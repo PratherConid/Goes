@@ -1,0 +1,23 @@
+.vscode
+dist
+**/node_modules
+src/**/*.js
+shared/**/*.js
+server/src/**/*.js
+
+# AI training outputs
+ai/checkpoints/
+# Manually or automatically archived checkpoints
+ai/checkpoint_archive/
+ai/build/
+
+# Build artifacts
+**/*.obj
+**/*.o
+**/*.lib
+**/*.a
+**/*.dll
+**/*.exe
+**/*.pdb
+**/*.ilk
+**/*.exp

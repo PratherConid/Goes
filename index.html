@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Goes</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #997750;
+      color: #000;
+      font-family: Calibri, sans-serif;
+      font-size: 16px;
+      height: 100dvh;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* ── left: main area ─────────────────────────────── */
+    #main-area {
+      flex: 2 1 0;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    #board-wrap {
+      flex: 1 1 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: calc(min(100dvh, 200dvw / 3) / 30);
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    #main-canvas {
+      display: block;
+      cursor: pointer;
+      /* size set dynamically */
+    }
+
+    /* control bar */
+    #ctrl-bar {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: calc(var(--u) * 4 / 7);
+      padding: calc(var(--u) * 2 / 7) calc(var(--u) * 4 / 7);
+      flex-shrink: 0;
+      --u: max(16px, min(100dvw, 100dvh) / 25);
+    }
+
+    #turn-stone {
+      width: calc(var(--u) * 8 / 7);
+      height: calc(var(--u) * 8 / 7);
+      border-radius: 50%;
+      border: 1px solid #333;
+      flex-shrink: 0;
+    }
+
+    #pass-btn {
+      padding: calc(var(--u) / 7) calc(var(--u) * 5 / 7);
+      border-radius: 999px;
+      border: none;
+      font-size: calc(var(--u) * 4 / 7);
+      color: #fff;
+      cursor: pointer;
+      background: #5c442e;
+    }
+    #pass-btn:disabled { background: #b5a99e; cursor: default; }
+
+    .ply-nav-btn {
+      height: var(--u);
+      border: none;
+      border-radius: 4px;
+      background: #5c442e;
+      color: #fff;
+      font-size: calc(var(--u) / 2);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .ply-nav-btn:disabled { background: #b5a99e; cursor: default; }
+    #bw-btn,   #fw-btn     { width: var(--u); }
+    #bw10-btn, #fw10-btn   { width: calc(var(--u) * 6 / 5); }
+    #bwend-btn, #fwend-btn { width: calc(var(--u) * 3 / 2); }
+
+    #ply-num {
+      position: absolute;
+      right: 16px;
+      font-size: calc(var(--u) * 11 / 14);
+    }
+
+    /* command input */
+    #cmd-area {
+      background: #1a1208;
+      padding: 4px 8px;
+      flex-shrink: 0;
+    }
+
+    #cmd-input {
+      width: 100%;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: #fff;
+      font-family: Consolas, monospace;
+      font-size: 15px;
+    }
+
+    /* ── right: side panel ───────────────────────────── */
+    #side-panel {
+      flex: 1 1 0;
+      display: flex;
+      flex-direction: column;
+      background: #b88f3d;
+      min-width: 0;
+    }
+
+    #panel-tabs {
+      display: flex;
+      flex-shrink: 0;
+    }
+
+    .tab-btn {
+      flex: 1;
+      padding: 6px;
+      border: none;
+      background: #66481f;
+      color: #fff;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .tab-btn.active { background: #b88f3d; }
+
+    #commands-panel {
+      flex: 1 1 0;
+      padding: 10px 12px;
+      overflow-y: auto;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    #commands-panel table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+    #commands-panel th {
+      text-align: left;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 8px 4px 2px;
+      border-bottom: 1px solid #8a6830;
+      color: #1a0a00;
+    }
+    #commands-panel td { padding: 2px 6px 2px 4px; vertical-align: top; }
+    #commands-panel td:first-child {
+      font-family: Consolas, monospace;
+      color: #000;
+    }
+    #commands-panel td:last-child { color: #000; }
+
+    #history-panel, #status-panel {
+      flex: 1 1 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #history-boards {
+      flex: 1 1 0;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-auto-rows: 1fr;
+      gap: 6px;
+      padding: 6px;
+      overflow: hidden;
+    }
+
+    .history-entry {
+      background: #e5b24c;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px;
+      min-height: 0;
+      min-width: 0;
+      overflow: hidden;
+      container-type: size;
+    }
+
+    .history-entry-left {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+      padding-left: calc(100cqw / 15);
+    }
+
+    .hist-stone {
+      width: calc(max(min(100cqh / 4, 100cqw / 5), 16px));
+      height: calc(max(min(100cqh / 4, 100cqw / 5), 16px));
+      border-radius: 50%;
+      border: 1px solid #333;
+      flex-shrink: 0;
+    }
+
+    .hist-ply {
+      font-size: calc(max(min(100cqh / 6, 100cqw / 8), 12px));
+    }
+
+    .hist-canvas {
+      flex: 1 1 0;
+      min-width: 0;
+      display: block;
+    }
+
+    #history-nav {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      grid-template-rows: 1fr 1fr;
+      flex-shrink: 0;
+    }
+
+    .nav-btn {
+      background: #66481f;
+      color: #fff;
+      border: none;
+      padding: 4px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .nav-btn:hover { background: #7a5827; }
+
+    #status-panel {
+      padding: 12px;
+      overflow-y: auto;
+      font-size: 14px;
+      line-height: 1.8;
+    }
+  </style>
+</head>
+<body>
+  <div id="main-area">
+    <div id="board-wrap">
+      <canvas id="main-canvas"></canvas>
+    </div>
+    <div id="ctrl-bar">
+      <button id="bwend-btn" class="ply-nav-btn">&#10074;&#9664;&#9664;</button>
+      <button id="bw10-btn"  class="ply-nav-btn">&#9664;&#9664;</button>
+      <button id="bw-btn"    class="ply-nav-btn">&#9664;</button>
+      <div id="turn-stone"></div>
+      <button id="pass-btn">Pass</button>
+      <button id="fw-btn"    class="ply-nav-btn">&#9654;</button>
+      <button id="fw10-btn"  class="ply-nav-btn">&#9654;&#9654;</button>
+      <button id="fwend-btn" class="ply-nav-btn">&#9654;&#9654;&#10074;</button>
+      <span id="ply-num">0</span>
+    </div>
+    <div id="cmd-area">
+      <input id="cmd-input" type="text" spellcheck="false"
+             placeholder="type command and press Enter…" autocomplete="off" />
+    </div>
+  </div>
+
+  <div id="side-panel">
+    <div id="panel-tabs">
+      <button class="tab-btn active" data-tab="history">History</button>
+      <button class="tab-btn" data-tab="status">Status</button>
+      <button class="tab-btn" data-tab="commands">Commands</button>
+    </div>
+    <div id="history-panel">
+      <div id="history-boards"></div>
+      <div id="history-nav">
+        <button class="nav-btn" data-action="prev" data-step="1">←1</button>
+        <button class="nav-btn" data-action="prev" data-step="10">←10</button>
+        <button class="nav-btn" data-action="prev" data-step="100">←100</button>
+        <button class="nav-btn" data-action="start">||←</button>
+        <button class="nav-btn" data-action="next" data-step="1">→1</button>
+        <button class="nav-btn" data-action="next" data-step="10">→10</button>
+        <button class="nav-btn" data-action="next" data-step="100">→100</button>
+        <button class="nav-btn" data-action="end">→||</button>
+      </div>
+    </div>
+    <div id="status-panel" style="display:none"></div>
+    <div id="commands-panel" style="display:none"></div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
