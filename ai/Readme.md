@@ -108,21 +108,21 @@ Run from the project root:
 
 ```bash
 export OMP_NUM_THREADS=8  # number of CPU threads for parallel MCTS select; defaults to all cores
-ai/build/goes_train --no-forced-pass-only --board rect 9 9 --verbosity 1 --linear-move-bound 1.5
+ai/build/goes_train --no-forced-pass-only --board rect 9 9 --verbosity 1 --linear-move-bound 2.5
 ```
 
 For higher-end training devices,
 
 ```bash
 export OMP_NUM_THREADS=8  # number of CPU threads for parallel MCTS select; defaults to all cores
-ai/build/goes_train --no-forced-pass-only --board rect 9 9 --verbosity 1 --linear-move-bound 1.5 --gamegen-batch-size 256 --iterations 65536 --save-every 16 --self-play-games 64
+ai/build/goes_train --no-forced-pass-only --board rect 9 9 --verbosity 1 --linear-move-bound 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 16 --self-play-games 64
 ```
 
 **Windows:**
 
 ```powershell
 $env:OMP_NUM_THREADS = "8"  # number of CPU threads for parallel MCTS select; defaults to all cores
-ai\build\Release\goes_train --no-forced-pass-only --board rect 9 9 --verbosity 1 --linear-move-bound 1.5
+ai\build\Release\goes_train --no-forced-pass-only --board rect 9 9 --verbosity 1 --linear-move-bound 2.5
 ```
 
 Checkpoints are saved as `ai/checkpoints/ckpt_XXXXXX.pt` and loaded automatically on resume.
@@ -161,7 +161,7 @@ echo 0 | sudo tee /proc/sys/kernel/perf_event_paranoid
 
 ```bash
 valgrind --tool=callgrind --callgrind-out-file=callgrind.out \
-    ai/build/goes_train --no-forced-pass-only --board rect 9 9 --verbosity 2 --linear-move-bound 1.5 --iterations 3 --self-play-games 4 --gamegen-batch-size 2 --num-simulations 5
+    ai/build/goes_train --no-forced-pass-only --board rect 9 9 --verbosity 2 --linear-move-bound 1 --iterations 3 --self-play-games 4 --gamegen-batch-size 2 --num-simulations 5
 
 callgrind_annotate --auto=yes callgrind.out | less
 ```
