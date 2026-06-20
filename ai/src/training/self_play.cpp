@@ -41,17 +41,16 @@ std::vector<GameRecord> trajectory_to_records(
 }
 
 std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
-    MessagePassingGNN& model,
+    Evaluator& evaluator,
     const std::vector<BoardState*>& states,
-    const AdjNorms& adj_norms,
+    torch::Device device,
     int num_simulations,
     int temperature_threshold,
     float c_puct,
     int verbosity,
     std::optional<int> max_plies)
 {
-    torch::Device device = adj_norms.adj.device();
-    MCTS mcts(model, c_puct, adj_norms, /*seed=*/42);
+    MCTS mcts(evaluator, c_puct, /*seed=*/42);
 
     std::vector<float> temps;
     temps.reserve(states.size());

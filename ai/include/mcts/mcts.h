@@ -1,6 +1,6 @@
 #pragma once
 #include "game/board_state.h"
-#include "model/gnn.h"
+#include "model/evaluator.h"
 #include <vector>
 #include <unordered_map>
 #include <memory>
@@ -16,7 +16,7 @@ struct MCTSTiming {
 
 struct MCTSNode {
     BoardState state;
-    std::vector<float> prior;        // (N+1,) from GNN policy
+    std::vector<float> prior;        // (N+1,) from model policy
     std::vector<int>   visit_count;  // (N+1,)
     std::vector<float> total_value;  // (N+1,)
     std::unordered_map<int, std::unique_ptr<MCTSNode>> children;
@@ -33,14 +33,11 @@ struct MCTSNode {
 // Value convention: each node stores Q-values from the perspective of the player
 // whose turn it is at that node. Backup does not negate — instead it looks up the
 // per-player reward map and reads the value for each node's own player. Terminal
-// rewards come from compute_player_rewards(); GNN leaves contribute only the value
+// rewards come from compute_player_rewards(); model leaves contribute only the value
 // for the leaf's current player (others get 0 for that simulation).
 class MCTS {
 public:
-    MCTS(MessagePassingGNN model,
-         float c_puct,           // exploration constant: higher = trust GNN prior more vs. Q values
-         AdjNorms adj_norms,     // pre-computed multi-scale adjacency, device already set
-         uint64_t seed = 42);
+    MCTS(Evaluator evaluator, float c_puct, uint64_t seed = 42);
 
     std::pair<std::vector<std::pair<std::vector<float>, int>>, MCTSTiming> search_batch(
         std::vector<BoardState*> states,
@@ -52,9 +49,8 @@ public:
         std::optional<int> max_plies = std::nullopt);
 
 private:
-    MessagePassingGNN model_;
+    Evaluator model_;
     float c_puct_;
-    AdjNorms adj_norms_;
     std::mt19937 rng_;
 
     // Returns (path, leaf, per-player-rewards-or-nullopt)

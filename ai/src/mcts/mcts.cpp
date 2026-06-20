@@ -34,8 +34,8 @@ std::vector<float> MCTSNode::ucb_scores(float c_puct) const {
 
 // ── MCTS ─────────────────────────────────────────────────────────────────────
 
-MCTS::MCTS(MessagePassingGNN model, float c_puct, AdjNorms adj_norms, uint64_t seed)
-    : model_(std::move(model)), c_puct_(c_puct), adj_norms_(std::move(adj_norms)),
+MCTS::MCTS(Evaluator evaluator, float c_puct, uint64_t seed)
+    : model_(std::move(evaluator)), c_puct_(c_puct),
       rng_(static_cast<unsigned>(seed))
 {}
 
@@ -188,7 +188,7 @@ MCTSTiming MCTS::simulate_batch(const std::vector<MCTSNode*>& roots,
         for (int i : eval_indices) batch_states.push_back(&nodes[i]->state);
 
         auto t0 = std::chrono::high_resolution_clock::now();
-        auto [policy_t, value_t] = model_->evaluate_batch(batch_states, adj_norms_);
+        auto [policy_t, value_t] = model_.evaluate_batch(batch_states);
         auto t1 = std::chrono::high_resolution_clock::now();
         eval_time = std::chrono::duration<double>(t1 - t0).count();
 
@@ -286,7 +286,7 @@ MCTS::search_batch(
     // Initial root-prior batch evaluation
     std::vector<const BoardState*> cstates(states.begin(), states.end());
     auto t0 = std::chrono::high_resolution_clock::now();
-    auto [policy_t, value_t] = model_->evaluate_batch(cstates, adj_norms_);
+    auto [policy_t, value_t] = model_.evaluate_batch(cstates);
     auto t1 = std::chrono::high_resolution_clock::now();
     MCTSTiming total{std::chrono::duration<double>(t1 - t0).count(), 0.0};
 

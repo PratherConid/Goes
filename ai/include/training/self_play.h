@@ -1,7 +1,8 @@
 #pragma once
 #include "game/board_config.h"
 #include "game/board_state.h"
-#include "model/gnn.h"
+#include "model/features.h"
+#include "model/evaluator.h"
 #include "mcts/mcts.h"
 #include "training/replay_buffer.h"
 #include <vector>
@@ -51,9 +52,9 @@ std::vector<GameRecord> trajectory_to_records(
 //
 // verbosity >=2: one line per ply plus a timing summary per batch.
 std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
-    MessagePassingGNN& model,
+    Evaluator& evaluator,
     const std::vector<BoardState*>& states,
-    const AdjNorms& adj_norms,
+    torch::Device device,
     int num_simulations,
     int temperature_threshold,
     float c_puct,

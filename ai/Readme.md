@@ -1,8 +1,10 @@
 ## AI Training Pipeline
 
-Self-play training pipeline for Goes using a Graph Neural Network (GNN) guided by Monte Carlo Tree Search (MCTS), in the style of AlphaZero.
+Self-play training pipeline for Goes using Monte Carlo Tree Search (MCTS), in the style of AlphaZero.
 
-Because Goes supports arbitrary board topologies (rectangular, triangular, cubical, hypercubical, twisted-square), a standard CNN cannot generalize across them. The GNN operates directly on the board's adjacency graph and works for all topologies without modification.
+Two model architectures are used depending on board topology:
+- **ConvNN** (U-Net CNN): for boards with a 2D integer embedding — `rect`, `rectd`, `tri`, `twsq`, `gtsq`.
+- **MessagePassingGNN**: for higher-dimensional boards whose nodes cannot be laid out on a 2D grid — `cub`, `hcub`.
 
 ## Differences from the TypeScript engine
 
@@ -22,7 +24,10 @@ ai/
 │   │   └── board_state.{h,cpp}         Port of shared/boardState.ts
 │   ├── model/
 │   │   ├── features.{h,cpp}            BoardState → per-node feature tensor
-│   │   └── gnn.{h,cpp}                 MessagePassingGNN (policy + value heads)
+│   │   ├── gnn.{h,cpp}                 MessagePassingGNN (policy + value heads, for cub/hcub)
+│   │   ├── cnn.{h,cpp}                 U-Net ConvNN (policy + value heads, for 2D boards)
+│   │   ├── evaluator.h                 Type-erased Evaluator used by MCTS and self-play
+│   │   └── any_model.h                 AnyModel variant + make_evaluator() factory
 │   ├── mcts/
 │   │   └── mcts.{h,cpp}                AlphaZero-style MCTS
 │   └── training/
@@ -219,7 +224,8 @@ The `GOES_CHECKPOINT_DIR` environment variable overrides the checkpoint director
 | `--linear-move-bound F` | _(none)_ | End games after k×N plies |
 | `--train-steps N` | `64` | Gradient steps per iteration |
 | `--batch-size N` | `128` | Training batch size |
-| `--hidden-dim N` | `128` | GNN hidden dimension |
+| `--gnn-hidden-dim N` | `128` | GNN hidden dimension (cub/hcub boards) |
+| `--cnn-hidden-dim N` | `64` | CNN hidden dimension (2D boards) |
 | `--num-layers N` | `9` | GNN message-passing layers |
 | `--save-every N` | `10` | Save a checkpoint every N iterations |
 | `--checkpoint-dir PATH` | `ai/checkpoints` | Checkpoint directory |
@@ -229,7 +235,7 @@ The `GOES_CHECKPOINT_DIR` environment variable overrides the checkpoint director
 
 1. **Self-play**: the current model plays games against itself. Each move is chosen by running MCTS simulations guided by the GNN's policy and value estimates.
 2. **Record collection**: each ply stores `(features, MCTS visit distribution, game outcome)`.
-3. **Training**: mini-batches are sampled from a replay buffer. The GNN is trained to predict the MCTS visit distribution (policy head, cross-entropy) and the game outcome (value head, MSE).
+3. **Training**: mini-batches are sampled from a replay buffer. The model is trained to predict the MCTS visit distribution (policy head, cross-entropy) and the game outcome (value head, MSE).
 4. **Iteration**: the updated model is used for the next round of self-play.
 
 ## Reward

@@ -35,7 +35,7 @@
 // Models are loaded lazily on first request for each game config and cached.
 #include "game/board_config.h"
 #include "game/board_state.h"
-#include "model/gnn.h"
+#include "model/any_model.h"
 #include "model/features.h"
 #include "mcts/mcts.h"
 #include <torch/torch.h>
@@ -112,7 +112,7 @@ struct SessionState {
 // ── Server state ──────────────────────────────────────────────────────────────
 
 struct ServerState {
-    std::unordered_map<std::string, MessagePassingGNN> models;
+    std::unordered_map<std::string, AnyModel> models;
     std::unordered_map<std::string, std::unique_ptr<SessionState>> sessions;
     torch::Device device{torch::kCPU};
     int default_sims = 200;
@@ -173,7 +173,9 @@ static std::string request_tag(const json& j) {
 }
 
 // Load (or return cached) model for the given tag.
-static MessagePassingGNN& load_model(ServerState& ss, const std::string& tag) {
+// bc is needed to construct ConvNN (which requires grid dimensions at build time).
+static AnyModel& load_model(ServerState& ss, const std::string& tag,
+                             const BoardConfig& bc) {
     auto it = ss.models.find(tag);
     if (it != ss.models.end()) return it->second;
 
@@ -193,21 +195,35 @@ static MessagePassingGNN& load_model(ServerState& ss, const std::string& tag) {
 
     json cfg        = json::parse(std::ifstream(json_path));
     int in_dim      = 2 * cfg["num_stones"].get<int>() + 4;
-    int hidden_dim  = cfg.value("hidden_dim", 128);
-    int num_layers  = cfg.value("num_layers", 8);
     int num_players = cfg.value("num_players", 2);
+    auto board_cfg  = cfg["board"].get<std::vector<std::string>>();
+    const std::string& kind = board_cfg[0];
+    bool use_cnn = (kind == "rect" || kind == "rectd" || kind == "tri" ||
+                    kind == "twsq" || kind == "gtsq");
 
-    MessagePassingGNN model(in_dim, hidden_dim, num_layers, num_players);
-    torch::load(model, latest.value().string());
-    model->to(ss.device);
-    model->eval();
+    AnyModel model_any = [&]() -> AnyModel {
+        if (use_cnn) {
+            int cnn_hidden = cfg.value("cnn_hidden_dim", 64);
+            return ConvNN(bc, in_dim, cnn_hidden, num_players);
+        } else {
+            int hidden_dim = cfg.contains("gnn_hidden_dim") ? cfg["gnn_hidden_dim"].get<int>()
+                                                             : cfg.value("hidden_dim", 128);
+            int num_layers = cfg.value("num_layers", 8);
+            return MessagePassingGNN(in_dim, hidden_dim, num_layers, num_players);
+        }
+    }();
+
+    std::visit([&](auto& m) {
+        torch::load(m, latest.value().string());
+        m->to(ss.device);
+        m->eval();
+    }, model_any);
 
     std::cout << "[inference] Loaded " << latest.value().filename()
               << " for tag=" << tag
-              << " (in_dim=" << in_dim << ", hidden=" << hidden_dim
-              << ", layers=" << num_layers << ")\n";
+              << " (in_dim=" << in_dim << ", model=" << (use_cnn ? "CNN" : "GNN") << ")\n";
 
-    auto [ins, ok] = ss.models.emplace(tag, std::move(model));
+    auto [ins, ok] = ss.models.emplace(tag, std::move(model_any));
     return ins->second;
 }
 
@@ -250,9 +266,10 @@ int main(int argc, char* argv[]) {
             if (j.contains("session_id") && j["session_id"].is_string())
                 session_id = j["session_id"].get<std::string>();
             std::string tag        = request_tag(j);
-            auto& model            = load_model(ss, tag);
             auto bc                = build_bc(j);
             auto adj_norms         = compute_adj_norms(bc, ss.device);
+            auto& model_v          = load_model(ss, tag, bc);
+            auto evaluator         = make_evaluator(model_v, adj_norms);
 
             // Moves list from client: null element → pass (-1), integer → board index.
             std::vector<int> req_moves;
@@ -340,15 +357,15 @@ int main(int argc, char* argv[]) {
             // ── Run MCTS ─────────────────────────────────────────────────────
 
             int num_sims = j.value("num_simulations", ss.default_sims);
-            MCTS mcts(model, 1.0f, adj_norms);
+            MCTS mcts(evaluator, 1.0f);
             auto [results, _timing] = mcts.search_batch(
                 {sess->state.get()}, num_sims, /*add_noise=*/false, 0.3f, 0.25f,
                 {0.0f});
             auto& [policy_vec, move_idx] = results[0];
-            auto [_pol, value_t] = model->evaluate(*sess->state, adj_norms);
+            auto [_pol_t, value_t] = evaluator.evaluate_batch({sess->state.get()});
             auto s2p_it = sess->state->stone_to_player_map.find(sess->state->next_player);
             int pid = (s2p_it != sess->state->stone_to_player_map.end()) ? s2p_it->second : 1;
-            float value = value_t[pid - 1].item<float>();
+            float value = value_t[0][pid - 1].item<float>();
 
             json resp;
             if (move_idx == bc.N) resp["move"] = nullptr;

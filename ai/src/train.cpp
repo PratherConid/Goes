@@ -3,7 +3,7 @@
 // Usage: goes_train [--board rect 9 9] [--iterations 100] ...
 // Run with --help for the full option list.
 #include "game/board_config.h"
-#include "model/gnn.h"
+#include "model/any_model.h"
 #include "model/features.h"
 #include "training/self_play.h"
 #include "training/replay_buffer.h"
@@ -33,7 +33,8 @@ struct Args {
     int num_stones        = 2;
     int num_players       = 2;
     bool forced_pass_only = false;
-    int hidden_dim        = 128;
+    int gnn_hidden_dim    = 128;
+    int cnn_hidden_dim    = 64;
     int num_layers        = 9;
     int iterations        = 200;
     int self_play_games   = 10;
@@ -58,8 +59,9 @@ static void print_usage(const char* prog) {
               << "  --num-stones N            Number of stone types (default: 2)\n"
               << "  --num-players N           Number of players (default: 2)\n"
               << "  --forced-pass-only        Enable forced-pass-only mode\n"
-              << "  --hidden-dim N            GNN hidden dimension (default: 128)\n"
-              << "  --num-layers N            GNN message-passing layers (default: 8)\n"
+              << "  --gnn-hidden-dim N        GNN hidden dimension (default: 128)\n"
+              << "  --cnn-hidden-dim N        CNN hidden dimension (default: 64)\n"
+              << "  --num-layers N            GNN message-passing layers (default: 9)\n"
               << "  --iterations N            Training iterations (default: 200)\n"
               << "  --self-play-games N       Games to complete before each training step (default: 10)\n"
               << "  --gamegen-batch-size N    Games generated in parallel (default: 10)\n"
@@ -92,7 +94,8 @@ static Args parse_args(int argc, char* argv[]) {
         else if (a == "--num-players")     args.num_players     = std::stoi(argv[++i]);
         else if (a == "--forced-pass-only") args.forced_pass_only = true;
         else if (a == "--no-forced-pass-only") args.forced_pass_only = false;
-        else if (a == "--hidden-dim")      args.hidden_dim      = std::stoi(argv[++i]);
+        else if (a == "--gnn-hidden-dim")  args.gnn_hidden_dim  = std::stoi(argv[++i]);
+        else if (a == "--cnn-hidden-dim")  args.cnn_hidden_dim  = std::stoi(argv[++i]);
         else if (a == "--num-layers")      args.num_layers      = std::stoi(argv[++i]);
         else if (a == "--iterations")      args.iterations      = std::stoi(argv[++i]);
         else if (a == "--self-play-games") args.self_play_games = std::stoi(argv[++i]);
@@ -131,6 +134,21 @@ static BoardConfig build_board(const std::vector<std::string>& board_args) {
     if (kind == "tri")   { auto v = ints(1); return triangular_board(v[0]); }
     if (kind == "twsq")  { auto v = ints(1); return twisted_square_board(v[0], v[1], v[2]); }
     if (kind == "gtsq")  { auto v = ints(1); return glue_twisted_square_board(v[0], v[1], v[2]); }
+    std::cerr << "Unknown board type: " << kind << "\n"; std::exit(1);
+}
+
+// ── Model factory ─────────────────────────────────────────────────────────────
+
+static AnyModel build_model(const Args& args, const BoardConfig& bc) {
+    int in_dim = 2 * args.num_stones + 4;
+    const std::string& kind = args.board[0];
+    // 2-D board types → ConvNN
+    if (kind == "rect" || kind == "rectd" || kind == "tri" ||
+        kind == "twsq" || kind == "gtsq")
+        return ConvNN(bc, in_dim, args.cnn_hidden_dim, args.num_players);
+    // Higher-dimensional board types → GNN
+    if (kind == "cub" || kind == "hcub")
+        return MessagePassingGNN(in_dim, args.gnn_hidden_dim, args.num_layers, args.num_players);
     std::cerr << "Unknown board type: " << kind << "\n"; std::exit(1);
 }
 
@@ -188,12 +206,12 @@ int main(int argc, char* argv[]) {
     // may only pass when no traditional placement is legal. In this case, players
     // will be forced to kill their own groups, and the game only ends when both
     // players have no legal moves simultaneously, which closely depends on the full
-    // history of the game. The GNN receives only per-node features derived from the
+    // history of the game. The model receives only per-node features derived from the
     // current board, so it cannot function correctly in this case,
     // and the policy head's pass logit becomes meaningless. This restriction
     // will be lifted once history-aware features are added to the input.
     assert(!args.forced_pass_only &&
-           "forced_pass_only=true is not supported: GNN lacks history-aware features");
+           "forced_pass_only=true is not supported: model lacks history-aware features");
 
     torch::Device device = (torch::cuda::is_available() && !args.cpu)
         ? torch::kCUDA : torch::kCPU;
@@ -212,9 +230,8 @@ int main(int argc, char* argv[]) {
         game_cfg.stone_to_player_map[s] = ((s - 1) % args.num_players) + 1;
     game_cfg.forced_pass_only = args.forced_pass_only;
 
-    int in_dim = 2 * args.num_stones + 4;
-    auto model = MessagePassingGNN(in_dim, args.hidden_dim, args.num_layers, args.num_players);
-    model->to(device);
+    auto model_var = build_model(args, bc);
+    std::visit([&](auto& m) { m->to(device); }, model_var);
 
     // Resume from checkpoint
     fs::path ckpt_dir = fs::path(args.checkpoint_dir) / model_tag(args);
@@ -223,18 +240,20 @@ int main(int argc, char* argv[]) {
     auto latest = latest_checkpoint(ckpt_dir);
     if (latest.has_value()) {
         std::cout << "Resuming from " << latest.value() << std::endl;
-        torch::load(model, latest.value().string());
+        std::visit([&](auto& m) { torch::load(m, latest.value().string()); }, model_var);
         start_iter = iteration_from_path(latest.value()) + 1;
     }
 
     auto optimizer = torch::optim::Adam(
-        model->parameters(),
+        std::visit([](auto& m) { return m->parameters(); }, model_var),
         torch::optim::AdamOptions(args.lr).weight_decay(args.l2));
 
     ReplayBuffer buffer(args.buffer_size);
     std::mt19937 rng(42);
 
     auto adj_norms = compute_adj_norms(bc, device);
+
+    auto evaluator = make_evaluator(model_var, adj_norms);
 
     std::optional<int> max_plies;
     if (args.linear_move_bound.has_value())
@@ -252,7 +271,7 @@ int main(int argc, char* argv[]) {
 
     for (int iter = start_iter; iter < args.iterations; iter++) {
         auto t0 = std::chrono::high_resolution_clock::now();
-        model->eval();
+        std::visit([](auto& m) { m->eval(); }, model_var);
 
         // ── Self-play ────────────────────────────────────────────────────────
         if (args.verbosity >= 1)
@@ -266,7 +285,7 @@ int main(int argc, char* argv[]) {
             for (auto& s : pool) ptrs.push_back(&s);
 
             auto [ply_results, _timing] = generate_one_ply_per_game(
-                model, ptrs, adj_norms,
+                evaluator, ptrs, device,
                 args.num_simulations, /*temperature_threshold=*/30, args.c_puct,
                 args.verbosity, max_plies);
 
@@ -307,7 +326,7 @@ int main(int argc, char* argv[]) {
         }
 
         // ── Training ─────────────────────────────────────────────────────────
-        model->train();
+        std::visit([](auto& m) { m->train(); }, model_var);
         double total_loss = 0, total_pol = 0, total_val = 0;
 
         for (int step = 0; step < args.train_steps; step++) {
@@ -317,7 +336,14 @@ int main(int argc, char* argv[]) {
             p_tgt = p_tgt.to(device);
             v_tgt = v_tgt.to(device);
 
-            auto [policy, value] = model->forward(x, adj_norms, mask);
+            auto [policy, value] = std::visit(
+                [&](auto& m) -> std::pair<torch::Tensor, torch::Tensor> {
+                    using M = std::decay_t<decltype(m)>;
+                    if constexpr (std::is_same_v<M, MessagePassingGNN>)
+                        return m->forward(x, adj_norms, mask);
+                    else
+                        return m->forward(x, mask);
+                }, model_var);
 
             // Policy loss: cross-entropy against MCTS visit distribution
             auto log_policy  = torch::log(policy.clamp_min(1e-8f));
@@ -328,7 +354,8 @@ int main(int argc, char* argv[]) {
 
             optimizer.zero_grad();
             loss.backward();
-            torch::nn::utils::clip_grad_norm_(model->parameters(), 1.0);
+            torch::nn::utils::clip_grad_norm_(
+                std::visit([](auto& m) { return m->parameters(); }, model_var), 1.0);
             optimizer.step();
 
             total_loss += loss.item<double>();
@@ -351,7 +378,7 @@ int main(int argc, char* argv[]) {
             std::ostringstream oss;
             oss << "ckpt_" << std::setfill('0') << std::setw(6) << iter << ".pt";
             fs::path ckpt_path = ckpt_dir / oss.str();
-            torch::save(model, ckpt_path.string());
+            std::visit([&](auto& m) { torch::save(m, ckpt_path.string()); }, model_var);
             fs::path json_path = ckpt_path; json_path.replace_extension(".json");
             {
                 json cfg;
@@ -363,7 +390,8 @@ int main(int argc, char* argv[]) {
                 json s2p_j;
                 for (auto& [k, v] : game_cfg.stone_to_player_map) s2p_j[std::to_string(k)] = v;
                 cfg["stone_to_player_map"] = s2p_j;
-                cfg["hidden_dim"]        = args.hidden_dim;
+                cfg["gnn_hidden_dim"]    = args.gnn_hidden_dim;
+                cfg["cnn_hidden_dim"]    = args.cnn_hidden_dim;
                 cfg["num_layers"]        = args.num_layers;
                 cfg["num_players"]       = args.num_players;
                 std::ofstream(json_path) << cfg.dump(2) << "\n";

@@ -39,7 +39,7 @@ struct MessagePassingGNNImpl : torch::nn::Module {
         const AdjNorms& adj_norms);
 
     // Evaluate a list of states in one forward pass (all must share the same board).
-    // Returns policy_batch (B, N+1) and value_batch (B,).
+    // Returns policy_batch (B, N+1) and value_batch (B, num_players).
     std::pair<torch::Tensor, torch::Tensor> evaluate_batch(
         const std::vector<BoardState*>& states,
         const AdjNorms& adj_norms);
