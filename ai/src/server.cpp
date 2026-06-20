@@ -228,7 +228,7 @@ int main(int argc, char* argv[]) {
         else if (a == "--cpu")       use_cpu = true;
     }
 
-    // Environment variable overrides (like Python server)
+    // Environment variable overrides
     if (const char* e = std::getenv("GOES_CHECKPOINT_DIR")) ckpt_dir = e;
     if (const char* e = std::getenv("GOES_NUM_SIMS"))      default_sims = std::stoi(e);
 

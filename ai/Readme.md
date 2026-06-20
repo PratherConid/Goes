@@ -6,9 +6,7 @@ Because Goes supports arbitrary board topologies (rectangular, triangular, cubic
 
 ## Differences from the TypeScript engine
 
-`shared/boardConfig.ts` stores node positions (`pos`) and a bounding box (`boardDimension`) for the canvas renderer. The Python `BoardConfig` omits both — only the adjacency matrix and node count are needed for gameplay and training.
-
-As a result, `board_config.py` is also simpler: `_make` takes only `adj`, all factory functions skip position computation entirely, and `_tilted_disconnected_square_board` drops its `gap` parameter (which was purely visual).
+`shared/boardConfig.ts` stores node positions (`pos`) and a bounding box (`boardDimension`) for the canvas renderer. The C++ `BoardConfig` now includes `pos` (ported from the TypeScript factory functions) but omits `boardDimension`, which is only needed by the renderer.
 
 ## Directory Structure
 

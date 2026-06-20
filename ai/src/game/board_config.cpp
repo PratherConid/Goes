@@ -3,14 +3,18 @@
 #include <algorithm>
 #include <functional>
 #include <numeric>
+#include <cmath>
 
-static BoardConfig make_bc(std::vector<std::vector<int>> adj) {
-    int N = static_cast<int>(adj.size());
-    assert((N == 0 || static_cast<int>(adj[0].size()) == N) && "adj must be N×N");
+static BoardConfig make_bc(std::vector<std::vector<int>> adj,
+                            unsigned emb_dim,
+                            std::vector<std::vector<unsigned>> emb) {
+    int N = static_cast<int>(emb.size());
+    assert(static_cast<int>(adj.size()) == N &&
+           (N == 0 || static_cast<int>(adj[0].size()) == N) && "adj must be N×N");
     for (int i = 0; i < N; i++)
         for (int j = 0; j < N; j++)
             assert(adj[i][j] == adj[j][i] && "adj must be symmetric");
-    return {N, std::move(adj)};
+    return {N, std::move(adj), emb_dim, std::move(emb)};
 }
 
 static std::vector<std::vector<int>> zero_adj(int N) {
@@ -24,10 +28,7 @@ BoardConfig quotient_board(const BoardConfig& bc,
     std::iota(parent.begin(), parent.end(), 0);
 
     std::function<int(int)> find = [&](int x) -> int {
-        while (parent[x] != x) {
-            parent[x] = parent[parent[x]];
-            x = parent[x];
-        }
+        while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
         return x;
     };
 
@@ -47,9 +48,22 @@ BoardConfig quotient_board(const BoardConfig& bc,
 
     std::vector<int> root_to_new(N, -1);
     for (int i = 0; i < new_n; i++) root_to_new[unique_roots[i]] = i;
-
     std::vector<int> node_to_new(N);
     for (int i = 0; i < N; i++) node_to_new[i] = root_to_new[roots[i]];
+
+    // New positions: average of class members
+    std::vector<std::vector<unsigned>> new_embed(new_n, std::vector<unsigned>(bc.emb_dim, 0u));
+    std::vector<int> cnt(new_n, 0);
+    for (int i = 0; i < N; i++) {
+        int ni = node_to_new[i];
+        new_embed[ni][0] += bc.embed[i][0];
+        new_embed[ni][1] += bc.embed[i][1];
+        cnt[ni]++;
+    }
+    for (int ni = 0; ni < new_n; ni++) {
+        new_embed[ni][0] /= cnt[ni];
+        new_embed[ni][1] /= cnt[ni];
+    }
 
     auto new_adj = zero_adj(new_n);
     for (int i = 0; i < N; i++)
@@ -59,11 +73,15 @@ BoardConfig quotient_board(const BoardConfig& bc,
             if (ni != nj) new_adj[ni][nj] = 1;
         }
 
-    return make_bc(std::move(new_adj));
+    return make_bc(std::move(new_adj), bc.emb_dim, std::move(new_embed));
 }
 
 BoardConfig rectangular_board(int w, int h) {
     assert(w > 0 && h > 0 && "w and h must be positive");
+    std::vector<std::vector<unsigned>> pos;
+    for (unsigned r = 0; r < h; r++)
+        for (unsigned c = 0; c < w; c++)
+            pos.push_back({c, r});
     auto adj = zero_adj(w * h);
     const int dirs[4][2] = {{0,1},{1,0},{0,-1},{-1,0}};
     for (int r = 0; r < h; r++)
@@ -73,12 +91,16 @@ BoardConfig rectangular_board(int w, int h) {
                 if (nr >= 0 && nr < h && nc >= 0 && nc < w)
                     adj[r*w+c][nr*w+nc] = 1;
             }
-    return make_bc(std::move(adj));
+    return make_bc(std::move(adj), 2u, std::move(pos));
 }
 
 BoardConfig rectangular_diagonal_board(int w, int h, int m) {
     assert(w > 0 && h > 0 && m > 0 && "w, h, m must be positive");
     auto adj = zero_adj(w * h);
+    std::vector<std::vector<unsigned>> pos;
+    for (unsigned r = 0; r < h; r++)
+        for (unsigned c = 0; c < w; c++)
+            pos.push_back({c, r});
     const int dirs[6][2] = {{0,1},{1,0},{0,-1},{-1,0},{1,1},{-1,1}};
     for (int r = 0; r < h; r++)
         for (int c = 0; c < w; c++)
@@ -90,11 +112,16 @@ BoardConfig rectangular_diagonal_board(int w, int h, int m) {
                 adj[r*w+c][nr*w+nc] = 1;
                 adj[nr*w+nc][r*w+c] = 1;
             }
-    return make_bc(std::move(adj));
+    return make_bc(std::move(adj), 2u, std::move(pos));
 }
 
 BoardConfig cubical_board(int w, int h, int d) {
     assert(w > 0 && h > 0 && d > 0 && "w, h, d must be positive");
+    std::vector<std::vector<unsigned>> pos;
+    for (unsigned s = 0; s < d; s++)
+        for (unsigned r = 0; r < h; r++)
+            for (unsigned c = 0; c < w; c++)
+                pos.push_back({c, r, s});
     int N = w * h * d;
     auto adj = zero_adj(N);
     auto idx = [&](int r, int c, int s) { return s*h*w + r*w + c; };
@@ -107,11 +134,17 @@ BoardConfig cubical_board(int w, int h, int d) {
                     if (nr>=0 && nr<h && nc>=0 && nc<w && ns>=0 && ns<d)
                         adj[idx(r,c,s)][idx(nr,nc,ns)] = 1;
                 }
-    return make_bc(std::move(adj));
+    return make_bc(std::move(adj), 3u, std::move(pos));
 }
 
 BoardConfig hypercube_board(int w, int h, int d, int t) {
     assert(w > 0 && h > 0 && d > 0 && t > 0 && "w, h, d, t must be positive");
+    std::vector<std::vector<unsigned>> pos;
+    for (unsigned s = 0; s < t; s++)
+        for (unsigned u = 0; u < d; u++)
+            for (unsigned r = 0; r < h; r++)
+                for (unsigned c = 0; c < w; c++)
+                    pos.push_back({c, r, u, s});
     int N = w * h * d * t;
     auto adj = zero_adj(N);
     auto idx = [&](int r, int c, int u, int s) {
@@ -130,11 +163,15 @@ BoardConfig hypercube_board(int w, int h, int d, int t) {
                         if (nr>=0&&nr<h&&nc>=0&&nc<w&&nu>=0&&nu<d&&ns>=0&&ns<t)
                             adj[idx(r,c,u,s)][idx(nr,nc,nu,ns)] = 1;
                     }
-    return make_bc(std::move(adj));
+    return make_bc(std::move(adj), 4u, std::move(pos));
 }
 
 BoardConfig triangular_board(int w) {
     assert(w > 0 && "w must be positive");
+    std::vector<std::vector<unsigned>> pos;
+    for (unsigned i = 0; i < w; i++)
+        for (unsigned j = 0; j <= i; j++)
+            pos.push_back({j, i});
     int N = w * (w + 1) / 2;
     auto adj = zero_adj(N);
     auto idx = [&](int i, int j) { return i*(i+1)/2 + j; };
@@ -146,11 +183,25 @@ BoardConfig triangular_board(int w) {
                 if (ni>=0 && ni<w && nj>=0 && nj<=ni)
                     adj[idx(i,j)][idx(ni,nj)] = 1;
             }
-    return make_bc(std::move(adj));
+    return make_bc(std::move(adj), 2u, std::move(pos));
 }
 
-static std::pair<std::vector<std::vector<int>>, std::vector<std::pair<int,int>>>
-tilted_disconnected_square_board(int w, int h, int g) {
+// gap=0.0 → glue_twisted_square_board, gap=1.0 → twisted_square_board
+static std::tuple<std::vector<std::vector<unsigned>>,
+                  std::vector<std::vector<int>>,
+                  std::vector<std::pair<int,int>>>
+tilted_disconnected_square_board(int w, int h, int g, int gap) {
+    const unsigned sq_width = (g - 1) * 2 + gap;
+    std::vector<std::vector<unsigned>> pos;
+    for (int rb = 0; rb < h; rb++)
+        for (int cb = 0; cb < w; cb++) {
+            unsigned bx = cb * sq_width;
+            unsigned by = rb * sq_width;
+            for (unsigned r = 0; r < g; r++)
+                for (unsigned c = 0; c < g; c++)
+                    // use `g - 1 - r` to avoid unsigned underflow
+                    pos.push_back({bx + c + (g - 1 - r), by + c + r});
+        }
     int N = w * h * g * g;
     auto adj = zero_adj(N);
     auto b_idx = [&](int rb, int cb) { return (rb*w + cb)*g*g; };
@@ -183,21 +234,21 @@ tilted_disconnected_square_board(int w, int h, int g) {
             }
         }
 
-    return {std::move(adj), std::move(inter_conn)};
+    return {std::move(pos), std::move(adj), std::move(inter_conn)};
 }
 
 BoardConfig glue_twisted_square_board(int w, int h, int g) {
     assert(w > 0 && h > 0 && g > 0 && "w, h, g must be positive");
-    auto [adj, inter_conn] = tilted_disconnected_square_board(w, h, g);
-    return quotient_board(make_bc(std::move(adj)), inter_conn);
+    auto [pos, adj, inter_conn] = tilted_disconnected_square_board(w, h, g, 0);
+    return quotient_board(make_bc(std::move(adj), 2u, std::move(pos)), inter_conn);
 }
 
 BoardConfig twisted_square_board(int w, int h, int g) {
     assert(w > 0 && h > 0 && g > 0 && "w, h, g must be positive");
-    auto [adj, inter_conn] = tilted_disconnected_square_board(w, h, g);
+    auto [pos, adj, inter_conn] = tilted_disconnected_square_board(w, h, g, 1);
     for (auto [i, j] : inter_conn) {
         adj[i][j] = 1;
         adj[j][i] = 1;
     }
-    return make_bc(std::move(adj));
+    return make_bc(std::move(adj), 2u, std::move(pos));
 }

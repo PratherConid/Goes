@@ -231,7 +231,6 @@ function tiltedDisconnectedSquareBoard(w: number, h: number, g: number, gap: num
                 const nrb = rb+dr, ncb = cb+dc;
                 if (nrb<0||nrb>=h||ncb<0||ncb>=w) continue;
                 const nb = bIdx(nrb, ncb);
-                // corner index formula matches Python's _tilted_disconnected_square_board
                 const selfIdx  = ((dr - dc + 1) >> 1) * g * (g-1) + ((dr + dc + 1) >> 1) * (g-1);
                 const otherIdx = g*g - 1 - selfIdx;
                 interConn.push([b + selfIdx, nb + otherIdx]);
