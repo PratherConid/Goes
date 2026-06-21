@@ -425,7 +425,7 @@ int main(int argc, char* argv[]) {
                 std::ofstream(json_path) << cfg.dump(2) << "\n";
             }
             std::ostringstream toss;
-            toss << arch << std::setfill('0') << std::setw(6) << iter << "_traj_" << ".json";
+            toss << arch << "_" << std::setfill('0') << std::setw(6) << iter << "_traj" << ".json";
             fs::path traj_path = ckpt_dir / toss.str();
             {
                 json trajs = json::array();
