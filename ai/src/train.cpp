@@ -269,6 +269,11 @@ int main(int argc, char* argv[]) {
         pool.push_back(new_state(game_cfg, bc));
     std::vector<std::vector<PlyResult>> trajectories(args.gamegen_batch_size);
 
+    // Accumulates completed game trajectories between checkpoints; dumped and
+    // cleared each time a checkpoint is saved.
+    std::vector<std::vector<PlyResult>> traj_store;
+    traj_store.reserve(args.gamegen_batch_size * args.save_every);
+
     for (int iter = start_iter; iter < args.iterations; iter++) {
         auto t0 = std::chrono::high_resolution_clock::now();
         std::visit([](auto& m) { m->eval(); }, model_var);
@@ -309,6 +314,8 @@ int main(int argc, char* argv[]) {
                     for (int w : pool[slot].winners) std::cout << w << ",";
                     std::cout << "]" << std::endl;
                 }
+
+                traj_store.push_back(trajectories[slot]);
 
                 buffer.add(std::move(records));
                 games_this_iter++;
@@ -396,6 +403,25 @@ int main(int argc, char* argv[]) {
                 cfg["num_players"]       = args.num_players;
                 std::ofstream(json_path) << cfg.dump(2) << "\n";
             }
+            std::ostringstream toss;
+            toss << "traj_" << std::setfill('0') << std::setw(6) << iter << ".json";
+            fs::path traj_path = ckpt_dir / toss.str();
+            {
+                json trajs = json::array();
+                for (auto& traj : traj_store) {
+                    json t = json::array();
+                    for (auto& ply : traj) {
+                        json p;
+                        p["policy"] = ply.policy;
+                        p["stone"]  = ply.stone;
+                        p["move"]   = ply.move;
+                        t.push_back(std::move(p));
+                    }
+                    trajs.push_back(std::move(t));
+                }
+                std::ofstream(traj_path) << trajs.dump() << "\n";
+            }
+            traj_store.clear();
             std::cout << "  Saved " << ckpt_path << std::endl;
         }
     }
