@@ -96,9 +96,8 @@ std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
         std::cout << "  ply iter: total=" << total_ms << "ms"
                   << "  search_batch=" << search_ms << "ms"
                   << "  eval_batch=" << timing.eval * 1000.0 << "ms"
-                  << "  (" << (int)(timing.eval / (total_ms / 1000.0) * 100.0) << "%)"
                   << "  select=" << timing.select * 1000.0 << "ms"
-                  << "  (" << (int)(timing.select / (total_ms / 1000.0) * 100.0) << "%)" << std::endl;
+                  << std::endl;
     }
 
     return {std::move(ply_results), timing};
