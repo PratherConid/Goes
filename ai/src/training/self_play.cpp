@@ -4,6 +4,9 @@
 #include <iostream>
 #include <cassert>
 #include <algorithm>
+#include <random>
+
+static std::mt19937 rng(std::random_device{}());
 
 BoardState new_state(const GameConfig& cfg, const BoardConfig& bc) {
     return BoardState(
@@ -40,6 +43,7 @@ std::vector<GameRecord> trajectory_to_records(
     return records;
 }
 
+// Not thread-safe: uses the file-scope std::mt19937 rng to seed each MCTS instance.
 std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
     Evaluator& evaluator,
     const std::vector<BoardState*>& states,
@@ -50,7 +54,7 @@ std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
     int verbosity,
     std::optional<int> max_plies)
 {
-    MCTS mcts(evaluator, c_puct, /*seed=*/42);
+    MCTS mcts(evaluator, c_puct, rng());
 
     std::vector<float> temps;
     temps.reserve(states.size());
