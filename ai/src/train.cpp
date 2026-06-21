@@ -406,7 +406,7 @@ int main(int argc, char* argv[]) {
             oss << arch << "_" << std::setfill('0') << std::setw(6) << iter << ".pt";
             fs::path ckpt_path = ckpt_dir / oss.str();
             std::visit([&](auto& m) { torch::save(m, ckpt_path.string()); }, model_var);
-            fs::path json_path = ckpt_path; json_path.replace_extension(".json");
+            fs::path json_path = ckpt_dir / (arch + "_config.json");
             {
                 json cfg;
                 cfg["board"]             = args.board;
@@ -424,7 +424,7 @@ int main(int argc, char* argv[]) {
                 std::ofstream(json_path) << cfg.dump(2) << "\n";
             }
             std::ostringstream toss;
-            toss << arch << "_traj_" << std::setfill('0') << std::setw(6) << iter << ".json";
+            toss << arch << std::setfill('0') << std::setw(6) << iter << "_traj_" << ".json";
             fs::path traj_path = ckpt_dir / toss.str();
             {
                 json trajs = json::array();

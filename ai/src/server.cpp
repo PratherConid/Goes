@@ -189,7 +189,8 @@ static AnyModel& load_model(ServerState& ss, const std::string& tag,
         throw std::runtime_error("No checkpoint found for config: " + subdir.string());
     }
 
-    fs::path json_path = latest.value(); json_path.replace_extension(".json");
+    std::string arch_prefix = use_cnn ? "cnn" : "gnn";
+    fs::path json_path = latest.value().parent_path() / (arch_prefix + "_config.json");
     if (!fs::exists(json_path)) {
         std::cerr << "[inference] Config JSON missing: " << json_path << "\n";
         throw std::runtime_error("Config JSON missing: " + json_path.string());
