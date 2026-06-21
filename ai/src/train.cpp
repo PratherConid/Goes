@@ -34,7 +34,7 @@ struct Args {
     int num_players       = 2;
     bool forced_pass_only = false;
     int gnn_hidden_dim    = 128;
-    int cnn_hidden_dim    = 64;
+    int cnn_hidden_dim    = 32;
     int num_layers        = 9;
     int iterations        = 200;
     int self_play_games   = 10;
@@ -60,13 +60,13 @@ static void print_usage(const char* prog) {
               << "  --num-players N           Number of players (default: 2)\n"
               << "  --forced-pass-only        Enable forced-pass-only mode\n"
               << "  --gnn-hidden-dim N        GNN hidden dimension (default: 128)\n"
-              << "  --cnn-hidden-dim N        CNN hidden dimension (default: 64)\n"
+              << "  --cnn-hidden-dim N        CNN hidden dimension (default: 32)\n"
               << "  --num-layers N            GNN message-passing layers (default: 9)\n"
               << "  --iterations N            Training iterations (default: 200)\n"
               << "  --self-play-games N       Games to complete before each training step (default: 10)\n"
               << "  --gamegen-batch-size N    Games generated in parallel (default: 10)\n"
               << "  --num-simulations N       MCTS simulations per move (default: 200)\n"
-              << "  --train-steps N           Gradient steps per iteration (default: 64)\n"
+              << "  --train-steps N           Gradient steps per iteration (default: 32)\n"
               << "  --batch-size N            Training batch size (default: 128)\n"
               << "  --buffer-size N           Replay buffer capacity (default: 100000)\n"
               << "  --lr F                    Learning rate (default: 0.001)\n"
@@ -286,7 +286,7 @@ int main(int argc, char* argv[]) {
 
             auto [ply_results, _timing] = generate_one_ply_per_game(
                 evaluator, ptrs, device,
-                args.num_simulations, /*temperature_threshold=*/30, args.c_puct,
+                args.num_simulations, /*temperature_threshold=*/bc.N / 3, args.c_puct,
                 args.verbosity, max_plies);
 
             for (int slot = 0; slot < args.gamegen_batch_size; slot++) {

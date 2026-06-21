@@ -225,7 +225,7 @@ The `GOES_CHECKPOINT_DIR` environment variable overrides the checkpoint director
 | `--train-steps N` | `64` | Gradient steps per iteration |
 | `--batch-size N` | `128` | Training batch size |
 | `--gnn-hidden-dim N` | `128` | GNN hidden dimension (cub/hcub boards) |
-| `--cnn-hidden-dim N` | `64` | CNN hidden dimension (2D boards) |
+| `--cnn-hidden-dim N` | `32` | CNN hidden dimension (2D boards) |
 | `--num-layers N` | `9` | GNN message-passing layers |
 | `--save-every N` | `10` | Save a checkpoint every N iterations |
 | `--checkpoint-dir PATH` | `ai/checkpoints` | Checkpoint directory |

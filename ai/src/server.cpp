@@ -203,7 +203,7 @@ static AnyModel& load_model(ServerState& ss, const std::string& tag,
 
     AnyModel model_any = [&]() -> AnyModel {
         if (use_cnn) {
-            int cnn_hidden = cfg.value("cnn_hidden_dim", 64);
+            int cnn_hidden = cfg.value("cnn_hidden_dim", 32);
             return ConvNN(bc, in_dim, cnn_hidden, num_players);
         } else {
             int hidden_dim = cfg.contains("gnn_hidden_dim") ? cfg["gnn_hidden_dim"].get<int>()
