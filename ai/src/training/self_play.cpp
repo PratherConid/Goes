@@ -67,6 +67,7 @@ std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
         0.3f, 0.25f, temps, max_plies);
     double search_ms = std::chrono::duration<double, std::milli>(
         std::chrono::high_resolution_clock::now() - t_search0).count();
+    timing.search = search_ms / 1000.0;
 
     std::vector<PlyResult> ply_results;
     ply_results.reserve(states.size());
@@ -88,16 +89,6 @@ std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
         assert(ok && "MCTS returned illegal move");
 
         ply_results.push_back({ft, mask, std::move(policy), stone, move});
-    }
-
-    if (verbosity >= 1) {
-        double total_ms = std::chrono::duration<double, std::milli>(
-            std::chrono::high_resolution_clock::now() - t_search0).count();
-        std::cout << "  ply iter: total=" << total_ms << "ms"
-                  << "  search_batch=" << search_ms << "ms"
-                  << "  eval_batch=" << timing.eval * 1000.0 << "ms"
-                  << "  select=" << timing.select * 1000.0 << "ms"
-                  << std::endl;
     }
 
     return {std::move(ply_results), timing};

@@ -295,6 +295,7 @@ int main(int argc, char* argv[]) {
     std::vector<std::vector<PlyResult>> traj_store;
     traj_store.reserve(args.gamegen_batch_size * args.save_every);
 
+    int ply_iter = 0;
     for (int iter = start_iter; iter < args.iterations; iter++) {
         auto t0 = std::chrono::high_resolution_clock::now();
         std::visit([](auto& m) { m->eval(); }, model_var);
@@ -310,10 +311,24 @@ int main(int argc, char* argv[]) {
             ptrs.reserve(args.gamegen_batch_size);
             for (auto& s : pool) ptrs.push_back(&s);
 
-            auto [ply_results, _timing] = generate_one_ply_per_game(
+            auto t_ply0 = std::chrono::high_resolution_clock::now();
+            auto [ply_results, timing] = generate_one_ply_per_game(
                 evaluator, ptrs, device,
                 args.num_simulations, /*temperature_threshold=*/bc.N / 3, args.c_puct,
                 args.verbosity, max_plies);
+            double total_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::high_resolution_clock::now() - t_ply0).count();
+            if (args.verbosity >= 1) {
+                std::cout << std::fixed << std::setprecision(0)
+                          << "  ply iter " << ply_iter << ": generate=" << total_ms << "ms"
+                          << "  search=" << timing.search * 1000.0 << "ms"
+                          << "  root=" << timing.root * 1000.0 << "ms"
+                          << "  simulate=" << timing.simulate * 1000.0 << "ms"
+                          << "  eval=" << timing.eval * 1000.0 << "ms"
+                          << "  select=" << timing.select * 1000.0 << "ms"
+                          << std::defaultfloat << std::endl;
+            }
+            ++ply_iter;
 
             for (int slot = 0; slot < args.gamegen_batch_size; slot++) {
                 trajectories[slot].push_back(std::move(ply_results[slot]));

@@ -283,12 +283,14 @@ MCTS::search_batch(
     int n = static_cast<int>(states.size());
     if (temperatures.empty()) temperatures.assign(n, 1.0f);
 
+    auto t_root0 = std::chrono::high_resolution_clock::now();
     // Initial root-prior batch evaluation
     std::vector<const BoardState*> cstates(states.begin(), states.end());
     auto t0 = std::chrono::high_resolution_clock::now();
     auto [policy_t, value_t] = model_.evaluate_batch(cstates);
     auto t1 = std::chrono::high_resolution_clock::now();
-    MCTSTiming total{std::chrono::duration<double>(t1 - t0).count(), 0.0};
+    MCTSTiming total;
+    total.eval = std::chrono::duration<double>(t1 - t0).count();
 
     auto pol_a = policy_t.accessor<float, 2>();
 
@@ -311,13 +313,18 @@ MCTS::search_batch(
         root->is_expanded = true;
         roots.push_back(std::move(root));
     }
+    total.root = std::chrono::duration<double>(
+        std::chrono::high_resolution_clock::now() - t_root0).count();
 
     std::vector<MCTSNode*> root_ptrs;
     root_ptrs.reserve(n);
     for (auto& r : roots) root_ptrs.push_back(r.get());
 
+    auto t_sim0 = std::chrono::high_resolution_clock::now();
     for (int s = 0; s < num_simulations; s++)
         total.add(simulate_batch(root_ptrs, max_plies));
+    total.simulate = std::chrono::duration<double>(
+        std::chrono::high_resolution_clock::now() - t_sim0).count();
 
     std::vector<std::pair<std::vector<float>, int>> results;
     results.reserve(n);
