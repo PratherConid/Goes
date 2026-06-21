@@ -115,7 +115,7 @@ For higher-end training devices,
 
 ```bash
 export OMP_NUM_THREADS=8  # number of CPU threads for parallel MCTS select; defaults to all cores
-ai/build/goes_train --no-forced-pass-only --board rect 9 9 --verbosity 1 --linear-move-bound 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 16 --self-play-games 64 --num-simulations 512 --buffer-size 262144
+ai/build/goes_train --no-forced-pass-only --board rect 9 9 --verbosity 1 --linear-move-bound 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 262144
 ```
 
 **Windows:**
