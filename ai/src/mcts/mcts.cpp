@@ -295,20 +295,23 @@ MCTS::search_batch(
     // hms must be declared before roots so it outlives the MCTSNodes (LIFO destruction).
     // One HistoryManager per root so each search tree is fully independent.
     std::vector<HistoryManager> hms(n);
-    std::vector<std::unique_ptr<MCTSNode>> roots;
-    roots.reserve(n);
+    std::vector<std::vector<float>> priors(n);
     for (int i = 0; i < n; i++) {
         int Np1 = states[i]->N + 1;
-        std::vector<float> prior(Np1);
-        for (int k = 0; k < Np1; k++) prior[k] = pol_a[i][k];
+        priors[i].resize(Np1);
+        for (int k = 0; k < Np1; k++) priors[i][k] = pol_a[i][k];
 
         if (add_noise) {
             auto noise = dirichlet_sample(Np1, dirichlet_alpha);
             for (int k = 0; k < Np1; k++)
-                prior[k] = (1.0f - noise_weight) * prior[k] + noise_weight * noise[k];
+                priors[i][k] = (1.0f - noise_weight) * priors[i][k] + noise_weight * noise[k];
         }
-        roots.push_back(std::make_unique<MCTSNode>(states[i]->copy_with_hm(&hms[i]), std::move(prior)));
     }
+
+    std::vector<std::unique_ptr<MCTSNode>> roots(n);
+    #pragma omp parallel for schedule(dynamic)
+    for (int i = 0; i < n; i++)
+        roots[i] = std::make_unique<MCTSNode>(states[i]->copy_with_hm(&hms[i]), std::move(priors[i]));
 
     std::vector<MCTSNode*> root_ptrs;
     root_ptrs.reserve(n);

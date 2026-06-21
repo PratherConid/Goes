@@ -61,10 +61,12 @@ std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
     for (auto* s : states)
         temps.push_back(s->ply_count() < temperature_threshold ? 1.0f : 0.0f);
 
-    auto t_iter = std::chrono::high_resolution_clock::now();
+    auto t_search0 = std::chrono::high_resolution_clock::now();
     auto [results, timing] = mcts.search_batch(
         states, num_simulations, /*add_noise=*/true,
         0.3f, 0.25f, temps, max_plies);
+    double search_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::high_resolution_clock::now() - t_search0).count();
 
     std::vector<PlyResult> ply_results;
     ply_results.reserve(states.size());
@@ -89,13 +91,14 @@ std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
     }
 
     if (verbosity >= 1) {
-        auto t1 = std::chrono::high_resolution_clock::now();
-        double iter_ms = std::chrono::duration<double, std::milli>(t1 - t_iter).count();
-        std::cout << "  ply iter: total=" << iter_ms << "ms"
+        double total_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - t_search0).count();
+        std::cout << "  ply iter: total=" << total_ms << "ms"
+                  << "  search_batch=" << search_ms << "ms"
                   << "  eval_batch=" << timing.eval * 1000.0 << "ms"
-                  << "  (" << (int)(timing.eval / (iter_ms / 1000.0) * 100.0) << "%)"
+                  << "  (" << (int)(timing.eval / (total_ms / 1000.0) * 100.0) << "%)"
                   << "  select=" << timing.select * 1000.0 << "ms"
-                  << "  (" << (int)(timing.select / (iter_ms / 1000.0) * 100.0) << "%)" << std::endl;
+                  << "  (" << (int)(timing.select / (total_ms / 1000.0) * 100.0) << "%)" << std::endl;
     }
 
     return {std::move(ply_results), timing};
