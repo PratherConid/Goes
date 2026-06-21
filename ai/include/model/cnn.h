@@ -39,6 +39,9 @@ struct ConvNNImpl : torch::nn::Module {
     torch::Tensor lin_idx_;      // (N,) long - row*W+col for each board node
     torch::Tensor valid_tensor_; // (1,1,H,W) float - 1 at valid grid cells
 
+    // in_dim: per-node feature dimension F (as produced by board_to_features), NOT
+    // the number of input channels to the first convolution. features_to_grid appends
+    // a validity channel, so the first conv actually receives in_dim + 1 channels.
     ConvNNImpl(const BoardConfig& bc, int in_dim, int hidden_dim, int num_players);
 
     // x: (N,F) or (B,N,F) → (1,F+1,H,W) or (B,F+1,H,W)

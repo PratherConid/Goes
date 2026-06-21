@@ -48,6 +48,7 @@ struct Args {
     float c_puct          = 1.0f;
     int save_every        = 10;
     std::string checkpoint_dir = "ai/checkpoints";
+    std::string net_arch  = "auto";
     bool cpu              = false;
     int verbosity         = 1;
     std::optional<float> linear_move_bound;
@@ -74,6 +75,7 @@ static void print_usage(const char* prog) {
               << "  --c-puct F                MCTS exploration constant (default: 1.0)\n"
               << "  --save-every N            Save checkpoint every N iterations (default: 10)\n"
               << "  --checkpoint-dir PATH     Checkpoint directory (default: ai/checkpoints)\n"
+              << "  --net-arch auto|cnn|gnn   Network architecture (default: auto)\n"
               << "  --cpu                     Force CPU even if CUDA is available\n"
               << "  --verbosity N             0=silent, 1=per-game, >=2=per-ply (default: 1)\n"
               << "  --linear-move-bound F     End games after k*N plies\n";
@@ -109,6 +111,7 @@ static Args parse_args(int argc, char* argv[]) {
         else if (a == "--c-puct")          args.c_puct          = std::stof(argv[++i]);
         else if (a == "--save-every")      args.save_every      = std::stoi(argv[++i]);
         else if (a == "--checkpoint-dir")  args.checkpoint_dir  = argv[++i];
+        else if (a == "--net-arch")        args.net_arch        = argv[++i];
         else if (a == "--cpu")             args.cpu             = true;
         else if (a == "--verbosity")       args.verbosity       = std::stoi(argv[++i]);
         else if (a == "--linear-move-bound") args.linear_move_bound = std::stof(argv[++i]);
@@ -139,27 +142,43 @@ static BoardConfig build_board(const std::vector<std::string>& board_args) {
 
 // ── Model factory ─────────────────────────────────────────────────────────────
 
+// Returns "cnn" or "gnn" — the architecture that will actually be used.
+static std::string effective_arch(const Args& args) {
+    const std::string& kind = args.board[0];
+    bool cnn_supported = (kind == "rect" || kind == "rectd" || kind == "tri" ||
+                          kind == "twsq" || kind == "gtsq");
+    if (args.net_arch == "cnn") {
+        if (!cnn_supported) {
+            std::cerr << "Error: --net-arch cnn is not supported for board type '" << kind
+                      << "'. CNN requires a 2D grid embedding (rect/rectd/tri/twsq/gtsq).\n";
+            std::exit(1);
+        }
+        return "cnn";
+    }
+    if (args.net_arch == "gnn") return "gnn";
+    if (args.net_arch == "auto") return cnn_supported ? "cnn" : "gnn";
+    std::cerr << "Error: unknown --net-arch '" << args.net_arch
+              << "'. Valid options: auto, cnn, gnn.\n";
+    std::exit(1);
+}
+
 static AnyModel build_model(const Args& args, const BoardConfig& bc) {
     int in_dim = 2 * args.num_stones + 4;
-    const std::string& kind = args.board[0];
-    // 2-D board types → ConvNN
-    if (kind == "rect" || kind == "rectd" || kind == "tri" ||
-        kind == "twsq" || kind == "gtsq")
+    if (effective_arch(args) == "cnn")
         return ConvNN(bc, in_dim, args.cnn_hidden_dim, args.num_players);
-    // Higher-dimensional board types → GNN
-    if (kind == "cub" || kind == "hcub")
-        return MessagePassingGNN(in_dim, args.gnn_hidden_dim, args.num_layers, args.num_players);
-    std::cerr << "Unknown board type: " << kind << "\n"; std::exit(1);
+    return MessagePassingGNN(in_dim, args.gnn_hidden_dim, args.num_layers, args.num_players);
 }
 
 // ── Checkpoint utilities ──────────────────────────────────────────────────────
 
-static std::optional<fs::path> latest_checkpoint(const fs::path& dir) {
+static std::optional<fs::path> latest_checkpoint(const fs::path& dir,
+                                                   const std::string& arch) {
     if (!fs::exists(dir)) return std::nullopt;
+    std::string prefix = arch + "_";
     std::vector<fs::path> ckpts;
     for (auto& e : fs::directory_iterator(dir)) {
         auto name = e.path().filename().string();
-        if (name.rfind("ckpt_", 0) == 0 && e.path().extension() == ".pt")
+        if (name.rfind(prefix, 0) == 0 && e.path().extension() == ".pt")
             ckpts.push_back(e.path());
     }
     if (ckpts.empty()) return std::nullopt;
@@ -168,7 +187,7 @@ static std::optional<fs::path> latest_checkpoint(const fs::path& dir) {
 }
 
 static int iteration_from_path(const fs::path& p) {
-    // ckpt_000042.pt → 42
+    // cnn_000042.pt / gnn_000042.pt → 42
     std::string stem = p.stem().string();
     auto pos = stem.rfind('_');
     if (pos == std::string::npos) return 0;
@@ -230,6 +249,7 @@ int main(int argc, char* argv[]) {
         game_cfg.stone_to_player_map[s] = ((s - 1) % args.num_players) + 1;
     game_cfg.forced_pass_only = args.forced_pass_only;
 
+    const std::string arch = effective_arch(args);
     auto model_var = build_model(args, bc);
     std::visit([&](auto& m) { m->to(device); }, model_var);
 
@@ -237,7 +257,7 @@ int main(int argc, char* argv[]) {
     fs::path ckpt_dir = fs::path(args.checkpoint_dir) / model_tag(args);
     fs::create_directories(ckpt_dir);
     int start_iter = 0;
-    auto latest = latest_checkpoint(ckpt_dir);
+    auto latest = latest_checkpoint(ckpt_dir, arch);
     if (latest.has_value()) {
         std::cout << "Resuming from " << latest.value() << std::endl;
         std::visit([&](auto& m) { torch::load(m, latest.value().string()); }, model_var);
@@ -383,7 +403,7 @@ int main(int argc, char* argv[]) {
         // ── Checkpoint ───────────────────────────────────────────────────────
         if ((iter + 1) % args.save_every == 0 || iter == args.iterations - 1) {
             std::ostringstream oss;
-            oss << "ckpt_" << std::setfill('0') << std::setw(6) << iter << ".pt";
+            oss << arch << "_" << std::setfill('0') << std::setw(6) << iter << ".pt";
             fs::path ckpt_path = ckpt_dir / oss.str();
             std::visit([&](auto& m) { torch::save(m, ckpt_path.string()); }, model_var);
             fs::path json_path = ckpt_path; json_path.replace_extension(".json");

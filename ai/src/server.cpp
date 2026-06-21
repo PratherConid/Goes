@@ -63,17 +63,19 @@ using json = nlohmann::json;
 
 // ── Checkpoint helpers ────────────────────────────────────────────────────────
 
+// Returns the latest checkpoint, preferring CNN over GNN when both are present.
 static std::optional<fs::path> latest_checkpoint(const fs::path& dir) {
     if (!fs::exists(dir)) return std::nullopt;
-    std::vector<fs::path> ckpts;
+    std::vector<fs::path> cnn_ckpts, gnn_ckpts;
     for (auto& e : fs::directory_iterator(dir)) {
+        if (e.path().extension() != ".pt") continue;
         auto name = e.path().filename().string();
-        if (name.rfind("ckpt_", 0) == 0 && e.path().extension() == ".pt")
-            ckpts.push_back(e.path());
+        if      (name.rfind("cnn_", 0) == 0) cnn_ckpts.push_back(e.path());
+        else if (name.rfind("gnn_", 0) == 0) gnn_ckpts.push_back(e.path());
     }
-    if (ckpts.empty()) return std::nullopt;
-    std::sort(ckpts.begin(), ckpts.end());
-    return ckpts.back();
+    if (!cnn_ckpts.empty()) { std::sort(cnn_ckpts.begin(), cnn_ckpts.end()); return cnn_ckpts.back(); }
+    if (!gnn_ckpts.empty()) { std::sort(gnn_ckpts.begin(), gnn_ckpts.end()); return gnn_ckpts.back(); }
+    return std::nullopt;
 }
 
 // ── Board factory (mirrors build_board in train.cpp) ─────────────────────────
@@ -196,10 +198,8 @@ static AnyModel& load_model(ServerState& ss, const std::string& tag,
     json cfg        = json::parse(std::ifstream(json_path));
     int in_dim      = 2 * cfg["num_stones"].get<int>() + 4;
     int num_players = cfg.value("num_players", 2);
-    auto board_cfg  = cfg["board"].get<std::vector<std::string>>();
-    const std::string& kind = board_cfg[0];
-    bool use_cnn = (kind == "rect" || kind == "rectd" || kind == "tri" ||
-                    kind == "twsq" || kind == "gtsq");
+    const std::string fname = latest.value().filename().string();
+    bool use_cnn = (fname.rfind("cnn_", 0) == 0);
 
     AnyModel model_any = [&]() -> AnyModel {
         if (use_cnn) {
