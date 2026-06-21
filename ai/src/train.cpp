@@ -431,11 +431,13 @@ int main(int argc, char* argv[]) {
                 json trajs = json::array();
                 for (auto& traj : traj_store) {
                     json t = json::array();
-                    for (auto& ply : traj) {
+                    for (int ply_idx = 0; ply_idx < (int)traj.size(); ply_idx++) {
+                        const auto& ply = traj[ply_idx];
                         json p;
-                        p["policy"] = ply.policy;
-                        p["nextStone"]  = ply.nextStone;
-                        p["move"]   = ply.move;
+                        p["ply"]      = ply_idx;
+                        p["nextStone"] = ply.nextStone;
+                        p["move"]     = ply.move;
+                        p["policy"]   = ply.policy;
                         t.push_back(std::move(p));
                     }
                     trajs.push_back(std::move(t));
