@@ -307,7 +307,9 @@ MCTS::search_batch(
             for (int k = 0; k < Np1; k++)
                 prior[k] = (1.0f - noise_weight) * prior[k] + noise_weight * noise[k];
         }
-        roots.push_back(std::make_unique<MCTSNode>(states[i]->copy_with_hm(&hms[i]), std::move(prior)));
+        auto root = std::make_unique<MCTSNode>(states[i]->copy_with_hm(&hms[i]), std::move(prior));
+        root->is_expanded = true;
+        roots.push_back(std::move(root));
     }
 
     std::vector<MCTSNode*> root_ptrs;
