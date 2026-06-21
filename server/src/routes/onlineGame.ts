@@ -30,6 +30,15 @@ router.get('/:id/state', (req, res) => {
     }
 });
 
+router.post('/:id/resign', (req, res) => {
+    try {
+        const { position } = req.body as { position: number };
+        res.json(onlineGameManager.resign(req.params['id']!, position));
+    } catch (e: any) {
+        res.status(e.statusCode ?? 500).json({ error: e.message });
+    }
+});
+
 router.post('/:id/move', (req, res) => {
     try {
         const { position, moveIndex, clientIdx } = req.body as {

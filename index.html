@@ -61,16 +61,17 @@
       flex-shrink: 0;
     }
 
-    #pass-btn {
+    #pass-btn, #resign-btn {
       padding: calc(var(--u) / 7) calc(var(--u) * 5 / 7);
       border-radius: 999px;
       border: none;
       font-size: calc(var(--u) * 4 / 7);
       color: #fff;
       cursor: pointer;
-      background: #5c442e;
     }
-    #pass-btn:disabled { background: #b5a99e; cursor: default; }
+    #pass-btn   { background: #5c442e; }
+    #resign-btn { background: #5c442e; }
+    #pass-btn:disabled, #resign-btn:disabled { background: #b5a99e; cursor: default; }
 
     .ply-nav-btn {
       height: var(--u);
@@ -263,6 +264,7 @@
       <button id="bw-btn"    class="ply-nav-btn">&#9664;</button>
       <div id="turn-stone"></div>
       <button id="pass-btn">Pass</button>
+      <button id="resign-btn" hidden>Resign</button>
       <button id="fw-btn"    class="ply-nav-btn">&#9654;</button>
       <button id="fw10-btn"  class="ply-nav-btn">&#9654;&#9654;</button>
       <button id="fwend-btn" class="ply-nav-btn">&#9654;&#9654;&#10074;</button>

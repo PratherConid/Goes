@@ -27,12 +27,23 @@ interface OnlineStateResponse {
 
 enum GameMode { local = 'local', online = 'online' }
 
+
 const _cmdToBoard = new Map(
     (Object.entries(PrescribedBoardMap) as [string, [number, string, string, string]][])
         .map(([k, [numArgs, cmd, argStr, desc]]) =>
             [cmd, { boardType: Number(k), numArgs, fn: PrescribedBoardFns[Number(k) as PrescribedBoard], argStr, desc }])
 );
 
+
+function _defaultPlayerName(): string {
+    const existing = localStorage.getItem('playerName');
+    if (existing) return existing;
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let name = '';
+    for (let i = 0; i < 16; i++) name += chars[Math.floor(Math.random() * chars.length)];
+    localStorage.setItem('playerName', name);
+    return name;
+}
 
 const COLOR_GRID    = '#4c4c4c';
 const COLOR_ILLEGAL = '#ca9d44';
@@ -242,7 +253,8 @@ export class Renderer {
 
     // Online multiplayer state
     gameMode: GameMode = GameMode.local;
-    playerName: string = localStorage.getItem('playerName') ?? '';
+    createdOnlineGames = new Map<string, OnlineGameConfig>();
+    playerName: string = _defaultPlayerName();
     onlineGameId: string | null = null;
     onlinePosition: number | null = null;
     onlinePlayerSlot: number | null = null;
@@ -253,6 +265,7 @@ export class Renderer {
     private mainCanvas:   HTMLCanvasElement;
     private histBoards:   HTMLDivElement;
     private passBtn:      HTMLButtonElement;
+    private resignBtn:    HTMLButtonElement;
     private bwEndBtn:     HTMLButtonElement;
     private bw10Btn:      HTMLButtonElement;
     private bwBtn:        HTMLButtonElement;
@@ -274,6 +287,7 @@ export class Renderer {
         this.mainCanvas   = document.getElementById('main-canvas')    as HTMLCanvasElement;
         this.histBoards   = document.getElementById('history-boards') as HTMLDivElement;
         this.passBtn      = document.getElementById('pass-btn')        as HTMLButtonElement;
+        this.resignBtn    = document.getElementById('resign-btn')      as HTMLButtonElement;
         this.bwEndBtn     = document.getElementById('bwend-btn')      as HTMLButtonElement;
         this.bw10Btn      = document.getElementById('bw10-btn')       as HTMLButtonElement;
         this.bwBtn        = document.getElementById('bw-btn')         as HTMLButtonElement;
@@ -330,6 +344,7 @@ export class Renderer {
                 }
             }
         });
+        this.resignBtn.addEventListener('click', () => { void this._resignOnline(); });
         this.cmdInput.addEventListener('keydown', e => {
             if (e.key === 'Enter') { this._parseCommand(this.cmdInput.value.trim()); this.cmdInput.value = ''; this._render(); }
         });
@@ -445,6 +460,8 @@ export class Renderer {
         this.fwEndBtn.disabled = this.displayPlyNum === v.plyCount;
         this.passBtn.disabled = this.displayPlyNum !== v.plyCount || !v.passEnabled || v.gameOver
             || (this.gameMode === GameMode.online && !this._isMyOnlineTurn());
+        this.resignBtn.hidden = this.gameMode !== GameMode.online;
+        this.resignBtn.disabled = this.gameMode !== GameMode.online || this.onlineGameFinished;
     }
 
     private _renderHistoryPanel(v: BoardView) {
@@ -500,18 +517,14 @@ export class Renderer {
             `<tr><th colspan="2">${label}</th></tr>`;
         this.commandsPanel.innerHTML = `<table>
             <colgroup><col style="width:40%"><col style="width:60%"></colgroup>
-            ${head('Online Multiplayer')}
-            ${row('setname &lt;name&gt;', 'Set your display name for online games')}
-            ${row('newo',                 'Create online game with current config; prints game ID')}
-            ${row('joino &lt;ID&gt;',     'Join an existing online game by ID')}
             ${head('Game')}
-            ${row('new',              'Start new game')}
+            ${row('new',              'Start new local game')}
             ${row('em [&lt;n&gt;]',  'Engine move (optional n consecutive moves)')}
             ${row('cem',             'Cancel current engine move')}
             ${row('s',           'Toggle self-play (random moves)')}
             ${row('af',          'Toggle auto-forced: auto-execute forced moves')}
-            ${row('r &lt;n&gt;', 'Retract n moves')}
-            ${row('rcd',         'Retract moves until ply equals display position')}
+            ${row('w &lt;n&gt;', 'Withdraw n moves')}
+            ${row('wcd',         'Withdraw moves until ply equals display position')}
             ${row('re &lt;n&gt;','Random evaluation over n playouts')}
             ${head('Display')}
             ${row('fw &lt;n&gt;','Step display forward n plies')}
@@ -525,6 +538,10 @@ export class Renderer {
             ${row('np &lt;n&gt;',             'Set number of players for new games')}
             ${row('tsl &lt;p1&gt; &lt;p2&gt; …','Set turn stone list for new games. Stone types are 1-indexed')}
             ${row('spm &lt;p1&gt; &lt;p2&gt; …','Set stone to player map. Players are 1-indexed')}
+            ${head('Online Multiplayer')}
+            ${row('setname &lt;name&gt;', 'Set your display name for online games')}
+            ${row('newo',                 'Create online game with current config; prints game ID')}
+            ${row('joino &lt;ID&gt;',     'Join an existing online game by ID')}
             ${head('Board Types')}
             ${[..._cmdToBoard.entries()].map(([cmd, { argStr, desc }]) => row(`${cmd} ${argStr}`, desc)).join('\n            ')}
         </table>`;
@@ -557,12 +574,15 @@ export class Renderer {
 
         const fmtMap = (map: Record<number, number>) =>
             Object.entries(map).map(([s, p]) => `${sideName(Number(s))}→P${p}`).join(', ');
+        const createdGamesSection = this.createdOnlineGames.size > 0 ? `
+            <div><b>Created online games:</b> ${[...this.createdOnlineGames.keys()].join(', ')}</div>
+            <hr style="margin:6px 0">` : '';
         const onlineSection = this.gameMode === GameMode.online ? `
             <div><b>Online game:</b> ${this.onlineGameId}</div>
             <div><b>Your player slot:</b> ${this.onlinePlayerSlot ?? '(waiting for start)'}</div>
             <div><b>Your name:</b> ${this.playerName || '(not set)'}</div>
             <hr style="margin:6px 0">` : '';
-        this.statusPanel.innerHTML = `${onlineSection}
+        this.statusPanel.innerHTML = `${createdGamesSection}${onlineSection}
             <div><b>To move:</b> ${sideName(v.nextPlayer)}</div>
             <div><b>Last move:</b> ${lastMoveStr}</div>
             <div><b>Stones:</b> ${stoneLine}</div>
@@ -656,6 +676,8 @@ export class Renderer {
             void this._createOnlineGame();
         }
         else if (cmd === 'joino') {
+            if (this.gameMode === GameMode.online && !this.onlineGameFinished)
+                { this._setCmdOutput('Cannot join a game while an online game is ongoing'); return; }
             if (!parts[1]) { this._setCmdOutput('Usage: joino <ID>'); return; }
             void this._joinOnlineGame(parts[1].toUpperCase());
         }
@@ -727,17 +749,17 @@ export class Renderer {
             if (n === null) { this._setCmdOutput('Usage: h <n>  (positive integer)'); return; }
             this.nShowHistory = n;
         }
-        else if (cmd === 'r') {
-            if (this.gameMode === GameMode.online) { this._setCmdOutput('Cannot withdraw a move in an online game'); return; }
+        else if (cmd === 'w') {
+            if (this.gameMode === GameMode.online) { this._setCmdOutput('Cannot withdraw moves in online games'); return; }
             const n = posInt(parts[1]);
-            if (n === null) { this._setCmdOutput('Usage: r <n>  (positive integer)'); return; }
+            if (n === null) { this._setCmdOutput('Usage: w <n>  (positive integer)'); return; }
             this.engineManager.cancel();
             this.engineManager.sessionId = null;
             for (let i = 0; i < n; i++) this.game.retractMove();
             this.displayPlyNum = Math.min(this.displayPlyNum, this.game.history.length - 1);
         }
-        else if (cmd === 'rcd') {
-            if (this.gameMode === GameMode.online) { this._setCmdOutput('Cannot withdraw a move in an online game'); return; }
+        else if (cmd === 'wcd') {
+            if (this.gameMode === GameMode.online) { this._setCmdOutput('Cannot withdraw moves in online games'); return; }
             this.engineManager.cancel();
             this.engineManager.sessionId = null;
             const n = this.game.history.length - 1 - this.displayPlyNum;
@@ -759,6 +781,11 @@ export class Renderer {
             this.randomEvaled = this.game.randomEvaluate(n);
         }
         else if (cmd === 'new') {
+            if (this.gameMode === GameMode.online && !this.onlineGameFinished)
+                { this._setCmdOutput('Cannot create new board during active online games'); return; }
+            // When an online game has finished, "new" exits online mode and starts a fresh local game.
+            this.gameMode = GameMode.local;
+            this.onlineGameId = null;
             const fn = PrescribedBoardFns[this.boardTypeForNew];
             this._newGame(fn(...this.boardDimensionForNew[this.boardTypeForNew]));
         }
@@ -819,12 +846,13 @@ export class Renderer {
             });
             if (!resp.ok) { this._setCmdOutput(`Failed to create game: ${resp.status}`); return; }
             const { id, position } = await resp.json() as { id: string; position: number };
-            this.gameMode         = GameMode.online;
+
             this.onlineGameId     = id;
             this.onlinePosition   = position;
             this.onlinePlayerSlot = null;
             this.onlineMovesSeen  = 0;
             this.onlineGameFinished = false;
+            this.createdOnlineGames.set(id, { boardType: boardTypeName, boardArgs: [...this.boardDimensionForNew[this.boardTypeForNew]], numStones: this.numStonesForNew, numPlayers: this.numPlayersForNew, turnStoneList: [...this.turnStoneListForNew], stoneToPlayerMap: { ...this.stoneToPlayerMap }, forcedPassOnly: this.forcedPassOnlyForNew });
             const fn = PrescribedBoardFns[this.boardTypeForNew];
             this._newGame(fn(...this.boardDimensionForNew[this.boardTypeForNew]));
             this._setCmdOutput(`Game created: ${id} - waiting for ${this.numPlayersForNew - 1} more player(s)…`);
@@ -862,7 +890,7 @@ export class Renderer {
             this.displayPlyNum   = 0;
             this.randomEvaled    = null;
             this.idxShowHistory  = 0;
-            this.gameMode         = GameMode.online;
+
             this.onlineGameId     = id;
             this.onlinePosition   = position;
             this.onlinePlayerSlot = null;
@@ -876,7 +904,8 @@ export class Renderer {
 
     private _startOnlinePoll() {
         this._stopOnlinePoll();
-        this.onlinePollTimer = setInterval(() => void this._pollOnce(), 1500);
+        // TODO: replace polling with a persistent TCP/IP connection (e.g. WebSocket)
+        this.onlinePollTimer = setInterval(() => void this._pollOnce(), 100);
     }
 
     private _stopOnlinePoll() {
@@ -897,8 +926,10 @@ export class Renderer {
         if (this.onlinePlayerSlot === null && state.status === 'playing') {
             const me = state.players[this.onlinePosition!];
             if (me) {
+                this.gameMode         = GameMode.online;
                 this.onlinePlayerSlot = me.slot;
                 this._setCmdOutput(`Game started! You are player ${me.slot} (${me.name})`);
+                this._render();
             }
         }
 
@@ -915,8 +946,12 @@ export class Renderer {
             // Notify when it becomes our turn after an opponent move
             if (this.onlinePlayerSlot !== null) {
                 const v = this.game.getView();
-                if (!v.gameOver && v.stoneToPlayerMap[v.nextPlayer] === this.onlinePlayerSlot)
-                    this._setCmdOutput('Your turn!');
+                if (!v.gameOver) {
+                    if (v.stoneToPlayerMap[v.nextPlayer] === this.onlinePlayerSlot)
+                        this._setCmdOutput('Your turn!');
+                    else
+                        this._setCmdOutput("Opponent's turn.")
+                }
             }
             this._render();
         }
@@ -924,7 +959,8 @@ export class Renderer {
         // Game-over notification (once)
         if (state.status === 'finished' && !this.onlineGameFinished) {
             this.onlineGameFinished = true;
-            this._stopOnlinePoll();
+            this.createdOnlineGames.delete(this.onlineGameId!);
+            if (this.createdOnlineGames.size === 0) this._stopOnlinePoll();
             const v = this.game.getView();
             const winnerText = v.winners.length === 0
                 ? 'No winners'
@@ -932,6 +968,23 @@ export class Renderer {
             this._setCmdOutput(`Game over! ${winnerText}`);
             this._render();
         }
+    }
+
+    private async _resignOnline() {
+        if (!this.onlineGameId) return;
+        try {
+            const resp = await fetch(`/api/onlineGame/${this.onlineGameId}/resign`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ position: this.onlinePosition }),
+            });
+            if (!resp.ok) {
+                const err = await resp.json() as { error: string };
+                this._setCmdOutput(`Resign failed: ${err.error}`);
+                return;
+            }
+            this._applyOnlineState(await resp.json() as OnlineStateResponse);
+        } catch (e: any) { this._setCmdOutput(`Network error: ${e.message}`); }
     }
 
     private async _submitOnlineMove(moveIndex: number | null) {

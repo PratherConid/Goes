@@ -21,6 +21,7 @@ interface OnlineGame {
     boardState: BoardState | null;               // null until game starts
     bc: BoardConfig;
     status: 'waiting' | 'playing' | 'finished';
+    resignedSlot: number | null;                 // player slot that resigned, if any
 }
 
 export interface OnlineStateResponse {
@@ -48,6 +49,8 @@ function makeId(len: number): string {
 }
 
 class OnlineGameManager {
+    // In-memory store mapping game ID to game state
+    // All games are lost on server restart; no persistence.
     private games = new Map<string, OnlineGame>();
 
     createGame(config: OnlineGameConfig, playerName: string): { id: string; position: number } {
@@ -63,6 +66,7 @@ class OnlineGameManager {
             boardState: null,
             bc: fn(...config.boardArgs),
             status: 'waiting',
+            resignedSlot: null,
         });
         return { id, position: 0 };
     }
@@ -101,9 +105,13 @@ class OnlineGameManager {
         let currentStone: number | null = null;
         let winners: number[] = [];
         if (game.boardState) {
-            const v = game.boardState.getView();
-            currentStone = v.gameOver ? null : v.nextPlayer;
-            winners = v.winners;
+            if (game.resignedSlot !== null) {
+                winners = game.players.filter(p => p.slot !== game.resignedSlot).map(p => p.slot);
+            } else {
+                const v = game.boardState.getView();
+                currentStone = v.gameOver ? null : v.nextPlayer;
+                winners = v.winners;
+            }
         }
         return {
             status: game.status,
@@ -127,6 +135,17 @@ class OnlineGameManager {
         if (!game.boardState!.makeMove(moveIndex)) throw Object.assign(new Error('Illegal move'), { statusCode: 400 });
         game.moves.push(moveIndex);
         if (game.boardState!.getView().gameOver) game.status = 'finished';
+        return this.getState(id);
+    }
+
+    resign(id: string, position: number): OnlineStateResponse {
+        const game = this.games.get(id);
+        if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
+        if (game.status !== 'playing') throw Object.assign(new Error('Game is not in progress'), { statusCode: 409 });
+        const player = game.players[position];
+        if (!player) throw Object.assign(new Error('Invalid position'), { statusCode: 400 });
+        game.resignedSlot = player.slot;
+        game.status = 'finished';
         return this.getState(id);
     }
 }
