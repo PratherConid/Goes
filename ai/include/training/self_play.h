@@ -22,7 +22,7 @@ struct PlyResult {
     torch::Tensor features;
     torch::Tensor legal_mask;
     std::vector<float> policy;
-    int stone;
+    int nextStone;
     int move;
 };
 

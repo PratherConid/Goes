@@ -36,18 +36,24 @@ AdjNorms compute_adj_norms(const BoardConfig& bc, torch::Device device) {
 //   features  : float32 (N, F)   per-node feature matrix
 //   legal_mask: bool    (N+1,)   True = legal action (last entry = pass)
 //
-// Feature layout:
-//   [0 .. num_stones-1]        is_stone[k]  (one-hot stone occupancy)
-//   [num_stones]               is_empty
-//   [num_stones+1]             is_legal (legal PLACE for current player)
-//   [num_stones+2]             liberty_count / N
-//   [num_stones+3]             group_size / N
-//   [num_stones+4 .. 2*ns+3]  next_player one-hot (broadcast to all nodes)
+// Feature layout (F = num_stones + 4 + turn_stone_list.size()):
+//   [0 .. num_stones-1]                      is_stone[k]  (one-hot stone occupancy)
+//   [num_stones]                              is_empty
+//   [num_stones+1]                            is_legal (legal PLACE for current player)
+//   [num_stones+2]                            liberty_count / N
+//   [num_stones+3]                            group_size / N
+//   [num_stones+4 .. num_stones+3+tsl.size()] ply-mod one-hot: one-hot at index
+//                                             (ply_count % turn_stone_list.size()),
+//                                             broadcast to all nodes. Encodes position
+//                                             in the turn cycle rather than stone type,
+//                                             so players with multiple consecutive turns
+//                                             (e.g. turn_stone_list=[1,1,2,2]) can be
+//                                             distinguished.
 FeatureTensors board_to_features(const BoardState& state, torch::Device device) {
     int N = state.N;
     int ns = state.num_stones;
-    // F = 2*num_stones + 4
-    int F = 2 * ns + 4;
+    // F = num_stones + 4 + turn_stone_list.size()
+    int F = ns + 4 + static_cast<int>(state.turn_stone_list.size());
 
     auto features = torch::zeros({N, F}, torch::kFloat32);
     auto feat_a = features.accessor<float, 2>();
@@ -87,11 +93,12 @@ FeatureTensors board_to_features(const BoardState& state, torch::Device device) 
         }
     }
 
-    // Current player one-hot (broadcast to all nodes)
-    int next_stone = state.next_player; // 1-indexed
-    if (next_stone >= 1 && next_stone <= ns) {
+    // Ply-mod one-hot (broadcast to all nodes)
+    int tsl_len = static_cast<int>(state.turn_stone_list.size());
+    if (tsl_len > 0) {
+        int ply_mod = state.ply_count() % tsl_len;
         for (int i = 0; i < N; i++)
-            feat_a[i][ns + 4 + next_stone - 1] = 1.0f;
+            feat_a[i][ns + 4 + ply_mod] = 1.0f;
     }
 
     // Legal mask: N place actions + 1 pass

@@ -189,18 +189,18 @@ static AnyModel& load_model(ServerState& ss, const std::string& tag,
         throw std::runtime_error("No checkpoint found for config: " + subdir.string());
     }
 
-    std::string arch_prefix = use_cnn ? "cnn" : "gnn";
-    fs::path json_path = latest.value().parent_path() / (arch_prefix + "_config.json");
+    const std::string fname = latest.value().filename().string();
+    bool use_cnn = (fname.rfind("cnn_", 0) == 0);
+    fs::path json_path = latest.value().parent_path() / ((use_cnn ? "cnn" : "gnn") + std::string("_config.json"));
     if (!fs::exists(json_path)) {
         std::cerr << "[inference] Config JSON missing: " << json_path << "\n";
         throw std::runtime_error("Config JSON missing: " + json_path.string());
     }
 
     json cfg        = json::parse(std::ifstream(json_path));
-    int in_dim      = 2 * cfg["num_stones"].get<int>() + 4;
+    // num_stones + 4 + turn_stone_list.size()
+    int in_dim      = cfg["num_stones"].get<int>() + 4 + (int)cfg["turn_stone_list"].size();
     int num_players = cfg.value("num_players", 2);
-    const std::string fname = latest.value().filename().string();
-    bool use_cnn = (fname.rfind("cnn_", 0) == 0);
 
     AnyModel model_any = [&]() -> AnyModel {
         if (use_cnn) {

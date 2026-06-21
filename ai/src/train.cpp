@@ -162,8 +162,9 @@ static std::string effective_arch(const Args& args) {
     std::exit(1);
 }
 
-static AnyModel build_model(const Args& args, const BoardConfig& bc) {
-    int in_dim = 2 * args.num_stones + 4;
+static AnyModel build_model(const Args& args, const BoardConfig& bc, int tsl_size) {
+    // num_stones + 4 + turn_stone_list.size()
+    int in_dim = args.num_stones + 4 + tsl_size;
     if (effective_arch(args) == "cnn")
         return ConvNN(bc, in_dim, args.cnn_hidden_dim, args.num_players);
     return MessagePassingGNN(in_dim, args.gnn_hidden_dim, args.num_layers, args.num_players);
@@ -250,7 +251,7 @@ int main(int argc, char* argv[]) {
     game_cfg.forced_pass_only = args.forced_pass_only;
 
     const std::string arch = effective_arch(args);
-    auto model_var = build_model(args, bc);
+    auto model_var = build_model(args, bc, (int)game_cfg.turn_stone_list.size());
     std::visit([&](auto& m) { m->to(device); }, model_var);
 
     // Resume from checkpoint
@@ -433,7 +434,7 @@ int main(int argc, char* argv[]) {
                     for (auto& ply : traj) {
                         json p;
                         p["policy"] = ply.policy;
-                        p["stone"]  = ply.stone;
+                        p["nextStone"]  = ply.nextStone;
                         p["move"]   = ply.move;
                         t.push_back(std::move(p));
                     }
