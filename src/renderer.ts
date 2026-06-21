@@ -5,6 +5,28 @@ import {
     PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns,
 } from '@shared/boardConfig.js';
 
+interface OnlineGameConfig {
+    boardType: string;
+    boardArgs: number[];
+    numStones: number;
+    numPlayers: number;
+    turnStoneList: number[];
+    stoneToPlayerMap: Record<number, number>;
+    forcedPassOnly: boolean;
+}
+
+interface OnlineStateResponse {
+    status: 'waiting' | 'playing' | 'finished';
+    numPlayersRequired: number;
+    numJoined: number;
+    players: ({ name: string; slot: number } | null)[];
+    moves: (number | null)[];
+    currentStone: number | null;
+    winners: number[];
+}
+
+enum GameMode { local = 'local', online = 'online' }
+
 const _cmdToBoard = new Map(
     (Object.entries(PrescribedBoardMap) as [string, [number, string, string, string]][])
         .map(([k, [numArgs, cmd, argStr, desc]]) =>
@@ -158,9 +180,9 @@ class EngineManager {
     }
 
     // Called each render loop iteration by _checkAsync:
-    //   null           — nothing to do (idle or fetch in-flight)
-    //   'needsRequest' — build a request body and call submit()
-    //   { move }       — apply this move; state already advanced:
+    //   null           - nothing to do (idle or fetch in-flight)
+    //   'needsRequest' - build a request body and call submit()
+    //   { move }       - apply this move; state already advanced:
     //                    remainingMoves decremented, and if > 0 transitioned to
     //                    needsRequest so the next poll() will prompt another submit()
     poll(): null | 'needsRequest' | { move: number | null } {
@@ -218,6 +240,16 @@ export class Renderer {
     randomEvaled: Record<number, number> | null = null;
     emNumSims: number = 200;
 
+    // Online multiplayer state
+    gameMode: GameMode = GameMode.local;
+    playerName: string = localStorage.getItem('playerName') ?? '';
+    onlineGameId: string | null = null;
+    onlinePosition: number | null = null;
+    onlinePlayerSlot: number | null = null;
+    onlineMovesSeen = 0;
+    private onlineGameFinished = false;
+    private onlinePollTimer: ReturnType<typeof setInterval> | null = null;
+
     private mainCanvas:   HTMLCanvasElement;
     private histBoards:   HTMLDivElement;
     private passBtn:      HTMLButtonElement;
@@ -230,6 +262,7 @@ export class Renderer {
     private turnStone:    HTMLDivElement;
     private plyNum:       HTMLSpanElement;
     private cmdInput:     HTMLInputElement;
+    private cmdOutput:    HTMLDivElement;
     private statusPanel:   HTMLDivElement;
     private commandsPanel: HTMLDivElement;
     private historyPanel:  HTMLDivElement;
@@ -250,6 +283,7 @@ export class Renderer {
         this.turnStone    = document.getElementById('turn-stone')     as HTMLDivElement;
         this.plyNum       = document.getElementById('ply-num')        as HTMLSpanElement;
         this.cmdInput     = document.getElementById('cmd-input')      as HTMLInputElement;
+        this.cmdOutput    = document.getElementById('cmd-output')     as HTMLDivElement;
         this.statusPanel   = document.getElementById('status-panel')    as HTMLDivElement;
         this.commandsPanel = document.getElementById('commands-panel')  as HTMLDivElement;
         this.historyPanel  = document.getElementById('history-panel')   as HTMLDivElement;
@@ -285,11 +319,15 @@ export class Renderer {
         this.passBtn.addEventListener('click', () => {
             const v = this.game.getView();
             if (v.passEnabled && !v.gameOver) {
-                this.engineManager.cancel();
-                this.game.makeMove(null);
-                this.displayPlyNum = this.game.getView().plyCount;
-                this.randomEvaled = null;
-                this._render();
+                if (this.gameMode === GameMode.online) {
+                    if (this._isMyOnlineTurn()) void this._submitOnlineMove(null);
+                } else {
+                    this.engineManager.cancel();
+                    this.game.makeMove(null);
+                    this.displayPlyNum = this.game.getView().plyCount;
+                    this.randomEvaled = null;
+                    this._render();
+                }
             }
         });
         this.cmdInput.addEventListener('keydown', e => {
@@ -370,7 +408,7 @@ export class Renderer {
         this._renderControlBar(v);
         this._renderHistoryPanel(v);
         if (this.activeTab === 'status') this._renderStatus(v);
-        if (this.autoForced && !this.selfPlay && !v.gameOver) {
+        if (this.autoForced && !this.selfPlay && !v.gameOver && this.gameMode === GameMode.local) {
             const legals = this.game.legalMoveList();
             if (legals.length === 0 || legals.length === 1) {
                 if (this.engineManager.running) return;
@@ -405,7 +443,8 @@ export class Renderer {
         this.fwBtn.disabled    = this.displayPlyNum === v.plyCount;
         this.fw10Btn.disabled  = this.displayPlyNum === v.plyCount;
         this.fwEndBtn.disabled = this.displayPlyNum === v.plyCount;
-        this.passBtn.disabled = this.displayPlyNum !== v.plyCount || !v.passEnabled || v.gameOver;
+        this.passBtn.disabled = this.displayPlyNum !== v.plyCount || !v.passEnabled || v.gameOver
+            || (this.gameMode === GameMode.online && !this._isMyOnlineTurn());
     }
 
     private _renderHistoryPanel(v: BoardView) {
@@ -421,7 +460,7 @@ export class Renderer {
             entry.className = 'history-entry';
             this.histBoards.appendChild(entry);
 
-            if (idx >= nShow) continue;  // empty slot — show background box only
+            if (idx >= nShow) continue;  // empty slot - show background box only
 
             const left = document.createElement('div');
             left.className = 'history-entry-left';
@@ -461,6 +500,10 @@ export class Renderer {
             `<tr><th colspan="2">${label}</th></tr>`;
         this.commandsPanel.innerHTML = `<table>
             <colgroup><col style="width:40%"><col style="width:60%"></colgroup>
+            ${head('Online Multiplayer')}
+            ${row('setname &lt;name&gt;', 'Set your display name for online games')}
+            ${row('newo',                 'Create online game with current config; prints game ID')}
+            ${row('joino &lt;ID&gt;',     'Join an existing online game by ID')}
             ${head('Game')}
             ${row('new',              'Start new game')}
             ${row('em [&lt;n&gt;]',  'Engine move (optional n consecutive moves)')}
@@ -514,7 +557,12 @@ export class Renderer {
 
         const fmtMap = (map: Record<number, number>) =>
             Object.entries(map).map(([s, p]) => `${sideName(Number(s))}→P${p}`).join(', ');
-        this.statusPanel.innerHTML = `
+        const onlineSection = this.gameMode === GameMode.online ? `
+            <div><b>Online game:</b> ${this.onlineGameId}</div>
+            <div><b>Your player slot:</b> ${this.onlinePlayerSlot ?? '(waiting for start)'}</div>
+            <div><b>Your name:</b> ${this.playerName || '(not set)'}</div>
+            <hr style="margin:6px 0">` : '';
+        this.statusPanel.innerHTML = `${onlineSection}
             <div><b>To move:</b> ${sideName(v.nextPlayer)}</div>
             <div><b>Last move:</b> ${lastMoveStr}</div>
             <div><b>Stones:</b> ${stoneLine}</div>
@@ -561,11 +609,15 @@ export class Renderer {
         }
         if (bestId >= 0 && bestDist < stone_r * 1.3) {
             if (this.displayPlyNum !== v.plyCount) return;
-            this.engineManager.cancel();
-            this.game.makeMove(bestId);
-            this.displayPlyNum = this.game.getView().plyCount;
-            this.randomEvaled = null;
-            this._render();
+            if (this.gameMode === GameMode.online) {
+                if (this._isMyOnlineTurn()) void this._submitOnlineMove(bestId);
+            } else {
+                this.engineManager.cancel();
+                this.game.makeMove(bestId);
+                this.displayPlyNum = this.game.getView().plyCount;
+                this.randomEvaled = null;
+                this._render();
+            }
         }
     }
 
@@ -586,23 +638,41 @@ export class Renderer {
 
     private _parseCommand(raw: string) {
         const parts = raw.trim().split(/\s+/);
+        this.cmdOutput.textContent = '';
         if (!parts[0]) return;
         const cmd = parts[0];
+        const posInt = (s: string | undefined) => { const n = Number(s); return Number.isInteger(n) && n > 0 ? n : null; };
 
-        if (cmd === 'em') {
-            const n = parts[1] ? Number(parts[1]) : 1;
-            if (Number.isInteger(n) && n > 0) {
-                if (!this.engineManager.register(n)) console.warn('em: engine move already in progress');
-                return;  // EngineManager triggers _render() when done
+        if (cmd === 'setname') {
+            if (parts[1]) {
+                this.playerName = parts.slice(1).join(' ');
+                localStorage.setItem('playerName', this.playerName);
+                this._setCmdOutput(`Name set to: ${this.playerName}`);
+            } else {
+                this._setCmdOutput(`Current name: ${this.playerName || '(not set)'}`);
             }
-            return;
+        }
+        else if (cmd === 'newo') {
+            void this._createOnlineGame();
+        }
+        else if (cmd === 'joino') {
+            if (!parts[1]) { this._setCmdOutput('Usage: joino <ID>'); return; }
+            void this._joinOnlineGame(parts[1].toUpperCase());
+        }
+        else if (cmd === 'em') {
+            if (this.gameMode === GameMode.online) { this._setCmdOutput('Engine moves are disabled in online mode'); return; }
+            const n = posInt(parts[1] ?? '1');
+            if (n === null) { this._setCmdOutput('em: n must be a positive integer'); return; }
+            if (!this.engineManager.register(n)) console.warn('em: engine move already in progress');
+            return;  // EngineManager triggers _render() when done
         }
         else if (cmd === 'cem') {
             this.engineManager.cancel();
         }
-        else if (cmd === 'emsim' && parts[1]) {
-            const n = Number(parts[1]);
-            if (Number.isInteger(n) && n > 0) this.emNumSims = n;
+        else if (cmd === 'emsim') {
+            const n = posInt(parts[1]);
+            if (n === null) { this._setCmdOutput('Usage: emsim <n>  (positive integer)'); return; }
+            this.emNumSims = n;
         }
         else if (cmd === 's') {
             this.selfPlay = !this.selfPlay;
@@ -611,74 +681,82 @@ export class Renderer {
         }
         else if (cmd === 'fpo')  this.forcedPassOnlyForNew = !this.forcedPassOnlyForNew;
         else if (cmd === 'af')   this.autoForced = !this.autoForced;
-        else if (cmd === 'bt' && parts[1] && _cmdToBoard.has(parts[1]))
+        else if (cmd === 'bt') {
+            if (!parts[1]) { this._setCmdOutput('Usage: bt <board-type>'); return; }
+            if (!_cmdToBoard.has(parts[1])) { this._setCmdOutput(`Unknown board type: ${parts[1]}`); return; }
             this.boardTypeForNew = _cmdToBoard.get(parts[1])!.boardType;
-        else if (cmd === 'bd' && parts[1]) {
+        }
+        else if (cmd === 'bd') {
+            if (!parts[1]) { this._setCmdOutput('Usage: bd <num> <num> …'); return; }
             const nums = parts.slice(1).map(Number);
-            if (nums.some(n => !Number.isInteger(n) || n <= 0)) return;
+            if (nums.some(n => !Number.isInteger(n) || n <= 0)) { this._setCmdOutput('bd: all arguments must be positive integers'); return; }
             for (const [idx, val] of nums.entries())
                 if (idx < (PrescribedBoardMap[this.boardTypeForNew][0]))
                     this.boardDimensionForNew[this.boardTypeForNew][idx] = val;
         }
-        else if (cmd === 'ns' && parts[1]) {
+        else if (cmd === 'ns') {
             const n = Number(parts[1]);
-            if (Number.isInteger(n) && n >= 1 && n <= 8) {
-                this.numStonesForNew = n;
-                this.turnStoneListForNew = Array.from({ length: n }, (_, i) => i + 1);
-                this.stoneToPlayerMap = Object.fromEntries(Array.from({ length: this.numStonesForNew }, (_, i) => [i + 1, i % this.numPlayersForNew + 1]));
-            }
+            if (!parts[1] || !Number.isInteger(n) || n < 1 || n > 8) { this._setCmdOutput('Usage: ns <n>  (1–8)'); return; }
+            this.numStonesForNew = n;
+            this.turnStoneListForNew = Array.from({ length: n }, (_, i) => i + 1);
+            this.stoneToPlayerMap = Object.fromEntries(Array.from({ length: n }, (_, i) => [i + 1, i % this.numPlayersForNew + 1]));
         }
-        else if (cmd === 'np' && parts[1]) {
+        else if (cmd === 'np') {
             const n = Number(parts[1]);
-            if (Number.isInteger(n) && n >= 1 && n <= 8) {
-                this.numPlayersForNew = n;
-                this.stoneToPlayerMap = Object.fromEntries(Array.from({ length: this.numStonesForNew }, (_, i) => [i + 1, i % this.numPlayersForNew + 1]));
-            }
+            if (!parts[1] || !Number.isInteger(n) || n < 1 || n > 8) { this._setCmdOutput('Usage: np <n>  (1–8)'); return; }
+            this.numPlayersForNew = n;
+            this.stoneToPlayerMap = Object.fromEntries(Array.from({ length: this.numStonesForNew }, (_, i) => [i + 1, i % n + 1]));
         }
-        else if (cmd === 'tsl' && parts.length >= 2) {
+        else if (cmd === 'tsl') {
+            if (parts.length < 2) { this._setCmdOutput('Usage: tsl <p1> <p2> …'); return; }
             const stones = parts.slice(1).map(Number);
-            if (stones.every(p => Number.isInteger(p) && p >= 1 && p <= this.numStonesForNew))
-                this.turnStoneListForNew = stones;
+            if (!stones.every(p => Number.isInteger(p) && p >= 1 && p <= this.numStonesForNew))
+                { this._setCmdOutput(`tsl: each value must be an integer between 1 and ${this.numStonesForNew}`); return; }
+            this.turnStoneListForNew = stones;
         }
-        else if (cmd === 'spm' && parts.length >= 2) {
+        else if (cmd === 'spm') {
+            if (parts.length < 2) { this._setCmdOutput('Usage: spm <p1> <p2> …'); return; }
             const players = parts.slice(1).map(Number);
-            if (players.every(p => Number.isInteger(p) && p >= 1 && p <= this.numPlayersForNew))
-                for (const [idx, p] of players.entries())
-                    this.stoneToPlayerMap[idx + 1] = p;
+            if (!players.every(p => Number.isInteger(p) && p >= 1 && p <= this.numPlayersForNew))
+                { this._setCmdOutput(`spm: each value must be an integer between 1 and ${this.numPlayersForNew}`); return; }
+            for (const [idx, p] of players.entries())
+                this.stoneToPlayerMap[idx + 1] = p;
         }
-        else if (cmd === 'h' && parts[1]) {
-            const n = Number(parts[1]);
-            if (Number.isInteger(n) && n > 0) this.nShowHistory = n;
+        else if (cmd === 'h') {
+            const n = posInt(parts[1]);
+            if (n === null) { this._setCmdOutput('Usage: h <n>  (positive integer)'); return; }
+            this.nShowHistory = n;
         }
-        else if (cmd === 'r' && parts[1]) {
-            const n = Number(parts[1]);
-            if (Number.isInteger(n) && n > 0) {
-                this.engineManager.cancel();
-                this.engineManager.sessionId = null;
-                for (let i = 0; i < n; i++) this.game.retractMove();
-                this.displayPlyNum = Math.min(this.displayPlyNum, this.game.history.length - 1);
-            }
+        else if (cmd === 'r') {
+            if (this.gameMode === GameMode.online) { this._setCmdOutput('Cannot withdraw a move in an online game'); return; }
+            const n = posInt(parts[1]);
+            if (n === null) { this._setCmdOutput('Usage: r <n>  (positive integer)'); return; }
+            this.engineManager.cancel();
+            this.engineManager.sessionId = null;
+            for (let i = 0; i < n; i++) this.game.retractMove();
+            this.displayPlyNum = Math.min(this.displayPlyNum, this.game.history.length - 1);
         }
         else if (cmd === 'rcd') {
+            if (this.gameMode === GameMode.online) { this._setCmdOutput('Cannot withdraw a move in an online game'); return; }
             this.engineManager.cancel();
             this.engineManager.sessionId = null;
             const n = this.game.history.length - 1 - this.displayPlyNum;
             for (let i = 0; i < n; i++) this.game.retractMove();
         }
-        else if (cmd === 'fw' && parts[1]) {
-            const n = Number(parts[1]);
-            if (Number.isInteger(n) && n > 0)
-                this.displayPlyNum = Math.min(this.displayPlyNum + n, this.game.history.length - 1);
+        else if (cmd === 'fw') {
+            const n = posInt(parts[1]);
+            if (n === null) { this._setCmdOutput('Usage: fw <n>  (positive integer)'); return; }
+            this.displayPlyNum = Math.min(this.displayPlyNum + n, this.game.history.length - 1);
         }
-        else if (cmd === 'bw' && parts[1]) {
-            const n = Number(parts[1]);
-            if (Number.isInteger(n) && n > 0)
-                this.displayPlyNum = Math.max(this.displayPlyNum - n, 0);
+        else if (cmd === 'bw') {
+            const n = posInt(parts[1]);
+            if (n === null) { this._setCmdOutput('Usage: bw <n>  (positive integer)'); return; }
+            this.displayPlyNum = Math.max(this.displayPlyNum - n, 0);
         }
-        else if (cmd === 're' && parts[1]) {
-            const n = Number(parts[1]);
-            if (Number.isInteger(n) && n > 0)
-                this.randomEvaled = this.game.randomEvaluate(n);
+        else if (cmd === 're') {
+            const n = posInt(parts[1]);
+            if (n === null) { this._setCmdOutput('Usage: re <n>  (positive integer)'); return; }
+            this.randomEvaled = this.game.randomEvaluate(n);
         }
         else if (cmd === 'new') {
             const fn = PrescribedBoardFns[this.boardTypeForNew];
@@ -706,6 +784,175 @@ export class Renderer {
 
     private _stopSelfPlay() {
         if (this.selfPlayTimer !== null) { cancelAnimationFrame(this.selfPlayTimer); this.selfPlayTimer = null; }
+    }
+
+    // ── Online multiplayer ────────────────────────────────────────────────────
+
+    private _setCmdOutput(msg: string) {
+        this.cmdOutput.textContent = msg;
+    }
+
+    private _isMyOnlineTurn(): boolean {
+        if (this.onlinePlayerSlot === null) return false;
+        const v = this.game.getView();
+        if (v.gameOver) return false;
+        return v.stoneToPlayerMap[v.nextPlayer] === this.onlinePlayerSlot;
+    }
+
+    private async _createOnlineGame() {
+        if (!this.playerName) { this._setCmdOutput('Set your name first: setname <name>'); return; }
+        const boardTypeName = PrescribedBoardMap[this.boardTypeForNew][1];
+        try {
+            const resp = await fetch('/api/onlineGame', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    boardType:        boardTypeName,
+                    boardArgs:        [...this.boardDimensionForNew[this.boardTypeForNew]],
+                    numStones:        this.numStonesForNew,
+                    numPlayers:       this.numPlayersForNew,
+                    turnStoneList:    [...this.turnStoneListForNew],
+                    stoneToPlayerMap: { ...this.stoneToPlayerMap },
+                    forcedPassOnly:   this.forcedPassOnlyForNew,
+                    playerName:       this.playerName,
+                }),
+            });
+            if (!resp.ok) { this._setCmdOutput(`Failed to create game: ${resp.status}`); return; }
+            const { id, position } = await resp.json() as { id: string; position: number };
+            this.gameMode         = GameMode.online;
+            this.onlineGameId     = id;
+            this.onlinePosition   = position;
+            this.onlinePlayerSlot = null;
+            this.onlineMovesSeen  = 0;
+            this.onlineGameFinished = false;
+            const fn = PrescribedBoardFns[this.boardTypeForNew];
+            this._newGame(fn(...this.boardDimensionForNew[this.boardTypeForNew]));
+            this._setCmdOutput(`Game created: ${id} - waiting for ${this.numPlayersForNew - 1} more player(s)…`);
+            this._startOnlinePoll();
+            this._render();
+        } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); }
+    }
+
+    private async _joinOnlineGame(id: string) {
+        if (!this.playerName) { this._setCmdOutput('Set your name first: setname <name>'); return; }
+        try {
+            const resp = await fetch(`/api/onlineGame/${id}/join`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ playerName: this.playerName }),
+            });
+            if (!resp.ok) {
+                const err = await resp.json() as { error: string };
+                this._setCmdOutput(`Failed to join: ${err.error}`);
+                return;
+            }
+            const { position, config } = await resp.json() as { position: number; config: OnlineGameConfig; status: string };
+            const boardEntry = _cmdToBoard.get(config.boardType);
+            if (!boardEntry) { this._setCmdOutput(`Unknown board type: ${config.boardType}`); return; }
+            const bc = boardEntry.fn(...config.boardArgs);
+            this.engineManager.cancel();
+            this.engineManager.sessionId = null;
+            this.game = new BoardState(
+                config.numStones, config.numPlayers,
+                config.turnStoneList, config.stoneToPlayerMap,
+                config.forcedPassOnly, new Array(bc.N).fill(0), bc,
+            );
+            this.boardTypeForCurrent = boardEntry.boardType;
+            this.boardDimsForCurrent = [...config.boardArgs];
+            this.displayPlyNum   = 0;
+            this.randomEvaled    = null;
+            this.idxShowHistory  = 0;
+            this.gameMode         = GameMode.online;
+            this.onlineGameId     = id;
+            this.onlinePosition   = position;
+            this.onlinePlayerSlot = null;
+            this.onlineMovesSeen  = 0;
+            this.onlineGameFinished = false;
+            this._setCmdOutput(`Joined game: ${id}`);
+            this._startOnlinePoll();
+            this._render();
+        } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); }
+    }
+
+    private _startOnlinePoll() {
+        this._stopOnlinePoll();
+        this.onlinePollTimer = setInterval(() => void this._pollOnce(), 1500);
+    }
+
+    private _stopOnlinePoll() {
+        if (this.onlinePollTimer !== null) { clearInterval(this.onlinePollTimer); this.onlinePollTimer = null; }
+    }
+
+    private async _pollOnce() {
+        if (!this.onlineGameId) return;
+        try {
+            const resp = await fetch(`/api/onlineGame/${this.onlineGameId}/state`);
+            if (!resp.ok) return;
+            this._applyOnlineState(await resp.json() as OnlineStateResponse);
+        } catch {}
+    }
+
+    private _applyOnlineState(state: OnlineStateResponse) {
+        // Resolve player slot once the game starts
+        if (this.onlinePlayerSlot === null && state.status === 'playing') {
+            const me = state.players[this.onlinePosition!];
+            if (me) {
+                this.onlinePlayerSlot = me.slot;
+                this._setCmdOutput(`Game started! You are player ${me.slot} (${me.name})`);
+            }
+        }
+
+        // Apply any new moves from the server
+        if (state.moves.length > this.onlineMovesSeen) {
+            const wasAtLive = this.displayPlyNum === this.game.getView().plyCount;
+            for (let i = this.onlineMovesSeen; i < state.moves.length; i++) {
+                this.game.makeMove(state.moves[i]);
+            }
+            this.onlineMovesSeen = state.moves.length;
+            if (wasAtLive) this.displayPlyNum = this.game.getView().plyCount;
+            this.randomEvaled = null;
+
+            // Notify when it becomes our turn after an opponent move
+            if (this.onlinePlayerSlot !== null) {
+                const v = this.game.getView();
+                if (!v.gameOver && v.stoneToPlayerMap[v.nextPlayer] === this.onlinePlayerSlot)
+                    this._setCmdOutput('Your turn!');
+            }
+            this._render();
+        }
+
+        // Game-over notification (once)
+        if (state.status === 'finished' && !this.onlineGameFinished) {
+            this.onlineGameFinished = true;
+            this._stopOnlinePoll();
+            const v = this.game.getView();
+            const winnerText = v.winners.length === 0
+                ? 'No winners'
+                : v.winners.map(w => `Player ${w}`).join(', ') + ' win!';
+            this._setCmdOutput(`Game over! ${winnerText}`);
+            this._render();
+        }
+    }
+
+    private async _submitOnlineMove(moveIndex: number | null) {
+        if (!this.onlineGameId) return;
+        try {
+            const resp = await fetch(`/api/onlineGame/${this.onlineGameId}/move`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    position:  this.onlinePosition,
+                    moveIndex,
+                    clientIdx: this.onlineMovesSeen,
+                }),
+            });
+            if (!resp.ok) {
+                const err = await resp.json() as { error: string };
+                this._setCmdOutput(`Move rejected: ${err.error}`);
+                return;
+            }
+            this._applyOnlineState(await resp.json() as OnlineStateResponse);
+        } catch (e: any) { this._setCmdOutput(`Network error: ${e.message}`); }
     }
 
 }

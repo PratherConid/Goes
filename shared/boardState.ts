@@ -195,7 +195,7 @@ export class BoardState {
     //   map from stone type to player
     //   players are 1-indexed
     // forcedPassOnly: only allow pass when there are no legal PLACE moves
-    // board:          initial board state — array of length N; 0 = empty, positive = stone color
+    // board:          initial board state - array of length N; 0 = empty, positive = stone color
     constructor(
         numStones: number, numPlayers: number, turnStoneList: number[], stoneToPlayerMap: Record<number, number>,
         forcedPassOnly: boolean, board: number[], bc: BoardConfig,

@@ -3,7 +3,7 @@
 // Usage: goes_server [--checkpoint-dir PATH] [--port 8765] [--sims 200] [--cpu]
 // Also reads GOES_CHECKPOINT_DIR and GOES_NUM_SIMS environment variables.
 //
-// POST /move — JSON body fields:
+// POST /move - JSON body fields:
 //   board_type        "rect"|"rectd"|"cub"|"hcub"|"tri"|"twsq"|"gtsq"
 //   board_args        integer dimensions matching the board type
 //   num_stones        int
@@ -11,18 +11,18 @@
 //   turn_stone_list   int[]
 //   stone_to_player_map  {stone: player} object
 //   forced_pass_only  bool
-//   moves             (int|null)[]  — full move history; null = pass, int = board index
-//   board             int[]        — current stone array (length N); used to verify
+//   moves             (int|null)[]  - full move history; null = pass, int = board index
+//   board             int[]        - current stone array (length N); used to verify
 //                                    the replayed state matches the client's state
-//   session_id        string|null  — opaque token returned by a previous response;
+//   session_id        string|null  - opaque token returned by a previous response;
 //                                    omit or pass "" / null for a new session
 //   num_simulations   int (optional, overrides server default)
 //
 //   Returns: {move, policy, value, session_id}
-//     move       int|null   — chosen board index, or null for pass
-//     policy     float[]    — MCTS visit distribution over all actions (length N+1)
-//     value      float      — estimated value for the current player
-//     session_id string     — token to include in the next request for this game
+//     move       int|null   - chosen board index, or null for pass
+//     policy     float[]    - MCTS visit distribution over all actions (length N+1)
+//     value      float      - estimated value for the current player
+//     session_id string     - token to include in the next request for this game
 //
 //   The server maintains a cached BoardState per session_id. On each request it
 //   finds the longest common prefix of the stored and incoming move lists, then
@@ -30,7 +30,7 @@
 //   that is cheaper (stored_len < 2 * lcp_len). Otherwise it replays all moves
 //   from an empty board and issues a fresh session_id.
 //
-// GET /health — returns {"status":"ok","loaded_tags":[...],"device":...}
+// GET /health - returns {"status":"ok","loaded_tags":[...],"device":...}
 //
 // Models are loaded lazily on first request for each game config and cached.
 #include "game/board_config.h"
@@ -40,7 +40,7 @@
 #include "mcts/mcts.h"
 #include <torch/torch.h>
 // Single-header libraries in third_party/
-// (OpenSSL is opt-in — not defining CPPHTTPLIB_OPENSSL_SUPPORT keeps it plain HTTP)
+// (OpenSSL is opt-in - not defining CPPHTTPLIB_OPENSSL_SUPPORT keeps it plain HTTP)
 #include "httplib.h"
 #include "nlohmann/json.hpp"
 
@@ -104,7 +104,7 @@ static std::string make_session_id() {
 // the state by replaying only new moves rather than reconstructing from scratch.
 
 struct SessionState {
-    std::string tag;                     // model/config tag — must match incoming request
+    std::string tag;                     // model/config tag - must match incoming request
     std::unique_ptr<BoardState> state;   // board state after all replayed moves
     std::vector<int> moves;              // moves applied so far (-1 = pass, ≥0 = board index)
 };
@@ -278,7 +278,7 @@ int main(int argc, char* argv[]) {
                     req_moves.push_back(m.is_null() ? -1 : m.get<int>());
             }
 
-            // Current board sent by client — used to verify our replayed state matches.
+            // Current board sent by client - used to verify our replayed state matches.
             std::vector<int> req_board = j["board"].get<std::vector<int>>();
 
             // Game config fields needed to reconstruct state from scratch.

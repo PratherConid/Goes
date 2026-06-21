@@ -31,7 +31,7 @@ struct MCTSNode {
 // AlphaZero-style MCTS.
 //
 // Value convention: each node stores Q-values from the perspective of the player
-// whose turn it is at that node. Backup does not negate — instead it looks up the
+// whose turn it is at that node. Backup does not negate - instead it looks up the
 // per-player reward map and reads the value for each node's own player. Terminal
 // rewards come from compute_player_rewards(); model leaves contribute only the value
 // for the leaf's current player (others get 0 for that simulation).

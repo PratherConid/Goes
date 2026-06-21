@@ -8,7 +8,7 @@ struct GameRecord {
     torch::Tensor features;       // (N, F) float32
     torch::Tensor legal_mask;     // (N+1,) bool
     torch::Tensor policy_target;  // (N+1,) float32
-    torch::Tensor value_target;   // (num_players,) float32 — reward for each player in ID order 1..P
+    torch::Tensor value_target;   // (num_players,) float32 - reward for each player in ID order 1..P
 };
 
 // Circular buffer of GameRecord objects.

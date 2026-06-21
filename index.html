@@ -103,6 +103,14 @@
       flex-shrink: 0;
     }
 
+    #cmd-output {
+      min-height: 1.2em;
+      color: #aaa;
+      font-family: Consolas, monospace;
+      font-size: 15px;
+      white-space: pre-line;
+    }
+
     #cmd-input {
       width: 100%;
       background: transparent;
@@ -261,6 +269,7 @@
       <span id="ply-num">0</span>
     </div>
     <div id="cmd-area">
+      <div id="cmd-output"></div>
       <input id="cmd-input" type="text" spellcheck="false"
              placeholder="type command and press Enter…" autocomplete="off" />
     </div>

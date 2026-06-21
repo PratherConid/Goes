@@ -190,7 +190,7 @@ static LegalMoves calculate_legal_moves(
             if (!ok) continue;
         }
 
-        // Ko check: speculative lookup only — do not intern the candidate board.
+        // Ko check: speculative lookup only - do not intern the candidate board.
         auto new_id_opt = hm->lookup(len_history % ltl, nb);
         if (new_id_opt.has_value() && history_id_set.count(*new_id_opt)) continue;
 

@@ -111,7 +111,7 @@ export class AVLTree<T> {
     }
 
     // cmp override is used by BoardState.sortedHistory (boardState.ts) to query
-    // with cmpNonStrict while the tree is ordered by cmpStrict — see the comment
+    // with cmpNonStrict while the tree is ordered by cmpStrict - see the comment
     // above sortedHistory in the BoardState constructor for the full rationale.
     has(value: T, cmp?: Comparator<T>): boolean {
         return hasNode(this.root, value, cmp ?? this.cmp);

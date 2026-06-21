@@ -3,8 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import gameRouter from './routes/game.js';
 import aiRouter from './routes/ai.js';
+import onlineGameRouter from './routes/onlineGame.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -44,8 +44,8 @@ process.on('SIGTERM', () => { aiProc?.kill(); process.exit(); });
 // ── Express app ───────────────────────────────────────────────────────────────
 
 app.use(express.json());
-app.use('/api/game', gameRouter);
-app.use('/api/ai',   aiRouter);
+app.use('/api/onlineGame', onlineGameRouter);
+app.use('/api/ai',        aiRouter);
 app.use(express.static(path.resolve(__dirname, '../../dist')));
 
 app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));

@@ -19,7 +19,7 @@
 //
 // Conv counts: 4 at encoder level 0, 2 at deeper encoder levels; 4 at decoder
 //              level 0, 2 at deeper decoder levels.
-// num_layers is not a parameter — depth is determined by grid dimensions.
+// num_layers is not a parameter - depth is determined by grid dimensions.
 // Requires bc.emb_dim == 2.
 struct ConvNNImpl : torch::nn::Module {
     std::vector<torch::nn::Sequential> enc_blocks_;  // [k=0..L]: encoder conv groups
@@ -36,8 +36,8 @@ struct ConvNNImpl : torch::nn::Module {
     std::vector<std::pair<int,int>> enc_sizes_;   // (H_k, W_k) at encoder level k
     std::vector<int>                enc_channels_; // C_k at encoder level k
 
-    torch::Tensor lin_idx_;      // (N,) long — row*W+col for each board node
-    torch::Tensor valid_tensor_; // (1,1,H,W) float — 1 at valid grid cells
+    torch::Tensor lin_idx_;      // (N,) long - row*W+col for each board node
+    torch::Tensor valid_tensor_; // (1,1,H,W) float - 1 at valid grid cells
 
     ConvNNImpl(const BoardConfig& bc, int in_dim, int hidden_dim, int num_players);
 

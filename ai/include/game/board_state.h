@@ -116,7 +116,7 @@ private:
     // are not required to avoid board state collision, so two states occurring in the
     // same game could have the same unique ID. If the same ID appears at
     // multiple positions in history_ids_, erasing it once on retract_move must not
-    // remove it from the set entirely — the earlier occurrence is still in history.
+    // remove it from the set entirely - the earlier occurrence is still in history.
     // Reference counting (ID → count) ensures the ID stays in the set until all
     // occurrences have been retracted.
     std::unordered_map<uint64_t, int> history_id_set_;
