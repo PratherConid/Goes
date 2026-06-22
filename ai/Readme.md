@@ -45,7 +45,7 @@ ai/
 2. **CMake ≥ 3.18**
 3. **OpenMP** — bundled with MSVC and GCC; on macOS install via `brew install libomp`. Optional but recommended: enables parallel MCTS select across game trees.
 4. **LibTorch** — download the pre-built package from https://pytorch.org/get-started/locally/
-   - Select: C++ / LibTorch / your OS / CUDA version or CPU
+   - Select: your OS (IMPORTANT!), C++ / LibTorch, CUDA version or CPU
    - Extract to a local directory, e.g. `D:\libtorch` on windows and `~/include/libtorch` on linux
 5. **Third-party headers** (single-file, copy into `third_party/`):
    - [httplib.h](https://github.com/yhirose/cpp-httplib/releases) → `third_party/httplib.h`
