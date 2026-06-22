@@ -147,6 +147,9 @@ std::pair<torch::Tensor, torch::Tensor> ConvNNImpl::forward(
 
     // Value head: flatten bottleneck → (B, C_L) → (B, num_players)
     auto value = value_head->forward(h.flatten(1));
+    // Normalise to zero-sum across players: subtract the per-row mean so the
+    // per-player values sum to zero (the model cannot rate everyone as winning).
+    value = value - value.mean(-1, /*keepdim=*/true);
 
     // Decoder: for each level from L-1 down to 0,
     //   1. Upsample to the recorded encoder spatial size (nearest-neighbor)

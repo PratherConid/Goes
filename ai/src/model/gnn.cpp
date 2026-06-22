@@ -57,6 +57,9 @@ std::pair<torch::Tensor, torch::Tensor> MessagePassingGNNImpl::forward(
     // Value head: global average pool → (B, num_players)
     auto global_feat = h.mean(1);                           // (B, hidden)
     auto value = value_head->forward(global_feat);          // (B, num_players)
+    // Normalise to zero-sum across players: subtract the per-row mean so the
+    // per-player values sum to zero (the model cannot rate everyone as winning).
+    value = value - value.mean(-1, /*keepdim=*/true);
 
     // Policy head: per-node logit + learnable pass logit
     auto node_logits = policy_head->forward(h).squeeze(-1);     // (B, N)

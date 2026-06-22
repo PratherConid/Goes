@@ -36,7 +36,7 @@ std::unordered_map<int,float> compute_player_rewards(
             else if (their_cnt > my_cnt) rank_diff--;
         }
         float rank_reward  = static_cast<float>(rank_diff) * 2.0f / (2 * P - 1);
-        float stone_reward = std::tanh(sf - 1.0f / P) / (2 * P - 1);
+        float stone_reward = (sf - 1.0f / P) / (2 * P - 1);
         rewards[p] = rank_reward + stone_reward;
     }
     return rewards;

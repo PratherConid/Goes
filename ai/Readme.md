@@ -244,10 +244,10 @@ The value target for every ply is a sum of a rank-based component and a stone-fr
 
 ```
 rank_reward  = (# opp with fewer stones − # opp with more stones) × 2 / (2P−1)   [0 if P=1]
-stone_reward = tanh(stone_fraction − 1/P) / (2P−1)
+stone_reward = (stone_fraction − 1/P) / (2P−1)
 reward       = rank_reward + stone_reward
 ```
 
-where `stone_fraction = (player's stones) / (total stones)`, or 0 when the board is empty, and `P` is the number of players. The `[-1, 1]` interval is divided into `2P−1` equal sub-intervals; the rank reward places each player at the midpoint of the sub-interval corresponding to their rank, and the stone reward adds a continuous signal within one half-interval width. For two players the combined reward provably fits in `(−1, 1)` (the Tanh bound); for more players the range is smaller. This design keeps rewards within the GNN value head's Tanh output range at all player counts.
+where `stone_fraction = (player's stones) / (total stones)`, or 0 when the board is empty, and `P` is the number of players. The `[-1, 1]` interval is divided into `2P−1` equal sub-intervals; the rank reward places each player at the midpoint of the sub-interval corresponding to their rank, and the stone reward adds a continuous signal within one half-interval width. The combined reward stays within `(−1, 1)` for all player counts. Because the stone term is now linear in `stone_fraction`, the per-player rewards are exactly zero-sum whenever the board is non-empty (`Σ (stone_fraction − 1/P) = 0` and the rank term is antisymmetric); the only non-zero-sum case is a fully empty terminal board.
 
 The same formula is computed for terminal nodes inside MCTS via `compute_player_rewards()`. The GNN value head outputs one value per player (player-ID order 1..P, with Tanh), so MCTS backup has per-player rewards for every simulation — not just for the player to move at the leaf. Backup does not negate: each node looks up its own player's reward from the map, so Q-values at every node reflect that node's player's outcome directly.
