@@ -283,7 +283,6 @@ MCTS::search_batch(
     int n = static_cast<int>(states.size());
     if (temperatures.empty()) temperatures.assign(n, 1.0f);
 
-    auto t_root0 = std::chrono::high_resolution_clock::now();
     // Initial root-prior batch evaluation
     std::vector<const BoardState*> cstates(states.begin(), states.end());
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -313,8 +312,6 @@ MCTS::search_batch(
         root->is_expanded = true;
         roots.push_back(std::move(root));
     }
-    total.root = std::chrono::duration<double>(
-        std::chrono::high_resolution_clock::now() - t_root0).count();
 
     std::vector<MCTSNode*> root_ptrs;
     root_ptrs.reserve(n);
@@ -323,8 +320,6 @@ MCTS::search_batch(
     auto t_sim0 = std::chrono::high_resolution_clock::now();
     for (int s = 0; s < num_simulations; s++)
         total.add(simulate_batch(root_ptrs, max_plies));
-    total.simulate = std::chrono::duration<double>(
-        std::chrono::high_resolution_clock::now() - t_sim0).count();
 
     std::vector<std::pair<std::vector<float>, int>> results;
     results.reserve(n);
@@ -333,5 +328,23 @@ MCTS::search_batch(
             roots[i]->visit_count, temperatures[i], rng_);
         results.push_back({std::move(dist), move});
     }
+    total.simulate = std::chrono::duration<double>(
+        std::chrono::high_resolution_clock::now() - t_sim0).count();
+
+    // Explicitly tear down the search trees here so the recursive MCTSNode
+    // destruction is timed rather than hiding in the function's return unwind.
+    // Each root tree is independent (its own HistoryManager hms[i]); the only
+    // shared object is the read-only adj shared_ptr, whose refcount is atomic.
+    // So destroying disjoint trees in parallel is race-free.
+    root_ptrs.clear();
+    auto t_tear0 = std::chrono::high_resolution_clock::now();
+    #pragma omp parallel for schedule(dynamic)
+    for (int i = 0; i < n; i++)
+        roots[i].reset();  // recursively destroy tree i
+    roots.clear();         // now just drops null unique_ptrs (cheap)
+    total.teardown = std::chrono::duration<double>(
+        std::chrono::high_resolution_clock::now() - t_tear0).count();
+    hms.clear();
+
     return {std::move(results), total};
 }

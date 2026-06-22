@@ -12,7 +12,7 @@ struct MCTSTiming {
     double eval = 0.0;
     double select = 0.0;
     double simulate = 0.0;  // wall time for the simulation loop
-    double root = 0.0;      // wall time for root initialisation (prior + noise)
+    double teardown = 0.0;  // wall time to destroy the search trees + history managers
     double search = 0.0;    // wall time for the full search_batch call
     MCTSTiming& add(const MCTSTiming& o) { eval += o.eval; select += o.select; return *this; }
 };

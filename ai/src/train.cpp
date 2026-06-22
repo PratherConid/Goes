@@ -322,8 +322,8 @@ int main(int argc, char* argv[]) {
                 std::cout << std::fixed << std::setprecision(0)
                           << "  ply iter " << ply_iter << ": generate=" << total_ms << "ms"
                           << "  search=" << timing.search * 1000.0 << "ms"
-                          << "  root=" << timing.root * 1000.0 << "ms"
                           << "  simulate=" << timing.simulate * 1000.0 << "ms"
+                          << "  teardown=" << timing.teardown * 1000.0 << "ms"
                           << "  eval=" << timing.eval * 1000.0 << "ms"
                           << "  select=" << timing.select * 1000.0 << "ms"
                           << std::defaultfloat << std::endl;
