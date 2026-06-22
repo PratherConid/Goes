@@ -52,7 +52,7 @@ std::string HistoryManager::make_key(int ply_mod, const std::vector<int>& board)
     return key;
 }
 
-uint64_t HistoryManager::intern(int ply_mod, const std::vector<int>& board) {
+uint64_t HistoryManager::store_board(int ply_mod, const std::vector<int>& board) {
     std::string key = make_key(ply_mod, board);
     auto it = key_to_id_.find(key);
     if (it != key_to_id_.end()) return it->second;
@@ -72,6 +72,17 @@ std::optional<uint64_t> HistoryManager::lookup(int ply_mod, const std::vector<in
 const std::vector<int>& HistoryManager::board_of(uint64_t id) const {
     assert(id < boards_.size());
     return boards_[id];
+}
+
+uint64_t HistoryManager::store_legal_moves(LegalMoves lm) {
+    uint64_t id = legal_moves_.size();
+    legal_moves_.push_back(std::move(lm));
+    return id;
+}
+
+const LegalMoves& HistoryManager::legal_moves_of(uint64_t id) const {
+    assert(id < legal_moves_.size());
+    return legal_moves_[id];
 }
 
 // ── Group / liberty computation ───────────────────────────────────────────────
@@ -190,7 +201,7 @@ static LegalMoves calculate_legal_moves(
             if (!ok) continue;
         }
 
-        // Ko check: speculative lookup only - do not intern the candidate board.
+        // Ko check: speculative lookup only - do not store the candidate board.
         auto new_id_opt = hm->lookup(len_history % ltl, nb);
         if (new_id_opt.has_value() && history_id_set.count(*new_id_opt)) continue;
 
@@ -204,11 +215,11 @@ static LegalMoves calculate_legal_moves(
 void BoardState::add_to_history_and_after_move() {
     int ply = static_cast<int>(history_ids_.size());
     int ltl = static_cast<int>(turn_stone_list.size());
-    uint64_t id = hm_->intern(ply % ltl, board);
+    uint64_t id = hm_->store_board(ply % ltl, board);
     history_ids_.push_back(id);
     history_id_set_[id]++;
     after_move();
-    legal_move_history_.push_back(legal_moves_with_take);
+    legal_move_history_ids_.push_back(hm_->store_legal_moves(legal_moves_with_take));
 }
 
 void BoardState::after_move() {
@@ -324,7 +335,7 @@ void BoardState::retract_move() {
     history_ids_.pop_back();
     if (--history_id_set_[removed_id] == 0) history_id_set_.erase(removed_id);
     last_moves_.pop_back();
-    legal_move_history_.pop_back();
+    legal_move_history_ids_.pop_back();
     int prev_ply = static_cast<int>(history_ids_.size()) - 1;
     int ltl = static_cast<int>(turn_stone_list.size());
     board = hm_->board_of(history_ids_.back());
@@ -338,7 +349,7 @@ void BoardState::set_ply(int ply) {
     std::vector<int> dummy(N, 0);
     for (int i = 0; i < extra; i++) {
         int p = static_cast<int>(history_ids_.size());
-        uint64_t id = hm_->intern(p % ltl, dummy);
+        uint64_t id = hm_->store_board(p % ltl, dummy);
         history_ids_.push_back(id);
         history_id_set_[id]++;
     }
@@ -363,13 +374,8 @@ BoardState BoardState::make_copy_skeleton(const BoardState& src) {
     c.legal_moves_with_take.reserve(src.legal_moves_with_take.size());
     for (const auto& m : src.legal_moves_with_take)
         c.legal_moves_with_take.push_back(m);
-    c.legal_move_history_.reserve(src.legal_move_history_.size());
-    for (const auto& row : src.legal_move_history_) {
-        LegalMoves row_copy;
-        row_copy.reserve(row.size());
-        for (const auto& m : row) row_copy.push_back(m);
-        c.legal_move_history_.push_back(std::move(row_copy));
-    }
+    // legal_move_history_ids_ is handled by the caller (copy / copy_with_hm),
+    // mirroring how history_ids_ is rebuilt per copy-variant.
     return c;
 }
 
@@ -378,6 +384,8 @@ BoardState BoardState::copy() const {
     c.hm_            = hm_;
     c.history_ids_   = history_ids_;
     c.history_id_set_ = history_id_set_;
+    // Same manager: the interned legal-move IDs stay valid, so just copy the list.
+    c.legal_move_history_ids_ = legal_move_history_ids_;
     return c;
 }
 
@@ -386,9 +394,14 @@ BoardState BoardState::copy_with_hm(HistoryManager* new_hm) const {
     c.hm_ = new_hm;
     int ltl = static_cast<int>(turn_stone_list.size());
     for (int i = 0; i < (int)history_ids_.size(); i++) {
-        uint64_t new_id = new_hm->intern(i % ltl, hm_->board_of(history_ids_[i]));
+        uint64_t new_id = new_hm->store_board(i % ltl, hm_->board_of(history_ids_[i]));
         c.history_ids_.push_back(new_id);
         c.history_id_set_[new_id]++;
     }
+    // Re-store the interned legal-move tables into the new manager, mirroring the
+    // board re-interning above (IDs are manager-specific so they must be rebuilt).
+    c.legal_move_history_ids_.reserve(legal_move_history_ids_.size());
+    for (uint64_t id : legal_move_history_ids_)
+        c.legal_move_history_ids_.push_back(new_hm->store_legal_moves(hm_->legal_moves_of(id)));
     return c;
 }

@@ -43,7 +43,7 @@ GroupDict group_liberty(const std::vector<int>& board,
 class HistoryManager {
 public:
     // Insert (ply_mod, board) if not present; return its ID.
-    uint64_t intern(int ply_mod, const std::vector<int>& board);
+    uint64_t store_board(int ply_mod, const std::vector<int>& board);
 
     // Return the ID if (ply_mod, board) is already interned, without inserting.
     std::optional<uint64_t> lookup(int ply_mod, const std::vector<int>& board) const;
@@ -51,10 +51,19 @@ public:
     // Retrieve board by ID (used by retract_move to restore the previous board).
     const std::vector<int>& board_of(uint64_t id) const;
 
+    // Store a per-ply legal-move table and return its ID. Append-only and NOT
+    // content-interned (unlike boards): legal-move tables rarely recur and are
+    // expensive to hash, and sharing across BoardState copies is the only goal.
+    uint64_t store_legal_moves(LegalMoves lm);
+
+    // Retrieve a legal-move table by the ID returned from store_legal_moves.
+    const LegalMoves& legal_moves_of(uint64_t id) const;
+
 private:
     static std::string make_key(int ply_mod, const std::vector<int>& board);
     std::unordered_map<std::string, uint64_t> key_to_id_;
     std::vector<std::vector<int>> boards_;
+    std::vector<LegalMoves> legal_moves_;
     uint64_t next_id_ = 0;
 };
 
@@ -121,7 +130,13 @@ private:
     // occurrences have been retracted.
     std::unordered_map<uint64_t, int> history_id_set_;
     std::vector<MoveInfo> last_moves_;
-    std::vector<LegalMoves> legal_move_history_;
+    // Per-ply legal-move tables, interned in the HistoryManager exactly like
+    // history_ids_: each entry is an ID into hm_->legal_moves_of(...), so copies
+    // share the data instead of deep-copying O(ply·N) snapshots.
+    // NOTE: currently write-only (pushed/popped/copied but never read) — retained
+    // for planned future use; retract_move recomputes legal moves rather than
+    // restoring them from here.
+    std::vector<uint64_t> legal_move_history_ids_;
 
     void add_to_history_and_after_move();
     void after_move();

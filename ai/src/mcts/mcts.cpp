@@ -265,7 +265,7 @@ MCTS::visit_counts_to_policy(const std::vector<int>& vc, float temperature,
 //            (value from stone counts) rather than evaluated by the GNN.
 //
 // Each root gets its own HistoryManager so the per-root search trees are fully
-// independent. This is required for parallel select: HistoryManager::intern/lookup
+// independent. This is required for parallel select: HistoryManager::store_board/lookup
 // are not thread-safe.
 //
 // Returns (per-state (visit-count dist, move index (N=pass)), timing including
