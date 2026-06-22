@@ -1,6 +1,6 @@
 ## Introduction
 This project implements several go variants, where the board topology, turn rule, and pass rule are modified.
-* If the "forced pass only" option is enabled, a player is only allowed to pass when there are no legal moves on the board. This fundamentally changes the concept of life and death. For example, the modified rule will force players to put stones into the eyes of their own groups, allowing their opponent to capture their group. The game ends when both players pass. We use the Chinese rule to ensure termination.
+* If the "forced pass only" option is enabled, a player is only allowed to pass when there are no legal moves on the board. This fundamentally changes the concept of life and death. For example, the modified rule will force players to put stones into the eyes of their own groups, allowing their opponent to capture their group. The game ends when both players pass. We use the SuperKo rule to ensure termination, which disallows repeating game configurations.
 * The turn rule can be changed by setting the "turn list", which is the list of players that places the stones in one turn. The length of the turn list is the number of plys in a turn.
 ----
 When typing commands in the command input bar, make sure the input method is set to English.
