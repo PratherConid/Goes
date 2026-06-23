@@ -24,6 +24,10 @@ struct MCTSNode {
     std::vector<float> total_value;  // (N+1,)
     std::unordered_map<int, std::unique_ptr<MCTSNode>> children;
     bool is_expanded = false;
+    // Debug: this node's per-player reward estimate when first evaluated
+    // (terminal value via compute_player_rewards, or GNN value head). nullopt
+    // until the node is evaluated as a leaf / root.
+    std::optional<std::unordered_map<int,float>> reward_estimate;
 
     MCTSNode(BoardState s, std::vector<float> p);
 

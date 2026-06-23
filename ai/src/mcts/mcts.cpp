@@ -4,7 +4,41 @@
 #include <numeric>
 #include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <string>
+#include <fstream>
+#include <filesystem>
 #include <omp.h>
+#include "nlohmann/json.hpp"
+
+// Debug toggle: when true, search_batch prints each root's MCTS subtree as JSON.
+#define DBG_PRINT_TREE false
+
+using json = nlohmann::json;
+
+// Recursively serialise an MCTS node and its subtree to JSON.
+//   "move"           action taken from the parent state (omitted for the root)
+//   "value_estimate" per-player reward estimate (empty if not yet evaluated)
+//   "subtree"        list of child nodes
+static json mcts_node_to_json(const MCTSNode* node, std::optional<int> move) {
+    json j;
+    if (move.has_value()) j["move"] = move.value();
+    json ve = json::object();
+    if (node->reward_estimate.has_value())
+        for (const auto& [player, val] : *node->reward_estimate)
+            ve[std::to_string(player)] = val;
+    j["value_estimate"] = std::move(ve);
+    json sub = json::array();
+    for (const auto& [action, child] : node->children)
+        sub.push_back(mcts_node_to_json(child.get(), action));
+    j["subtree"] = std::move(sub);
+    return j;
+}
+
+// Returns the JSON string for the subtree rooted at `root`.
+[[maybe_unused]] static std::string mcts_subtree_to_json(const MCTSNode* root) {
+    return mcts_node_to_json(root, std::nullopt).dump();
+}
 
 // ── MCTSNode ──────────────────────────────────────────────────────────────────
 
@@ -210,8 +244,10 @@ MCTSTiming MCTS::simulate_batch(const std::vector<MCTSNode*>& roots,
 
     #pragma omp parallel for schedule(static)
     for (int i = 0; i < n; i++) {
-        if (leaf_values[i].has_value())
+        if (leaf_values[i].has_value()) {
+            nodes[i]->reward_estimate = leaf_values[i];
             backup(paths[i], leaf_values[i].value());
+        }
     }
     return {eval_time, select_time};
 }
@@ -292,6 +328,7 @@ MCTS::search_batch(
     total.eval = std::chrono::duration<double>(t1 - t0).count();
 
     auto pol_a = policy_t.accessor<float, 2>();
+    auto val_a = value_t.accessor<float, 2>();
 
     // hms must be declared before roots so it outlives the MCTSNodes (LIFO destruction).
     // One HistoryManager per root so each search tree is fully independent.
@@ -310,6 +347,11 @@ MCTS::search_batch(
         }
         auto root = std::make_unique<MCTSNode>(states[i]->copy_with_hm(&hms[i]), std::move(prior));
         root->is_expanded = true;
+        // Debug: store the root's per-player value estimate from the initial eval.
+        std::unordered_map<int,float> root_rewards;
+        for (int p = 0; p < states[i]->num_players; p++)
+            root_rewards[p + 1] = val_a[i][p];
+        root->reward_estimate = std::move(root_rewards);
         roots.push_back(std::move(root));
     }
 
@@ -330,6 +372,14 @@ MCTS::search_batch(
     }
     total.simulate = std::chrono::duration<double>(
         std::chrono::high_resolution_clock::now() - t_sim0).count();
+
+    if (DBG_PRINT_TREE) {
+        json roots_json = json::array();
+        for (int i = 0; i < n; i++)
+            roots_json.push_back(mcts_node_to_json(root_ptrs[i], std::nullopt));
+        std::filesystem::create_directories(".logs");
+        std::ofstream(".logs/tree.json") << roots_json.dump(2) << std::endl;
+    }
 
     // Explicitly tear down the search trees here so the recursive MCTSNode
     // destruction is timed rather than hiding in the function's return unwind.
