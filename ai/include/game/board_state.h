@@ -25,6 +25,9 @@ struct MoveInfo {
     std::unordered_set<int> passed_players;
 };
 
+// Human-readable description of a move: "PLACE <cell>", "PASS", etc.
+std::string move_to_string(const MoveInfo& m);
+
 // nullopt = illegal; value = set of captured node indices
 using LegalMove = std::optional<std::vector<int>>;
 using LegalMoves = std::vector<LegalMove>;

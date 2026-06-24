@@ -18,11 +18,29 @@ using json = nlohmann::json;
 
 // Recursively serialise an MCTS node and its subtree to JSON.
 //   "move"           action taken from the parent state (omitted for the root)
+//   "visit_count"    N(parent, move): visits to the edge into this node (non-root)
+//   "total_value"    W(parent, move): summed backup value of that edge (non-root)
+//   "prior"          P(parent, move): model policy prior for that edge (non-root)
+//   "board"          current board stones (root only)
+//   "last_move"      description of the move that produced this state (root only)
+//   "ply"            ply number of this node's state
 //   "value_estimate" per-player reward estimate (empty if not yet evaluated)
 //   "subtree"        list of child nodes
-static json mcts_node_to_json(const MCTSNode* node, std::optional<int> move) {
+static json mcts_node_to_json(const MCTSNode* node, std::optional<int> move,
+                              int visit_count, float total_value, float prior) {
     json j;
-    if (move.has_value()) j["move"] = move.value();
+    if (move.has_value()) {
+        j["move"] = move.value();
+        j["visit_count"] = visit_count;
+        j["total_value"] = total_value;
+        j["prior"] = prior;
+    } else {
+        // Only the root is serialised with no move from a parent; record the
+        // board and the move that produced this state instead.
+        j["board"] = node->state.board;
+        j["last_move"] = move_to_string(node->state.last_move());
+    }
+    j["ply"] = node->state.ply_count();
     json ve = json::object();
     if (node->reward_estimate.has_value())
         for (const auto& [player, val] : *node->reward_estimate)
@@ -30,14 +48,16 @@ static json mcts_node_to_json(const MCTSNode* node, std::optional<int> move) {
     j["value_estimate"] = std::move(ve);
     json sub = json::array();
     for (const auto& [action, child] : node->children)
-        sub.push_back(mcts_node_to_json(child.get(), action));
+        sub.push_back(mcts_node_to_json(child.get(), action,
+                          node->visit_count[action], node->total_value[action],
+                          node->prior[action]));
     j["subtree"] = std::move(sub);
     return j;
 }
 
 // Returns the JSON string for the subtree rooted at `root`.
 [[maybe_unused]] static std::string mcts_subtree_to_json(const MCTSNode* root) {
-    return mcts_node_to_json(root, std::nullopt).dump();
+    return mcts_node_to_json(root, std::nullopt, 0, 0.0f, 0.0f).dump();
 }
 
 // ── MCTSNode ──────────────────────────────────────────────────────────────────
@@ -376,7 +396,7 @@ MCTS::search_batch(
     if (DBG_PRINT_TREE) {
         json roots_json = json::array();
         for (int i = 0; i < n; i++)
-            roots_json.push_back(mcts_node_to_json(root_ptrs[i], std::nullopt));
+            roots_json.push_back(mcts_node_to_json(root_ptrs[i], std::nullopt, 0, 0.0f, 0.0f));
         std::filesystem::create_directories(".logs");
         std::ofstream(".logs/tree.json") << roots_json.dump(2) << std::endl;
     }
