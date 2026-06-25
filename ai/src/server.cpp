@@ -369,7 +369,7 @@ int main(int argc, char* argv[]) {
             float temperature = j.value("temperature", ss.default_temperature);
             MCTS mcts(evaluator, 1.0f);
             auto [results, _timing] = mcts.search_batch(
-                {sess->state.get()}, num_sims, /*add_noise=*/false, 0.3f, 0.25f,
+                {sess->state.get()}, num_sims, NoiseConfig{/*add_noise=*/false, 0.3f, 0.25f},
                 {temperature});
             auto& [policy_vec, move_idx] = results[0];
             auto [_pol_t, value_t] = evaluator.evaluate_batch({sess->state.get()});

@@ -35,6 +35,13 @@ struct MCTSNode {
     std::vector<float> ucb_scores(float c_puct) const;
 };
 
+// Dirichlet root-noise settings for search_batch (self-play exploration).
+struct NoiseConfig {
+    bool  add_noise       = false;  // add Dirichlet noise to root priors
+    float dirichlet_alpha = 0.3f;   // Dirichlet concentration
+    float noise_weight    = 0.25f;  // mixing weight of noise into the prior
+};
+
 // AlphaZero-style MCTS.
 //
 // Value convention: each node stores Q-values from the perspective of the player
@@ -49,9 +56,7 @@ public:
     std::pair<std::vector<std::pair<std::vector<float>, int>>, MCTSTiming> search_batch(
         std::vector<BoardState*> states,
         int num_simulations = 200,
-        bool add_noise = false,
-        float dirichlet_alpha = 0.3f,
-        float noise_weight = 0.25f,
+        NoiseConfig noise_cfg = {},
         std::vector<float> temperatures = {},
         std::optional<int> max_plies = std::nullopt);
 

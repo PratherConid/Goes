@@ -63,8 +63,8 @@ std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
 
     auto t_search0 = std::chrono::high_resolution_clock::now();
     auto [results, timing] = mcts.search_batch(
-        states, num_simulations, /*add_noise=*/true,
-        0.3f, 0.25f, temps, max_plies);
+        states, num_simulations,
+        NoiseConfig{/*add_noise=*/true, 0.3f, 0.25f}, temps, max_plies);
     double search_ms = std::chrono::duration<double, std::milli>(
         std::chrono::high_resolution_clock::now() - t_search0).count();
     timing.search = search_ms / 1000.0;
