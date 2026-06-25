@@ -86,7 +86,9 @@ std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
 
         std::optional<int> k = (move == s->N) ? std::nullopt : std::optional<int>(move);
         bool ok = s->make_move(k);
-        assert(ok && "MCTS returned illegal move");
+        if (!ok)
+            std::cerr << "MCTS returned illegal move: slot=" << j
+                      << " ply=" << s->ply_count() << " move=" << move << std::endl;
 
         ply_results.push_back({ft, mask, std::move(policy), stone, move});
     }

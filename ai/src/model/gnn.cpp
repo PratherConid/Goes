@@ -102,7 +102,6 @@ static std::pair<torch::Tensor, torch::Tensor> run_batch(
     auto dev = adj_norms.adj.device();
     int B = static_cast<int>(states.size());
     std::vector<torch::Tensor> feats(B), masks(B);
-    #pragma omp parallel for schedule(dynamic)
     for (int i = 0; i < B; i++) {
         auto [ft, mask] = board_to_features(*states[i], dev);
         feats[i] = ft;
