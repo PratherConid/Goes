@@ -250,7 +250,7 @@ export class Renderer {
     activeTab: 'history' | 'status' | 'commands' = 'history';
     randomEvaled: Record<number, number> | null = null;
     emNumSims: number = 200;
-    emTemperature: number = 0.25;
+    emTemperature: number = 0;
 
     // Online multiplayer state
     gameMode: GameMode = GameMode.local;

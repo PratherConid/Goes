@@ -79,10 +79,22 @@ std::vector<float> MCTSNode::q_values() const {
 std::vector<float> MCTSNode::ucb_scores(float c_puct) const {
     int total = std::accumulate(visit_count.begin(), visit_count.end(), 0);
     float sqrt_total = std::sqrt(static_cast<float>(total + 1));
+    // Number of legal actions at this node (placements + pass if allowed),
+    // mirroring MCTS::legal_mask.
+    int num_legal_moves = static_cast<int>(state.legal_move_list().size());
+    bool can_pass = (!state.forced_pass_only) || state.no_trad_legal();
+    if (can_pass && !state.game_over()) num_legal_moves++;
+    // Uniform exploration floor added to every prior: keeps minimum selection
+    // pressure on each legal move even when the policy head has collapsed onto
+    // one action. Harmless after convergence — although `select` alone no longer
+    // returns good moves with high probability, with enough simulations the
+    // genuinely good move still dominates the visit counts in `search_batch`
+    // calls. Therefore, with very high probability, all `search_batch` calls returns good moves.
+    float eps = 1.0f / (3.0f * (num_legal_moves + 1));
     auto q = q_values();
     std::vector<float> scores(q.size());
     for (size_t i = 0; i < scores.size(); i++)
-        scores[i] = q[i] + c_puct * prior[i] * sqrt_total / (1.0f + visit_count[i]);
+        scores[i] = q[i] + c_puct * (prior[i] + eps) * sqrt_total / (1.0f + visit_count[i]);
     return scores;
 }
 
