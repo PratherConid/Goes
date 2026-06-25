@@ -1,7 +1,8 @@
 // HTTP inference server.
 //
-// Usage: goes_server [--checkpoint-dir PATH] [--port 8765] [--sims 200] [--cpu]
-// Also reads GOES_CHECKPOINT_DIR and GOES_NUM_SIMS environment variables.
+// Usage: goes_server [--checkpoint-dir PATH] [--port 8765] [--sims 200]
+//                    [--temperature 0.0] [--cpu]
+// Also reads GOES_CHECKPOINT_DIR, GOES_NUM_SIMS, and GOES_TEMPERATURE env vars.
 //
 // POST /move - JSON body fields:
 //   board_type        "rect"|"rectd"|"cub"|"hcub"|"tri"|"twsq"|"gtsq"
@@ -17,6 +18,8 @@
 //   session_id        string|null  - opaque token returned by a previous response;
 //                                    omit or pass "" / null for a new session
 //   num_simulations   int (optional, overrides server default)
+//   temperature       float (optional, overrides server default; 0 = argmax
+//                      visit count, >0 = sample from visit distribution)
 //
 //   Returns: {move, policy, value, session_id}
 //     move       int|null   - chosen board index, or null for pass
@@ -118,6 +121,7 @@ struct ServerState {
     std::unordered_map<std::string, std::unique_ptr<SessionState>> sessions;
     torch::Device device{torch::kCPU};
     int default_sims = 200;
+    float default_temperature = 0.0f;  // 0 = argmax visit count; >0 = sample
     std::string ckpt_dir;
 };
 
@@ -234,24 +238,28 @@ int main(int argc, char* argv[]) {
     std::string ckpt_dir = "ai/checkpoints";
     int port = 8765;
     int default_sims = 200;
+    float default_temperature = 0.0f;
     bool use_cpu = false;
 
     // Simple arg parsing
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--checkpoint-dir") ckpt_dir = argv[++i];
-        else if (a == "--port")      port = std::stoi(argv[++i]);
-        else if (a == "--sims")      default_sims = std::stoi(argv[++i]);
-        else if (a == "--cpu")       use_cpu = true;
+        else if (a == "--port")        port = std::stoi(argv[++i]);
+        else if (a == "--sims")        default_sims = std::stoi(argv[++i]);
+        else if (a == "--temperature") default_temperature = std::stof(argv[++i]);
+        else if (a == "--cpu")         use_cpu = true;
     }
 
     // Environment variable overrides
     if (const char* e = std::getenv("GOES_CHECKPOINT_DIR")) ckpt_dir = e;
     if (const char* e = std::getenv("GOES_NUM_SIMS"))      default_sims = std::stoi(e);
+    if (const char* e = std::getenv("GOES_TEMPERATURE"))   default_temperature = std::stof(e);
 
     ServerState ss;
     ss.device      = (torch::cuda::is_available() && !use_cpu) ? torch::kCUDA : torch::kCPU;
     ss.default_sims = default_sims;
+    ss.default_temperature = default_temperature;
     ss.ckpt_dir    = ckpt_dir;
     std::cout << "[inference] Checkpoint dir: " << ckpt_dir
               << "  device: " << ss.device << "\n"
@@ -358,10 +366,11 @@ int main(int argc, char* argv[]) {
             // ── Run MCTS ─────────────────────────────────────────────────────
 
             int num_sims = j.value("num_simulations", ss.default_sims);
+            float temperature = j.value("temperature", ss.default_temperature);
             MCTS mcts(evaluator, 1.0f);
             auto [results, _timing] = mcts.search_batch(
                 {sess->state.get()}, num_sims, /*add_noise=*/false, 0.3f, 0.25f,
-                {0.0f});
+                {temperature});
             auto& [policy_vec, move_idx] = results[0];
             auto [_pol_t, value_t] = evaluator.evaluate_batch({sess->state.get()});
             auto s2p_it = sess->state->stone_to_player_map.find(sess->state->next_player);

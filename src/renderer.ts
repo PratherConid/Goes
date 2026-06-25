@@ -250,6 +250,7 @@ export class Renderer {
     activeTab: 'history' | 'status' | 'commands' = 'history';
     randomEvaled: Record<number, number> | null = null;
     emNumSims: number = 200;
+    emTemperature: number = 0.25;
 
     // Online multiplayer state
     gameMode: GameMode = GameMode.local;
@@ -402,6 +403,7 @@ export class Renderer {
                     moves,
                     session_id:          this.engineManager.sessionId,
                     num_simulations:     this.emNumSims,
+                    temperature:         this.emTemperature,
                 });
                 break;
             }
@@ -521,6 +523,7 @@ export class Renderer {
             ${row('new',              'Start new local game')}
             ${row('em [&lt;n&gt;]',  'Engine move (optional n consecutive moves)')}
             ${row('cem',             'Cancel current engine move')}
+            ${row('temp &lt;f&gt;',  'Set engine temperature (0 = argmax visits)')}
             ${row('s',           'Toggle self-play (random moves)')}
             ${row('af',          'Toggle auto-forced: auto-execute forced moves')}
             ${row('w &lt;n&gt;', 'Withdraw n moves')}
@@ -589,6 +592,7 @@ export class Renderer {
             <div><b>Ply:</b> ${v.plyCount}</div>
             <div><b>AI engine:</b> ${this.aiEngineReady ? 'ready' : 'unavailable'}</div>
             <div><b>Engine sims per move:</b> ${this.emNumSims ?? 'default'}</div>
+            <div><b>Engine temperature:</b> ${this.emTemperature}</div>
             <div><b>Self play:</b> ${this.selfPlay}</div>
             <div><b>Auto forced:</b> ${this.autoForced}</div>
             <div><b>Show history:</b> ${this.nShowHistory}</div>
@@ -695,6 +699,11 @@ export class Renderer {
             const n = posInt(parts[1]);
             if (n === null) { this._setCmdOutput('Usage: emsim <n>  (positive integer)'); return; }
             this.emNumSims = n;
+        }
+        else if (cmd === 'temp') {
+            const t = parseFloat(parts[1]);
+            if (!Number.isFinite(t) || t < 0) { this._setCmdOutput('Usage: temp <float>  (non-negative; 0 = argmax)'); return; }
+            this.emTemperature = t;
         }
         else if (cmd === 's') {
             this.selfPlay = !this.selfPlay;
