@@ -71,7 +71,10 @@ async function handleRequest(ws: WebSocket, msg: ReqMessage): Promise<unknown> {
             const result = onlineGameManager.joinGame(id, playerName);
             subscribe(id, ws, result.position);
             broadcastState(id);   // notify the host (and others) that someone joined / game started
-            return result;
+            // Include the current state so the joiner applies it directly: the broadcast
+            // above races ahead of this response and is dropped client-side (onlineGameId
+            // isn't set yet), so we must not rely on it for the joiner's initial state.
+            return { ...result, state: onlineGameManager.getState(id) };
         }
         case 'game/move': {
             const id = msg['id'] as string;

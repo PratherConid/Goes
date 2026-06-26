@@ -879,7 +879,7 @@ export class Renderer {
     private async _joinOnlineGame(id: string) {
         if (!this.playerName) { this._setCmdOutput('Set your name first: setname <name>'); return; }
         try {
-            const { position, config } = await conn.request<{ position: number; config: OnlineGameConfig; status: string }>(
+            const { position, config, state } = await conn.request<{ position: number; config: OnlineGameConfig; status: string; state: OnlineStateResponse }>(
                 'game/join', { id, playerName: this.playerName }).promise;
             const boardEntry = _cmdToBoard.get(config.boardType);
             if (!boardEntry) { this._setCmdOutput(`Unknown board type: ${config.boardType}`); return; }
@@ -903,6 +903,9 @@ export class Renderer {
             this.onlineMovesSeen  = 0;
             this.onlineGameFinished = false;
             this._setCmdOutput(`Joined game: ${id}`);
+            // Apply the initial state from the response (the broadcast that fired
+            // during join arrived before onlineGameId was set and was dropped).
+            this._applyOnlineState(state);
             this._render();
         } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); }
     }
