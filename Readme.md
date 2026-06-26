@@ -11,7 +11,7 @@ When typing commands in the command input bar, make sure the input method is set
 Goes/
 ├── shared/     Pure TypeScript game logic (no browser or Node dependencies)
 ├── src/        Browser client (canvas renderer, UI)
-├── server/     Node.js/Express backend (API stubs, static file serving)
+├── server/     Node.js backend: WebSocket API (online games + AI proxy) and static file serving
 └── ai/         C++ self-play training pipeline (GNN + MCTS) — see ai/Readme.md
 ```
 
@@ -24,13 +24,20 @@ Goes/
   npm run dev
   ```
   Open `http://localhost:5173` in browser
-* To enable the AI engine in the dev client, also run the AI server in a separate terminal (after building it — see `ai/Readme.md`):
+* The client talks to the main server over a single WebSocket (`/ws`) for both the
+  AI engine and online multiplayer. To enable those in the dev client, run the main
+  server in a separate terminal (build the engine first — see `ai/Readme.md`):
   ```
-  npm run ai        # Linux/macOS
-  npm run ai-win    # Windows
+  cd server
+  npm install
+  npm run dev
   ```
-  The AI server listens on port 8765. The Vite dev server proxies `/api/ai` requests directly to it.
-* Start the full backend server (serves the built client and proxies AI requests):
+  The main server listens on port 3000 and **auto-spawns the AI engine** (port 8765)
+  itself, proxying AI requests to it over HTTP. The Vite dev server proxies the `/ws`
+  WebSocket to `localhost:3000`. (`npm run ai` / `npm run ai-win` still launch the
+  engine standalone for manual testing, but the dev client reaches it through the
+  main server.)
+* Start the full backend server (serves the built client and the WebSocket):
   ```
   npm run build
   cd server

@@ -1,10 +1,10 @@
 import express from 'express';
+import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import aiRouter from './routes/ai.js';
-import onlineGameRouter from './routes/onlineGame.js';
+import { attachWebSocket } from './wsServer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -41,11 +41,13 @@ process.on('exit',    () => aiProc?.kill());
 process.on('SIGINT',  () => { aiProc?.kill(); process.exit(); });
 process.on('SIGTERM', () => { aiProc?.kill(); process.exit(); });
 
-// ── Express app ───────────────────────────────────────────────────────────────
+// ── Express app + WebSocket ─────────────────────────────────────────────────────
+// All client↔server traffic (AI proxy + online games) goes over the WebSocket at
+// /ws; Express only serves the built client. The server↔engine hop stays HTTP.
 
-app.use(express.json());
-app.use('/api/onlineGame', onlineGameRouter);
-app.use('/api/ai',        aiRouter);
 app.use(express.static(path.resolve(__dirname, '../../dist')));
 
-app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
+const server = http.createServer(app);
+attachWebSocket(server);
+
+server.listen(PORT, () => console.log(`Server listening on port ${PORT}`));

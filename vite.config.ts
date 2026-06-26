@@ -9,11 +9,8 @@ export default defineConfig({
     },
     server: {
         proxy: {
-            '/api/ai': {
-                target: 'http://localhost:8765',
-                rewrite: path => path.replace(/^\/api\/ai/, ''),
-            },
-            '/api': 'http://localhost:3000',
+            // All client↔server traffic (AI proxy + online games) goes over the WS.
+            '/ws': { target: 'ws://localhost:3000', ws: true },
         },
     },
 });

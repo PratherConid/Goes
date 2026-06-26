@@ -4,6 +4,11 @@ import type { BoardConfig } from '@shared/boardConfig.js';
 import {
     PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns,
 } from '@shared/boardConfig.js';
+import { ServerConnection, type RequestHandle } from './serverConnection.js';
+
+// Single persistent WebSocket connection to the main server, shared by the
+// EngineManager (AI proxy) and the online-game commands.
+const conn = new ServerConnection();
 
 interface OnlineGameConfig {
     boardType: string;
@@ -132,20 +137,20 @@ function drawBoardFull(
 //
 //   idle ──register()──► needsRequest ──submit()──► waiting
 //    ▲                        ▲                        │
-//    │                        │              fetch completes / error
+//    │                        │           WS response completes / error
 //    │                        │                        │
 //    │              remainingMoves > 0            hasResult
 //    │                        │                        │
 //    └── remainingMoves == 0 ─┴──────poll()────────────┘
 //
-//   cancel() transitions any state back to idle; if waiting, aborts the fetch
-//   so the in-flight request is dropped and its catch handler is a no-op.
-//   A fetch error (non-abort) also transitions waiting → idle directly.
+//   cancel() transitions any state back to idle; if waiting, it cancels the
+//   in-flight WS request so its eventual response is dropped (no-op).
+//   A request error also transitions waiting → idle directly.
 
 class EngineManager {
     private _state: 'idle' | 'needsRequest' | 'waiting' | 'hasResult' = 'idle';
     private _pendingMove: number | null = null;
-    private _abortController: AbortController | null = null;
+    private _pendingHandle: RequestHandle | null = null;
     private _onResult: () => void;
     remainingMoves = 0;
     sessionId: string | null = null;
@@ -167,31 +172,23 @@ class EngineManager {
         return true;
     }
 
-    // Fire one fetch. Called by _checkAsync only when poll() returned 'needsRequest'.
+    // Fire one engine request over the WS. Called by _checkAsync only when poll()
+    // returned 'needsRequest'.
     // Transitions needsRequest → waiting; on completion → hasResult (or idle on error).
     submit(body: Record<string, unknown>): void {
         this._state = 'waiting';
-        this._abortController = new AbortController();
-        fetch('/api/ai/move', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-            signal: this._abortController.signal,
-        })
-            .then(r => {
-                if (!r.ok) throw new Error(`HTTP ${r.status}`);
-                return r.json() as Promise<{ move: number | null; session_id?: string }>;
-            })
-            .then(data => { this._abortController = null; this._pendingMove = data.move; if (data.session_id) this.sessionId = data.session_id; this._state = 'hasResult'; this._onResult(); })
+        const handle = conn.request<{ move: number | null; session_id?: string }>('ai/move', { body });
+        this._pendingHandle = handle;
+        handle.promise
+            .then(data => { this._pendingHandle = null; this._pendingMove = data.move; if (data.session_id) this.sessionId = data.session_id; this._state = 'hasResult'; this._onResult(); })
             .catch(e => {
-                this._abortController = null;
-                if (e?.name === 'AbortError') return;  // cancel() already reset state
+                this._pendingHandle = null;
                 console.error('em:', e); this._state = 'idle'; this._onResult();
             });
     }
 
     // Called each render loop iteration by _checkAsync:
-    //   null           - nothing to do (idle or fetch in-flight)
+    //   null           - nothing to do (idle or request in-flight)
     //   'needsRequest' - build a request body and call submit()
     //   { move }       - apply this move; state already advanced:
     //                    remainingMoves decremented, and if > 0 transitioned to
@@ -209,9 +206,10 @@ class EngineManager {
     }
 
     // Abort the current sequence and return to idle.
-    // If a fetch is in-flight (waiting), it is aborted; its catch handler is a no-op.
+    // If a request is in-flight (waiting), it is cancelled; its eventual response
+    // is dropped (the promise never settles, so its handlers never run).
     cancel(): void {
-        if (this._abortController) { this._abortController.abort(); this._abortController = null; }
+        if (this._pendingHandle) { this._pendingHandle.cancel(); this._pendingHandle = null; }
         this._state = 'idle';
         this._pendingMove = null;
         this.remainingMoves = 0;
@@ -261,7 +259,6 @@ export class Renderer {
     onlinePlayerSlot: number | null = null;
     onlineMovesSeen = 0;
     private onlineGameFinished = false;
-    private onlinePollTimer: ReturnType<typeof setInterval> | null = null;
 
     private mainCanvas:   HTMLCanvasElement;
     private histBoards:   HTMLDivElement;
@@ -376,10 +373,22 @@ export class Renderer {
         });
         window.addEventListener('resize', () => this._render());
         this._render();
-        fetch('/api/ai/health').then(r => {
-            this.aiEngineReady = r.ok;
+        conn.request<{ status?: string }>('ai/health').promise.then(data => {
+            this.aiEngineReady = data?.status === 'ok';
             this._render();
         }).catch(() => { this.aiEngineReady = false; });
+
+        // Online-game state arrives via server push (replaces polling). Apply only
+        // pushes for the game we're currently in.
+        conn.onEvent('game/state', (msg: { id: string; state: OnlineStateResponse }) => {
+            if (msg.id === this.onlineGameId) this._applyOnlineState(msg.state);
+        });
+        // Re-subscribe to the active game after a (re)connect so pushes resume and
+        // the server re-binds this connection to our player position.
+        conn.onEvent('open', () => {
+            if (this.onlineGameId !== null && this.onlinePosition !== null)
+                conn.request('game/subscribe', { id: this.onlineGameId, position: this.onlinePosition }).promise.catch(() => {});
+        });
     }
 
     private _checkAsync() {
@@ -798,6 +807,8 @@ export class Renderer {
             const fn = PrescribedBoardFns[this.boardTypeForNew];
             this._newGame(fn(...this.boardDimensionForNew[this.boardTypeForNew]));
         }
+        else
+            this._setCmdOutput(`Unknown command \"${cmd}\"`)
     }
 
     private _startSelfPlay() {
@@ -839,10 +850,8 @@ export class Renderer {
         if (!this.playerName) { this._setCmdOutput('Set your name first: setname <name>'); return; }
         const boardTypeName = PrescribedBoardMap[this.boardTypeForNew][1];
         try {
-            const resp = await fetch('/api/onlineGame', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
+            const { id, position } = await conn.request<{ id: string; position: number }>('game/create', {
+                config: {
                     boardType:        boardTypeName,
                     boardArgs:        [...this.boardDimensionForNew[this.boardTypeForNew]],
                     numStones:        this.numStonesForNew,
@@ -850,11 +859,9 @@ export class Renderer {
                     turnStoneList:    [...this.turnStoneListForNew],
                     stoneToPlayerMap: { ...this.stoneToPlayerMap },
                     forcedPassOnly:   this.forcedPassOnlyForNew,
-                    playerName:       this.playerName,
-                }),
-            });
-            if (!resp.ok) { this._setCmdOutput(`Failed to create game: ${resp.status}`); return; }
-            const { id, position } = await resp.json() as { id: string; position: number };
+                },
+                playerName: this.playerName,
+            }).promise;
 
             this.onlineGameId     = id;
             this.onlinePosition   = position;
@@ -865,7 +872,6 @@ export class Renderer {
             const fn = PrescribedBoardFns[this.boardTypeForNew];
             this._newGame(fn(...this.boardDimensionForNew[this.boardTypeForNew]));
             this._setCmdOutput(`Game created: ${id} - waiting for ${this.numPlayersForNew - 1} more player(s)…`);
-            this._startOnlinePoll();
             this._render();
         } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); }
     }
@@ -873,17 +879,8 @@ export class Renderer {
     private async _joinOnlineGame(id: string) {
         if (!this.playerName) { this._setCmdOutput('Set your name first: setname <name>'); return; }
         try {
-            const resp = await fetch(`/api/onlineGame/${id}/join`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ playerName: this.playerName }),
-            });
-            if (!resp.ok) {
-                const err = await resp.json() as { error: string };
-                this._setCmdOutput(`Failed to join: ${err.error}`);
-                return;
-            }
-            const { position, config } = await resp.json() as { position: number; config: OnlineGameConfig; status: string };
+            const { position, config } = await conn.request<{ position: number; config: OnlineGameConfig; status: string }>(
+                'game/join', { id, playerName: this.playerName }).promise;
             const boardEntry = _cmdToBoard.get(config.boardType);
             if (!boardEntry) { this._setCmdOutput(`Unknown board type: ${config.boardType}`); return; }
             const bc = boardEntry.fn(...config.boardArgs);
@@ -906,28 +903,8 @@ export class Renderer {
             this.onlineMovesSeen  = 0;
             this.onlineGameFinished = false;
             this._setCmdOutput(`Joined game: ${id}`);
-            this._startOnlinePoll();
             this._render();
         } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); }
-    }
-
-    private _startOnlinePoll() {
-        this._stopOnlinePoll();
-        // TODO: replace polling with a persistent TCP/IP connection (e.g. WebSocket)
-        this.onlinePollTimer = setInterval(() => void this._pollOnce(), 100);
-    }
-
-    private _stopOnlinePoll() {
-        if (this.onlinePollTimer !== null) { clearInterval(this.onlinePollTimer); this.onlinePollTimer = null; }
-    }
-
-    private async _pollOnce() {
-        if (!this.onlineGameId) return;
-        try {
-            const resp = await fetch(`/api/onlineGame/${this.onlineGameId}/state`);
-            if (!resp.ok) return;
-            this._applyOnlineState(await resp.json() as OnlineStateResponse);
-        } catch {}
     }
 
     private _applyOnlineState(state: OnlineStateResponse) {
@@ -969,7 +946,6 @@ export class Renderer {
         if (state.status === 'finished' && !this.onlineGameFinished) {
             this.onlineGameFinished = true;
             this.createdOnlineGames.delete(this.onlineGameId!);
-            if (this.createdOnlineGames.size === 0) this._stopOnlinePoll();
             const v = this.game.getView();
             const winnerText = v.winners.length === 0
                 ? 'No winners'
@@ -981,40 +957,24 @@ export class Renderer {
 
     private async _resignOnline() {
         if (!this.onlineGameId) return;
+        // Resulting state arrives via the game/state push. The server identifies us
+        // by our WebSocket connection, so no position is sent.
         try {
-            const resp = await fetch(`/api/onlineGame/${this.onlineGameId}/resign`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ position: this.onlinePosition }),
-            });
-            if (!resp.ok) {
-                const err = await resp.json() as { error: string };
-                this._setCmdOutput(`Resign failed: ${err.error}`);
-                return;
-            }
-            this._applyOnlineState(await resp.json() as OnlineStateResponse);
-        } catch (e: any) { this._setCmdOutput(`Network error: ${e.message}`); }
+            await conn.request('game/resign', { id: this.onlineGameId }).promise;
+        } catch (e: any) { this._setCmdOutput(`Resign failed: ${e.message}`); }
     }
 
     private async _submitOnlineMove(moveIndex: number | null) {
         if (!this.onlineGameId) return;
+        // Resulting state arrives via the game/state push. The server identifies us
+        // by our WebSocket connection, so no position is sent.
         try {
-            const resp = await fetch(`/api/onlineGame/${this.onlineGameId}/move`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    position:  this.onlinePosition,
-                    moveIndex,
-                    clientIdx: this.onlineMovesSeen,
-                }),
-            });
-            if (!resp.ok) {
-                const err = await resp.json() as { error: string };
-                this._setCmdOutput(`Move rejected: ${err.error}`);
-                return;
-            }
-            this._applyOnlineState(await resp.json() as OnlineStateResponse);
-        } catch (e: any) { this._setCmdOutput(`Network error: ${e.message}`); }
+            await conn.request('game/move', {
+                id:        this.onlineGameId,
+                moveIndex,
+                clientIdx: this.onlineMovesSeen,
+            }).promise;
+        } catch (e: any) { this._setCmdOutput(`Move rejected: ${e.message}`); }
     }
 
 }
