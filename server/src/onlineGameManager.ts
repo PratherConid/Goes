@@ -99,6 +99,12 @@ class OnlineGameManager {
         game.status = 'playing';
     }
 
+    getConfig(id: string): OnlineGameConfig {
+        const game = this.games.get(id);
+        if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
+        return game.config;
+    }
+
     getState(id: string): OnlineStateResponse {
         const game = this.games.get(id);
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });

@@ -253,6 +253,10 @@ export class Renderer {
     // Online multiplayer state
     gameMode: GameMode = GameMode.local;
     createdOnlineGames = new Map<string, OnlineGameConfig>();
+    // Games created/joined but not yet started, mapping game id → our player position.
+    // A player can have several pending at once; one becomes the active game (the
+    // fields below) only when its start event arrives.
+    pendingGames = new Map<string, number>();
     playerName: string = _defaultPlayerName();
     onlineGameId: string | null = null;
     onlinePosition: number | null = null;
@@ -378,16 +382,23 @@ export class Renderer {
             this._render();
         }).catch(() => { this.aiEngineReady = false; });
 
-        // Online-game state arrives via server push (replaces polling). Apply only
-        // pushes for the game we're currently in.
-        conn.onEvent('game/state', (msg: { id: string; state: OnlineStateResponse }) => {
-            if (msg.id === this.onlineGameId) this._applyOnlineState(msg.state);
+        // Online-game state arrives via server push (replaces polling). The event
+        // carries the config so the board can be built when the game starts. It either
+        // updates the active game or activates a pending game that just started.
+        conn.onEvent('game/state', (msg: { id: string; state: OnlineStateResponse; config: OnlineGameConfig }) => {
+            this._handleGameState(msg.id, msg.state, msg.config);
         });
-        // Re-subscribe to the active game after a (re)connect so pushes resume and
-        // the server re-binds this connection to our player position.
+        // After a (re)connect, re-subscribe to the active game and every pending game so
+        // the server re-binds our position and we resume getting state events. The reply
+        // carries the current state + config, routed through the same handler.
         conn.onEvent('open', () => {
+            const resub = (id: string, position: number) =>
+                conn.request<{ state: OnlineStateResponse; config: OnlineGameConfig }>(
+                    'game/subscribe', { id, position })
+                    .promise.then(({ state, config }) => this._handleGameState(id, state, config)).catch(() => {});
             if (this.onlineGameId !== null && this.onlinePosition !== null)
-                conn.request('game/subscribe', { id: this.onlineGameId, position: this.onlinePosition }).promise.catch(() => {});
+                resub(this.onlineGameId, this.onlinePosition);
+            for (const [id, position] of this.pendingGames) resub(id, position);
         });
     }
 
@@ -589,12 +600,15 @@ export class Renderer {
         const createdGamesSection = this.createdOnlineGames.size > 0 ? `
             <div><b>Created online games:</b> ${[...this.createdOnlineGames.keys()].join(', ')}</div>
             <hr style="margin:6px 0">` : '';
+        const pendingGamesSection = this.pendingGames.size > 0 ? `
+            <div><b>Pending online games:</b> ${[...this.pendingGames.keys()].join(', ')}</div>
+            <hr style="margin:6px 0">` : '';
         const onlineSection = this.gameMode === GameMode.online ? `
             <div><b>Online game:</b> ${this.onlineGameId}</div>
             <div><b>Your player slot:</b> ${this.onlinePlayerSlot ?? '(waiting for start)'}</div>
             <div><b>Your name:</b> ${this.playerName || '(not set)'}</div>
             <hr style="margin:6px 0">` : '';
-        this.statusPanel.innerHTML = `${createdGamesSection}${onlineSection}
+        this.statusPanel.innerHTML = `${createdGamesSection}${pendingGamesSection}${onlineSection}
             <div><b>To move:</b> ${sideName(v.nextPlayer)}</div>
             <div><b>Last move:</b> ${lastMoveStr}</div>
             <div><b>Stones:</b> ${stoneLine}</div>
@@ -848,29 +862,22 @@ export class Renderer {
 
     private async _createOnlineGame() {
         if (!this.playerName) { this._setCmdOutput('Set your name first: setname <name>'); return; }
-        const boardTypeName = PrescribedBoardMap[this.boardTypeForNew][1];
+        const config: OnlineGameConfig = {
+            boardType:        PrescribedBoardMap[this.boardTypeForNew][1],
+            boardArgs:        [...this.boardDimensionForNew[this.boardTypeForNew]],
+            numStones:        this.numStonesForNew,
+            numPlayers:       this.numPlayersForNew,
+            turnStoneList:    [...this.turnStoneListForNew],
+            stoneToPlayerMap: { ...this.stoneToPlayerMap },
+            forcedPassOnly:   this.forcedPassOnlyForNew,
+        };
         try {
-            const { id, position } = await conn.request<{ id: string; position: number }>('game/create', {
-                config: {
-                    boardType:        boardTypeName,
-                    boardArgs:        [...this.boardDimensionForNew[this.boardTypeForNew]],
-                    numStones:        this.numStonesForNew,
-                    numPlayers:       this.numPlayersForNew,
-                    turnStoneList:    [...this.turnStoneListForNew],
-                    stoneToPlayerMap: { ...this.stoneToPlayerMap },
-                    forcedPassOnly:   this.forcedPassOnlyForNew,
-                },
-                playerName: this.playerName,
-            }).promise;
-
-            this.onlineGameId     = id;
-            this.onlinePosition   = position;
-            this.onlinePlayerSlot = null;
-            this.onlineMovesSeen  = 0;
-            this.onlineGameFinished = false;
-            this.createdOnlineGames.set(id, { boardType: boardTypeName, boardArgs: [...this.boardDimensionForNew[this.boardTypeForNew]], numStones: this.numStonesForNew, numPlayers: this.numPlayersForNew, turnStoneList: [...this.turnStoneListForNew], stoneToPlayerMap: { ...this.stoneToPlayerMap }, forcedPassOnly: this.forcedPassOnlyForNew });
-            const fn = PrescribedBoardFns[this.boardTypeForNew];
-            this._newGame(fn(...this.boardDimensionForNew[this.boardTypeForNew]));
+            const { id, position } = await conn.request<{ id: string; position: number }>(
+                'game/create', { config, playerName: this.playerName }).promise;
+            // Record it as pending only. The active-game fields and the board are not
+            // touched until the game actually starts (its game/state event arrives).
+            this.pendingGames.set(id, position);
+            this.createdOnlineGames.set(id, config);
             this._setCmdOutput(`Game created: ${id} - waiting for ${this.numPlayersForNew - 1} more player(s)…`);
             this._render();
         } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); }
@@ -879,48 +886,75 @@ export class Renderer {
     private async _joinOnlineGame(id: string) {
         if (!this.playerName) { this._setCmdOutput('Set your name first: setname <name>'); return; }
         try {
-            const { position, config, state } = await conn.request<{ position: number; config: OnlineGameConfig; status: string; state: OnlineStateResponse }>(
+            // Join only acks; record it as pending. Nothing in the renderer changes
+            // until the game starts and its game/state event activates it.
+            const { position } = await conn.request<{ position: number }>(
                 'game/join', { id, playerName: this.playerName }).promise;
-            const boardEntry = _cmdToBoard.get(config.boardType);
-            if (!boardEntry) { this._setCmdOutput(`Unknown board type: ${config.boardType}`); return; }
-            const bc = boardEntry.fn(...config.boardArgs);
-            this.engineManager.cancel();
-            this.engineManager.sessionId = null;
-            this.game = new BoardState(
-                config.numStones, config.numPlayers,
-                config.turnStoneList, config.stoneToPlayerMap,
-                config.forcedPassOnly, new Array(bc.N).fill(0), bc,
-            );
-            this.boardTypeForCurrent = boardEntry.boardType;
-            this.boardDimsForCurrent = [...config.boardArgs];
-            this.displayPlyNum   = 0;
-            this.randomEvaled    = null;
-            this.idxShowHistory  = 0;
-
-            this.onlineGameId     = id;
-            this.onlinePosition   = position;
-            this.onlinePlayerSlot = null;
-            this.onlineMovesSeen  = 0;
-            this.onlineGameFinished = false;
-            this._setCmdOutput(`Joined game: ${id}`);
-            // Apply the initial state from the response (the broadcast that fired
-            // during join arrived before onlineGameId was set and was dropped).
-            this._applyOnlineState(state);
+            this.pendingGames.set(id, position);
+            this._setCmdOutput(`Joined game: ${id} - waiting for the game to start…`);
             this._render();
         } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); }
     }
 
-    private _applyOnlineState(state: OnlineStateResponse) {
-        // Resolve player slot once the game starts
+    // Route a game/state event (push or subscribe reply): update the active game, or
+    // activate a pending game once it has started.
+    private _handleGameState(id: string, state: OnlineStateResponse, config: OnlineGameConfig) {
+        if (id === this.onlineGameId) {
+            this._applyOnlineState(state, config);
+        } else if (this.pendingGames.has(id) && state.status === 'playing') {
+            this._activatePendingGame(id, state, config);
+        }
+    }
+
+    // Promote a pending game to the active game once it starts: only now are the
+    // active-game fields and the board set up.
+    private _activatePendingGame(id: string, state: OnlineStateResponse, config: OnlineGameConfig) {
+        const position = this.pendingGames.get(id);
+        if (position === undefined) return;
+        this.pendingGames.delete(id);
+        this.onlineGameId       = id;
+        this.onlinePosition     = position;
+        this.onlinePlayerSlot   = null;
+        this.onlineMovesSeen    = 0;
+        this.onlineGameFinished = false;
+        this._applyOnlineState(state, config);   // builds the board and enters online mode
+    }
+
+    // Build the local board for a started online game from its config. Returns false
+    // if the board type is unknown.
+    private _setupOnlineBoard(config: OnlineGameConfig): boolean {
+        const boardEntry = _cmdToBoard.get(config.boardType);
+        if (!boardEntry) { this._setCmdOutput(`Unknown board type: ${config.boardType}`); return false; }
+        const bc = boardEntry.fn(...config.boardArgs);
+        this.engineManager.cancel();
+        this.engineManager.sessionId = null;
+        this.game = new BoardState(
+            config.numStones, config.numPlayers,
+            config.turnStoneList, config.stoneToPlayerMap,
+            config.forcedPassOnly, new Array(bc.N).fill(0), bc,
+        );
+        this.boardTypeForCurrent = boardEntry.boardType;
+        this.boardDimsForCurrent = [...config.boardArgs];
+        this.displayPlyNum   = 0;
+        this.randomEvaled    = null;
+        this.idxShowHistory  = 0;
+        return true;
+    }
+
+    private _applyOnlineState(state: OnlineStateResponse, config: OnlineGameConfig) {
+        // The game has started: build the board and enter online mode (once).
         if (this.onlinePlayerSlot === null && state.status === 'playing') {
             const me = state.players[this.onlinePosition!];
-            if (me) {
+            if (me && this._setupOnlineBoard(config)) {
                 this.gameMode         = GameMode.online;
                 this.onlinePlayerSlot = me.slot;
                 this._setCmdOutput(`Game started! You are player ${me.slot} (${me.name})`);
                 this._render();
             }
         }
+
+        // Nothing to sync until we've entered the online game (board built above).
+        if (this.gameMode !== GameMode.online) return;
 
         // Apply any new moves from the server
         if (state.moves.length > this.onlineMovesSeen) {
