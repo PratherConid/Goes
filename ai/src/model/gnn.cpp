@@ -102,16 +102,14 @@ static std::pair<torch::Tensor, torch::Tensor> run_batch(
     auto dev = adj_norms.adj.device();
     int B = static_cast<int>(states.size());
     std::vector<torch::Tensor> feats(B), masks(B);
-    // Build features on CPU inside the parallel region — calling .to(CUDA) from
-    // OpenMP worker threads concurrently is unsafe. Move to device once below.
     #pragma omp parallel for schedule(dynamic)
     for (int i = 0; i < B; i++) {
-        auto [ft, mask] = board_to_features(*states[i], torch::kCPU);
+        auto [ft, mask] = board_to_features(*states[i], dev);
         feats[i] = ft;
         masks[i] = mask;
     }
-    auto x    = torch::stack(feats, 0).to(dev); // (B, N, F)
-    auto mask = torch::stack(masks, 0).to(dev); // (B, N+1)
+    auto x    = torch::stack(feats, 0); // (B, N, F)
+    auto mask = torch::stack(masks, 0); // (B, N+1)
     auto [policy, value] = self->forward(x, adj_norms, mask);
     return {policy.cpu(), value.cpu()};
 }
