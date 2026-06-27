@@ -199,6 +199,17 @@ class EngineManager {
 
 // ── Renderer class ───────────────────────────────────────────────────────────
 
+interface ActiveGame {
+    game: BoardState;
+    position: number;                             // join index (which pendingGames slot)
+    playerSlot: number;
+    movesSeen: number;
+    finished: boolean;
+    displayPlyNum: number;
+    idxShowHistory: number;
+    randomEvaled: Record<number, number> | null;
+}
+
 export class Renderer {
     game: BoardState;
     // invariant: displayPlyNum < game.history.length
@@ -232,17 +243,18 @@ export class Renderer {
     emTemperature: number = 0;
 
     // Online multiplayer state
-    gameMode: GameMode = GameMode.local;
     // Games created/joined but not yet started, mapping game id → our player position.
-    // A player can have several pending at once; one becomes the active game (the
-    // fields below) only when its start event arrives.
+    // A player can have several pending at once; one becomes an active game (in
+    // activeGames) only when its start event arrives.
     pendingGames = new Map<string, number>();
     playerName: string = _defaultPlayerName();
-    onlineGameId: string | null = null;
-    onlinePosition: number | null = null;
-    onlinePlayerSlot: number | null = null;
-    onlineMovesSeen = 0;
-    private onlineGameFinished = false;
+    activeGames = new Map<string, ActiveGame>();
+    activeIdx: string | null = null;
+
+    get gameMode(): GameMode { return this.activeIdx !== null ? GameMode.online : GameMode.local; }
+    private get _active(): ActiveGame | null {
+        return this.activeIdx !== null ? (this.activeGames.get(this.activeIdx) ?? null) : null;
+    }
 
     private mainCanvas:   HTMLCanvasElement;
     private histBoards:   HTMLDivElement;
@@ -376,8 +388,7 @@ export class Renderer {
                 conn.request<{ state: OnlineStateResponse; config: OnlineGameConfig }>(
                     'game/subscribe', { id, position })
                     .promise.then(({ state, config }) => this._handleGameState(id, state, config)).catch(() => {});
-            if (this.onlineGameId !== null && this.onlinePosition !== null)
-                resub(this.onlineGameId, this.onlinePosition);
+            for (const [id, ag] of this.activeGames) resub(id, ag.position);
             for (const [id, position] of this.pendingGames) resub(id, position);
         });
     }
@@ -463,8 +474,8 @@ export class Renderer {
         this.passBtn.disabled = this.displayPlyNum !== v.plyCount || !v.passEnabled || v.gameOver
             || (this.gameMode === GameMode.online && !this._isMyOnlineTurn());
         this.resignBtn.hidden = this.gameMode !== GameMode.online;
-        this.resignBtn.disabled = this.gameMode !== GameMode.online || this.onlineGameFinished
-            || (this.onlinePlayerSlot !== null && v.resignedPlayers.includes(this.onlinePlayerSlot));
+        this.resignBtn.disabled = this.gameMode !== GameMode.online || (this._active?.finished ?? false)
+            || (this._active !== null && v.resignedPlayers.includes(this._active.playerSlot));
     }
 
     private _renderHistoryPanel(v: BoardView) {
@@ -581,12 +592,15 @@ export class Renderer {
         const pendingGamesSection = this.pendingGames.size > 0 ? `
             <div><b>Pending games:</b> ${[...this.pendingGames.keys()].join(', ')}</div>
             <hr style="margin:6px 0">` : '';
+        const activeGamesSection = this.activeGames.size > 0 ? `
+            <div><b>Active games:</b> ${[...this.activeGames.keys()].join(', ')}</div>
+            <hr style="margin:6px 0">` : '';
         const onlineSection = this.gameMode === GameMode.online ? `
-            <div><b>Online game:</b> ${this.onlineGameId}</div>
-            <div><b>Your player slot:</b> ${this.onlinePlayerSlot ?? '(waiting for start)'}</div>
+            <div><b>Online game:</b> ${this.activeIdx}</div>
+            <div><b>Your player slot:</b> ${this._active?.playerSlot}</div>
             <div><b>Your name:</b> ${this.playerName || '(not set)'}</div>
             <hr style="margin:6px 0">` : '';
-        this.statusPanel.innerHTML = `${pendingGamesSection}${onlineSection}
+        this.statusPanel.innerHTML = `${pendingGamesSection}${activeGamesSection}${onlineSection}
             <div><b>To move:</b> ${sideName(v.nextPlayer)}</div>
             <div><b>Last move:</b> ${lastMoveStr}</div>
             <div><b>Stones:</b> ${stoneLine}</div>
@@ -681,8 +695,6 @@ export class Renderer {
             void this._createOnlineGame();
         }
         else if (cmd === 'joino') {
-            if (this.gameMode === GameMode.online && !this.onlineGameFinished)
-                { this._setCmdOutput('Cannot join a game while an online game is ongoing'); return; }
             if (!parts[1]) { this._setCmdOutput('Usage: joino <ID>'); return; }
             void this._joinOnlineGame(parts[1].toUpperCase());
         }
@@ -791,11 +803,9 @@ export class Renderer {
             this.randomEvaled = this.game.randomEvaluate(n);
         }
         else if (cmd === 'new') {
-            if (this.gameMode === GameMode.online && !this.onlineGameFinished)
+            if (this._active && !this._active.finished)
                 { this._setCmdOutput('Cannot create new board during active online games'); return; }
-            // When an online game has finished, "new" exits online mode and starts a fresh local game.
-            this.gameMode = GameMode.local;
-            this.onlineGameId = null;
+            this.activeIdx = null;
             const fn = PrescribedBoardFns[this.boardTypeForNew];
             this._newGame(fn(...this.boardDimensionForNew[this.boardTypeForNew]));
         }
@@ -832,10 +842,10 @@ export class Renderer {
     }
 
     private _isMyOnlineTurn(): boolean {
-        if (this.onlinePlayerSlot === null) return false;
-        const v = this.game.getView();
-        if (v.gameOver) return false;
-        return v.stoneToPlayerMap[v.nextPlayer] === this.onlinePlayerSlot;
+        const ag = this._active;
+        if (!ag) return false;
+        const v = ag.game.getView();
+        return !v.gameOver && v.stoneToPlayerMap[v.nextPlayer] === ag.playerSlot;
     }
 
     private async _createOnlineGame() {
@@ -876,8 +886,8 @@ export class Renderer {
     // Route a game/state event (push or subscribe reply): update the active game, or
     // activate a pending game once it has started.
     private _handleGameState(id: string, state: OnlineStateResponse, config: OnlineGameConfig) {
-        if (id === this.onlineGameId) {
-            this._applyOnlineState(state, config);
+        if (this.activeGames.has(id)) {
+            this._applyOnlineState(id, state);
         } else if (this.pendingGames.has(id) && state.status === 'playing') {
             this._activatePendingGame(id, state, config);
         }
@@ -888,13 +898,24 @@ export class Renderer {
     private _activatePendingGame(id: string, state: OnlineStateResponse, config: OnlineGameConfig) {
         const position = this.pendingGames.get(id);
         if (position === undefined) return;
+        const me = state.players[position];
+        if (!me || !this._setupOnlineBoard(config)) return;
         this.pendingGames.delete(id);
-        this.onlineGameId       = id;
-        this.onlinePosition     = position;
-        this.onlinePlayerSlot   = null;
-        this.onlineMovesSeen    = 0;
-        this.onlineGameFinished = false;
-        this._applyOnlineState(state, config);   // builds the board and enters online mode
+        const ag: ActiveGame = {
+            game:          this.game,
+            position,
+            playerSlot:    me.slot,
+            movesSeen:     0,
+            finished:      false,
+            displayPlyNum: 0,
+            idxShowHistory: 0,
+            randomEvaled:  null,
+        };
+        this.activeGames.set(id, ag);
+        this.activeIdx = id;
+        this._setCmdOutput(`Game started! You are player ${me.slot} (${me.name})`);
+        this._render();
+        this._applyOnlineState(id, state);
     }
 
     // Build the local board for a started online game from its config. Returns false
@@ -918,82 +939,71 @@ export class Renderer {
         return true;
     }
 
-    private _applyOnlineState(state: OnlineStateResponse, config: OnlineGameConfig) {
-        // The game has started: build the board and enter online mode (once).
-        if (this.onlinePlayerSlot === null && state.status === 'playing') {
-            const me = state.players[this.onlinePosition!];
-            if (me && this._setupOnlineBoard(config)) {
-                this.gameMode         = GameMode.online;
-                this.onlinePlayerSlot = me.slot;
-                this._setCmdOutput(`Game started! You are player ${me.slot} (${me.name})`);
-                this._render();
-            }
-        }
-
-        // Nothing to sync until we've entered the online game (board built above).
-        if (this.gameMode !== GameMode.online) return;
+    private _applyOnlineState(id: string, state: OnlineStateResponse) {
+        const ag = this.activeGames.get(id)!;
+        const isActive = id === this.activeIdx;
 
         // Sync resigned players before replaying moves so auto-passes succeed.
-        for (const player of state.resignedPlayers) this.game.resign(player);
+        for (const player of state.resignedPlayers) ag.game.resign(player);
 
-        // Apply any new moves from the server
-        if (state.moves.length > this.onlineMovesSeen) {
-            const wasAtLive = this.displayPlyNum === this.game.getView().plyCount;
-            for (let i = this.onlineMovesSeen; i < state.moves.length; i++) {
-                this.game.makeMove(state.moves[i]);
+        // Apply any new moves from the server.
+        if (state.moves.length > ag.movesSeen) {
+            const wasAtLive = ag.displayPlyNum === ag.game.getView().plyCount;
+            for (let i = ag.movesSeen; i < state.moves.length; i++) ag.game.makeMove(state.moves[i]);
+            ag.movesSeen = state.moves.length;
+            if (wasAtLive) {
+                ag.displayPlyNum = ag.game.getView().plyCount;
+                if (isActive) this.displayPlyNum = ag.displayPlyNum;
             }
-            this.onlineMovesSeen = state.moves.length;
-            if (wasAtLive) this.displayPlyNum = this.game.getView().plyCount;
-            this.randomEvaled = null;
+            ag.randomEvaled = null;
+            if (isActive) this.randomEvaled = null;
 
-            // Notify when it becomes our turn after an opponent move
-            if (this.onlinePlayerSlot !== null) {
-                const v = this.game.getView();
+            // Notify the active player when it becomes their turn.
+            if (isActive) {
+                const v = ag.game.getView();
                 if (!v.gameOver) {
-                    if (v.stoneToPlayerMap[v.nextPlayer] === this.onlinePlayerSlot)
+                    if (v.stoneToPlayerMap[v.nextPlayer] === ag.playerSlot)
                         this._setCmdOutput('Your turn!');
                     else {
                         const slot = v.stoneToPlayerMap[v.nextPlayer];
                         const p = state.players.find(pl => pl?.slot === slot);
-                        this._setCmdOutput(p ? `${p.name} (${p.slot})'s turn.` : "Opponent's turn.");
+                        this._setCmdOutput(p ? `${p.name} [${p.slot}]'s turn.` : "Opponent's turn.");
                     }
                 }
             }
         }
 
-        // Game-over notification (once)
-        if (state.status === 'finished' && !this.onlineGameFinished) {
-            this.onlineGameFinished = true;
-            const v = this.game.getView();
-            const winnerText = v.winners.length === 0
-                ? 'No winners'
-                : v.winners.length === 1
-                ? `Player ${v.winners[0]} wins!`
-                : v.winners.map(w => `Player ${w}`).join(', ') + ' tied.';
-            this._setCmdOutput(`Game over! ${winnerText}`);
+        // Game-over notification (once).
+        if (state.status === 'finished' && !ag.finished) {
+            ag.finished = true;
+            if (isActive) {
+                const v = ag.game.getView();
+                const winnerText = v.winners.length === 0
+                    ? 'No winners'
+                    : v.winners.length === 1
+                    ? `Player ${v.winners[0]} wins!`
+                    : v.winners.map(w => `Player ${w}`).join(', ') + ' tied.';
+                this._setCmdOutput(`Game over! ${winnerText}`);
+            }
         }
 
-        this._render();
+        if (isActive) this._render();
     }
 
     private async _resignOnline() {
-        if (!this.onlineGameId) return;
-        // Resulting state arrives via the game/state push. The server identifies us
-        // by our WebSocket connection, so no position is sent.
+        if (!this.activeIdx) return;
         try {
-            await conn.request('game/resign', { id: this.onlineGameId }).promise;
+            await conn.request('game/resign', { id: this.activeIdx }).promise;
         } catch (e: any) { this._setCmdOutput(`Resign failed: ${e.message}`); }
     }
 
     private async _submitOnlineMove(moveIndex: number | null) {
-        if (!this.onlineGameId) return;
-        // Resulting state arrives via the game/state push. The server identifies us
-        // by our WebSocket connection, so no position is sent.
+        if (!this.activeIdx) return;
         try {
             await conn.request('game/move', {
-                id:        this.onlineGameId,
+                id:        this.activeIdx,
                 moveIndex,
-                clientIdx: this.onlineMovesSeen,
+                clientIdx: this._active!.movesSeen,
             }).promise;
         } catch (e: any) { this._setCmdOutput(`Move rejected: ${e.message}`); }
     }
