@@ -464,7 +464,8 @@ export class Renderer {
         this.passBtn.disabled = this.displayPlyNum !== v.plyCount || !v.passEnabled || v.gameOver
             || (this.gameMode === GameMode.online && !this._isMyOnlineTurn());
         this.resignBtn.hidden = this.gameMode !== GameMode.online;
-        this.resignBtn.disabled = this.gameMode !== GameMode.online || this.onlineGameFinished;
+        this.resignBtn.disabled = this.gameMode !== GameMode.online || this.onlineGameFinished
+            || (this.onlinePlayerSlot !== null && v.resignedPlayers.includes(this.onlinePlayerSlot));
     }
 
     private _renderHistoryPanel(v: BoardView) {
@@ -959,7 +960,7 @@ export class Renderer {
                     else {
                         const slot = v.stoneToPlayerMap[v.nextPlayer];
                         const p = state.players.find(pl => pl?.slot === slot);
-                        this._setCmdOutput(p ? `${p.name} [${p.slot}]'s turn.` : "Opponent's turn.");
+                        this._setCmdOutput(p ? `${p.name} (${p.slot})'s turn.` : "Opponent's turn.");
                     }
                 }
             }
