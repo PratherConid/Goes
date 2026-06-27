@@ -33,6 +33,20 @@ export interface HistoryEntry {
     lenTurnList: number;
 }
 
+export type PlayerType = 'local' | 'server' | 'client';
+
+export class PlayerInfo {
+    type: PlayerType;
+    name: string;
+    socket: WebSocket | null;   // set on server (ws package); null on client
+
+    constructor(type: PlayerType, name: string, socket: WebSocket | null = null) {
+        this.type   = type;
+        this.name   = name;
+        this.socket = socket;
+    }
+}
+
 export interface OnlineGameConfig {
     boardType: string;
     boardArgs: number[];

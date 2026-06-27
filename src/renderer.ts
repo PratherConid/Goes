@@ -1,4 +1,5 @@
 import { BoardState, MoveType, STONE_MAP } from '@shared/boardState.js';
+import { PlayerInfo } from '@shared/types.js';
 import type { BoardView, OnlineGameConfig, OnlineStateResponse } from '@shared/types.js';
 import type { BoardConfig } from '@shared/boardConfig.js';
 import {
@@ -201,8 +202,8 @@ class EngineManager {
 
 interface ActiveGame {
     game: BoardState;
-    position: number;                             // join index (which pendingGames slot)
-    playerSlot: number;
+    positions: number[];                          // join indices of local players
+    players: Map<number, PlayerInfo>;             // key = slot; local players have type 'local'
     finished: boolean;
     displayPlyNum: number;
     idxShowHistory: number;
@@ -240,10 +241,10 @@ export class Renderer {
     emTemperature: number = 0;
 
     // Online multiplayer state
-    // Games created/joined but not yet started, mapping game id → our player position.
+    // Games created/joined but not yet started, mapping game id → our player positions.
     // A player can have several pending at once; one becomes an active game (in
     // activeGames) only when its start event arrives.
-    pendingGames = new Map<string, number>();
+    pendingGames = new Map<string, number[]>();
     playerName: string = _defaultPlayerName();
     activeGames = new Map<string, ActiveGame>();
     activeIdx: string | null = null;
@@ -325,7 +326,7 @@ export class Renderer {
             const v = this.game.getView();
             if (v.passEnabled && !v.gameOver) {
                 if (this.gameMode === GameMode.online) {
-                    if (this._isMyOnlineTurn()) void this._submitOnlineMove(null);
+                    if (this._isMyTurn()) void this._submitOnlineMove(null);
                 } else {
                     this.engineManager.cancel();
                     this.game.makeMove(null);
@@ -386,8 +387,8 @@ export class Renderer {
                 conn.request<{ state: OnlineStateResponse; config: OnlineGameConfig }>(
                     'game/subscribe', { id, position })
                     .promise.then(({ state, config }) => this._handleGameState(id, state, config)).catch(() => {});
-            for (const [id, ag] of this.activeGames) resub(id, ag.position);
-            for (const [id, position] of this.pendingGames) resub(id, position);
+            for (const [id, ag] of this.activeGames) for (const pos of ag.positions) resub(id, pos);
+            for (const [id, positions] of this.pendingGames) for (const pos of positions) resub(id, pos);
         });
     }
 
@@ -469,10 +470,10 @@ export class Renderer {
         this.fw10Btn.disabled  = this.displayPlyNum === v.plyCount;
         this.fwEndBtn.disabled = this.displayPlyNum === v.plyCount;
         this.passBtn.disabled = this.displayPlyNum !== v.plyCount || !v.passEnabled || v.gameOver
-            || (this.gameMode === GameMode.online && !this._isMyOnlineTurn());
+            || (this.gameMode === GameMode.online && !this._isMyTurn());
         this.resignBtn.hidden = this.gameMode !== GameMode.online;
         this.resignBtn.disabled = this.gameMode !== GameMode.online || (this._active?.finished ?? false)
-            || (this._active !== null && v.resignedPlayers.includes(this._active.playerSlot));
+            || (this._active !== null && [...this._active.players.entries()].every(([s, pi]) => pi.type !== 'local' || v.resignedPlayers.includes(s)));
     }
 
     private _renderHistoryPanel(v: BoardView) {
@@ -589,17 +590,17 @@ export class Renderer {
         const fmtMap = (map: Record<number, number>) =>
             Object.entries(map).map(([s, p]) => `${sideName(Number(s))}→P${p}`).join(', ');
         const pendingGamesSection = this.pendingGames.size > 0 ? `
-            <div><b>Pending games:</b> ${[...this.pendingGames.keys()].join(', ')}</div>
-            <hr style="margin:6px 0">` : '';
+            <div><b>Pending games:</b> ${[...this.pendingGames.keys()].join(', ')}</div>` : '';
         const activeGamesSection = this.activeGames.size > 0 ? `
-            <div><b>Active games:</b> ${[...this.activeGames.keys()].join(', ')}</div>
+            <div><b>Active games:</b> ${[...this.activeGames.keys()].join(', ')}</div>` : '';
+        const gamesSectionHr = (this.pendingGames.size > 0 || this.activeGames.size > 0) ? `
             <hr style="margin:6px 0">` : '';
         const onlineSection = this.gameMode === GameMode.online ? `
             <div><b>Online game:</b> ${this.activeIdx}</div>
-            <div><b>Your player slot:</b> ${this._active?.playerSlot}</div>
+            <div><b>Your player slot:</b> ${this._active ? [...this._active.players.entries()].filter(([, pi]) => pi.type === 'local').map(([s]) => s).join(', ') : undefined}</div>
             <div><b>Your name:</b> ${this.playerName || '(not set)'}</div>
             <hr style="margin:6px 0">` : '';
-        this.statusPanel.innerHTML = `${pendingGamesSection}${activeGamesSection}${onlineSection}
+        this.statusPanel.innerHTML = `${pendingGamesSection}${activeGamesSection}${gamesSectionHr}${onlineSection}
             <div><b>To move:</b> ${sideName(v.nextPlayer)}</div>
             <div><b>Last move:</b> ${lastMoveStr}</div>
             <div><b>Stones:</b> ${stoneLine}</div>
@@ -648,7 +649,7 @@ export class Renderer {
         if (bestId >= 0 && bestDist < stone_r * 1.3) {
             if (this.displayPlyNum !== v.plyCount) return;
             if (this.gameMode === GameMode.online) {
-                if (this._isMyOnlineTurn()) void this._submitOnlineMove(bestId);
+                if (this._isMyTurn()) void this._submitOnlineMove(bestId);
             } else {
                 this.engineManager.cancel();
                 this.game.makeMove(bestId);
@@ -837,11 +838,11 @@ export class Renderer {
         this.cmdOutput.textContent = msg;
     }
 
-    private _isMyOnlineTurn(): boolean {
+    private _isMyTurn(): boolean {
         const ag = this._active;
         if (!ag) return false;
         const v = ag.game.getView();
-        return !v.gameOver && v.stoneToPlayerMap[v.nextPlayer] === ag.playerSlot;
+        return !v.gameOver && ag.players.get(v.stoneToPlayerMap[v.nextPlayer])?.type === 'local';
     }
 
     private async _createOnlineGame() {
@@ -860,7 +861,7 @@ export class Renderer {
                 'game/create', { config, playerName: this.playerName }).promise;
             // Record it as pending only. The active-game fields and the board are not
             // touched until the game actually starts (its game/state event arrives).
-            this.pendingGames.set(id, position);
+            this.pendingGames.set(id, [position]);
             this._setCmdOutput(`Game created: ${id} - waiting for ${this.numPlayersForNew - 1} more player(s)…`);
             this._render();
         } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); }
@@ -873,7 +874,8 @@ export class Renderer {
             // until the game starts and its game/state event activates it.
             const { position } = await conn.request<{ position: number }>(
                 'game/join', { id, playerName: this.playerName }).promise;
-            this.pendingGames.set(id, position);
+            const existing = this.pendingGames.get(id) ?? [];
+            this.pendingGames.set(id, [...existing, position]);
             this._setCmdOutput(`Joined game: ${id} - waiting for the game to start…`);
             this._render();
         } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); }
@@ -892,15 +894,19 @@ export class Renderer {
     // Promote a pending game to the active game once it starts: only now are the
     // active-game fields and the board set up.
     private _activatePendingGame(id: string, state: OnlineStateResponse, config: OnlineGameConfig) {
-        const position = this.pendingGames.get(id);
-        if (position === undefined) return;
-        const me = state.players[position];
-        if (!me || !this._setupOnlineBoard(config)) return;
+        const positions = this.pendingGames.get(id);
+        if (!positions) return;
+        if (!this._setupOnlineBoard(config)) return;
+        const players = new Map<number, PlayerInfo>();
+        for (let i = 0; i < state.players.length; i++) {
+            const p = state.players[i];
+            if (p) players.set(p.slot, new PlayerInfo(positions.includes(i) ? 'local' : 'server', p.name));
+        }
         this.pendingGames.delete(id);
         const ag: ActiveGame = {
             game:          this.game,
-            position,
-            playerSlot:    me.slot,
+            positions,
+            players,
             finished:      false,
             displayPlyNum: 0,
             idxShowHistory: 0,
@@ -908,7 +914,8 @@ export class Renderer {
         };
         this.activeGames.set(id, ag);
         this.activeIdx = id;
-        this._setCmdOutput(`Game started! You are player ${me.slot} (${me.name})`);
+        const localEntries = [...ag.players.entries()].filter(([, pi]) => pi.type === 'local');
+        this._setCmdOutput(`Game started! You are player(s) ${localEntries.map(([s, pi]) => `${s} (${pi.name})`).join(', ')}`);
         this._render();
         this._applyOnlineState(id, state);
     }
@@ -953,12 +960,12 @@ export class Renderer {
             if (isActive) {
                 const v = ag.game.getView();
                 if (!v.gameOver) {
-                    if (v.stoneToPlayerMap[v.nextPlayer] === ag.playerSlot)
+                    if (ag.players.get(v.stoneToPlayerMap[v.nextPlayer])?.type === 'local')
                         this._setCmdOutput('Your turn!');
                     else {
                         const slot = v.stoneToPlayerMap[v.nextPlayer];
-                        const p = state.players.find(pl => pl?.slot === slot);
-                        this._setCmdOutput(p ? `${p.name} [${p.slot}]'s turn.` : "Opponent's turn.");
+                        const p = ag.players.get(slot);
+                        this._setCmdOutput(p ? `${p.name} [${slot}]'s turn.` : "Opponent's turn.");
                     }
                 }
             }
