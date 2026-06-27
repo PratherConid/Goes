@@ -986,7 +986,9 @@ export class Renderer {
             const v = this.game.getView();
             const winnerText = v.winners.length === 0
                 ? 'No winners'
-                : v.winners.map(w => `Player ${w}`).join(', ') + ' win!';
+                : v.winners.length === 1
+                ? `Player ${v.winners[0]} wins!`
+                : v.winners.map(w => `Player ${w}`).join(', ') + ' tied.';
             this._setCmdOutput(`Game over! ${winnerText}`);
             this._render();
         }

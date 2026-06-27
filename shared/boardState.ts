@@ -184,6 +184,10 @@ export class BoardState {
 
     stoneCount:           Record<number, number> = {};
     winners:              number[]               = [];
+    // Players (1-indexed) that have resigned. A resigned player may only pass (always,
+    // ignoring forcedPassOnly) and is excluded from scoring / cannot win. Currently set
+    // by the online game flow, but usable for local games too.
+    resignedPlayers:      number[]               = [];
     legalMovesWithTake:   (Set<number> | null)[] = [];
     // invariant: legalMoveHistory.length === history.length
     legalMoveHistory: (Set<number> | null)[][] = [];
@@ -270,12 +274,17 @@ export class BoardState {
         this.stoneCount = {};
         for (let p = 1; p <= this.numStones; p++)
             this.stoneCount[p] = this.board.filter(v => v === p).length;
-        const players = Array.from({ length: this.numPlayers }, (_, i) => i + 1);
+        // Resigned players are excluded from scoring and cannot be winners.
+        const players = Array.from({ length: this.numPlayers }, (_, i) => i + 1)
+            .filter(p => !this.resignedPlayers.includes(p));
         const playerCount: Record<number, number> = {};
         for (const p of players) playerCount[p] = 0;
-        for (const [stone, count] of Object.entries(this.stoneCount))
-            playerCount[this.stoneToPlayerMap[Number(stone)]!] += count;
-        const max = Math.max(...Object.values(playerCount));
+        for (const [stone, count] of Object.entries(this.stoneCount)) {
+            const player = this.stoneToPlayerMap[Number(stone)]!;
+            if (playerCount[player] === undefined) continue;   // resigned player's stones don't score
+            playerCount[player] += count;
+        }
+        const max = players.length > 0 ? Math.max(...players.map(p => playerCount[p]!)) : 0;
         this.winners = players.filter(p => playerCount[p] === max);
     }
 
@@ -295,14 +304,24 @@ export class BoardState {
             .filter(i => i >= 0);
     }
 
+    // Mark a player (1-indexed) as resigned: thereafter they may only pass and are
+    // excluded from scoring. Recomputes winners immediately.
+    resign(player: number) {
+        if (!this.resignedPlayers.includes(player)) this.resignedPlayers.push(player);
+        this._countStones();
+    }
+
     // Make a move. Pass null for a pass move. Returns true if the move was legal.
     // Fields are updated immediately after each move.
     makeMove(k: number | null): boolean {
         if (this.lastMove().moveType === MoveType.GAMEOVER) {
             this._afterMove(); return false;
         }
+        // A resigned player may only pass, and always may (ignoring forcedPassOnly).
+        const resigned = this.resignedPlayers.includes(this.stoneToPlayerMap[this.nextPlayer]!);
+        if (resigned && k !== null) return false;
         if (k === null) {
-            if (this.forcedPassOnly && !this.noTradLegal()) return false;
+            if (!resigned && this.forcedPassOnly && !this.noTradLegal()) return false;
             const passed = new Set(this.lastMove().passedPlayers);
             passed.add(this.nextPlayer);
             if (passed.size >= new Set(this.turnStoneList).size) {
@@ -344,8 +363,10 @@ export class BoardState {
     // Make a uniformly random legal move (or pass if no PLACE moves exist).
     randomMove() {
         if (this.lastMove().moveType === MoveType.GAMEOVER) return;
+        const resigned = this.resignedPlayers.includes(this.stoneToPlayerMap[this.nextPlayer]!);
         const legals = this.legalMoveList();
-        const k = legals.length > 0 ? legals[Math.floor(Math.random() * legals.length)] : null;
+        const k = (!resigned && legals.length > 0)
+            ? legals[Math.floor(Math.random() * legals.length)] : null;
         const success = this.makeMove(k);
         assert(success, 'random move failed');
     }
@@ -378,6 +399,7 @@ export class BoardState {
         c.nextPlayer    = this.nextPlayer;
         c.stoneCount    = { ...this.stoneCount };
         c.winners       = [...this.winners];
+        c.resignedPlayers = [...this.resignedPlayers];
         c.legalMovesWithTake = this.legalMovesWithTake.map(s => s ? new Set(s) : null);
         c.legalMoveHistory   = this.legalMoveHistory.map(row => row.map(s => s ? new Set(s) : null));
         return c;
@@ -398,12 +420,15 @@ export class BoardState {
             lastMove: lm,
             stoneCount: { ...this.stoneCount },
             winners: [...this.winners],
+            resignedPlayers: [...this.resignedPlayers],
             plyCount: this.history.length - 1,
             history: this.history,
             legalMoves: this.legalMovesWithTake,
             legalMoveHistory: this.legalMoveHistory,
             gameOver: lm.moveType === MoveType.GAMEOVER,
-            passEnabled: !this.forcedPassOnly || this.noTradLegal(),
+            // A resigned player may always pass; otherwise the forced-pass-only rule applies.
+            passEnabled: this.resignedPlayers.includes(this.stoneToPlayerMap[this.nextPlayer]!)
+                || !this.forcedPassOnly || this.noTradLegal(),
         };
     }
 }

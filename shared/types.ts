@@ -46,6 +46,7 @@ export interface BoardView {
     lastMove: MoveInfo;
     stoneCount: Record<number, number>;
     winners: number[];
+    resignedPlayers: number[];
     plyCount: number;
     history: HistoryEntry[];
     legalMoves: (Set<number> | null)[];
