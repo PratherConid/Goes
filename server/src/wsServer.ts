@@ -83,6 +83,8 @@ async function handleRequest(ws: WebSocket, msg: ReqMessage): Promise<Handled> {
         case 'game/join': {
             const id = msg['id'] as string;
             const playerName = (msg['playerName'] as string) ?? 'Anonymous';
+            if (subscribers.get(id)?.has(ws))
+                throw Object.assign(new Error('Connection already joined this game'), { statusCode: 409 });
             const result = onlineGameManager.joinGame(id, playerName);
             subscribe(id, ws, result.position);
             // Ack only. Broadcast lazily: just the join that starts the game (status

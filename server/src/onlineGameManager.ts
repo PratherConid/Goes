@@ -39,7 +39,7 @@ class OnlineGameManager {
         const fn = boardTypeToFn.get(config.boardType);
         if (!fn) throw Object.assign(new Error(`Unknown board type: ${config.boardType}`), { statusCode: 400 });
         let id: string;
-        do { id = makeId(6); } while (this.games.has(id));
+        do { id = makeId(12); } while (this.games.has(id));
         this.games.set(id, {
             id, config,
             pendingNames: [playerName],

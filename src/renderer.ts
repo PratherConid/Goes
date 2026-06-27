@@ -233,7 +233,6 @@ export class Renderer {
 
     // Online multiplayer state
     gameMode: GameMode = GameMode.local;
-    createdOnlineGames = new Map<string, OnlineGameConfig>();
     // Games created/joined but not yet started, mapping game id → our player position.
     // A player can have several pending at once; one becomes the active game (the
     // fields below) only when its start event arrives.
@@ -579,18 +578,15 @@ export class Renderer {
 
         const fmtMap = (map: Record<number, number>) =>
             Object.entries(map).map(([s, p]) => `${sideName(Number(s))}→P${p}`).join(', ');
-        const createdGamesSection = this.createdOnlineGames.size > 0 ? `
-            <div><b>Created online games:</b> ${[...this.createdOnlineGames.keys()].join(', ')}</div>
-            <hr style="margin:6px 0">` : '';
         const pendingGamesSection = this.pendingGames.size > 0 ? `
-            <div><b>Pending online games:</b> ${[...this.pendingGames.keys()].join(', ')}</div>
+            <div><b>Pending games:</b> ${[...this.pendingGames.keys()].join(', ')}</div>
             <hr style="margin:6px 0">` : '';
         const onlineSection = this.gameMode === GameMode.online ? `
             <div><b>Online game:</b> ${this.onlineGameId}</div>
             <div><b>Your player slot:</b> ${this.onlinePlayerSlot ?? '(waiting for start)'}</div>
             <div><b>Your name:</b> ${this.playerName || '(not set)'}</div>
             <hr style="margin:6px 0">` : '';
-        this.statusPanel.innerHTML = `${createdGamesSection}${pendingGamesSection}${onlineSection}
+        this.statusPanel.innerHTML = `${pendingGamesSection}${onlineSection}
             <div><b>To move:</b> ${sideName(v.nextPlayer)}</div>
             <div><b>Last move:</b> ${lastMoveStr}</div>
             <div><b>Stones:</b> ${stoneLine}</div>
@@ -859,7 +855,6 @@ export class Renderer {
             // Record it as pending only. The active-game fields and the board are not
             // touched until the game actually starts (its game/state event arrives).
             this.pendingGames.set(id, position);
-            this.createdOnlineGames.set(id, config);
             this._setCmdOutput(`Game created: ${id} - waiting for ${this.numPlayersForNew - 1} more player(s)…`);
             this._render();
         } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); }
@@ -969,7 +964,6 @@ export class Renderer {
         // Game-over notification (once)
         if (state.status === 'finished' && !this.onlineGameFinished) {
             this.onlineGameFinished = true;
-            this.createdOnlineGames.delete(this.onlineGameId!);
             const v = this.game.getView();
             const winnerText = v.winners.length === 0
                 ? 'No winners'
