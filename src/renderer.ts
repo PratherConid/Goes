@@ -203,7 +203,6 @@ interface ActiveGame {
     game: BoardState;
     position: number;                             // join index (which pendingGames slot)
     playerSlot: number;
-    movesSeen: number;
     finished: boolean;
     displayPlyNum: number;
     idxShowHistory: number;
@@ -236,9 +235,7 @@ export class Renderer {
     stoneToPlayerMap: Record<number, number> = {1: 1, 2: 2};
     forcedPassOnlyForNew = true;
     nShowHistory = 10;
-    idxShowHistory = 0;
     activeTab: 'history' | 'status' | 'commands' = 'history';
-    randomEvaled: Record<number, number> | null = null;
     emNumSims: number = 200;
     emTemperature: number = 0;
 
@@ -333,7 +330,6 @@ export class Renderer {
                     this.engineManager.cancel();
                     this.game.makeMove(null);
                     this.displayPlyNum = this.game.getView().plyCount;
-                    this.randomEvaled = null;
                     this._render();
                 }
             }
@@ -360,10 +356,12 @@ export class Renderer {
                 const step   = parseInt(btn.dataset['step'] ?? '0');
                 const v      = this.game.getView();
                 const n      = v.history.length;
-                if      (action === 'prev')  this.idxShowHistory = Math.max(0, this.idxShowHistory - step);
-                else if (action === 'next')  this.idxShowHistory = Math.min(this.idxShowHistory + step, n - 1);
-                else if (action === 'start') this.idxShowHistory = 0;
-                else if (action === 'end')   this.idxShowHistory = n - 1;
+                if (this._active) {
+                    if      (action === 'prev')  this._active.idxShowHistory = Math.max(0, this._active.idxShowHistory - step);
+                    else if (action === 'next')  this._active.idxShowHistory = Math.min(this._active.idxShowHistory + step, n - 1);
+                    else if (action === 'start') this._active.idxShowHistory = 0;
+                    else if (action === 'end')   this._active.idxShowHistory = n - 1;
+                }
                 this._render();
             });
         });
@@ -424,7 +422,6 @@ export class Renderer {
                 break;
             }
             this.displayPlyNum = this.game.getView().plyCount;
-            this.randomEvaled = null;
             // loop: poll() has already advanced state to 'needsRequest' or 'idle'
         }
     }
@@ -480,8 +477,9 @@ export class Renderer {
 
     private _renderHistoryPanel(v: BoardView) {
         const n = v.history.length;
-        this.idxShowHistory = Math.max(0, Math.min(this.idxShowHistory, n - 1));
-        const nAvail = n - this.idxShowHistory;
+        const scroll = Math.max(0, Math.min(this._active?.idxShowHistory ?? 0, n - 1));
+        if (this._active) this._active.idxShowHistory = scroll;
+        const nAvail = n - scroll;
         const nShow  = Math.min(nAvail, this.nShowHistory);
 
         // rebuild entry DOM (simple approach: always rebuild)
@@ -504,7 +502,7 @@ export class Renderer {
             left.append(circle, plyLabel);
             entry.append(left, canvas);
 
-            const t = n - 1 - this.idxShowHistory - idx;
+            const t = n - 1 - scroll - idx;
             const he = v.history[t];
             circle.style.background = STONE_MAP[he.nextPlayer]?.color ?? '#888';
             plyLabel.textContent = String(he.plyCount);
@@ -583,8 +581,9 @@ export class Renderer {
             .map(([p, c]) => `${sideName(Number(p))}: ${c}`)
             .join('  ');
 
-        const evalStr = this.randomEvaled
-            ? Object.entries(this.randomEvaled).map(([p, w]) => `P${p} ${w.toFixed(1)}`).join(' | ')
+        const randomEvaled = this._active?.randomEvaled ?? null;
+        const evalStr = randomEvaled
+            ? Object.entries(randomEvaled).map(([p, w]) => `P${p} ${(w as number).toFixed(1)}`).join(' | ')
             : 'None';
 
         const fmtMap = (map: Record<number, number>) =>
@@ -654,7 +653,6 @@ export class Renderer {
                 this.engineManager.cancel();
                 this.game.makeMove(bestId);
                 this.displayPlyNum = this.game.getView().plyCount;
-                this.randomEvaled = null;
                 this._render();
             }
         }
@@ -670,9 +668,7 @@ export class Renderer {
         );
         this.boardTypeForCurrent = this.boardTypeForNew;
         this.boardDimsForCurrent = [...this.boardDimensionForNew[this.boardTypeForNew]];
-        this.idxShowHistory = 0;
         this.displayPlyNum  = 0;
-        this.randomEvaled   = null;
     }
 
     private _parseCommand(raw: string) {
@@ -800,7 +796,7 @@ export class Renderer {
         else if (cmd === 're') {
             const n = posInt(parts[1]);
             if (n === null) { this._setCmdOutput('Usage: re <n>  (positive integer)'); return; }
-            this.randomEvaled = this.game.randomEvaluate(n);
+            if (this._active) this._active.randomEvaled = this.game.randomEvaluate(n);
         }
         else if (cmd === 'new') {
             if (this._active && !this._active.finished)
@@ -905,7 +901,6 @@ export class Renderer {
             game:          this.game,
             position,
             playerSlot:    me.slot,
-            movesSeen:     0,
             finished:      false,
             displayPlyNum: 0,
             idxShowHistory: 0,
@@ -934,8 +929,6 @@ export class Renderer {
         this.boardTypeForCurrent = boardEntry.boardType;
         this.boardDimsForCurrent = [...config.boardArgs];
         this.displayPlyNum   = 0;
-        this.randomEvaled    = null;
-        this.idxShowHistory  = 0;
         return true;
     }
 
@@ -947,16 +940,14 @@ export class Renderer {
         for (const player of state.resignedPlayers) ag.game.resign(player);
 
         // Apply any new moves from the server.
-        if (state.moves.length > ag.movesSeen) {
+        if (state.moves.length > ag.game.lastMoves.length) {
             const wasAtLive = ag.displayPlyNum === ag.game.getView().plyCount;
-            for (let i = ag.movesSeen; i < state.moves.length; i++) ag.game.makeMove(state.moves[i]);
-            ag.movesSeen = state.moves.length;
+            for (let i = ag.game.lastMoves.length; i < state.moves.length; i++) ag.game.makeMove(state.moves[i]);
             if (wasAtLive) {
                 ag.displayPlyNum = ag.game.getView().plyCount;
                 if (isActive) this.displayPlyNum = ag.displayPlyNum;
             }
             ag.randomEvaled = null;
-            if (isActive) this.randomEvaled = null;
 
             // Notify the active player when it becomes their turn.
             if (isActive) {
@@ -1003,7 +994,7 @@ export class Renderer {
             await conn.request('game/move', {
                 id:        this.activeIdx,
                 moveIndex,
-                clientIdx: this._active!.movesSeen,
+                clientIdx: this._active!.game.lastMoves.length,
             }).promise;
         } catch (e: any) { this._setCmdOutput(`Move rejected: ${e.message}`); }
     }
