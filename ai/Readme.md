@@ -90,6 +90,14 @@ cmake -S ai -B ai/build \
 cmake --build ai/build --config Release
 ```
 
+If the build triggers internal compiler errors, try setting the number of parallel build jobs to `1`:
+
+```bash
+cmake --build ai/build --config Release --parallel 1
+```
+
+If GCC still crashes, try switching to a different compiler version (`-DCMAKE_CXX_COMPILER=g++-12`) or to Clang (`-DCMAKE_CXX_COMPILER=clang++`), which handles LibTorch template instantiation without these issues.
+
 **Windows:**
 ```powershell
 cmake -S ai -B ai\build -DCMAKE_PREFIX_PATH="D:/libtorch" -DCMAKE_BUILD_TYPE=Release
