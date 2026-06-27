@@ -956,11 +956,13 @@ export class Renderer {
                 if (!v.gameOver) {
                     if (v.stoneToPlayerMap[v.nextPlayer] === this.onlinePlayerSlot)
                         this._setCmdOutput('Your turn!');
-                    else
-                        this._setCmdOutput("Opponent's turn.")
+                    else {
+                        const slot = v.stoneToPlayerMap[v.nextPlayer];
+                        const p = state.players.find(pl => pl?.slot === slot);
+                        this._setCmdOutput(p ? `${p.name} [${p.slot}]'s turn.` : "Opponent's turn.");
+                    }
                 }
             }
-            this._render();
         }
 
         // Game-over notification (once)
@@ -974,8 +976,9 @@ export class Renderer {
                 ? `Player ${v.winners[0]} wins!`
                 : v.winners.map(w => `Player ${w}`).join(', ') + ' tied.';
             this._setCmdOutput(`Game over! ${winnerText}`);
-            this._render();
         }
+
+        this._render();
     }
 
     private async _resignOnline() {
