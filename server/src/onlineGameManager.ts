@@ -8,7 +8,6 @@ interface OnlineGame {
     config: OnlineGameConfig;
     pendingNames: string[];                      // in join order, before slot assignment
     players: { name: string; slot: number }[];   // populated when game starts
-    moves: (number | null)[];
     boardState: BoardState | null;               // null until game starts
     bc: BoardConfig;
     status: 'waiting' | 'playing' | 'finished';
@@ -44,7 +43,6 @@ class OnlineGameManager {
             id, config,
             pendingNames: [playerName],
             players: [],
-            moves: [],
             boardState: null,
             bc: fn(...config.boardArgs),
             status: 'waiting',
@@ -103,7 +101,7 @@ class OnlineGameManager {
             numPlayersRequired: game.config.numPlayers,
             numJoined: game.pendingNames.length,
             players: game.pendingNames.map((_, i) => game.players[i] ?? null),
-            moves: game.moves,
+            moves: game.boardState?.lastMoves.map(m => m.pos) ?? [],
             currentStone,
             winners,
             resignedPlayers,
@@ -114,13 +112,13 @@ class OnlineGameManager {
         const game = this.games.get(id);
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
         if (game.status !== 'playing') throw Object.assign(new Error('Game is not in progress'), { statusCode: 409 });
-        if (game.moves.length !== clientIdx) throw Object.assign(new Error('Move index mismatch'), { statusCode: 409 });
+        if (game.boardState!.lastMoves.length !== clientIdx) throw Object.assign(new Error('Move index mismatch'), { statusCode: 409 });
         const v = game.boardState!.getView();
         if (game.config.stoneToPlayerMap[v.nextPlayer] !== game.players[position]?.slot)
             throw Object.assign(new Error('Not your turn'), { statusCode: 403 });
         if (!game.boardState!.makeMove(moveIndex)) throw Object.assign(new Error('Illegal move'), { statusCode: 400 });
-        game.moves.push(moveIndex);
-        this._advancePastResigned(game);   // auto-pass for any resigned player now on turn
+        game.boardState!.advanceResigned();
+        if (game.boardState!.getView().gameOver) game.status = 'finished';
         return this.getState(id);
     }
 
@@ -135,22 +133,13 @@ class OnlineGameManager {
         // End immediately if at most one player is left; otherwise auto-pass any resigned
         // player now on turn (which may itself end the game by a final pass).
         if (game.config.numPlayers - bs.resignedPlayers.length <= 1) game.status = 'finished';
-        else this._advancePastResigned(game);
+        else {
+            bs.advanceResigned();
+            if (bs.getView().gameOver) game.status = 'finished';
+        }
         return this.getState(id);
     }
 
-    // Auto-pass on behalf of any resigned player whose turn it is, until a non-resigned
-    // player is to move or the game ends. Marks the game finished when it ends.
-    private _advancePastResigned(game: OnlineGame) {
-        const bs = game.boardState!;
-        while (!bs.getView().gameOver) {
-            const player = game.config.stoneToPlayerMap[bs.nextPlayer];
-            if (player === undefined || !bs.resignedPlayers.includes(player)) break;
-            if (!bs.makeMove(null)) break;   // resigned pass always succeeds; guard anyway
-            game.moves.push(null);
-        }
-        if (bs.getView().gameOver) game.status = 'finished';
-    }
 }
 
 export const onlineGameManager = new OnlineGameManager();

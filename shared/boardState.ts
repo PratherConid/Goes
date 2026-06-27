@@ -311,6 +311,16 @@ export class BoardState {
         this._countStones();
     }
 
+    // Auto-pass on behalf of any resigned player whose turn it is, until a non-resigned
+    // player is to move or the game ends.
+    advanceResigned(): void {
+        while (!this.getView().gameOver) {
+            const player = this.stoneToPlayerMap[this.nextPlayer];
+            if (player === undefined || !this.resignedPlayers.includes(player)) break;
+            if (!this.makeMove(null)) break;
+        }
+    }
+
     // Make a move. Pass null for a pass move. Returns true if the move was legal.
     // Fields are updated immediately after each move.
     makeMove(k: number | null): boolean {
