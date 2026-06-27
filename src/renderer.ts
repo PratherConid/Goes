@@ -1,6 +1,7 @@
 import { BoardState, MoveType, STONE_MAP } from '@shared/boardState.js';
 import { PlayerInfo } from '@shared/types.js';
-import type { BoardView, OnlineGameConfig, OnlineStateResponse } from '@shared/types.js';
+import type { BoardView, OnlineStateResponse } from '@shared/types.js';
+import { GameConfig } from '@shared/types.js';
 import type { BoardConfig } from '@shared/boardConfig.js';
 import {
     PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns,
@@ -217,10 +218,10 @@ export class Renderer {
     aiEngineReady = false;
     selfPlay   = false;
     autoForced = false;
-    numStonesForNew  = 2;
-    numPlayersForNew = 2;
-    boardTypeForNew = PrescribedBoard.rectangularBoard;
-    boardDimensionForNew : Record<PrescribedBoard, number[]> = {
+    newCfg     = new GameConfig(PrescribedBoardMap[PrescribedBoard.rectangularBoard][1], [9, 9], 2, 2, [1, 2], {1: 1, 2: 2}, true);
+    currentCfg = new GameConfig(PrescribedBoardMap[PrescribedBoard.rectangularBoard][1], [9, 9], 2, 2, [1, 2], {1: 1, 2: 2}, true);
+    // Per-board-type dimension memory so 'bt' restores custom dimensions on type switch
+    boardDimensionForNew: Record<PrescribedBoard, number[]> = {
         [PrescribedBoard.rectangularBoard]:         [9, 9],
         [PrescribedBoard.rectangularDiagonalBoard]: [9, 9],
         [PrescribedBoard.cubicalBoard]:             [5, 5, 2],
@@ -229,12 +230,6 @@ export class Renderer {
         [PrescribedBoard.twistedSquareBoard]:       [4, 4, 3],
         [PrescribedBoard.glueTwistedSquareBoard]:   [4, 4, 3],
     };
-    // Board type/dims of the live game (used to build /move requests to the AI engine)
-    boardTypeForCurrent  = PrescribedBoard.rectangularBoard;
-    boardDimsForCurrent: number[] = [9, 9];
-    turnStoneListForNew: number[] = [1, 2];
-    stoneToPlayerMap: Record<number, number> = {1: 1, 2: 2};
-    forcedPassOnlyForNew = true;
     nShowHistory = 10;
     activeTab: 'history' | 'status' | 'commands' = 'history';
     emNumSims: number = 200;
@@ -376,7 +371,7 @@ export class Renderer {
         // Online-game state arrives via server push (replaces polling). The event
         // carries the config so the board can be built when the game starts. It either
         // updates the active game or activates a pending game that just started.
-        conn.onEvent('game/state', (msg: { id: string; state: OnlineStateResponse; config: OnlineGameConfig }) => {
+        conn.onEvent('game/state', (msg: { id: string; state: OnlineStateResponse; config: GameConfig }) => {
             this._handleGameState(msg.id, msg.state, msg.config);
         });
         // After a (re)connect, re-subscribe to the active game and every pending game so
@@ -384,7 +379,7 @@ export class Renderer {
         // carries the current state + config, routed through the same handler.
         conn.onEvent('open', () => {
             const resub = (id: string, position: number) =>
-                conn.request<{ state: OnlineStateResponse; config: OnlineGameConfig }>(
+                conn.request<{ state: OnlineStateResponse; config: GameConfig }>(
                     'game/subscribe', { id, position })
                     .promise.then(({ state, config }) => this._handleGameState(id, state, config)).catch(() => {});
             for (const [id, ag] of this.activeGames) for (const pos of ag.positions) resub(id, pos);
@@ -402,8 +397,8 @@ export class Renderer {
                 if (this.displayPlyNum !== v.plyCount) { console.warn('em: not at live position (navigate to end first)'); this.engineManager.cancel(); break; }
                 const moves = this.game.lastMoves.map(m => m.pos);
                 this.engineManager.submit({
-                    board_type:          PrescribedBoardMap[this.boardTypeForCurrent][1],
-                    board_args:          this.boardDimsForCurrent,
+                    board_type:          this.currentCfg.boardType,
+                    board_args:          this.currentCfg.boardArgs,
                     board:               v.history[v.plyCount].board,
                     num_stones:          v.numStones,
                     num_players:         v.numPlayers,
@@ -621,13 +616,13 @@ export class Renderer {
             <div><b>&emsp;Forced pass only (current):</b> ${v.forcedPassOnly}</div>
             <hr style="margin:6px 0">
             <div><b>New Game Setup</div>
-            <div><b>&emsp;Type of stones:</b> ${this.numStonesForNew}</div>
-            <div><b>&emsp;Number of players:</b> ${this.numPlayersForNew}</div>
-            <div><b>&emsp;Turn stone list:</b> [${this.turnStoneListForNew.join(', ')}]</div>
-            <div><b>&emsp;Stone to player map:</b> ${fmtMap(this.stoneToPlayerMap)}</div>
-            <div><b>&emsp;Forced pass only:</b> ${this.forcedPassOnlyForNew}</div>
-            <div><b>&emsp;Board type:</b> ${PrescribedBoardMap[this.boardTypeForNew][1]}</div>
-            <div><b>&emsp;Board dimension:</b> ${this.boardDimensionForNew[this.boardTypeForNew]}</div>
+            <div><b>&emsp;Type of stones:</b> ${this.newCfg.numStones}</div>
+            <div><b>&emsp;Number of players:</b> ${this.newCfg.numPlayers}</div>
+            <div><b>&emsp;Turn stone list:</b> [${this.newCfg.turnStoneList.join(', ')}]</div>
+            <div><b>&emsp;Stone to player map:</b> ${fmtMap(this.newCfg.stoneToPlayerMap)}</div>
+            <div><b>&emsp;Forced pass only:</b> ${this.newCfg.forcedPassOnly}</div>
+            <div><b>&emsp;Board type:</b> ${this.newCfg.boardType}</div>
+            <div><b>&emsp;Board dimension:</b> ${this.newCfg.boardArgs}</div>
         `;
     }
 
@@ -663,12 +658,11 @@ export class Renderer {
         this.engineManager.cancel();
         this.engineManager.sessionId = null;
         this.game = new BoardState(
-            this.numStonesForNew, this.numPlayersForNew, this.turnStoneListForNew, this.stoneToPlayerMap,
-            this.forcedPassOnlyForNew,
+            this.newCfg.numStones, this.newCfg.numPlayers, this.newCfg.turnStoneList, this.newCfg.stoneToPlayerMap,
+            this.newCfg.forcedPassOnly,
             new Array(bc.N).fill(0), bc,
         );
-        this.boardTypeForCurrent = this.boardTypeForNew;
-        this.boardDimsForCurrent = [...this.boardDimensionForNew[this.boardTypeForNew]];
+        this.currentCfg = this.newCfg.copy();
         this.displayPlyNum  = 0;
     }
 
@@ -720,48 +714,53 @@ export class Renderer {
             if (this.selfPlay) this._startSelfPlay();
             else this._stopSelfPlay();
         }
-        else if (cmd === 'fpo')  this.forcedPassOnlyForNew = !this.forcedPassOnlyForNew;
+        else if (cmd === 'fpo')  this.newCfg.forcedPassOnly = !this.newCfg.forcedPassOnly;
         else if (cmd === 'af')   this.autoForced = !this.autoForced;
         else if (cmd === 'bt') {
             if (!parts[1]) { this._setCmdOutput('Usage: bt <board-type>'); return; }
             if (!_cmdToBoard.has(parts[1])) { this._setCmdOutput(`Unknown board type: ${parts[1]}`); return; }
-            this.boardTypeForNew = _cmdToBoard.get(parts[1])!.boardType;
+            const entry = _cmdToBoard.get(parts[1])!;
+            this.newCfg.boardType = parts[1];
+            this.newCfg.boardArgs = [...this.boardDimensionForNew[entry.boardType as PrescribedBoard]];
         }
         else if (cmd === 'bd') {
             if (!parts[1]) { this._setCmdOutput('Usage: bd <num> <num> …'); return; }
             const nums = parts.slice(1).map(Number);
             if (nums.some(n => !Number.isInteger(n) || n <= 0)) { this._setCmdOutput('bd: all arguments must be positive integers'); return; }
+            const boardTypeEnum = _cmdToBoard.get(this.newCfg.boardType)!.boardType as PrescribedBoard;
             for (const [idx, val] of nums.entries())
-                if (idx < (PrescribedBoardMap[this.boardTypeForNew][0]))
-                    this.boardDimensionForNew[this.boardTypeForNew][idx] = val;
+                if (idx < PrescribedBoardMap[boardTypeEnum][0]) {
+                    this.boardDimensionForNew[boardTypeEnum][idx] = val;
+                    this.newCfg.boardArgs[idx] = val;
+                }
         }
         else if (cmd === 'ns') {
             const n = Number(parts[1]);
             if (!parts[1] || !Number.isInteger(n) || n < 1 || n > 8) { this._setCmdOutput('Usage: ns <n>  (1–8)'); return; }
-            this.numStonesForNew = n;
-            this.turnStoneListForNew = Array.from({ length: n }, (_, i) => i + 1);
-            this.stoneToPlayerMap = Object.fromEntries(Array.from({ length: n }, (_, i) => [i + 1, i % this.numPlayersForNew + 1]));
+            this.newCfg.numStones = n;
+            this.newCfg.turnStoneList = Array.from({ length: n }, (_, i) => i + 1);
+            this.newCfg.stoneToPlayerMap = Object.fromEntries(Array.from({ length: n }, (_, i) => [i + 1, i % this.newCfg.numPlayers + 1]));
         }
         else if (cmd === 'np') {
             const n = Number(parts[1]);
             if (!parts[1] || !Number.isInteger(n) || n < 1 || n > 8) { this._setCmdOutput('Usage: np <n>  (1–8)'); return; }
-            this.numPlayersForNew = n;
-            this.stoneToPlayerMap = Object.fromEntries(Array.from({ length: this.numStonesForNew }, (_, i) => [i + 1, i % n + 1]));
+            this.newCfg.numPlayers = n;
+            this.newCfg.stoneToPlayerMap = Object.fromEntries(Array.from({ length: this.newCfg.numStones }, (_, i) => [i + 1, i % n + 1]));
         }
         else if (cmd === 'tsl') {
             if (parts.length < 2) { this._setCmdOutput('Usage: tsl <p1> <p2> …'); return; }
             const stones = parts.slice(1).map(Number);
-            if (!stones.every(p => Number.isInteger(p) && p >= 1 && p <= this.numStonesForNew))
-                { this._setCmdOutput(`tsl: each value must be an integer between 1 and ${this.numStonesForNew}`); return; }
-            this.turnStoneListForNew = stones;
+            if (!stones.every(p => Number.isInteger(p) && p >= 1 && p <= this.newCfg.numStones))
+                { this._setCmdOutput(`tsl: each value must be an integer between 1 and ${this.newCfg.numStones}`); return; }
+            this.newCfg.turnStoneList = stones;
         }
         else if (cmd === 'spm') {
             if (parts.length < 2) { this._setCmdOutput('Usage: spm <p1> <p2> …'); return; }
             const players = parts.slice(1).map(Number);
-            if (!players.every(p => Number.isInteger(p) && p >= 1 && p <= this.numPlayersForNew))
-                { this._setCmdOutput(`spm: each value must be an integer between 1 and ${this.numPlayersForNew}`); return; }
+            if (!players.every(p => Number.isInteger(p) && p >= 1 && p <= this.newCfg.numPlayers))
+                { this._setCmdOutput(`spm: each value must be an integer between 1 and ${this.newCfg.numPlayers}`); return; }
             for (const [idx, p] of players.entries())
-                this.stoneToPlayerMap[idx + 1] = p;
+                this.newCfg.stoneToPlayerMap[idx + 1] = p;
         }
         else if (cmd === 'h') {
             const n = posInt(parts[1]);
@@ -803,8 +802,8 @@ export class Renderer {
             if (this._active && !this._active.finished)
                 { this._setCmdOutput('Cannot create new board during active online games'); return; }
             this.activeIdx = null;
-            const fn = PrescribedBoardFns[this.boardTypeForNew];
-            this._newGame(fn(...this.boardDimensionForNew[this.boardTypeForNew]));
+            const entry = _cmdToBoard.get(this.newCfg.boardType)!;
+            this._newGame(entry.fn(...this.newCfg.boardArgs));
         }
         else
             this._setCmdOutput(`Unknown command \"${cmd}\"`)
@@ -847,22 +846,14 @@ export class Renderer {
 
     private async _createOnlineGame() {
         if (!this.playerName) { this._setCmdOutput('Set your name first: setname <name>'); return; }
-        const config: OnlineGameConfig = {
-            boardType:        PrescribedBoardMap[this.boardTypeForNew][1],
-            boardArgs:        [...this.boardDimensionForNew[this.boardTypeForNew]],
-            numStones:        this.numStonesForNew,
-            numPlayers:       this.numPlayersForNew,
-            turnStoneList:    [...this.turnStoneListForNew],
-            stoneToPlayerMap: { ...this.stoneToPlayerMap },
-            forcedPassOnly:   this.forcedPassOnlyForNew,
-        };
+        const config = this.newCfg.copy();
         try {
             const { id, position } = await conn.request<{ id: string; position: number }>(
                 'game/create', { config, playerName: this.playerName }).promise;
             // Record it as pending only. The active-game fields and the board are not
             // touched until the game actually starts (its game/state event arrives).
             this.pendingGames.set(id, [position]);
-            this._setCmdOutput(`Game created: ${id} - waiting for ${this.numPlayersForNew - 1} more player(s)…`);
+            this._setCmdOutput(`Game created: ${id} - waiting for ${this.newCfg.numPlayers - 1} more player(s)…`);
             this._render();
         } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); }
     }
@@ -883,7 +874,7 @@ export class Renderer {
 
     // Route a game/state event (push or subscribe reply): update the active game, or
     // activate a pending game once it has started.
-    private _handleGameState(id: string, state: OnlineStateResponse, config: OnlineGameConfig) {
+    private _handleGameState(id: string, state: OnlineStateResponse, config: GameConfig) {
         if (this.activeGames.has(id)) {
             this._applyOnlineState(id, state);
         } else if (this.pendingGames.has(id) && state.status === 'playing') {
@@ -893,7 +884,7 @@ export class Renderer {
 
     // Promote a pending game to the active game once it starts: only now are the
     // active-game fields and the board set up.
-    private _activatePendingGame(id: string, state: OnlineStateResponse, config: OnlineGameConfig) {
+    private _activatePendingGame(id: string, state: OnlineStateResponse, config: GameConfig) {
         const positions = this.pendingGames.get(id);
         if (!positions) return;
         if (!this._setupOnlineBoard(config)) return;
@@ -922,7 +913,7 @@ export class Renderer {
 
     // Build the local board for a started online game from its config. Returns false
     // if the board type is unknown.
-    private _setupOnlineBoard(config: OnlineGameConfig): boolean {
+    private _setupOnlineBoard(config: GameConfig): boolean {
         const boardEntry = _cmdToBoard.get(config.boardType);
         if (!boardEntry) { this._setCmdOutput(`Unknown board type: ${config.boardType}`); return false; }
         const bc = boardEntry.fn(...config.boardArgs);
@@ -933,8 +924,7 @@ export class Renderer {
             config.turnStoneList, config.stoneToPlayerMap,
             config.forcedPassOnly, new Array(bc.N).fill(0), bc,
         );
-        this.boardTypeForCurrent = boardEntry.boardType;
-        this.boardDimsForCurrent = [...config.boardArgs];
+        this.currentCfg = config;
         this.displayPlyNum   = 0;
         return true;
     }

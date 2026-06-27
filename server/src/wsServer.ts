@@ -1,7 +1,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server } from 'node:http';
 import { onlineGameManager } from './onlineGameManager.js';
-import type { OnlineGameConfig } from '@shared/types.js';
+import type { GameConfig } from '@shared/types.js';
 import { aiMove, aiHealth } from './engineProxy.js';
 
 // ── Wire protocol ──────────────────────────────────────────────────────────────
@@ -63,7 +63,7 @@ async function handleRequest(ws: WebSocket, msg: ReqMessage): Promise<Handled> {
         case 'ai/health':
             return { data: await aiHealth() };
         case 'game/create': {
-            const config = msg['config'] as OnlineGameConfig;
+            const config = msg['config'] as GameConfig;
             const playerName = (msg['playerName'] as string) ?? 'Anonymous';
             const result = onlineGameManager.createGame(config, playerName);
             onlineGameManager.acceptJoin(result.id, ws, result.position);

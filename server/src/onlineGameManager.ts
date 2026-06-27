@@ -2,11 +2,11 @@ import { BoardState } from '@shared/boardState.js';
 import { PrescribedBoardMap, PrescribedBoardFns, PrescribedBoard } from '@shared/boardConfig.js';
 import type { BoardConfig } from '@shared/boardConfig.js';
 import { PlayerInfo } from '@shared/types.js';
-import type { OnlineGameConfig, OnlineStateResponse } from '@shared/types.js';
+import type { GameConfig, OnlineStateResponse } from '@shared/types.js';
 
 interface ServerPendingGame {
     id: string;
-    config: OnlineGameConfig;
+    config: GameConfig;
     pendingNames: string[];                      // in join order, before slot assignment
     bc: BoardConfig;
     joinedPlayers: Map<object, number[]>;        // ws → positions; tracks connections before game starts
@@ -14,7 +14,7 @@ interface ServerPendingGame {
 
 interface OnlineGame {
     id: string;
-    config: OnlineGameConfig;
+    config: GameConfig;
     players: Map<number, PlayerInfo>;            // key = slot; insertion order = join order
     boardState: BoardState;                      // always present (game has started)
     // Not purely derivable from boardState: when resignation leaves ≤1 player the game ends
@@ -41,7 +41,7 @@ class OnlineGameManager {
     private pendingGames = new Map<string, ServerPendingGame>();
     private activeGames  = new Map<string, OnlineGame>();
 
-    createGame(config: OnlineGameConfig, playerName: string): { id: string; position: number } {
+    createGame(config: GameConfig, playerName: string): { id: string; position: number } {
         const fn = boardTypeToFn.get(config.boardType);
         if (!fn) throw Object.assign(new Error(`Unknown board type: ${config.boardType}`), { statusCode: 400 });
         let id: string;
@@ -55,7 +55,7 @@ class OnlineGameManager {
         return { id, position: 0 };
     }
 
-    joinGame(id: string, playerName: string): { position: number; config: OnlineGameConfig; status: 'waiting' | 'playing' } {
+    joinGame(id: string, playerName: string): { position: number; config: GameConfig; status: 'waiting' | 'playing' } {
         const pending = this.pendingGames.get(id);
         if (!pending) {
             if (this.activeGames.has(id)) throw Object.assign(new Error('Game already started'), { statusCode: 409 });
@@ -151,7 +151,7 @@ class OnlineGameManager {
                 if (pi.socket === (ws as WebSocket | null)) pi.socket = null;
     }
 
-    getConfig(id: string): OnlineGameConfig {
+    getConfig(id: string): GameConfig {
         const game = this.pendingGames.get(id) ?? this.activeGames.get(id);
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
         return game.config;

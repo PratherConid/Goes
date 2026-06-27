@@ -47,7 +47,7 @@ export class PlayerInfo {
     }
 }
 
-export interface OnlineGameConfig {
+export class GameConfig {
     boardType: string;
     boardArgs: number[];
     numStones: number;
@@ -55,6 +55,36 @@ export interface OnlineGameConfig {
     turnStoneList: number[];
     stoneToPlayerMap: Record<number, number>;
     forcedPassOnly: boolean;
+
+    constructor(
+        boardType: string,
+        boardArgs: number[],
+        numStones: number,
+        numPlayers: number,
+        turnStoneList: number[],
+        stoneToPlayerMap: Record<number, number>,
+        forcedPassOnly: boolean,
+    ) {
+        this.boardType       = boardType;
+        this.boardArgs       = boardArgs;
+        this.numStones       = numStones;
+        this.numPlayers      = numPlayers;
+        this.turnStoneList   = turnStoneList;
+        this.stoneToPlayerMap = stoneToPlayerMap;
+        this.forcedPassOnly  = forcedPassOnly;
+    }
+
+    copy(): GameConfig {
+        return new GameConfig(
+            this.boardType,
+            [...this.boardArgs],
+            this.numStones,
+            this.numPlayers,
+            [...this.turnStoneList],
+            { ...this.stoneToPlayerMap },
+            this.forcedPassOnly,
+        );
+    }
 }
 
 export interface OnlineStateResponse {
