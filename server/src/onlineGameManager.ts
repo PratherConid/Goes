@@ -1,7 +1,7 @@
 import { BoardState } from '@shared/boardState.js';
 import { PrescribedBoardMap, PrescribedBoardFns, PrescribedBoard } from '@shared/boardConfig.js';
 import type { BoardConfig } from '@shared/boardConfig.js';
-import { PlayerInfo } from '@shared/types.js';
+import { PlayerInfo, makeId } from '@shared/types.js';
 import type { GameConfig, OnlineStateResponse } from '@shared/types.js';
 
 interface ServerPendingGame {
@@ -29,12 +29,6 @@ for (const key of Object.keys(PrescribedBoardMap)) {
     boardTypeToFn.set(typeStr, PrescribedBoardFns[numKey]);
 }
 
-function makeId(len: number): string {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    let id = '';
-    for (let i = 0; i < len; i++) id += chars[Math.floor(Math.random() * chars.length)];
-    return id;
-}
 
 class OnlineGameManager {
     // In-memory store. All games are lost on server restart; no persistence.

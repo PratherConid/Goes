@@ -119,3 +119,10 @@ export interface BoardView {
     gameOver: boolean;
     passEnabled: boolean;
 }
+
+const _ID_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+export function makeId(len: number): string {
+    let id = '';
+    for (let i = 0; i < len; i++) id += _ID_CHARS[Math.floor(Math.random() * _ID_CHARS.length)];
+    return id;
+}

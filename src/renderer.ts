@@ -1,7 +1,6 @@
 import { BoardState, MoveType, STONE_MAP } from '@shared/boardState.js';
-import { PlayerInfo } from '@shared/types.js';
+import { PlayerInfo, GameConfig, makeId } from '@shared/types.js';
 import type { BoardView, OnlineStateResponse } from '@shared/types.js';
-import { GameConfig } from '@shared/types.js';
 import type { BoardConfig } from '@shared/boardConfig.js';
 import {
     PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns,
@@ -13,15 +12,19 @@ import { ServerConnection, type RequestHandle } from './serverConnection.js';
 const conn = new ServerConnection();
 
 
-enum GameMode { local = 'local', online = 'online' }
-
-
 const _cmdToBoard = new Map(
     (Object.entries(PrescribedBoardMap) as [string, [number, string, string, string]][])
         .map(([k, [numArgs, cmd, argStr, desc]]) =>
             [cmd, { boardType: Number(k), numArgs, fn: PrescribedBoardFns[Number(k) as PrescribedBoard], argStr, desc }])
 );
 
+function _makeLocalActiveGame(bs: BoardState, cfg: GameConfig): ActiveGame {
+    const players = new Map<number, PlayerInfo>();
+    for (const slot of new Set(Object.values(cfg.stoneToPlayerMap)))
+        players.set(slot, new PlayerInfo('local', ''));
+    return { game: bs, positions: [], players, finished: false,
+             displayPlyNum: 0, idxShowHistory: 0, randomEvaled: null };
+}
 
 function _defaultPlayerName(): string {
     const existing = localStorage.getItem('playerName');
@@ -212,9 +215,6 @@ interface ActiveGame {
 }
 
 export class Renderer {
-    game: BoardState;
-    // invariant: displayPlyNum < game.history.length
-    displayPlyNum = 0;
     aiEngineReady = false;
     selfPlay   = false;
     autoForced = false;
@@ -242,11 +242,10 @@ export class Renderer {
     pendingGames = new Map<string, number[]>();
     playerName: string = _defaultPlayerName();
     activeGames = new Map<string, ActiveGame>();
-    activeIdx: string | null = null;
+    activeIdx: string = '';   // always set before first render (constructor initializes)
 
-    get gameMode(): GameMode { return this.activeIdx !== null ? GameMode.online : GameMode.local; }
-    private get _active(): ActiveGame | null {
-        return this.activeIdx !== null ? (this.activeGames.get(this.activeIdx) ?? null) : null;
+    private get _active(): ActiveGame {
+        return this.activeGames.get(this.activeIdx)!;
     }
 
     private mainCanvas:   HTMLCanvasElement;
@@ -270,7 +269,9 @@ export class Renderer {
     private engineManager = new EngineManager(() => this._render());
 
     constructor(game: BoardState) {
-        this.game = game;
+        const localId = 'L_' + makeId(12);
+        this.activeIdx = localId;
+        this.activeGames.set(localId, _makeLocalActiveGame(game, this.newCfg));
         this.mainCanvas   = document.getElementById('main-canvas')    as HTMLCanvasElement;
         this.histBoards   = document.getElementById('history-boards') as HTMLDivElement;
         this.passBtn      = document.getElementById('pass-btn')        as HTMLButtonElement;
@@ -294,38 +295,38 @@ export class Renderer {
         this._initCommandsPanel();
         this.mainCanvas.addEventListener('click', e => this._onBoardClick(e));
         this.bwEndBtn.addEventListener('click', () => {
-            this.displayPlyNum = 0;
+            this._active.displayPlyNum = 0;
             this._render();
         });
         this.bw10Btn.addEventListener('click', () => {
-            this.displayPlyNum = Math.max(this.displayPlyNum - 10, 0);
+            this._active.displayPlyNum = Math.max(this._active.displayPlyNum - 10, 0);
             this._render();
         });
         this.bwBtn.addEventListener('click', () => {
-            this.displayPlyNum = Math.max(this.displayPlyNum - 1, 0);
+            this._active.displayPlyNum = Math.max(this._active.displayPlyNum - 1, 0);
             this._render();
         });
         this.fwBtn.addEventListener('click', () => {
-            this.displayPlyNum = Math.min(this.displayPlyNum + 1, this.game.history.length - 1);
+            this._active.displayPlyNum = Math.min(this._active.displayPlyNum + 1, this._active.game.history.length - 1);
             this._render();
         });
         this.fw10Btn.addEventListener('click', () => {
-            this.displayPlyNum = Math.min(this.displayPlyNum + 10, this.game.history.length - 1);
+            this._active.displayPlyNum = Math.min(this._active.displayPlyNum + 10, this._active.game.history.length - 1);
             this._render();
         });
         this.fwEndBtn.addEventListener('click', () => {
-            this.displayPlyNum = this.game.history.length - 1;
+            this._active.displayPlyNum = this._active.game.history.length - 1;
             this._render();
         });
         this.passBtn.addEventListener('click', () => {
-            const v = this.game.getView();
+            const v = this._active.game.getView();
             if (v.passEnabled && !v.gameOver) {
-                if (this.gameMode === GameMode.online) {
+                if (this.activeIdx.startsWith('O_')) {
                     if (this._isMyTurn()) void this._submitOnlineMove(null);
                 } else {
                     this.engineManager.cancel();
-                    this.game.makeMove(null);
-                    this.displayPlyNum = this.game.getView().plyCount;
+                    this._active.game.makeMove(null);
+                    this._active.displayPlyNum = this._active.game.getView().plyCount;
                     this._render();
                 }
             }
@@ -350,14 +351,12 @@ export class Renderer {
             btn.addEventListener('click', () => {
                 const action = btn.dataset['action']!;
                 const step   = parseInt(btn.dataset['step'] ?? '0');
-                const v      = this.game.getView();
+                const v      = this._active.game.getView();
                 const n      = v.history.length;
-                if (this._active) {
-                    if      (action === 'prev')  this._active.idxShowHistory = Math.max(0, this._active.idxShowHistory - step);
-                    else if (action === 'next')  this._active.idxShowHistory = Math.min(this._active.idxShowHistory + step, n - 1);
-                    else if (action === 'start') this._active.idxShowHistory = 0;
-                    else if (action === 'end')   this._active.idxShowHistory = n - 1;
-                }
+                if      (action === 'prev')  this._active.idxShowHistory = Math.max(0, this._active.idxShowHistory - step);
+                else if (action === 'next')  this._active.idxShowHistory = Math.min(this._active.idxShowHistory + step, n - 1);
+                else if (action === 'start') this._active.idxShowHistory = 0;
+                else if (action === 'end')   this._active.idxShowHistory = n - 1;
                 this._render();
             });
         });
@@ -382,7 +381,8 @@ export class Renderer {
                 conn.request<{ state: OnlineStateResponse; config: GameConfig }>(
                     'game/subscribe', { id, position })
                     .promise.then(({ state, config }) => this._handleGameState(id, state, config)).catch(() => {});
-            for (const [id, ag] of this.activeGames) for (const pos of ag.positions) resub(id, pos);
+            for (const [id, ag] of this.activeGames)
+                if (id.startsWith('O_')) for (const pos of ag.positions) resub(id.slice(2), pos);
             for (const [id, positions] of this.pendingGames) for (const pos of positions) resub(id, pos);
         });
     }
@@ -392,10 +392,10 @@ export class Renderer {
             const outcome = this.engineManager.poll();
             if (outcome === null) break;
             if (outcome === 'needsRequest') {
-                const v = this.game.getView();
+                const v = this._active.game.getView();
                 if (v.gameOver) { console.warn('em: game is already over'); this.engineManager.cancel(); break; }
-                if (this.displayPlyNum !== v.plyCount) { console.warn('em: not at live position (navigate to end first)'); this.engineManager.cancel(); break; }
-                const moves = this.game.lastMoves.map(m => m.pos);
+                if (this._active.displayPlyNum !== v.plyCount) { console.warn('em: not at live position (navigate to end first)'); this.engineManager.cancel(); break; }
+                const moves = this._active.game.lastMoves.map(m => m.pos);
                 this.engineManager.submit({
                     board_type:          this.currentCfg.boardType,
                     board_args:          this.currentCfg.boardArgs,
@@ -412,29 +412,29 @@ export class Renderer {
                 });
                 break;
             }
-            if (!this.game.makeMove(outcome.move)) {
+            if (!this._active.game.makeMove(outcome.move)) {
                 console.error('em: engine returned an illegal move', outcome.move);
                 this.engineManager.cancel();
                 break;
             }
-            this.displayPlyNum = this.game.getView().plyCount;
+            this._active.displayPlyNum = this._active.game.getView().plyCount;
             // loop: poll() has already advanced state to 'needsRequest' or 'idle'
         }
     }
 
     private _render() {
         this._checkAsync();
-        const v = this.game.getView();
+        const v = this._active.game.getView();
         this._renderMainBoard(v);
         this._renderControlBar(v);
         this._renderHistoryPanel(v);
         if (this.activeTab === 'status') this._renderStatus(v);
-        if (this.autoForced && !this.selfPlay && !v.gameOver && this.gameMode === GameMode.local) {
-            const legals = this.game.legalMoveList();
+        if (this.autoForced && !this.selfPlay && !v.gameOver && this.activeIdx.startsWith('L_')) {
+            const legals = this._active.game.legalMoveList();
             if (legals.length === 0 || legals.length === 1) {
                 if (this.engineManager.running) return;
-                this.game.makeMove(legals.length === 0 ? null : legals[0]);
-                this.displayPlyNum = this.game.getView().plyCount;
+                this._active.game.makeMove(legals.length === 0 ? null : legals[0]);
+                this._active.displayPlyNum = this._active.game.getView().plyCount;
                 requestAnimationFrame(() => this._render());
             }
         }
@@ -451,30 +451,31 @@ export class Renderer {
         const ctx = this.mainCanvas.getContext('2d')!;
         ctx.fillStyle = COLOR_BOARD;
         ctx.fillRect(0, 0, size, size);
-        drawBoardFull(ctx, v, this.game.adj, v.history[this.displayPlyNum].board,
-                      size, size, v.legalMoveHistory[this.displayPlyNum]);
+        drawBoardFull(ctx, v, this._active.game.adj, v.history[this._active.displayPlyNum].board,
+                      size, size, v.legalMoveHistory[this._active.displayPlyNum]);
     }
 
     private _renderControlBar(v: BoardView) {
+        const dpn = this._active.displayPlyNum;
         this.turnStone.style.background = STONE_MAP[v.nextPlayer]?.color ?? '#888';
-        this.plyNum.textContent = `${this.displayPlyNum}/${v.plyCount}`;
-        this.bwEndBtn.disabled = this.displayPlyNum === 0;
-        this.bw10Btn.disabled  = this.displayPlyNum === 0;
-        this.bwBtn.disabled    = this.displayPlyNum === 0;
-        this.fwBtn.disabled    = this.displayPlyNum === v.plyCount;
-        this.fw10Btn.disabled  = this.displayPlyNum === v.plyCount;
-        this.fwEndBtn.disabled = this.displayPlyNum === v.plyCount;
-        this.passBtn.disabled = this.displayPlyNum !== v.plyCount || !v.passEnabled || v.gameOver
-            || (this.gameMode === GameMode.online && !this._isMyTurn());
-        this.resignBtn.hidden = this.gameMode !== GameMode.online;
-        this.resignBtn.disabled = this.gameMode !== GameMode.online || (this._active?.finished ?? false)
-            || (this._active !== null && [...this._active.players.entries()].every(([s, pi]) => pi.type !== 'local' || v.resignedPlayers.includes(s)));
+        this.plyNum.textContent = `${dpn}/${v.plyCount}`;
+        this.bwEndBtn.disabled = dpn === 0;
+        this.bw10Btn.disabled  = dpn === 0;
+        this.bwBtn.disabled    = dpn === 0;
+        this.fwBtn.disabled    = dpn === v.plyCount;
+        this.fw10Btn.disabled  = dpn === v.plyCount;
+        this.fwEndBtn.disabled = dpn === v.plyCount;
+        this.passBtn.disabled = dpn !== v.plyCount || !v.passEnabled || v.gameOver
+            || (this.activeIdx.startsWith('O_') && !this._isMyTurn());
+        this.resignBtn.hidden = this.activeIdx.startsWith('L_');
+        this.resignBtn.disabled = this.activeIdx.startsWith('L_') || this._active.finished
+            || [...this._active.players.entries()].every(([s, pi]) => pi.type !== 'local' || v.resignedPlayers.includes(s));
     }
 
     private _renderHistoryPanel(v: BoardView) {
         const n = v.history.length;
-        const scroll = Math.max(0, Math.min(this._active?.idxShowHistory ?? 0, n - 1));
-        if (this._active) this._active.idxShowHistory = scroll;
+        const scroll = Math.max(0, Math.min(this._active.idxShowHistory, n - 1));
+        this._active.idxShowHistory = scroll;
         const nAvail = n - scroll;
         const nShow  = Math.min(nAvail, this.nShowHistory);
 
@@ -513,7 +514,7 @@ export class Renderer {
                 const ctx2 = canvas.getContext('2d')!;
                 ctx2.fillStyle = COLOR_BOARD;
                 ctx2.fillRect(0, 0, cw, ch);
-                drawBoardFull(ctx2, v, this.game.adj, he.board, cw, ch, null);
+                drawBoardFull(ctx2, v, this._active.game.adj, he.board, cw, ch, null);
             });
         }
     }
@@ -577,25 +578,29 @@ export class Renderer {
             .map(([p, c]) => `${sideName(Number(p))}: ${c}`)
             .join('  ');
 
-        const randomEvaled = this._active?.randomEvaled ?? null;
+        const randomEvaled = this._active.randomEvaled;
         const evalStr = randomEvaled
             ? Object.entries(randomEvaled).map(([p, w]) => `P${p} ${(w as number).toFixed(1)}`).join(' | ')
             : 'None';
 
         const fmtMap = (map: Record<number, number>) =>
             Object.entries(map).map(([s, p]) => `${sideName(Number(s))}→P${p}`).join(', ');
+        const onlineGameIds = [...this.activeGames.keys()].filter(k => k.startsWith('O_'));
+        const localGameIds  = [...this.activeGames.keys()].filter(k => k.startsWith('L_'));
         const pendingGamesSection = this.pendingGames.size > 0 ? `
             <div><b>Pending games:</b> ${[...this.pendingGames.keys()].join(', ')}</div>` : '';
-        const activeGamesSection = this.activeGames.size > 0 ? `
-            <div><b>Active games:</b> ${[...this.activeGames.keys()].join(', ')}</div>` : '';
-        const gamesSectionHr = (this.pendingGames.size > 0 || this.activeGames.size > 0) ? `
+        const activeGamesSection = onlineGameIds.length > 0 ? `
+            <div><b>Active online games:</b> ${onlineGameIds.join(', ')}</div>` : '';
+        const localGamesSection = localGameIds.length > 1 ? `
+            <div><b>Active local games:</b> ${localGameIds.join(', ')}</div>` : '';
+        const gamesSectionHr = (this.pendingGames.size > 0 || onlineGameIds.length > 0 || localGameIds.length > 1) ? `
             <hr style="margin:6px 0">` : '';
-        const onlineSection = this.gameMode === GameMode.online ? `
-            <div><b>Online game:</b> ${this.activeIdx}</div>
-            <div><b>Your player slot:</b> ${this._active ? [...this._active.players.entries()].filter(([, pi]) => pi.type === 'local').map(([s]) => s).join(', ') : undefined}</div>
+        const onlineSection = this.activeIdx.startsWith('O_') ? `
+            <div><b>Online game:</b> ${this.activeIdx.slice(2)}</div>
+            <div><b>Your player slot:</b> ${[...this._active.players.entries()].filter(([, pi]) => pi.type === 'local').map(([s]) => s).join(', ')}</div>
             <div><b>Your name:</b> ${this.playerName || '(not set)'}</div>
             <hr style="margin:6px 0">` : '';
-        this.statusPanel.innerHTML = `${pendingGamesSection}${activeGamesSection}${gamesSectionHr}${onlineSection}
+        this.statusPanel.innerHTML = `${pendingGamesSection}${activeGamesSection}${localGamesSection}${gamesSectionHr}${onlineSection}
             <div><b>To move:</b> ${sideName(v.nextPlayer)}</div>
             <div><b>Last move:</b> ${lastMoveStr}</div>
             <div><b>Stones:</b> ${stoneLine}</div>
@@ -627,7 +632,7 @@ export class Renderer {
     }
 
     private _onBoardClick(e: MouseEvent) {
-        const v    = this.game.getView();
+        const v    = this._active.game.getView();
         const rect = this.mainCanvas.getBoundingClientRect();
         const mx   = e.clientX - rect.left;
         const my   = e.clientY - rect.top;
@@ -642,13 +647,13 @@ export class Renderer {
             if (dist < bestDist) { bestDist = dist; bestId = i; }
         }
         if (bestId >= 0 && bestDist < stone_r * 1.3) {
-            if (this.displayPlyNum !== v.plyCount) return;
-            if (this.gameMode === GameMode.online) {
+            if (this._active.displayPlyNum !== v.plyCount) return;
+            if (this.activeIdx.startsWith('O_')) {
                 if (this._isMyTurn()) void this._submitOnlineMove(bestId);
             } else {
                 this.engineManager.cancel();
-                this.game.makeMove(bestId);
-                this.displayPlyNum = this.game.getView().plyCount;
+                this._active.game.makeMove(bestId);
+                this._active.displayPlyNum = this._active.game.getView().plyCount;
                 this._render();
             }
         }
@@ -657,13 +662,14 @@ export class Renderer {
     private _newGame(bc: BoardConfig) {
         this.engineManager.cancel();
         this.engineManager.sessionId = null;
-        this.game = new BoardState(
+        const bs = new BoardState(
             this.newCfg.numStones, this.newCfg.numPlayers, this.newCfg.turnStoneList, this.newCfg.stoneToPlayerMap,
-            this.newCfg.forcedPassOnly,
-            new Array(bc.N).fill(0), bc,
+            this.newCfg.forcedPassOnly, new Array(bc.N).fill(0), bc,
         );
+        const id = 'L_' + makeId(12);
+        this.activeGames.set(id, _makeLocalActiveGame(bs, this.newCfg));
+        this.activeIdx = id;
         this.currentCfg = this.newCfg.copy();
-        this.displayPlyNum  = 0;
     }
 
     private _parseCommand(raw: string) {
@@ -690,7 +696,7 @@ export class Renderer {
             void this._joinOnlineGame(parts[1].toUpperCase());
         }
         else if (cmd === 'em') {
-            if (this.gameMode === GameMode.online) { this._setCmdOutput('Engine moves are disabled in online mode'); return; }
+            if (this.activeIdx.startsWith('O_')) { this._setCmdOutput('Engine moves are disabled in online mode'); return; }
             const n = posInt(parts[1] ?? '1');
             if (n === null) { this._setCmdOutput('em: n must be a positive integer'); return; }
             if (!this.engineManager.register(n)) console.warn('em: engine move already in progress');
@@ -768,40 +774,39 @@ export class Renderer {
             this.nShowHistory = n;
         }
         else if (cmd === 'w') {
-            if (this.gameMode === GameMode.online) { this._setCmdOutput('Cannot withdraw moves in online games'); return; }
+            if (this.activeIdx.startsWith('O_')) { this._setCmdOutput('Cannot withdraw moves in online games'); return; }
             const n = posInt(parts[1]);
             if (n === null) { this._setCmdOutput('Usage: w <n>  (positive integer)'); return; }
             this.engineManager.cancel();
             this.engineManager.sessionId = null;
-            for (let i = 0; i < n; i++) this.game.retractMove();
-            this.displayPlyNum = Math.min(this.displayPlyNum, this.game.history.length - 1);
+            for (let i = 0; i < n; i++) this._active.game.retractMove();
+            this._active.displayPlyNum = Math.min(this._active.displayPlyNum, this._active.game.history.length - 1);
         }
         else if (cmd === 'wcd') {
-            if (this.gameMode === GameMode.online) { this._setCmdOutput('Cannot withdraw moves in online games'); return; }
+            if (this.activeIdx.startsWith('O_')) { this._setCmdOutput('Cannot withdraw moves in online games'); return; }
             this.engineManager.cancel();
             this.engineManager.sessionId = null;
-            const n = this.game.history.length - 1 - this.displayPlyNum;
-            for (let i = 0; i < n; i++) this.game.retractMove();
+            const n = this._active.game.history.length - 1 - this._active.displayPlyNum;
+            for (let i = 0; i < n; i++) this._active.game.retractMove();
         }
         else if (cmd === 'fw') {
             const n = posInt(parts[1]);
             if (n === null) { this._setCmdOutput('Usage: fw <n>  (positive integer)'); return; }
-            this.displayPlyNum = Math.min(this.displayPlyNum + n, this.game.history.length - 1);
+            this._active.displayPlyNum = Math.min(this._active.displayPlyNum + n, this._active.game.history.length - 1);
         }
         else if (cmd === 'bw') {
             const n = posInt(parts[1]);
             if (n === null) { this._setCmdOutput('Usage: bw <n>  (positive integer)'); return; }
-            this.displayPlyNum = Math.max(this.displayPlyNum - n, 0);
+            this._active.displayPlyNum = Math.max(this._active.displayPlyNum - n, 0);
         }
         else if (cmd === 're') {
             const n = posInt(parts[1]);
             if (n === null) { this._setCmdOutput('Usage: re <n>  (positive integer)'); return; }
-            if (this._active) this._active.randomEvaled = this.game.randomEvaluate(n);
+            this._active.randomEvaled = this._active.game.randomEvaluate(n);
         }
         else if (cmd === 'new') {
-            if (this._active && !this._active.finished)
+            if (this.activeIdx.startsWith('O_') && !this._active.finished)
                 { this._setCmdOutput('Cannot create new board during active online games'); return; }
-            this.activeIdx = null;
             const entry = _cmdToBoard.get(this.newCfg.boardType)!;
             this._newGame(entry.fn(...this.newCfg.boardArgs));
         }
@@ -815,12 +820,12 @@ export class Renderer {
             if (!this.selfPlay) return;
             const end = Date.now() + 40;
             while (Date.now() < end) {
-                this.game.randomMove();
-                if (this.game.lastMove().moveType === MoveType.GAMEOVER) {
+                this._active.game.randomMove();
+                if (this._active.game.lastMove().moveType === MoveType.GAMEOVER) {
                     this.selfPlay = false; break;
                 }
             }
-            this.displayPlyNum = this.game.history.length - 1;
+            this._active.displayPlyNum = this._active.game.history.length - 1;
             this._render();
             if (this.selfPlay) this.selfPlayTimer = requestAnimationFrame(tick);
         };
@@ -839,7 +844,6 @@ export class Renderer {
 
     private _isMyTurn(): boolean {
         const ag = this._active;
-        if (!ag) return false;
         const v = ag.game.getView();
         return !v.gameOver && ag.players.get(v.stoneToPlayerMap[v.nextPlayer])?.type === 'local';
     }
@@ -875,7 +879,7 @@ export class Renderer {
     // Route a game/state event (push or subscribe reply): update the active game, or
     // activate a pending game once it has started.
     private _handleGameState(id: string, state: OnlineStateResponse, config: GameConfig) {
-        if (this.activeGames.has(id)) {
+        if (this.activeGames.has('O_' + id)) {
             this._applyOnlineState(id, state);
         } else if (this.pendingGames.has(id) && state.status === 'playing') {
             this._activatePendingGame(id, state, config);
@@ -887,7 +891,8 @@ export class Renderer {
     private _activatePendingGame(id: string, state: OnlineStateResponse, config: GameConfig) {
         const positions = this.pendingGames.get(id);
         if (!positions) return;
-        if (!this._setupOnlineBoard(config)) return;
+        const bs = this._setupOnlineBoard(config);
+        if (!bs) return;
         const players = new Map<number, PlayerInfo>();
         for (let i = 0; i < state.players.length; i++) {
             const p = state.players[i];
@@ -895,7 +900,7 @@ export class Renderer {
         }
         this.pendingGames.delete(id);
         const ag: ActiveGame = {
-            game:          this.game,
+            game:          bs,
             positions,
             players,
             finished:      false,
@@ -903,35 +908,34 @@ export class Renderer {
             idxShowHistory: 0,
             randomEvaled:  null,
         };
-        this.activeGames.set(id, ag);
-        this.activeIdx = id;
+        const prefixedId = 'O_' + id;
+        this.activeGames.set(prefixedId, ag);
+        this.activeIdx = prefixedId;
         const localEntries = [...ag.players.entries()].filter(([, pi]) => pi.type === 'local');
         this._setCmdOutput(`Game started! You are player(s) ${localEntries.map(([s, pi]) => `${s} (${pi.name})`).join(', ')}`);
         this._render();
         this._applyOnlineState(id, state);
     }
 
-    // Build the local board for a started online game from its config. Returns false
-    // if the board type is unknown.
-    private _setupOnlineBoard(config: GameConfig): boolean {
+    // Build the board for a started online game from its config. Returns null if the
+    // board type is unknown.
+    private _setupOnlineBoard(config: GameConfig): BoardState | null {
         const boardEntry = _cmdToBoard.get(config.boardType);
-        if (!boardEntry) { this._setCmdOutput(`Unknown board type: ${config.boardType}`); return false; }
+        if (!boardEntry) { this._setCmdOutput(`Unknown board type: ${config.boardType}`); return null; }
         const bc = boardEntry.fn(...config.boardArgs);
         this.engineManager.cancel();
         this.engineManager.sessionId = null;
-        this.game = new BoardState(
+        this.currentCfg = config;
+        return new BoardState(
             config.numStones, config.numPlayers,
             config.turnStoneList, config.stoneToPlayerMap,
             config.forcedPassOnly, new Array(bc.N).fill(0), bc,
         );
-        this.currentCfg = config;
-        this.displayPlyNum   = 0;
-        return true;
     }
 
     private _applyOnlineState(id: string, state: OnlineStateResponse) {
-        const ag = this.activeGames.get(id)!;
-        const isActive = id === this.activeIdx;
+        const ag = this.activeGames.get('O_' + id)!;
+        const isActive = 'O_' + id === this.activeIdx;
 
         // Sync resigned players before replaying moves so auto-passes succeed.
         for (const player of state.resignedPlayers) ag.game.resign(player);
@@ -942,7 +946,6 @@ export class Renderer {
             for (let i = ag.game.lastMoves.length; i < state.moves.length; i++) ag.game.makeMove(state.moves[i]);
             if (wasAtLive) {
                 ag.displayPlyNum = ag.game.getView().plyCount;
-                if (isActive) this.displayPlyNum = ag.displayPlyNum;
             }
             ag.randomEvaled = null;
 
@@ -979,19 +982,19 @@ export class Renderer {
     }
 
     private async _resignOnline() {
-        if (!this.activeIdx) return;
+        if (this.activeIdx.startsWith('L_')) return;
         try {
-            await conn.request('game/resign', { id: this.activeIdx }).promise;
+            await conn.request('game/resign', { id: this.activeIdx.slice(2) }).promise;
         } catch (e: any) { this._setCmdOutput(`Resign failed: ${e.message}`); }
     }
 
     private async _submitOnlineMove(moveIndex: number | null) {
-        if (!this.activeIdx) return;
+        if (this.activeIdx.startsWith('L_')) return;
         try {
             await conn.request('game/move', {
-                id:        this.activeIdx,
+                id:        this.activeIdx.slice(2),
                 moveIndex,
-                clientIdx: this._active!.game.lastMoves.length,
+                clientIdx: this._active.game.lastMoves.length,
             }).promise;
         } catch (e: any) { this._setCmdOutput(`Move rejected: ${e.message}`); }
     }
