@@ -1,16 +1,7 @@
 import { BoardState } from '@shared/boardState.js';
 import { PrescribedBoardMap, PrescribedBoardFns, PrescribedBoard } from '@shared/boardConfig.js';
 import type { BoardConfig } from '@shared/boardConfig.js';
-
-export interface OnlineGameConfig {
-    boardType: string;
-    boardArgs: number[];
-    numStones: number;
-    numPlayers: number;
-    turnStoneList: number[];
-    stoneToPlayerMap: Record<number, number>;
-    forcedPassOnly: boolean;
-}
+import type { OnlineGameConfig, OnlineStateResponse } from '@shared/types.js';
 
 interface OnlineGame {
     id: string;
@@ -23,16 +14,6 @@ interface OnlineGame {
     status: 'waiting' | 'playing' | 'finished';
     // Resignations are tracked on boardState.resignedPlayers (a resigned player auto-passes
     // and is excluded from scoring); the game also ends if ≤1 player remains.
-}
-
-export interface OnlineStateResponse {
-    status: 'waiting' | 'playing' | 'finished';
-    numPlayersRequired: number;
-    numJoined: number;
-    players: ({ name: string; slot: number } | null)[];  // indexed by join position
-    moves: (number | null)[];
-    currentStone: number | null;
-    winners: number[];
 }
 
 const boardTypeToFn = new Map<string, (...args: number[]) => BoardConfig>();
@@ -110,9 +91,11 @@ class OnlineGameManager {
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
         let currentStone: number | null = null;
         let winners: number[] = [];
+        let resignedPlayers: number[] = [];
         if (game.boardState) {
             const v = game.boardState.getView();
-            winners = v.winners;   // boardState already excludes resigned players
+            winners = v.winners;
+            resignedPlayers = v.resignedPlayers;
             currentStone = game.status === 'playing' ? v.nextPlayer : null;
         }
         return {
@@ -123,6 +106,7 @@ class OnlineGameManager {
             moves: game.moves,
             currentStone,
             winners,
+            resignedPlayers,
         };
     }
 

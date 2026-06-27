@@ -1,5 +1,5 @@
 import { BoardState, MoveType, STONE_MAP } from '@shared/boardState.js';
-import type { BoardView } from '@shared/types.js';
+import type { BoardView, OnlineGameConfig, OnlineStateResponse } from '@shared/types.js';
 import type { BoardConfig } from '@shared/boardConfig.js';
 import {
     PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns,
@@ -10,25 +10,6 @@ import { ServerConnection, type RequestHandle } from './serverConnection.js';
 // EngineManager (AI proxy) and the online-game commands.
 const conn = new ServerConnection();
 
-interface OnlineGameConfig {
-    boardType: string;
-    boardArgs: number[];
-    numStones: number;
-    numPlayers: number;
-    turnStoneList: number[];
-    stoneToPlayerMap: Record<number, number>;
-    forcedPassOnly: boolean;
-}
-
-interface OnlineStateResponse {
-    status: 'waiting' | 'playing' | 'finished';
-    numPlayersRequired: number;
-    numJoined: number;
-    players: ({ name: string; slot: number } | null)[];
-    moves: (number | null)[];
-    currentStone: number | null;
-    winners: number[];
-}
 
 enum GameMode { local = 'local', online = 'online' }
 
@@ -955,6 +936,9 @@ export class Renderer {
 
         // Nothing to sync until we've entered the online game (board built above).
         if (this.gameMode !== GameMode.online) return;
+
+        // Sync resigned players before replaying moves so auto-passes succeed.
+        for (const player of state.resignedPlayers) this.game.resign(player);
 
         // Apply any new moves from the server
         if (state.moves.length > this.onlineMovesSeen) {

@@ -33,6 +33,27 @@ export interface HistoryEntry {
     lenTurnList: number;
 }
 
+export interface OnlineGameConfig {
+    boardType: string;
+    boardArgs: number[];
+    numStones: number;
+    numPlayers: number;
+    turnStoneList: number[];
+    stoneToPlayerMap: Record<number, number>;
+    forcedPassOnly: boolean;
+}
+
+export interface OnlineStateResponse {
+    status: 'waiting' | 'playing' | 'finished';
+    numPlayersRequired: number;
+    numJoined: number;
+    players: ({ name: string; slot: number } | null)[];
+    moves: (number | null)[];
+    currentStone: number | null;
+    winners: number[];
+    resignedPlayers: number[];
+}
+
 export interface BoardView {
     N: number;
     pos: number[][];           // N×2
