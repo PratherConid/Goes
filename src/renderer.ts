@@ -22,7 +22,7 @@ function _makeLocalActiveGame(bs: BoardState, cfg: GameConfig): ActiveGame {
     const players = new Map<number, PlayerInfo>();
     for (const slot of new Set(Object.values(cfg.stoneToPlayerMap)))
         players.set(slot, new PlayerInfo('local', ''));
-    return { game: bs, positions: [], players, finished: false,
+    return { bs: bs, positions: [], players,
              displayPlyNum: 0, idxShowHistory: 0, randomEvaled: null };
 }
 
@@ -205,10 +205,9 @@ class EngineManager {
 // ── Renderer class ───────────────────────────────────────────────────────────
 
 interface ActiveGame {
-    game: BoardState;
+    bs: BoardState;
     positions: number[];                          // join indices of local players
     players: Map<number, PlayerInfo>;             // key = slot; local players have type 'local'
-    finished: boolean;
     displayPlyNum: number;
     idxShowHistory: number;
     randomEvaled: Record<number, number> | null;
@@ -307,31 +306,22 @@ export class Renderer {
             this._render();
         });
         this.fwBtn.addEventListener('click', () => {
-            this._active.displayPlyNum = Math.min(this._active.displayPlyNum + 1, this._active.game.history.length - 1);
+            this._active.displayPlyNum = Math.min(this._active.displayPlyNum + 1, this._active.bs.history.length - 1);
             this._render();
         });
         this.fw10Btn.addEventListener('click', () => {
-            this._active.displayPlyNum = Math.min(this._active.displayPlyNum + 10, this._active.game.history.length - 1);
+            this._active.displayPlyNum = Math.min(this._active.displayPlyNum + 10, this._active.bs.history.length - 1);
             this._render();
         });
         this.fwEndBtn.addEventListener('click', () => {
-            this._active.displayPlyNum = this._active.game.history.length - 1;
+            this._active.displayPlyNum = this._active.bs.history.length - 1;
             this._render();
         });
         this.passBtn.addEventListener('click', () => {
-            const v = this._active.game.getView();
-            if (v.passEnabled && !v.gameOver) {
-                if (this.activeIdx.startsWith('O_')) {
-                    if (this._isMyTurn()) void this._submitOnlineMove(null);
-                } else {
-                    this.engineManager.cancel();
-                    this._active.game.makeMove(null);
-                    this._active.displayPlyNum = this._active.game.getView().plyCount;
-                    this._render();
-                }
-            }
+            const v = this._active.bs.getView();
+            if (v.passEnabled && !v.gameOver) this._tryMakeMove(null);
         });
-        this.resignBtn.addEventListener('click', () => { void this._resignOnline(); });
+        this.resignBtn.addEventListener('click', () => { void this._resign(); });
         this.cmdInput.addEventListener('keydown', e => {
             if (e.key === 'Enter') { this._parseCommand(this.cmdInput.value.trim()); this.cmdInput.value = ''; this._render(); }
         });
@@ -351,7 +341,7 @@ export class Renderer {
             btn.addEventListener('click', () => {
                 const action = btn.dataset['action']!;
                 const step   = parseInt(btn.dataset['step'] ?? '0');
-                const v      = this._active.game.getView();
+                const v      = this._active.bs.getView();
                 const n      = v.history.length;
                 if      (action === 'prev')  this._active.idxShowHistory = Math.max(0, this._active.idxShowHistory - step);
                 else if (action === 'next')  this._active.idxShowHistory = Math.min(this._active.idxShowHistory + step, n - 1);
@@ -392,10 +382,10 @@ export class Renderer {
             const outcome = this.engineManager.poll();
             if (outcome === null) break;
             if (outcome === 'needsRequest') {
-                const v = this._active.game.getView();
+                const v = this._active.bs.getView();
                 if (v.gameOver) { console.warn('em: game is already over'); this.engineManager.cancel(); break; }
                 if (this._active.displayPlyNum !== v.plyCount) { console.warn('em: not at live position (navigate to end first)'); this.engineManager.cancel(); break; }
-                const moves = this._active.game.lastMoves.map(m => m.pos);
+                const moves = this._active.bs.lastMoves.map(m => m.pos);
                 this.engineManager.submit({
                     board_type:          this.currentCfg.boardType,
                     board_args:          this.currentCfg.boardArgs,
@@ -412,29 +402,29 @@ export class Renderer {
                 });
                 break;
             }
-            if (!this._active.game.makeMove(outcome.move)) {
+            if (!this._active.bs.makeMove(outcome.move)) {
                 console.error('em: engine returned an illegal move', outcome.move);
                 this.engineManager.cancel();
                 break;
             }
-            this._active.displayPlyNum = this._active.game.getView().plyCount;
+            this._active.displayPlyNum = this._active.bs.getView().plyCount;
             // loop: poll() has already advanced state to 'needsRequest' or 'idle'
         }
     }
 
     private _render() {
         this._checkAsync();
-        const v = this._active.game.getView();
+        const v = this._active.bs.getView();
         this._renderMainBoard(v);
         this._renderControlBar(v);
         this._renderHistoryPanel(v);
         if (this.activeTab === 'status') this._renderStatus(v);
         if (this.autoForced && !this.selfPlay && !v.gameOver && this.activeIdx.startsWith('L_')) {
-            const legals = this._active.game.legalMoveList();
+            const legals = this._active.bs.legalMoveList();
             if (legals.length === 0 || legals.length === 1) {
                 if (this.engineManager.running) return;
-                this._active.game.makeMove(legals.length === 0 ? null : legals[0]);
-                this._active.displayPlyNum = this._active.game.getView().plyCount;
+                this._active.bs.makeMove(legals.length === 0 ? null : legals[0]);
+                this._active.displayPlyNum = this._active.bs.getView().plyCount;
                 requestAnimationFrame(() => this._render());
             }
         }
@@ -451,7 +441,7 @@ export class Renderer {
         const ctx = this.mainCanvas.getContext('2d')!;
         ctx.fillStyle = COLOR_BOARD;
         ctx.fillRect(0, 0, size, size);
-        drawBoardFull(ctx, v, this._active.game.adj, v.history[this._active.displayPlyNum].board,
+        drawBoardFull(ctx, v, this._active.bs.adj, v.history[this._active.displayPlyNum].board,
                       size, size, v.legalMoveHistory[this._active.displayPlyNum]);
     }
 
@@ -465,10 +455,9 @@ export class Renderer {
         this.fwBtn.disabled    = dpn === v.plyCount;
         this.fw10Btn.disabled  = dpn === v.plyCount;
         this.fwEndBtn.disabled = dpn === v.plyCount;
-        this.passBtn.disabled = dpn !== v.plyCount || !v.passEnabled || v.gameOver
-            || (this.activeIdx.startsWith('O_') && !this._isMyTurn());
+        this.passBtn.disabled = dpn !== v.plyCount || !v.passEnabled || !this._isMyTurn();
         this.resignBtn.hidden = this.activeIdx.startsWith('L_');
-        this.resignBtn.disabled = this.activeIdx.startsWith('L_') || this._active.finished
+        this.resignBtn.disabled = this.activeIdx.startsWith('L_') || v.gameOver
             || [...this._active.players.entries()].every(([s, pi]) => pi.type !== 'local' || v.resignedPlayers.includes(s));
     }
 
@@ -514,7 +503,7 @@ export class Renderer {
                 const ctx2 = canvas.getContext('2d')!;
                 ctx2.fillStyle = COLOR_BOARD;
                 ctx2.fillRect(0, 0, cw, ch);
-                drawBoardFull(ctx2, v, this._active.game.adj, he.board, cw, ch, null);
+                drawBoardFull(ctx2, v, this._active.bs.adj, he.board, cw, ch, null);
             });
         }
     }
@@ -552,6 +541,8 @@ export class Renderer {
             ${row('setname &lt;name&gt;', 'Set your display name for online games')}
             ${row('newo',                 'Create online game with current config; prints game ID')}
             ${row('joino &lt;ID&gt;',     'Join an existing online game by ID')}
+            ${row('swl &lt;ID&gt;',       'Switch active view to a local game by ID')}
+            ${row('swo &lt;ID&gt;',       'Switch active view to an online game by ID')}
             ${head('Board Types')}
             ${[..._cmdToBoard.entries()].map(([cmd, { argStr, desc }]) => row(`${cmd} ${argStr}`, desc)).join('\n            ')}
         </table>`;
@@ -590,10 +581,10 @@ export class Renderer {
         const pendingGamesSection = this.pendingGames.size > 0 ? `
             <div><b>Pending games:</b> ${[...this.pendingGames.keys()].join(', ')}</div>` : '';
         const activeGamesSection = onlineGameIds.length > 0 ? `
-            <div><b>Active online games:</b> ${onlineGameIds.join(', ')}</div>` : '';
-        const localGamesSection = localGameIds.length > 1 ? `
-            <div><b>Active local games:</b> ${localGameIds.join(', ')}</div>` : '';
-        const gamesSectionHr = (this.pendingGames.size > 0 || onlineGameIds.length > 0 || localGameIds.length > 1) ? `
+            <div><b>Active online games:</b> ${onlineGameIds.map(id => id.slice(2)).join(', ')}</div>` : '';
+        const localGamesSection = localGameIds.length > 0 ? `
+            <div><b>Active local games:</b> ${localGameIds.map(id => id.slice(2)).join(', ')}</div>` : '';
+        const gamesSectionHr = (this.pendingGames.size > 0 || onlineGameIds.length > 0 || localGameIds.length > 0) ? `
             <hr style="margin:6px 0">` : '';
         const onlineSection = this.activeIdx.startsWith('O_') ? `
             <div><b>Online game:</b> ${this.activeIdx.slice(2)}</div>
@@ -632,7 +623,7 @@ export class Renderer {
     }
 
     private _onBoardClick(e: MouseEvent) {
-        const v    = this._active.game.getView();
+        const v    = this._active.bs.getView();
         const rect = this.mainCanvas.getBoundingClientRect();
         const mx   = e.clientX - rect.left;
         const my   = e.clientY - rect.top;
@@ -648,14 +639,7 @@ export class Renderer {
         }
         if (bestId >= 0 && bestDist < stone_r * 1.3) {
             if (this._active.displayPlyNum !== v.plyCount) return;
-            if (this.activeIdx.startsWith('O_')) {
-                if (this._isMyTurn()) void this._submitOnlineMove(bestId);
-            } else {
-                this.engineManager.cancel();
-                this._active.game.makeMove(bestId);
-                this._active.displayPlyNum = this._active.game.getView().plyCount;
-                this._render();
-            }
+            this._tryMakeMove(bestId);
         }
     }
 
@@ -694,6 +678,21 @@ export class Renderer {
         else if (cmd === 'joino') {
             if (!parts[1]) { this._setCmdOutput('Usage: joino <ID>'); return; }
             void this._joinOnlineGame(parts[1].toUpperCase());
+        }
+        else if (cmd === 'swl') {
+            if (!parts[1]) { this._setCmdOutput('Usage: swl <game-id>'); return; }
+            const id = parts[1].startsWith('L_') ? parts[1] : 'L_' + parts[1];
+            if (!this.activeGames.has(id)) { this._setCmdOutput(`Local game not found: ${id}`); return; }
+            this.engineManager.cancel();
+            this.activeIdx = id;
+        }
+        else if (cmd === 'swo') {
+            if (!parts[1]) { this._setCmdOutput('Usage: swo <game-id>'); return; }
+            const raw = parts[1].startsWith('O_') ? parts[1].slice(2) : parts[1];
+            const id = 'O_' + raw.toUpperCase();
+            if (!this.activeGames.has(id)) { this._setCmdOutput(`Online game not found: ${raw.toUpperCase()}`); return; }
+            this.engineManager.cancel();
+            this.activeIdx = id;
         }
         else if (cmd === 'em') {
             if (this.activeIdx.startsWith('O_')) { this._setCmdOutput('Engine moves are disabled in online mode'); return; }
@@ -779,20 +778,20 @@ export class Renderer {
             if (n === null) { this._setCmdOutput('Usage: w <n>  (positive integer)'); return; }
             this.engineManager.cancel();
             this.engineManager.sessionId = null;
-            for (let i = 0; i < n; i++) this._active.game.retractMove();
-            this._active.displayPlyNum = Math.min(this._active.displayPlyNum, this._active.game.history.length - 1);
+            for (let i = 0; i < n; i++) this._active.bs.retractMove();
+            this._active.displayPlyNum = Math.min(this._active.displayPlyNum, this._active.bs.history.length - 1);
         }
         else if (cmd === 'wcd') {
             if (this.activeIdx.startsWith('O_')) { this._setCmdOutput('Cannot withdraw moves in online games'); return; }
             this.engineManager.cancel();
             this.engineManager.sessionId = null;
-            const n = this._active.game.history.length - 1 - this._active.displayPlyNum;
-            for (let i = 0; i < n; i++) this._active.game.retractMove();
+            const n = this._active.bs.history.length - 1 - this._active.displayPlyNum;
+            for (let i = 0; i < n; i++) this._active.bs.retractMove();
         }
         else if (cmd === 'fw') {
             const n = posInt(parts[1]);
             if (n === null) { this._setCmdOutput('Usage: fw <n>  (positive integer)'); return; }
-            this._active.displayPlyNum = Math.min(this._active.displayPlyNum + n, this._active.game.history.length - 1);
+            this._active.displayPlyNum = Math.min(this._active.displayPlyNum + n, this._active.bs.history.length - 1);
         }
         else if (cmd === 'bw') {
             const n = posInt(parts[1]);
@@ -802,10 +801,10 @@ export class Renderer {
         else if (cmd === 're') {
             const n = posInt(parts[1]);
             if (n === null) { this._setCmdOutput('Usage: re <n>  (positive integer)'); return; }
-            this._active.randomEvaled = this._active.game.randomEvaluate(n);
+            this._active.randomEvaled = this._active.bs.randomEvaluate(n);
         }
         else if (cmd === 'new') {
-            if (this.activeIdx.startsWith('O_') && !this._active.finished)
+            if (this.activeIdx.startsWith('O_') && !this._active.bs.gameOver())
                 { this._setCmdOutput('Cannot create new board during active online games'); return; }
             const entry = _cmdToBoard.get(this.newCfg.boardType)!;
             this._newGame(entry.fn(...this.newCfg.boardArgs));
@@ -820,12 +819,12 @@ export class Renderer {
             if (!this.selfPlay) return;
             const end = Date.now() + 40;
             while (Date.now() < end) {
-                this._active.game.randomMove();
-                if (this._active.game.lastMove().moveType === MoveType.GAMEOVER) {
+                this._active.bs.randomMove();
+                if (this._active.bs.gameOver()) {
                     this.selfPlay = false; break;
                 }
             }
-            this._active.displayPlyNum = this._active.game.history.length - 1;
+            this._active.displayPlyNum = this._active.bs.history.length - 1;
             this._render();
             if (this.selfPlay) this.selfPlayTimer = requestAnimationFrame(tick);
         };
@@ -844,8 +843,19 @@ export class Renderer {
 
     private _isMyTurn(): boolean {
         const ag = this._active;
-        const v = ag.game.getView();
+        const v = ag.bs.getView();
         return !v.gameOver && ag.players.get(v.stoneToPlayerMap[v.nextPlayer])?.type === 'local';
+    }
+
+    private _tryMakeMove(moveIndex: number | null): void {
+        if (this.activeIdx.startsWith('O_')) {
+            if (this._isMyTurn()) void this._submitOnlineMove(moveIndex);
+        } else {
+            this.engineManager.cancel();
+            this._active.bs.makeMove(moveIndex);
+            this._active.displayPlyNum = this._active.bs.getView().plyCount;
+            this._render();
+        }
     }
 
     private async _createOnlineGame() {
@@ -900,10 +910,9 @@ export class Renderer {
         }
         this.pendingGames.delete(id);
         const ag: ActiveGame = {
-            game:          bs,
+            bs:          bs,
             positions,
             players,
-            finished:      false,
             displayPlyNum: 0,
             idxShowHistory: 0,
             randomEvaled:  null,
@@ -937,21 +946,22 @@ export class Renderer {
         const ag = this.activeGames.get('O_' + id)!;
         const isActive = 'O_' + id === this.activeIdx;
 
+        const wasGameOver = ag.bs.gameOver();
         // Sync resigned players before replaying moves so auto-passes succeed.
-        for (const player of state.resignedPlayers) ag.game.resign(player);
+        for (const player of state.resignedPlayers) ag.bs.resign(player);
 
         // Apply any new moves from the server.
-        if (state.moves.length > ag.game.lastMoves.length) {
-            const wasAtLive = ag.displayPlyNum === ag.game.getView().plyCount;
-            for (let i = ag.game.lastMoves.length; i < state.moves.length; i++) ag.game.makeMove(state.moves[i]);
+        if (state.moves.length > ag.bs.lastMoves.length) {
+            const wasAtLive = ag.displayPlyNum === ag.bs.getView().plyCount;
+            for (let i = ag.bs.lastMoves.length; i < state.moves.length; i++) ag.bs.makeMove(state.moves[i]);
             if (wasAtLive) {
-                ag.displayPlyNum = ag.game.getView().plyCount;
+                ag.displayPlyNum = ag.bs.getView().plyCount;
             }
             ag.randomEvaled = null;
 
             // Notify the active player when it becomes their turn.
             if (isActive) {
-                const v = ag.game.getView();
+                const v = ag.bs.getView();
                 if (!v.gameOver) {
                     if (ag.players.get(v.stoneToPlayerMap[v.nextPlayer])?.type === 'local')
                         this._setCmdOutput('Your turn!');
@@ -965,10 +975,9 @@ export class Renderer {
         }
 
         // Game-over notification (once).
-        if (state.status === 'finished' && !ag.finished) {
-            ag.finished = true;
+        if (state.status === 'finished' && !wasGameOver) {
             if (isActive) {
-                const v = ag.game.getView();
+                const v = ag.bs.getView();
                 const winnerText = v.winners.length === 0
                     ? 'No winners'
                     : v.winners.length === 1
@@ -981,7 +990,7 @@ export class Renderer {
         if (isActive) this._render();
     }
 
-    private async _resignOnline() {
+    private async _resign() {
         if (this.activeIdx.startsWith('L_')) return;
         try {
             await conn.request('game/resign', { id: this.activeIdx.slice(2) }).promise;
@@ -994,7 +1003,7 @@ export class Renderer {
             await conn.request('game/move', {
                 id:        this.activeIdx.slice(2),
                 moveIndex,
-                clientIdx: this._active.game.lastMoves.length,
+                clientIdx: this._active.bs.lastMoves.length,
             }).promise;
         } catch (e: any) { this._setCmdOutput(`Move rejected: ${e.message}`); }
     }

@@ -17,9 +17,6 @@ interface OnlineGame {
     config: GameConfig;
     players: Map<number, PlayerInfo>;            // key = slot; insertion order = join order
     boardState: BoardState;                      // always present (game has started)
-    // Not purely derivable from boardState: when resignation leaves ≤1 player the game ends
-    // immediately without a game-over move being recorded in boardState.
-    status: 'playing' | 'finished';
 }
 
 const boardTypeToFn = new Map<string, (...args: number[]) => BoardConfig>();
@@ -82,7 +79,7 @@ class OnlineGameManager {
             pending.config.forcedPassOnly, new Array(pending.bc.N).fill(0), pending.bc,
         );
         this.pendingGames.delete(pending.id);
-        const game: OnlineGame = { id: pending.id, config: pending.config, players, boardState, status: 'playing' };
+        const game: OnlineGame = { id: pending.id, config: pending.config, players, boardState };
         this.activeGames.set(pending.id, game);
         // Transfer socket connections from pending joinedPlayers into active PlayerInfo
         const playerKeys = [...game.players.keys()];
@@ -169,12 +166,12 @@ class OnlineGameManager {
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
         const v = game.boardState.getView();
         return {
-            status: game.status,
+            status: v.gameOver ? 'finished' : 'playing',
             numPlayersRequired: game.config.numPlayers,
             numJoined: game.players.size,
             players: [...game.players.entries()].map(([slot, pi]) => ({ name: pi.name, slot })),
             moves: game.boardState.lastMoves.map(m => m.pos),
-            currentStone: game.status === 'playing' ? v.nextPlayer : null,
+            currentStone: v.gameOver ? null : v.nextPlayer,
             winners: v.winners,
             resignedPlayers: v.resignedPlayers,
         };
@@ -183,7 +180,7 @@ class OnlineGameManager {
     applyMove(id: string, positions: number[], moveIndex: number | null, clientIdx: number): OnlineStateResponse {
         const game = this.activeGames.get(id);
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
-        if (game.status !== 'playing') throw Object.assign(new Error('Game is not in progress'), { statusCode: 409 });
+        if (game.boardState.gameOver()) throw Object.assign(new Error('Game is not in progress'), { statusCode: 409 });
         if (game.boardState.lastMoves.length !== clientIdx) throw Object.assign(new Error('Move index mismatch'), { statusCode: 409 });
         const v = game.boardState.getView();
         const playerKeys = [...game.players.keys()];
@@ -192,14 +189,13 @@ class OnlineGameManager {
             throw Object.assign(new Error('Not your turn'), { statusCode: 403 });
         if (!game.boardState.makeMove(moveIndex)) throw Object.assign(new Error('Illegal move'), { statusCode: 400 });
         game.boardState.advanceResigned();
-        if (game.boardState.getView().gameOver) game.status = 'finished';
         return this.getState(id);
     }
 
     resign(id: string, positions: number[]): OnlineStateResponse {
         const game = this.activeGames.get(id);
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
-        if (game.status !== 'playing') throw Object.assign(new Error('Game is not in progress'), { statusCode: 409 });
+        if (game.boardState.gameOver()) throw Object.assign(new Error('Game is not in progress'), { statusCode: 409 });
         const playerKeys = [...game.players.keys()];
         const bs = game.boardState;
         for (const position of positions) {
@@ -207,13 +203,7 @@ class OnlineGameManager {
             if (slot === undefined) throw Object.assign(new Error('Invalid position'), { statusCode: 400 });
             bs.resign(slot);   // mark resigned, exclude from scoring, refresh winners
         }
-        // End immediately if at most one player is left; otherwise auto-pass any resigned
-        // player now on turn (which may itself end the game by a final pass).
-        if (game.config.numPlayers - bs.resignedPlayers.length <= 1) game.status = 'finished';
-        else {
-            bs.advanceResigned();
-            if (bs.getView().gameOver) game.status = 'finished';
-        }
+        bs.advanceResigned();
         return this.getState(id);
     }
 }

@@ -262,7 +262,7 @@ export class BoardState {
     }
 
     private _afterMove() {
-        if (this.lastMove().moveType === MoveType.GAMEOVER)
+        if (this.gameOver())
             this.legalMovesWithTake = new Array(this.board.length).fill(null);
         else
             this.legalMovesWithTake = calculateLegalMoves(
@@ -294,6 +294,11 @@ export class BoardState {
             : { moveType: MoveType.NOMOVE, pos: null, captures: [], passedPlayers: new Set() };
     }
 
+    gameOver(): boolean {
+        return this.lastMove().moveType === MoveType.GAMEOVER
+            || this.numPlayers - this.resignedPlayers.length <= 1;
+    }
+
     // Returns true iff there are no legal PLACE moves for the current player.
     noTradLegal(): boolean { return this.legalMovesWithTake.every(m => m === null); }
 
@@ -314,7 +319,7 @@ export class BoardState {
     // Auto-pass on behalf of any resigned player whose turn it is, until a non-resigned
     // player is to move or the game ends.
     advanceResigned(): void {
-        while (!this.getView().gameOver) {
+        while (!this.gameOver()) {
             const player = this.stoneToPlayerMap[this.nextPlayer];
             if (player === undefined || !this.resignedPlayers.includes(player)) break;
             if (!this.makeMove(null)) break;
@@ -324,7 +329,7 @@ export class BoardState {
     // Make a move. Pass null for a pass move. Returns true if the move was legal.
     // Fields are updated immediately after each move.
     makeMove(k: number | null): boolean {
-        if (this.lastMove().moveType === MoveType.GAMEOVER) {
+        if (this.gameOver()) {
             this._afterMove(); return false;
         }
         // A resigned player may only pass, and always may (ignoring forcedPassOnly).
@@ -372,7 +377,7 @@ export class BoardState {
 
     // Make a uniformly random legal move (or pass if no PLACE moves exist).
     randomMove() {
-        if (this.lastMove().moveType === MoveType.GAMEOVER) return;
+        if (this.gameOver()) return;
         const resigned = this.resignedPlayers.includes(this.stoneToPlayerMap[this.nextPlayer]!);
         const legals = this.legalMoveList();
         const k = (!resigned && legals.length > 0)
@@ -389,7 +394,7 @@ export class BoardState {
         for (const p of players) wins[p] = 0;
         for (let i = 0; i < n; i++) {
             const copy = this._copy();
-            while (copy.lastMove().moveType !== MoveType.GAMEOVER) copy.randomMove();
+            while (!copy.gameOver()) copy.randomMove();
             const val = 1 / copy.winners.length;
             for (const w of copy.winners) wins[w] += val;
         }
@@ -435,7 +440,7 @@ export class BoardState {
             history: this.history,
             legalMoves: this.legalMovesWithTake,
             legalMoveHistory: this.legalMoveHistory,
-            gameOver: lm.moveType === MoveType.GAMEOVER,
+            gameOver: this.gameOver(),
             // A resigned player may always pass; otherwise the forced-pass-only rule applies.
             passEnabled: this.resignedPlayers.includes(this.stoneToPlayerMap[this.nextPlayer]!)
                 || !this.forcedPassOnly || this.noTradLegal(),
