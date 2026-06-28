@@ -912,9 +912,8 @@ export class Renderer {
             config.forcedPassOnly, new Array(bc.N).fill(0), bc,
         );
         const players = new Map<number, PlayerInfo>();
-        for (let i = 0; i < state.players.length; i++) {
-            const p = state.players[i];
-            if (p) players.set(p.slot, new PlayerInfo(positions.includes(i) ? 'local' : 'server', p.name));
+        for (const p of state.players) {
+            if (p) players.set(p.slot, new PlayerInfo(positions.includes(p.slot) ? 'local' : 'server', p.name));
         }
         this.pendingGames.delete(id);
         this._registerGame('O_' + id, bs, config, players, positions);
