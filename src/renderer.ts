@@ -643,7 +643,7 @@ export class Renderer {
         }
     }
 
-    private _newGame(bc: BoardConfig) {
+    private _createLocalGame(bc: BoardConfig) {
         this.engineManager.cancel();
         this.engineManager.sessionId = null;
         const bs = new BoardState(
@@ -804,10 +804,8 @@ export class Renderer {
             this._active.randomEvaled = this._active.bs.randomEvaluate(n);
         }
         else if (cmd === 'new') {
-            if (this.activeIdx.startsWith('O_') && !this._active.bs.gameOver())
-                { this._setCmdOutput('Cannot create new board during active online games'); return; }
             const entry = _cmdToBoard.get(this.newCfg.boardType)!;
-            this._newGame(entry.fn(...this.newCfg.boardArgs));
+            this._createLocalGame(entry.fn(...this.newCfg.boardArgs));
         }
         else
             this._setCmdOutput(`Unknown command \"${cmd}\"`)
