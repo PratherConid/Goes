@@ -18,13 +18,6 @@ const _cmdToBoard = new Map(
             [cmd, { boardType: Number(k), numArgs, fn: PrescribedBoardFns[Number(k) as PrescribedBoard], argStr, desc }])
 );
 
-function _makeLocalActiveGame(bs: BoardState, cfg: GameConfig): ActiveGame {
-    const players = new Map<number, PlayerInfo>();
-    for (const slot of new Set(Object.values(cfg.stoneToPlayerMap)))
-        players.set(slot, new PlayerInfo('local', ''));
-    return { bs: bs, positions: [], players,
-             displayPlyNum: 0, idxShowHistory: 0, randomEvaled: null };
-}
 
 function _defaultPlayerName(): string {
     const existing = localStorage.getItem('playerName');
@@ -268,9 +261,11 @@ export class Renderer {
     private engineManager = new EngineManager(() => this._render());
 
     constructor(game: BoardState) {
-        const localId = 'L_' + makeId(12);
-        this.activeIdx = localId;
-        this.activeGames.set(localId, _makeLocalActiveGame(game, this.newCfg));
+        const players = new Map<number, PlayerInfo>();
+        for (const slot of new Set(Object.values(this.newCfg.stoneToPlayerMap)))
+            players.set(slot, new PlayerInfo('local', ''));
+        // Start with a default local game so there is always an active game.
+        this._registerGame('L_' + makeId(12), game, this.newCfg.copy(), players, []);
         this.mainCanvas   = document.getElementById('main-canvas')    as HTMLCanvasElement;
         this.histBoards   = document.getElementById('history-boards') as HTMLDivElement;
         this.passBtn      = document.getElementById('pass-btn')        as HTMLButtonElement;
@@ -644,16 +639,22 @@ export class Renderer {
     }
 
     private _createLocalGame(bc: BoardConfig) {
+        const bs = new BoardState(
+            this.newCfg.numStones, this.newCfg.numPlayers, this.newCfg.turnStoneList,
+            this.newCfg.stoneToPlayerMap, this.newCfg.forcedPassOnly, new Array(bc.N).fill(0), bc,
+        );
+        const players = new Map<number, PlayerInfo>();
+        for (const slot of new Set(Object.values(this.newCfg.stoneToPlayerMap)))
+            players.set(slot, new PlayerInfo('local', ''));
+        this._registerGame('L_' + makeId(12), bs, this.newCfg.copy(), players, []);
+    }
+
+    private _registerGame(id: string, bs: BoardState, config: GameConfig, players: Map<number, PlayerInfo>, positions: number[]): void {
         this.engineManager.cancel();
         this.engineManager.sessionId = null;
-        const bs = new BoardState(
-            this.newCfg.numStones, this.newCfg.numPlayers, this.newCfg.turnStoneList, this.newCfg.stoneToPlayerMap,
-            this.newCfg.forcedPassOnly, new Array(bc.N).fill(0), bc,
-        );
-        const id = 'L_' + makeId(12);
-        this.activeGames.set(id, _makeLocalActiveGame(bs, this.newCfg));
+        this.currentCfg = config;
+        this.activeGames.set(id, { bs, positions, players, displayPlyNum: 0, idxShowHistory: 0, randomEvaled: null });
         this.activeIdx = id;
-        this.currentCfg = this.newCfg.copy();
     }
 
     private _parseCommand(raw: string) {
@@ -899,46 +900,30 @@ export class Renderer {
     private _activatePendingGame(id: string, state: OnlineStateResponse, config: GameConfig) {
         const positions = this.pendingGames.get(id);
         if (!positions) return;
-        const bs = this._setupOnlineBoard(config);
-        if (!bs) return;
+        const boardEntry = _cmdToBoard.get(config.boardType);
+        if (!boardEntry) { this._setCmdOutput(`Unknown board type: ${config.boardType}`); return; }
+        const bc = boardEntry.fn(...config.boardArgs);
+        this.engineManager.cancel();
+        this.engineManager.sessionId = null;
+        this.currentCfg = config;
+        const bs = new BoardState(
+            config.numStones, config.numPlayers,
+            config.turnStoneList, config.stoneToPlayerMap,
+            config.forcedPassOnly, new Array(bc.N).fill(0), bc,
+        );
         const players = new Map<number, PlayerInfo>();
         for (let i = 0; i < state.players.length; i++) {
             const p = state.players[i];
             if (p) players.set(p.slot, new PlayerInfo(positions.includes(i) ? 'local' : 'server', p.name));
         }
         this.pendingGames.delete(id);
-        const ag: ActiveGame = {
-            bs:          bs,
-            positions,
-            players,
-            displayPlyNum: 0,
-            idxShowHistory: 0,
-            randomEvaled:  null,
-        };
-        const prefixedId = 'O_' + id;
-        this.activeGames.set(prefixedId, ag);
-        this.activeIdx = prefixedId;
-        const localEntries = [...ag.players.entries()].filter(([, pi]) => pi.type === 'local');
+        this._registerGame('O_' + id, bs, config, players, positions);
+        const localEntries = [...this._active.players.entries()].filter(([, pi]) => pi.type === 'local');
         this._setCmdOutput(`Game started! You are player(s) ${localEntries.map(([s, pi]) => `${s} (${pi.name})`).join(', ')}`);
         this._render();
         this._applyOnlineState(id, state);
     }
 
-    // Build the board for a started online game from its config. Returns null if the
-    // board type is unknown.
-    private _setupOnlineBoard(config: GameConfig): BoardState | null {
-        const boardEntry = _cmdToBoard.get(config.boardType);
-        if (!boardEntry) { this._setCmdOutput(`Unknown board type: ${config.boardType}`); return null; }
-        const bc = boardEntry.fn(...config.boardArgs);
-        this.engineManager.cancel();
-        this.engineManager.sessionId = null;
-        this.currentCfg = config;
-        return new BoardState(
-            config.numStones, config.numPlayers,
-            config.turnStoneList, config.stoneToPlayerMap,
-            config.forcedPassOnly, new Array(bc.N).fill(0), bc,
-        );
-    }
 
     private _applyOnlineState(id: string, state: OnlineStateResponse) {
         const ag = this.activeGames.get('O_' + id)!;
