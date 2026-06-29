@@ -198,6 +198,7 @@ export class Renderer {
     // by game/pending-games broadcasts; local slots have type='local'.
     pendingGames = new Map<string, PendingGame>();
     playerName: string = _defaultPlayerName();
+    playersSetup = new Map<number, PlayerInfo>();
     activeGames = new Map<string, ActiveGame>();
     activeIdx: string = '';   // always set before first render (constructor initializes)
 
@@ -508,6 +509,8 @@ export class Renderer {
             ${row('spm &lt;p1&gt; &lt;p2&gt; …','Set stone to player map. Players are 1-indexed')}
             ${head('Online Multiplayer')}
             ${row('setname &lt;name&gt;', 'Set your display name for online games')}
+            ${row('sol &lt;num&gt;',      'Mark player slot &lt;num&gt; as local (you) before newo')}
+            ${row('soe &lt;num&gt; [sim] [t]', 'Mark player slot &lt;num&gt; as server engine; optional sim count and temperature')}
             ${row('newo',                 'Create online game with current config; prints game ID')}
             ${row('joino &lt;ID&gt;',     'Join an existing online game by ID')}
             ${row('swl &lt;ID&gt;',       'Switch active view to a local game by ID')}
@@ -546,6 +549,9 @@ else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${sideName(lastMover)
             Object.entries(map).map(([s, p]) => `${sideName(Number(s))}→P${p}`).join(', ');
         const onlineGameIds = [...this.activeGames.keys()].filter(k => k.startsWith('O_'));
         const localGameIds  = [...this.activeGames.keys()].filter(k => k.startsWith('L_'));
+        const setupSection = this.playersSetup.size > 0 ? `
+            <div><b>Player setup:</b> ${[...this.playersSetup.entries()]
+                .map(([s, pi]) => `${s}:${pi.type}${pi.type === 'serverEngine' && (pi.emsim || pi.temp) ? `(sim=${pi.emsim},t=${pi.temp})` : ''}`).join(', ')}</div>` : '';
         const pendingGamesSection = this.pendingGames.size > 0 ? `
             <div><b>Pending games:</b> ${[...this.pendingGames.values()]
                 .map(pg => `${pg.id} (${pg.players.size}/${pg.config?.numPlayers ?? '?'} joined)`)
@@ -561,7 +567,7 @@ else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${sideName(lastMover)
             <div><b>Your player slot:</b> ${[...this._active.players.entries()].filter(([, pi]) => pi.type === 'local').map(([s]) => s).join(', ')}</div>
             <div><b>Your name:</b> ${this.playerName || '(not set)'}</div>
             <hr style="margin:6px 0">` : '';
-        this.statusPanel.innerHTML = `${pendingGamesSection}${activeGamesSection}${localGamesSection}${gamesSectionHr}${onlineSection}
+        this.statusPanel.innerHTML = `${setupSection}${pendingGamesSection}${activeGamesSection}${localGamesSection}${gamesSectionHr}${onlineSection}
             <div><b>To move:</b> ${sideName(v.nextPlayer)}</div>
             <div><b>Last move:</b> ${lastMoveStr}</div>
             <div><b>Stones:</b> ${stoneLine}</div>
@@ -647,6 +653,18 @@ else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${sideName(lastMover)
             } else {
                 this._setCmdOutput(`Current name: ${this.playerName || '(not set)'}`);
             }
+        }
+        else if (cmd === 'sol') {
+            const n = posInt(parts[1]); if (n === null) { this._setCmdOutput('Usage: sol <player-id>'); return; }
+            this.playersSetup.set(n, new PlayerInfo('local', this.playerName)); this._render();
+        }
+        else if (cmd === 'soe') {
+            const n = posInt(parts[1]); if (n === null) { this._setCmdOutput('Usage: soe <player-id> [emsim] [temp]'); return; }
+            const nonNeg = (s: string | undefined) => { const v = Number(s); return s !== undefined && isFinite(v) && v >= 0 ? v : null; };
+            const emsim = parts[2] !== undefined ? nonNeg(parts[2]) : 0;
+            const temp  = parts[3] !== undefined ? nonNeg(parts[3]) : 0;
+            if (emsim === null || temp === null) { this._setCmdOutput('Usage: soe <player-id> [emsim] [temp]'); return; }
+            this.playersSetup.set(n, new PlayerInfo('serverEngine', 'Engine', null, emsim, temp)); this._render();
         }
         else if (cmd === 'newo') {
             void this._createOnlineGame();
@@ -836,17 +854,21 @@ else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${sideName(lastMover)
     private async _createOnlineGame() {
         if (!this.playerName) { this._setCmdOutput('Set your name first: setname <name>'); return; }
         const config = this.newCfg.copy();
+        const setup = Object.fromEntries(
+            [...this.playersSetup.entries()].map(([slot, pi]) => [slot, { type: pi.type, emsim: pi.emsim, temp: pi.temp }])
+        );
         try {
-            const { id, position } = await conn.request<{ id: string; position: number }>(
-                'game/create', { config, playerName: this.playerName }).promise;
+            const { id, positions } = await conn.request<{ id: string; positions: number[] }>(
+                'game/create', { config, playerName: this.playerName, playerSetup: setup }).promise;
+            this.playersSetup.clear();
             // Record it as pending only. The active-game fields and the board are not
             // touched until the game actually starts (its game/start event arrives).
             this.pendingGames.set(id, {
                 id, config: this.newCfg.copy(),
-                players: new Map([[position, new PlayerInfo('local', this.playerName)]]),
+                players: new Map(positions.map(pos => [pos, new PlayerInfo('local', this.playerName)])),
                 pendingSlots: [],
             });
-            this._setCmdOutput(`Game created: ${id} - waiting for ${this.newCfg.numPlayers - 1} more player(s)…`);
+            this._setCmdOutput(`Game created: ${id} - waiting for ${this.newCfg.numPlayers - positions.length} more player(s)…`);
             this._render();
         } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); }
     }

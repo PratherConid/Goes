@@ -9,6 +9,7 @@ interface OnlineGame {
     config: GameConfig;
     players: Map<number, PlayerInfo>;            // key = slot; insertion order = join order
     boardState: BoardState;                      // always present (game has started)
+    engineSessions: Map<number, string>;         // slot → AI session ID for serverEngine slots
 }
 
 const boardTypeToFn = new Map<string, (...args: number[]) => BoardConfig>();
@@ -24,12 +25,41 @@ class OnlineGameManager {
     private pendingGames = new Map<string, PendingGame>();
     private activeGames  = new Map<string, OnlineGame>();
 
-    createGame(config: GameConfig, playerName: string): { id: string; position: number } {
+    createGame(
+        config: GameConfig, playerName: string,
+        playerSetup: Record<number, { type: 'local' | 'serverEngine'; emsim?: number; temp?: number }> = {},
+    ): { id: string; positions: number[]; status: 'waiting' | 'playing' } {
         const fn = boardTypeToFn.get(config.boardType);
         if (!fn) throw Object.assign(new Error(`Unknown board type: ${config.boardType}`), { statusCode: 400 });
         let id: string;
         do { id = makeId(12); } while (this.pendingGames.has(id) || this.activeGames.has(id));
-        // Pre-shuffle all slots; assign first to creator, remainder go to pendingSlots
+
+        const setupEntries = Object.entries(playerSetup).map(([k, v]) => [Number(k), v] as [number, { type: 'local' | 'serverEngine'; emsim?: number; temp?: number }]);
+        if (setupEntries.length > 0) {
+            // Validate slot numbers
+            for (const [slot] of setupEntries)
+                if (slot < 1 || slot > config.numPlayers)
+                    throw Object.assign(new Error(`Invalid slot ${slot} for ${config.numPlayers}-player game`), { statusCode: 400 });
+            const players = new Map<number, PlayerInfo>(setupEntries.map(([slot, entry]) =>
+                [slot, entry.type === 'local'
+                    ? new PlayerInfo('client', playerName)
+                    : new PlayerInfo('serverEngine', 'Engine', null, entry.emsim ?? 0, entry.temp ?? 0)]
+            ));
+            const assignedSlots = new Set(players.keys());
+            const pendingSlots = Array.from({ length: config.numPlayers }, (_, i) => i + 1)
+                .filter(s => !assignedSlots.has(s));
+            const positions = setupEntries.filter(([, e]) => e.type === 'local').map(([s]) => s);
+            if (pendingSlots.length === 0) {
+                // All slots filled — start immediately
+                const pending: PendingGame = { id, config, players, pendingSlots: [] };
+                this._startGame(pending);
+                return { id, positions, status: 'playing' };
+            }
+            this.pendingGames.set(id, { id, config, players, pendingSlots });
+            return { id, positions, status: 'waiting' };
+        }
+
+        // Default: shuffle slots, assign first to creator
         const slots = Array.from({ length: config.numPlayers }, (_, i) => i + 1);
         for (let i = slots.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
@@ -41,7 +71,7 @@ class OnlineGameManager {
             players: new Map([[creatorSlot, new PlayerInfo('client', playerName)]]),
             pendingSlots: slots.slice(1),
         });
-        return { id, position: creatorSlot };
+        return { id, positions: [creatorSlot], status: 'waiting' };
     }
 
     joinGame(id: string, playerName: string): { position: number; config: GameConfig; status: 'waiting' | 'playing' } {
@@ -70,7 +100,7 @@ class OnlineGameManager {
         );
         this.pendingGames.delete(pending.id);
         // Slots were already randomly assigned at join time; move players map directly.
-        this.activeGames.set(pending.id, { id: pending.id, config: pending.config!, players: pending.players, boardState });
+        this.activeGames.set(pending.id, { id: pending.id, config: pending.config!, players: pending.players, boardState, engineSessions: new Map() });
     }
 
     // Record that a connection (identified by ws) owns a slot in a game.
@@ -107,6 +137,11 @@ class OnlineGameManager {
 
     getPendingPlayers(id: string): Map<number, PlayerInfo> | null {
         return this.pendingGames.get(id)?.players ?? null;
+    }
+
+    getPlayerInfo(id: string, slot: number): PlayerInfo | null {
+        const game = this.pendingGames.get(id) ?? this.activeGames.get(id);
+        return game?.players.get(slot) ?? null;
     }
 
     getConfig(id: string): GameConfig {
@@ -150,6 +185,44 @@ class OnlineGameManager {
         if (!game.boardState.makeMove(moveIndex)) throw Object.assign(new Error('Illegal move'), { statusCode: 400 });
         game.boardState.advanceResigned();
         return this.getState(id);
+    }
+
+    // Returns the slot that should move next if it is a serverEngine slot; null otherwise.
+    getEngineSlot(id: string): number | null {
+        const game = this.activeGames.get(id);
+        if (!game || game.boardState.gameOver()) return null;
+        const v = game.boardState.getView();
+        const slot = game.config.stoneToPlayerMap[v.nextPlayer];
+        const pi = game.players.get(slot);
+        return (pi?.type === 'serverEngine') ? slot : null;
+    }
+
+    // Returns the body needed to call aiMove for a serverEngine slot.
+    getEngineRequestParams(id: string, slot: number): {
+        config: GameConfig; board: number[]; moves: (number | null)[];
+        session_id: string | null; num_simulations: number; temperature: number;
+    } | null {
+        const game = this.activeGames.get(id);
+        if (!game) return null;
+        const v = game.boardState.getView();
+        const pi = game.players.get(slot)!;
+        return {
+            config: game.config,
+            board: v.history[v.plyCount].board,
+            moves: game.boardState.lastMoves.map(m => m.pos),
+            session_id: game.engineSessions.get(slot) ?? null,
+            num_simulations: pi.emsim || 0,
+            temperature: pi.temp || 0,
+        };
+    }
+
+    // Applies a move from the server-side engine (bypasses player-auth check).
+    applyEngineMove(id: string, slot: number, moveIndex: number | null, sessionId?: string): void {
+        const game = this.activeGames.get(id);
+        if (!game) return;
+        if (sessionId) game.engineSessions.set(slot, sessionId);
+        game.boardState.makeMove(moveIndex);
+        game.boardState.advanceResigned();
     }
 
     resign(id: string, positions: number[]): OnlineStateResponse {

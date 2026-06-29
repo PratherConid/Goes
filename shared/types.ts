@@ -32,17 +32,22 @@ export interface HistoryEntry {
     lenTurnList: number;
 }
 
-export type PlayerType = 'local' | 'server' | 'client';
+export type PlayerType = 'local' | 'localEngine' | 'server' | 'serverEngine' | 'client';
 
 export class PlayerInfo {
     type: PlayerType;
     name: string;
     socket: WebSocket | null;   // set on server (ws package); null on client
+    emsim: number;  // AI simulations per move (0 = server default); for serverEngine slots
+    temp: number;   // AI temperature (0 = server default); for serverEngine slots
 
-    constructor(type: PlayerType, name: string, socket: WebSocket | null = null) {
+    constructor(type: PlayerType, name: string, socket: WebSocket | null = null,
+                emsim = 0, temp = 0) {
         this.type   = type;
         this.name   = name;
         this.socket = socket;
+        this.emsim  = emsim;
+        this.temp   = temp;
     }
 }
 

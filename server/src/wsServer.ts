@@ -51,14 +51,20 @@ interface BroadcastMsg {
     payload?: object;                                   // uniform: same to all sockets
     perSocket?: { ws: WebSocket; payload: object }[];   // personalized: one entry per socket
 }
-interface Handled { data: unknown; broadcast?: BroadcastMsg; }
+interface Handled { data: unknown; broadcast?: BroadcastMsg; engineGame?: string; }
 
 // Build the personalized players payload for one socket in an active game (game/start).
 function buildStartPayload(id: string, ws: WebSocket): object {
     const mySlots = new Set(onlineGameManager.getPositions(id, ws));
-    const players = (onlineGameManager.getState(id).players as ({ slot: number; name: string } | null)[])
+    const state = onlineGameManager.getState(id);
+    const players = (state.players as ({ slot: number; name: string } | null)[])
         .filter((p): p is { slot: number; name: string } => p !== null)
-        .map(p => ({ ...p, type: mySlots.has(p.slot) ? 'local' : 'server' }));
+        .map(p => {
+            const pi = onlineGameManager.getPlayerInfo(id, p.slot);
+            const type = mySlots.has(p.slot) ? 'local'
+                : (pi?.type === 'serverEngine' ? 'serverEngine' : 'server');
+            return { ...p, type };
+        });
     return { config: onlineGameManager.getConfig(id), players };
 }
 
@@ -70,10 +76,27 @@ function buildPendingGamesPayload(id: string, ws: WebSocket): object {
         config: onlineGameManager.getConfig(id),
         players: [...players.entries()].map(([slot, pi]) => ({
             slot, name: pi.name,
-            type: mySlots.has(slot) ? 'local' : 'server',
+            type: mySlots.has(slot) ? 'local'
+                : (pi.type === 'serverEngine' ? 'serverEngine' : 'server'),
         })),
         pendingSlots: [],
     };
+}
+
+// Advances serverEngine turns until a human slot or game over.
+async function advanceServerEngine(id: string): Promise<void> {
+    const slot = onlineGameManager.getEngineSlot(id);
+    if (slot === null) return;
+    const params = onlineGameManager.getEngineRequestParams(id, slot);
+    if (!params) return;
+    try {
+        const result = await aiMove(params) as { move: number | null; session_id?: string };
+        onlineGameManager.applyEngineMove(id, slot, result.move, result.session_id);
+        broadcastEvent(id, 'game/move', { moveIndex: result.move });
+        await advanceServerEngine(id);
+    } catch (e) {
+        console.error('[engine] server engine error for game', id, e);
+    }
 }
 
 // Dispatch one request; returns the ack data (+ optional broadcast), or throws { statusCode }.
@@ -86,13 +109,19 @@ async function handleRequest(ws: WebSocket, msg: ReqMessage): Promise<Handled> {
         case 'game/create': {
             const config = msg['config'] as GameConfig;
             const playerName = (msg['playerName'] as string) ?? 'Anonymous';
-            const result = onlineGameManager.createGame(config, playerName);
-            onlineGameManager.acceptJoin(result.id, ws, result.position);
+            const playerSetup = (msg['playerSetup'] as Record<number, { type: 'local' | 'serverEngine'; emsim?: number; temp?: number }>) ?? {};
+            const result = onlineGameManager.createGame(config, playerName, playerSetup);
+            for (const pos of result.positions) onlineGameManager.acceptJoin(result.id, ws, pos);
             const sockets = onlineGameManager.getSockets(result.id) as WebSocket[];
+            const broadcast = result.status === 'playing'
+                ? { id: result.id, type: 'game/start',
+                    perSocket: sockets.map(rcv => ({ ws: rcv, payload: buildStartPayload(result.id, rcv) })) }
+                : { id: result.id, type: 'game/pending-games',
+                    perSocket: sockets.map(rcv => ({ ws: rcv, payload: buildPendingGamesPayload(result.id, rcv) })) };
             return {
-                data: result,
-                broadcast: { id: result.id, type: 'game/pending-games',
-                    perSocket: sockets.map(rcv => ({ ws: rcv, payload: buildPendingGamesPayload(result.id, rcv) })) },
+                data: { id: result.id, positions: result.positions },
+                broadcast,
+                engineGame: result.status === 'playing' ? result.id : undefined,
             };
         }
         case 'game/join': {
@@ -106,20 +135,20 @@ async function handleRequest(ws: WebSocket, msg: ReqMessage): Promise<Handled> {
                     perSocket: sockets.map(rcv => ({ ws: rcv, payload: buildStartPayload(id, rcv) })) }
                 : { id, type: 'game/pending-games',
                     perSocket: sockets.map(rcv => ({ ws: rcv, payload: buildPendingGamesPayload(id, rcv) })) };
-            return { data: { position: result.position }, broadcast };
+            return { data: { position: result.position }, broadcast, engineGame: result.status === 'playing' ? id : undefined };
         }
         case 'game/move': {
             const id = msg['id'] as string;
             const positions = requirePositions(id, ws);
             const moveIndex = (msg['moveIndex'] as number | null) ?? null;
             onlineGameManager.applyMove(id, positions, moveIndex, msg['clientIdx'] as number);
-            return { data: { ok: true }, broadcast: { id, type: 'game/move', payload: { moveIndex } } };
+            return { data: { ok: true }, broadcast: { id, type: 'game/move', payload: { moveIndex } }, engineGame: id };
         }
         case 'game/resign': {
             const id = msg['id'] as string;
             const positions = requirePositions(id, ws);
             onlineGameManager.resign(id, positions);
-            return { data: { ok: true }, broadcast: { id, type: 'game/resign', payload: { slots: positions } } };
+            return { data: { ok: true }, broadcast: { id, type: 'game/resign', payload: { slots: positions } }, engineGame: id };
         }
         case 'game/subscribe': {
             // Re-bind this connection after a reconnect; reply with full state for catchup sync.
@@ -147,7 +176,7 @@ export function attachWebSocket(server: Server) {
             if (msg?.kind !== 'req' || typeof msg.reqId !== 'number') return;
 
             handleRequest(ws, msg)
-                .then(({ data, broadcast }) => {
+                .then(({ data, broadcast, engineGame }) => {
                     send(ws, { kind: 'res', reqId: msg.reqId, ok: true, data });
                     if (broadcast) {
                         const { type, id } = broadcast;
@@ -156,6 +185,7 @@ export function attachWebSocket(server: Server) {
                                 send(rcv, { kind: 'event', type, id, ...payload });
                         else broadcastEvent(id, type, broadcast.payload!);
                     }
+                    if (engineGame) void advanceServerEngine(engineGame);
                 })
                 .catch((e: any) => send(ws, {
                     kind: 'res', reqId: msg.reqId, ok: false,
