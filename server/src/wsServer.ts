@@ -9,12 +9,13 @@ import { aiMove, aiHealth } from './engineProxy.js';
 // Client → server:  { kind:'req', reqId, type, ...payload }
 // Server → client:  { kind:'res', reqId, ok:true,  data }
 //                   { kind:'res', reqId, ok:false, error, statusCode }
-//                   { kind:'event', type:'game/state', id, state, config }  (push, no reqId)
+//                   { kind:'event', type:'game/start',  id, config, players }  (push)
+//                   { kind:'event', type:'game/move',   id, moveIndex }         (push)
+//                   { kind:'event', type:'game/resign', id, slots }             (push)
 //
-// Create/join only ack (id/position); a connection's renderer state changes only
-// when it receives a game/state event — which the server broadcasts when the game
-// starts and after every move/resign. The event carries the config so each client
-// can build its board the first time it sees a started game.
+// After a game starts the server forwards only the minimal change (move index or
+// resigned slots). Clients maintain their own BoardState incrementally. Reconnects
+// use game/subscribe, which returns the full OnlineStateResponse for a catchup sync.
 
 interface ReqMessage {
     kind: 'req';
@@ -31,18 +32,10 @@ function requirePositions(id: string, ws: WebSocket): number[] {
     return positions;
 }
 
-// Current state + static config for game `id` (the payload of a game/state event).
-function stateWithConfig(id: string) {
-    return { state: onlineGameManager.getState(id), config: onlineGameManager.getConfig(id) };
-}
-
-// Push the current state of game `id` to every joined connection.
-function broadcastState(id: string) {
+// Push a lightweight event to every joined connection for game `id`.
+function broadcastEvent(id: string, type: string, payload: object) {
     const sockets = onlineGameManager.getSockets(id) as WebSocket[];
-    if (!sockets.length) return;
-    let payload: { state: unknown; config: unknown };
-    try { payload = stateWithConfig(id); } catch { return; }
-    const msg = JSON.stringify({ kind: 'event', type: 'game/state', id, ...payload });
+    const msg = JSON.stringify({ kind: 'event', type, id, ...payload });
     for (const ws of sockets) if (ws.readyState === ws.OPEN) ws.send(msg);
 }
 
@@ -50,10 +43,10 @@ function send(ws: WebSocket, obj: unknown) {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
 }
 
-// Result of handling a request: the data to ack, and optionally a game id to
-// broadcast *after* the ack is sent (so the requester's ack arrives first and its
-// onlineGameId is set before the game/state event — avoids a client-side race).
-interface Handled { data: unknown; broadcastId?: string; }
+// Result of handling a request: the data to ack, and an optional broadcast to fire
+// after the ack so the requester's ack arrives first (avoids a client-side race).
+interface BroadcastMsg { id: string; type: string; payload: object; }
+interface Handled { data: unknown; broadcast?: BroadcastMsg; }
 
 // Dispatch one request; returns the ack data (+ optional broadcast), or throws { statusCode }.
 async function handleRequest(ws: WebSocket, msg: ReqMessage): Promise<Handled> {
@@ -73,38 +66,32 @@ async function handleRequest(ws: WebSocket, msg: ReqMessage): Promise<Handled> {
             const id = msg['id'] as string;
             const playerName = (msg['playerName'] as string) ?? 'Anonymous';
             const result = onlineGameManager.joinGame(id, playerName);
-            // acceptJoin wires the socket: into pending.joinedPlayers if still waiting,
-            // or into the active PlayerInfo.socket if the game just started.
             onlineGameManager.acceptJoin(id, ws, result.position);
-            // Ack only. Broadcast lazily: just the join that starts the game (status
-            // becomes 'playing') notifies everyone, *after* this ack so the joiner's
-            // onlineGameId is set when the game/state event arrives.
-            return { data: { position: result.position },
-                     broadcastId: result.status === 'playing' ? id : undefined };
+            const broadcast = result.status === 'playing' ? {
+                id, type: 'game/start',
+                payload: { config: onlineGameManager.getConfig(id), players: onlineGameManager.getState(id).players },
+            } : undefined;
+            return { data: { position: result.position }, broadcast };
         }
         case 'game/move': {
             const id = msg['id'] as string;
-            const positions = requirePositions(id, ws);   // who you are = your connection
-            onlineGameManager.applyMove(
-                id, positions,
-                (msg['moveIndex'] as number | null) ?? null,
-                msg['clientIdx'] as number,
-            );
-            return { data: { ok: true }, broadcastId: id };   // state arrives via the broadcast
+            const positions = requirePositions(id, ws);
+            const moveIndex = (msg['moveIndex'] as number | null) ?? null;
+            onlineGameManager.applyMove(id, positions, moveIndex, msg['clientIdx'] as number);
+            return { data: { ok: true }, broadcast: { id, type: 'game/move', payload: { moveIndex } } };
         }
         case 'game/resign': {
             const id = msg['id'] as string;
             const positions = requirePositions(id, ws);
             onlineGameManager.resign(id, positions);
-            return { data: { ok: true }, broadcastId: id };
+            return { data: { ok: true }, broadcast: { id, type: 'game/resign', payload: { slots: positions } } };
         }
         case 'game/subscribe': {
-            // Re-bind this connection to its player position after a reconnect, and
-            // reply with the current state + config so it can resync.
+            // Re-bind this connection after a reconnect; reply with full state for catchup sync.
             const id = msg['id'] as string;
             const position = msg['position'] as number;
             onlineGameManager.acceptJoin(id, ws, position);
-            return { data: stateWithConfig(id) };
+            return { data: { state: onlineGameManager.getState(id), config: onlineGameManager.getConfig(id) } };
         }
         default:
             throw Object.assign(new Error(`Unknown request type: ${msg.type}`), { statusCode: 400 });
@@ -125,9 +112,9 @@ export function attachWebSocket(server: Server) {
             if (msg?.kind !== 'req' || typeof msg.reqId !== 'number') return;
 
             handleRequest(ws, msg)
-                .then(({ data, broadcastId }) => {
+                .then(({ data, broadcast }) => {
                     send(ws, { kind: 'res', reqId: msg.reqId, ok: true, data });
-                    if (broadcastId) broadcastState(broadcastId);   // after the ack
+                    if (broadcast) broadcastEvent(broadcast.id, broadcast.type, broadcast.payload);
                 })
                 .catch((e: any) => send(ws, {
                     kind: 'res', reqId: msg.reqId, ok: false,

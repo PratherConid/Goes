@@ -123,11 +123,8 @@ class OnlineGameManager {
         if (pending) {
             return {
                 status: 'waiting',
-                numPlayersRequired: pending.config.numPlayers,
-                numJoined: pending.players.size,
                 players: new Array(pending.players.size).fill(null),
                 moves: [],
-                currentStone: null,
                 winners: [],
                 resignedPlayers: [],
             };
@@ -137,11 +134,8 @@ class OnlineGameManager {
         const v = game.boardState.getView();
         return {
             status: v.gameOver ? 'finished' : 'playing',
-            numPlayersRequired: game.config.numPlayers,
-            numJoined: game.players.size,
             players: [...game.players.entries()].map(([slot, pi]) => ({ name: pi.name, slot })),
             moves: game.boardState.lastMoves.map(m => m.pos),
-            currentStone: v.gameOver ? null : v.nextPlayer,
             winners: v.winners,
             resignedPlayers: v.resignedPlayers,
         };

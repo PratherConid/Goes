@@ -184,10 +184,9 @@ export class BoardState {
 
     stoneCount:           Record<number, number> = {};
     winners:              number[]               = [];
-    // Players (1-indexed) that have resigned. A resigned player may only pass (always,
-    // ignoring forcedPassOnly) and is excluded from scoring / cannot win. Currently set
-    // by the online game flow, but usable for local games too.
-    resignedPlayers:      number[]               = [];
+    // Map from ply index to the players (1-indexed) that resigned at that ply, in
+    // resignation order. A resigned player may only pass and is excluded from scoring.
+    resigns:              Map<number, number[]>  = new Map();
     legalMovesWithTake:   (Set<number> | null)[] = [];
     // invariant: legalMoveHistory.length === history.length
     legalMoveHistory: (Set<number> | null)[][] = [];
@@ -309,10 +308,16 @@ export class BoardState {
             .filter(i => i >= 0);
     }
 
+    get resignedPlayers(): number[] { return [...this.resigns.values()].flat(); }
+
     // Mark a player (1-indexed) as resigned: thereafter they may only pass and are
     // excluded from scoring. Recomputes winners immediately.
     resign(player: number) {
-        if (!this.resignedPlayers.includes(player)) this.resignedPlayers.push(player);
+        if (this.resignedPlayers.includes(player)) return;
+        const ply = this.history.length - 1;
+        const list = this.resigns.get(ply);
+        if (list) list.push(player);
+        else this.resigns.set(ply, [player]);
         this._countStones();
     }
 
@@ -414,7 +419,7 @@ export class BoardState {
         c.nextPlayer    = this.nextPlayer;
         c.stoneCount    = { ...this.stoneCount };
         c.winners       = [...this.winners];
-        c.resignedPlayers = [...this.resignedPlayers];
+        c.resigns = new Map([...this.resigns.entries()].map(([k, v]) => [k, [...v]]));
         c.legalMovesWithTake = this.legalMovesWithTake.map(s => s ? new Set(s) : null);
         c.legalMoveHistory   = this.legalMoveHistory.map(row => row.map(s => s ? new Set(s) : null));
         return c;

@@ -41,7 +41,7 @@ export class ServerConnection {
         this._connect();
     }
 
-    // Register a handler for a pushed event type (e.g. 'game/state').
+    // Register a handler for a pushed event type (e.g. 'game/start', 'game/move').
     onEvent(type: string, handler: EventHandler): void {
         const list = this.eventHandlers.get(type) ?? [];
         list.push(handler);

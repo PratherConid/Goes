@@ -89,11 +89,8 @@ export class GameConfig {
 
 export interface OnlineStateResponse {
     status: 'waiting' | 'playing' | 'finished';
-    numPlayersRequired: number;
-    numJoined: number;
     players: ({ name: string; slot: number } | null)[];
     moves: (number | null)[];
-    currentStone: number | null;
     winners: number[];
     resignedPlayers: number[];
 }
