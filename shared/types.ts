@@ -87,6 +87,13 @@ export class GameConfig {
     }
 }
 
+export interface PendingGame {
+    id: string;
+    config?: GameConfig;                // always set server-side; set client-side only by creator
+    players: Map<number, PlayerInfo>;   // key = slot; socket always null on client
+    pendingSlots: number[];             // pre-shuffled unassigned slots (server); [] on client
+}
+
 export interface OnlineStateResponse {
     status: 'waiting' | 'playing' | 'finished';
     players: ({ name: string; slot: number } | null)[];

@@ -1,6 +1,6 @@
 import { BoardState, MoveType, STONE_MAP } from '@shared/boardState.js';
 import { PlayerInfo, GameConfig, makeId } from '@shared/types.js';
-import type { BoardView, OnlineStateResponse } from '@shared/types.js';
+import type { BoardView, OnlineStateResponse, PendingGame, PlayerType } from '@shared/types.js';
 import type { BoardConfig } from '@shared/boardConfig.js';
 import {
     PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns,
@@ -228,10 +228,9 @@ export class Renderer {
     emTemperature: number = 0;
 
     // Online multiplayer state
-    // Games created/joined but not yet started, mapping game id → our player positions.
-    // A player can have several pending at once; one becomes an active game (in
-    // activeGames) only when its start event arrives.
-    pendingGames = new Map<string, number[]>();
+    // Pending games: created/joined but not yet started. The players map is kept in sync
+    // by game/pending-players broadcasts; local slots have type='local'.
+    pendingGames = new Map<string, PendingGame>();
     playerName: string = _defaultPlayerName();
     activeGames = new Map<string, ActiveGame>();
     activeIdx: string = '';   // always set before first render (constructor initializes)
@@ -352,7 +351,16 @@ export class Renderer {
             this._render();
         }).catch(() => { this.aiEngineReady = false; });
 
-        conn.onEvent('game/start', (msg: { id: string; config: GameConfig; players: { slot: number; name: string }[] }) => {
+        conn.onEvent('game/pending-players', (msg: { id: string; players: { slot: number; type: PlayerType; name: string }[] }) => {
+            let pg = this.pendingGames.get(msg.id);
+            if (!pg) {
+                pg = { id: msg.id, players: new Map(), pendingSlots: [] };
+                this.pendingGames.set(msg.id, pg);
+            }
+            pg.players = new Map(msg.players.map(p => [p.slot, new PlayerInfo(p.type, p.name)]));
+            this._render();
+        });
+        conn.onEvent('game/start', (msg: { id: string; config: GameConfig; players: { slot: number; name: string; type: PlayerType }[] }) => {
             this._activatePendingGame(msg.id, msg.players, msg.config);
         });
         conn.onEvent('game/move', (msg: { id: string; moveIndex: number | null }) => {
@@ -376,7 +384,9 @@ export class Renderer {
                     }).catch(() => {});
             for (const [id, ag] of this.activeGames)
                 if (id.startsWith('O_')) for (const pos of ag.positions) resub(id.slice(2), pos);
-            for (const [id, positions] of this.pendingGames) for (const pos of positions) resub(id, pos);
+            for (const [id, pg] of this.pendingGames)
+                for (const [slot, pi] of pg.players)
+                    if (pi.type === 'local') resub(id, slot);
         });
     }
 
@@ -582,7 +592,9 @@ export class Renderer {
         const onlineGameIds = [...this.activeGames.keys()].filter(k => k.startsWith('O_'));
         const localGameIds  = [...this.activeGames.keys()].filter(k => k.startsWith('L_'));
         const pendingGamesSection = this.pendingGames.size > 0 ? `
-            <div><b>Pending games:</b> ${[...this.pendingGames.keys()].join(', ')}</div>` : '';
+            <div><b>Pending games:</b> ${[...this.pendingGames.values()]
+                .map(pg => `${pg.id} (${pg.players.size}/${pg.config?.numPlayers ?? '?'} joined)`)
+                .join(', ')}</div>` : '';
         const activeGamesSection = onlineGameIds.length > 0 ? `
             <div><b>Active online games:</b> ${onlineGameIds.map(id => id.slice(2)).join(', ')}</div>` : '';
         const localGamesSection = localGameIds.length > 0 ? `
@@ -873,7 +885,11 @@ export class Renderer {
                 'game/create', { config, playerName: this.playerName }).promise;
             // Record it as pending only. The active-game fields and the board are not
             // touched until the game actually starts (its game/start event arrives).
-            this.pendingGames.set(id, [position]);
+            this.pendingGames.set(id, {
+                id, config: this.newCfg.copy(),
+                players: new Map([[position, new PlayerInfo('local', this.playerName)]]),
+                pendingSlots: [],
+            });
             this._setCmdOutput(`Game created: ${id} - waiting for ${this.newCfg.numPlayers - 1} more player(s)…`);
             this._render();
         } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); }
@@ -882,21 +898,21 @@ export class Renderer {
     private async _joinOnlineGame(id: string) {
         if (!this.playerName) { this._setCmdOutput('Set your name first: setname <name>'); return; }
         try {
-            // Join only acks; record it as pending. Nothing in the renderer changes
-            // until the game starts and its game/start event activates it.
-            const { position } = await conn.request<{ position: number }>(
-                'game/join', { id, playerName: this.playerName }).promise;
-            const existing = this.pendingGames.get(id) ?? [];
-            this.pendingGames.set(id, [...existing, position]);
+            await conn.request('game/join', { id, playerName: this.playerName }).promise;
             this._setCmdOutput(`Joined game: ${id} - waiting for the game to start…`);
             this._render();
         } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); }
     }
 
     // Promote a pending game to active once it starts.
-    private _activatePendingGame(id: string, players: { slot: number; name: string }[], config: GameConfig) {
-        const positions = this.pendingGames.get(id);
-        if (!positions) return;
+    // `players` carries `type` when called from game/start; no `type` on the reconnect path.
+    private _activatePendingGame(id: string, players: { slot: number; name: string; type?: PlayerType }[], config: GameConfig) {
+        const pg = this.pendingGames.get(id);
+        const hasTypeInfo = players.some(p => p.type !== undefined);
+        if (!hasTypeInfo && !pg) return;
+        const positions = hasTypeInfo
+            ? players.filter(p => p.type === 'local').map(p => p.slot)
+            : [...pg!.players.entries()].filter(([, pi]) => pi.type === 'local').map(([slot]) => slot);
         const boardEntry = _cmdToBoard.get(config.boardType);
         if (!boardEntry) { this._setCmdOutput(`Unknown board type: ${config.boardType}`); return; }
         const bc = boardEntry.fn(...config.boardArgs);
@@ -907,8 +923,8 @@ export class Renderer {
         );
         const playerMap = new Map<number, PlayerInfo>();
         for (const p of players)
-            playerMap.set(p.slot, new PlayerInfo(positions.includes(p.slot) ? 'local' : 'server', p.name));
-        this.pendingGames.delete(id);
+            playerMap.set(p.slot, new PlayerInfo(p.type ?? (positions.includes(p.slot) ? 'local' : 'server'), p.name));
+        if (pg) this.pendingGames.delete(id);
         this._registerGame('O_' + id, bs, config, playerMap, positions);
         const localEntries = [...this._active.players.entries()].filter(([, pi]) => pi.type === 'local');
         this._setCmdOutput(`Game started! You are player(s) ${localEntries.map(([s, pi]) => `${s} (${pi.name})`).join(', ')}`);

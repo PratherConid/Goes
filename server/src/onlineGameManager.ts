@@ -2,14 +2,7 @@ import { BoardState } from '@shared/boardState.js';
 import { PrescribedBoardMap, PrescribedBoardFns, PrescribedBoard } from '@shared/boardConfig.js';
 import type { BoardConfig } from '@shared/boardConfig.js';
 import { PlayerInfo, makeId } from '@shared/types.js';
-import type { GameConfig, OnlineStateResponse } from '@shared/types.js';
-
-interface ServerPendingGame {
-    id: string;
-    config: GameConfig;
-    players: Map<number, PlayerInfo>;            // key = slot (randomly assigned on join)
-    pendingSlots: number[];                      // unassigned slots, pre-shuffled
-}
+import type { GameConfig, OnlineStateResponse, PendingGame } from '@shared/types.js';
 
 interface OnlineGame {
     id: string;
@@ -28,7 +21,7 @@ for (const key of Object.keys(PrescribedBoardMap)) {
 
 class OnlineGameManager {
     // In-memory store. All games are lost on server restart; no persistence.
-    private pendingGames = new Map<string, ServerPendingGame>();
+    private pendingGames = new Map<string, PendingGame>();
     private activeGames  = new Map<string, OnlineGame>();
 
     createGame(config: GameConfig, playerName: string): { id: string; position: number } {
@@ -63,21 +56,21 @@ class OnlineGameManager {
         pending.players.set(slot, new PlayerInfo('client', playerName));
         if (pending.pendingSlots.length === 0) {
             this._startGame(pending);
-            return { position: slot, config: pending.config, status: 'playing' };
+            return { position: slot, config: pending.config!, status: 'playing' };
         }
-        return { position: slot, config: pending.config, status: 'waiting' };
+        return { position: slot, config: pending.config!, status: 'waiting' };
     }
 
-    private _startGame(pending: ServerPendingGame) {
-        const bc = boardTypeToFn.get(pending.config.boardType)!(...pending.config.boardArgs);
+    private _startGame(pending: PendingGame) {
+        const bc = boardTypeToFn.get(pending.config!.boardType)!(...pending.config!.boardArgs);
         const boardState = new BoardState(
-            pending.config.numStones, pending.config.numPlayers,
-            pending.config.turnStoneList, pending.config.stoneToPlayerMap,
-            pending.config.forcedPassOnly, new Array(bc.N).fill(0), bc,
+            pending.config!.numStones, pending.config!.numPlayers,
+            pending.config!.turnStoneList, pending.config!.stoneToPlayerMap,
+            pending.config!.forcedPassOnly, new Array(bc.N).fill(0), bc,
         );
         this.pendingGames.delete(pending.id);
         // Slots were already randomly assigned at join time; move players map directly.
-        this.activeGames.set(pending.id, { id: pending.id, config: pending.config, players: pending.players, boardState });
+        this.activeGames.set(pending.id, { id: pending.id, config: pending.config!, players: pending.players, boardState });
     }
 
     // Record that a connection (identified by ws) owns a slot in a game.
@@ -112,10 +105,14 @@ class OnlineGameManager {
                 if (pi.socket === (ws as WebSocket | null)) pi.socket = null;
     }
 
+    getPendingPlayers(id: string): Map<number, PlayerInfo> | null {
+        return this.pendingGames.get(id)?.players ?? null;
+    }
+
     getConfig(id: string): GameConfig {
         const game = this.pendingGames.get(id) ?? this.activeGames.get(id);
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
-        return game.config;
+        return game.config!;
     }
 
     getState(id: string): OnlineStateResponse {

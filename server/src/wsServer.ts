@@ -9,13 +9,14 @@ import { aiMove, aiHealth } from './engineProxy.js';
 // Client → server:  { kind:'req', reqId, type, ...payload }
 // Server → client:  { kind:'res', reqId, ok:true,  data }
 //                   { kind:'res', reqId, ok:false, error, statusCode }
-//                   { kind:'event', type:'game/start',  id, config, players }  (push)
-//                   { kind:'event', type:'game/move',   id, moveIndex }         (push)
-//                   { kind:'event', type:'game/resign', id, slots }             (push)
+//                   { kind:'event', type:'game/pending-players', id, players } (push, personalized)
+//                   { kind:'event', type:'game/start',  id, config, players } (push, personalized)
+//                   { kind:'event', type:'game/move',   id, moveIndex }        (push)
+//                   { kind:'event', type:'game/resign', id, slots }            (push)
 //
-// After a game starts the server forwards only the minimal change (move index or
-// resigned slots). Clients maintain their own BoardState incrementally. Reconnects
-// use game/subscribe, which returns the full OnlineStateResponse for a catchup sync.
+// While waiting, game/pending-players is broadcast after every join so clients see
+// who has joined. After a game starts only the minimal change is forwarded.
+// Reconnects use game/subscribe, which returns full OnlineStateResponse for catchup.
 
 interface ReqMessage {
     kind: 'req';
@@ -45,8 +46,33 @@ function send(ws: WebSocket, obj: unknown) {
 
 // Result of handling a request: the data to ack, and an optional broadcast to fire
 // after the ack so the requester's ack arrives first (avoids a client-side race).
-interface BroadcastMsg { id: string; type: string; payload: object; }
+interface BroadcastMsg {
+    id: string; type: string;
+    payload?: object;                                   // uniform: same to all sockets
+    perSocket?: { ws: WebSocket; payload: object }[];   // personalized: one entry per socket
+}
 interface Handled { data: unknown; broadcast?: BroadcastMsg; }
+
+// Build the personalized players payload for one socket in an active game (game/start).
+function buildStartPayload(id: string, ws: WebSocket): object {
+    const mySlots = new Set(onlineGameManager.getPositions(id, ws));
+    const players = (onlineGameManager.getState(id).players as ({ slot: number; name: string } | null)[])
+        .filter((p): p is { slot: number; name: string } => p !== null)
+        .map(p => ({ ...p, type: mySlots.has(p.slot) ? 'local' : 'server' }));
+    return { config: onlineGameManager.getConfig(id), players };
+}
+
+// Build the personalized players payload for one socket in a pending game.
+function buildPendingPlayersPayload(id: string, ws: WebSocket): object {
+    const players = onlineGameManager.getPendingPlayers(id) ?? new Map();
+    const mySlots = new Set(onlineGameManager.getPositions(id, ws));
+    return {
+        players: [...players.entries()].map(([slot, pi]) => ({
+            slot, name: pi.name,
+            type: mySlots.has(slot) ? 'local' : 'server',
+        })),
+    };
+}
 
 // Dispatch one request; returns the ack data (+ optional broadcast), or throws { statusCode }.
 async function handleRequest(ws: WebSocket, msg: ReqMessage): Promise<Handled> {
@@ -60,17 +86,24 @@ async function handleRequest(ws: WebSocket, msg: ReqMessage): Promise<Handled> {
             const playerName = (msg['playerName'] as string) ?? 'Anonymous';
             const result = onlineGameManager.createGame(config, playerName);
             onlineGameManager.acceptJoin(result.id, ws, result.position);
-            return { data: result };   // ack only; game is 'waiting', nobody is notified yet
+            const sockets = onlineGameManager.getSockets(result.id) as WebSocket[];
+            return {
+                data: result,
+                broadcast: { id: result.id, type: 'game/pending-players',
+                    perSocket: sockets.map(rcv => ({ ws: rcv, payload: buildPendingPlayersPayload(result.id, rcv) })) },
+            };
         }
         case 'game/join': {
             const id = msg['id'] as string;
             const playerName = (msg['playerName'] as string) ?? 'Anonymous';
             const result = onlineGameManager.joinGame(id, playerName);
             onlineGameManager.acceptJoin(id, ws, result.position);
-            const broadcast = result.status === 'playing' ? {
-                id, type: 'game/start',
-                payload: { config: onlineGameManager.getConfig(id), players: onlineGameManager.getState(id).players },
-            } : undefined;
+            const sockets = onlineGameManager.getSockets(id) as WebSocket[];
+            const broadcast = result.status === 'playing'
+                ? { id, type: 'game/start',
+                    perSocket: sockets.map(rcv => ({ ws: rcv, payload: buildStartPayload(id, rcv) })) }
+                : { id, type: 'game/pending-players',
+                    perSocket: sockets.map(rcv => ({ ws: rcv, payload: buildPendingPlayersPayload(id, rcv) })) };
             return { data: { position: result.position }, broadcast };
         }
         case 'game/move': {
@@ -114,7 +147,13 @@ export function attachWebSocket(server: Server) {
             handleRequest(ws, msg)
                 .then(({ data, broadcast }) => {
                     send(ws, { kind: 'res', reqId: msg.reqId, ok: true, data });
-                    if (broadcast) broadcastEvent(broadcast.id, broadcast.type, broadcast.payload);
+                    if (broadcast) {
+                        const { type, id } = broadcast;
+                        if (broadcast.perSocket)
+                            for (const { ws: rcv, payload } of broadcast.perSocket)
+                                send(rcv, { kind: 'event', type, id, ...payload });
+                        else broadcastEvent(id, type, broadcast.payload!);
+                    }
                 })
                 .catch((e: any) => send(ws, {
                     kind: 'res', reqId: msg.reqId, ok: false,
