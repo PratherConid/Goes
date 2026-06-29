@@ -154,8 +154,16 @@ class EngineManager {
     // Fire one engine request over the WS. Called by _checkAsync only when poll()
     // returned 'needsRequest'.
     // Transitions needsRequest → waiting; on completion → hasResult (or idle on error).
-    submit(body: Record<string, unknown>): void {
+    submit(
+        config: GameConfig,
+        board: number[],
+        moves: (number | null)[],
+        session_id: string | null,
+        num_simulations: number,
+        temperature: number,
+    ): void {
         this._state = 'waiting';
+        const body = { config, board, moves, session_id, num_simulations, temperature };
         const handle = conn.request<{ move: number | null; session_id?: string }>('ai/move', { body });
         this._pendingHandle = handle;
         handle.promise
@@ -399,20 +407,14 @@ export class Renderer {
                 if (v.gameOver) { console.warn('em: game is already over'); this.engineManager.cancel(); break; }
                 if (this._active.displayPlyNum !== v.plyCount) { console.warn('em: not at live position (navigate to end first)'); this.engineManager.cancel(); break; }
                 const moves = this._active.bs.lastMoves.map(m => m.pos);
-                this.engineManager.submit({
-                    board_type:          this.currentCfg.boardType,
-                    board_args:          this.currentCfg.boardArgs,
-                    board:               v.history[v.plyCount].board,
-                    num_stones:          v.numStones,
-                    num_players:         v.numPlayers,
-                    turn_stone_list:     v.turnStoneList,
-                    stone_to_player_map: v.stoneToPlayerMap,
-                    forced_pass_only:    v.forcedPassOnly,
+                this.engineManager.submit(
+                    this.currentCfg,
+                    v.history[v.plyCount].board,
                     moves,
-                    session_id:          this.engineManager.sessionId,
-                    num_simulations:     this.emNumSims,
-                    temperature:         this.emTemperature,
-                });
+                    this.engineManager.sessionId,
+                    this.emNumSims,
+                    this.emTemperature,
+                );
                 break;
             }
             if (!this._active.bs.makeMove(outcome.move)) {

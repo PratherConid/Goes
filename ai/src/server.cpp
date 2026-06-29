@@ -5,13 +5,14 @@
 // Also reads GOES_CHECKPOINT_DIR, GOES_NUM_SIMS, and GOES_TEMPERATURE env vars.
 //
 // POST /move - JSON body fields:
-//   board_type        "rect"|"rectd"|"cub"|"hcub"|"tri"|"twsq"|"gtsq"
-//   board_args        integer dimensions matching the board type
-//   num_stones        int
-//   num_players       int
-//   turn_stone_list   int[]
-//   stone_to_player_map  {stone: player} object
-//   forced_pass_only  bool
+//   config            object with game configuration:
+//     boardType         "rect"|"rectd"|"cub"|"hcub"|"tri"|"twsq"|"gtsq"
+//     boardArgs         integer dimensions matching the board type
+//     numStones         int
+//     numPlayers        int
+//     turnStoneList     int[]
+//     stoneToPlayerMap  {stone: player} object
+//     forcedPassOnly    bool
 //   moves             (int|null)[]  - full move history; null = pass, int = board index
 //   board             int[]        - current stone array (length N); used to verify
 //                                    the replayed state matches the client's state
@@ -127,22 +128,22 @@ struct ServerState {
 
 // ── Request helpers ───────────────────────────────────────────────────────────
 
-static BoardConfig build_bc(const json& j) {
-    std::string kind   = j["board_type"].get<std::string>();
-    std::vector<int> v = j["board_args"].get<std::vector<int>>();
+static BoardConfig build_bc(const json& cfg) {
+    std::string kind   = cfg["boardType"].get<std::string>();
+    std::vector<int> v = cfg["boardArgs"].get<std::vector<int>>();
     return build_board(kind, v);
 }
 
-static BoardState build_state(const json& j, const BoardConfig& bc) {
+static BoardState build_state(const json& j, const json& cfg, const BoardConfig& bc) {
     std::vector<int> board    = j["board"].get<std::vector<int>>();
-    int num_stones            = j["num_stones"].get<int>();
-    int num_players           = j["num_players"].get<int>();
-    std::vector<int> tsl      = j["turn_stone_list"].get<std::vector<int>>();
-    bool forced               = j.value("forced_pass_only", true);
+    int num_stones            = cfg["numStones"].get<int>();
+    int num_players           = cfg["numPlayers"].get<int>();
+    std::vector<int> tsl      = cfg["turnStoneList"].get<std::vector<int>>();
+    bool forced               = cfg.value("forcedPassOnly", true);
     int ply                   = j.value("ply", 0);
 
     std::unordered_map<int,int> s2p;
-    for (auto& [k, v] : j["stone_to_player_map"].items())
+    for (auto& [k, v] : cfg["stoneToPlayerMap"].items())
         s2p[std::stoi(k)] = v.get<int>();
 
     BoardState state(num_stones, num_players, tsl, s2p, forced, board, bc);
@@ -152,13 +153,13 @@ static BoardState build_state(const json& j, const BoardConfig& bc) {
 
 // Compute the checkpoint subdirectory tag from a /move request.
 // Must match model_tag() in train.cpp.
-static std::string request_tag(const json& j) {
-    std::string kind   = j["board_type"].get<std::string>();
-    std::vector<int> v = j["board_args"].get<std::vector<int>>();
-    int num_stones     = j["num_stones"].get<int>();
-    int num_players    = j["num_players"].get<int>();
-    auto tsl           = j["turn_stone_list"].get<std::vector<int>>();
-    bool fp            = j.value("forced_pass_only", false);
+static std::string request_tag(const json& cfg) {
+    std::string kind   = cfg["boardType"].get<std::string>();
+    std::vector<int> v = cfg["boardArgs"].get<std::vector<int>>();
+    int num_stones     = cfg["numStones"].get<int>();
+    int num_players    = cfg["numPlayers"].get<int>();
+    auto tsl           = cfg["turnStoneList"].get<std::vector<int>>();
+    bool fp            = cfg.value("forcedPassOnly", false);
 
     std::string s = kind;
     for (int x : v) s += '-' + std::to_string(x);
@@ -168,7 +169,7 @@ static std::string request_tag(const json& j) {
     for (int i = 0; i < (int)tsl.size(); i++) { if (i) s += '.'; s += std::to_string(tsl[i]); }
     s += "_s2p";
     std::map<int,int> s2p;
-    for (auto& [k, val] : j["stone_to_player_map"].items()) s2p[std::stoi(k)] = val.get<int>();
+    for (auto& [k, val] : cfg["stoneToPlayerMap"].items()) s2p[std::stoi(k)] = val.get<int>();
     bool first = true;
     for (auto& [k, val] : s2p) {
         if (!first) s += '.'; first = false;
@@ -270,12 +271,13 @@ int main(int argc, char* argv[]) {
     svr.Post("/move", [&](const httplib::Request& req, httplib::Response& res) {
         try {
             auto j = json::parse(req.body);
+            const auto& cfg = j["config"];
 
             std::string session_id;
             if (j.contains("session_id") && j["session_id"].is_string())
                 session_id = j["session_id"].get<std::string>();
-            std::string tag        = request_tag(j);
-            auto bc                = build_bc(j);
+            std::string tag        = request_tag(cfg);
+            auto bc                = build_bc(cfg);
             auto adj_norms         = compute_adj_norms(bc, ss.device);
             auto& model_v          = load_model(ss, tag, bc);
             auto evaluator         = make_evaluator(model_v, adj_norms);
@@ -291,12 +293,12 @@ int main(int argc, char* argv[]) {
             std::vector<int> req_board = j["board"].get<std::vector<int>>();
 
             // Game config fields needed to reconstruct state from scratch.
-            int num_stones  = j["num_stones"].get<int>();
-            int num_players = j["num_players"].get<int>();
-            auto tsl        = j["turn_stone_list"].get<std::vector<int>>();
-            bool forced     = j.value("forced_pass_only", true);
+            int num_stones  = cfg["numStones"].get<int>();
+            int num_players = cfg["numPlayers"].get<int>();
+            auto tsl        = cfg["turnStoneList"].get<std::vector<int>>();
+            bool forced     = cfg.value("forcedPassOnly", true);
             std::unordered_map<int,int> s2p;
-            for (auto& [k, v] : j["stone_to_player_map"].items())
+            for (auto& [k, v] : cfg["stoneToPlayerMap"].items())
                 s2p[std::stoi(k)] = v.get<int>();
 
             // ── Find or create session ────────────────────────────────────────
