@@ -109,96 +109,54 @@ function drawBoardFull(
 // ── EngineManager ────────────────────────────────────────────────────────────
 //
 // Manages a sequence of engine move requests without blocking the main thread.
-// The caller drives the state machine by alternating poll() and submit() calls
-// from the render loop (_checkAsync), so no async/await appears in Renderer.
-//
-// State machine:
-//
-//   idle ──register()──► needsRequest ──submit()──► waiting
-//    ▲                        ▲                        │
-//    │                        │           WS response completes / error
-//    │                        │                        │
-//    │              remainingMoves > 0            hasResult
-//    │                        │                        │
-//    └── remainingMoves == 0 ─┴──────poll()────────────┘
-//
-//   cancel() transitions any state back to idle; if waiting, it cancels the
-//   in-flight WS request so its eventual response is dropped (no-op).
-//   A request error also transitions waiting → idle directly.
-
 class EngineManager {
-    private _state: 'idle' | 'needsRequest' | 'waiting' | 'hasResult' = 'idle';
-    private _pendingMove: number | null = null;
-    private _pendingHandle: RequestHandle | null = null;
-    private _onResult: () => void;
+    private _handle: RequestHandle | null = null;
     remainingMoves = 0;
     sessionId: string | null = null;
 
-    get running() { return this._state !== 'idle'; }
+    get running() { return this._handle !== null || this.remainingMoves > 0; }
 
-    constructor(onResult: () => void) {
-        this._onResult = onResult;
-    }
-
-    // Begin a new sequence of numMoves engine moves. Transitions idle → needsRequest
-    // and triggers a render so _checkAsync sees 'needsRequest' and calls submit().
-    // Returns false (no-op) if already running.
+    // Begin a new sequence of numMoves engine moves. Returns false (no-op) if already running.
+    // Caller must call _fireEngineMove() immediately after a successful register().
     register(numMoves: number): boolean {
-        if (this._state !== 'idle') return false;
+        if (this.running) return false;
         this.remainingMoves = numMoves;
-        this._state = 'needsRequest';
-        this._onResult();
         return true;
     }
 
-    // Fire one engine request over the WS. Called by _checkAsync only when poll()
-    // returned 'needsRequest'.
-    // Transitions needsRequest → waiting; on completion → hasResult (or idle on error).
-    submit(
+    // Fire one engine request. onMove is called with the resulting move on success;
+    // onError is called on failure. Caller chains the next fire() inside onMove.
+    fire(
         config: GameConfig,
         board: number[],
         moves: (number | null)[],
         session_id: string | null,
         num_simulations: number,
         temperature: number,
+        onMove: (move: number | null) => void,
+        onError: () => void,
     ): void {
-        this._state = 'waiting';
         const body = { config, board, moves, session_id, num_simulations, temperature };
         const handle = conn.request<{ move: number | null; session_id?: string }>('ai/move', { body });
-        this._pendingHandle = handle;
+        this._handle = handle;
         handle.promise
-            .then(data => { this._pendingHandle = null; this._pendingMove = data.move; if (data.session_id) this.sessionId = data.session_id; this._state = 'hasResult'; this._onResult(); })
+            .then(data => {
+                this._handle = null;
+                if (data.session_id) this.sessionId = data.session_id;
+                this.remainingMoves--;
+                onMove(data.move);
+            })
             .catch(e => {
-                this._pendingHandle = null;
-                console.error('em:', e); this._state = 'idle'; this._onResult();
+                this._handle = null;
+                console.error('em:', e);
+                this.remainingMoves = 0;
+                onError();
             });
     }
 
-    // Called each render loop iteration by _checkAsync:
-    //   null           - nothing to do (idle or request in-flight)
-    //   'needsRequest' - build a request body and call submit()
-    //   { move }       - apply this move; state already advanced:
-    //                    remainingMoves decremented, and if > 0 transitioned to
-    //                    needsRequest so the next poll() will prompt another submit()
-    poll(): null | 'needsRequest' | { move: number | null } {
-        if (this._state === 'needsRequest') return 'needsRequest';
-        if (this._state === 'hasResult') {
-            const move = this._pendingMove;
-            this._pendingMove = null;
-            this.remainingMoves--;
-            this._state = this.remainingMoves > 0 ? 'needsRequest' : 'idle';
-            return { move };
-        }
-        return null;
-    }
-
-    // Abort the current sequence and return to idle.
-    // If a request is in-flight (waiting), it is cancelled; its eventual response
-    // is dropped (the promise never settles, so its handlers never run).
+    // Abort the current sequence. If a request is in-flight its eventual response is dropped.
     cancel(): void {
-        if (this._pendingHandle) { this._pendingHandle.cancel(); this._pendingHandle = null; }
-        this._state = 'idle';
-        this._pendingMove = null;
+        if (this._handle) { this._handle.cancel(); this._handle = null; }
         this.remainingMoves = 0;
     }
 }
@@ -265,7 +223,7 @@ export class Renderer {
     private commandsPanel: HTMLDivElement;
     private historyPanel:  HTMLDivElement;
     private selfPlayTimer: number | null = null;
-    private engineManager = new EngineManager(() => this._render());
+    private engineManager = new EngineManager();
 
     constructor(game: BoardState) {
         const players = new Map<number, PlayerInfo>();
@@ -398,37 +356,33 @@ export class Renderer {
         });
     }
 
-    private _checkAsync() {
-        while (true) {
-            const outcome = this.engineManager.poll();
-            if (outcome === null) break;
-            if (outcome === 'needsRequest') {
-                const v = this._active.bs.getView();
-                if (v.gameOver) { console.warn('em: game is already over'); this.engineManager.cancel(); break; }
-                if (this._active.displayPlyNum !== v.plyCount) { console.warn('em: not at live position (navigate to end first)'); this.engineManager.cancel(); break; }
-                const moves = this._active.bs.lastMoves.map(m => m.pos);
-                this.engineManager.submit(
-                    this.currentCfg,
-                    v.history[v.plyCount].board,
-                    moves,
-                    this.engineManager.sessionId,
-                    this.emNumSims,
-                    this.emTemperature,
-                );
-                break;
-            }
-            if (!this._active.bs.makeMove(outcome.move)) {
-                console.error('em: engine returned an illegal move', outcome.move);
-                this.engineManager.cancel();
-                break;
-            }
-            this._active.displayPlyNum = this._active.bs.getView().plyCount;
-            // loop: poll() has already advanced state to 'needsRequest' or 'idle'
-        }
+    private _fireEngineMove(): void {
+        const v = this._active.bs.getView();
+        if (v.gameOver) { console.warn('em: game is already over'); this.engineManager.cancel(); return; }
+        if (this._active.displayPlyNum !== v.plyCount) { console.warn('em: not at live position (navigate to end first)'); this.engineManager.cancel(); return; }
+        const moves = this._active.bs.lastMoves.map(m => m.pos);
+        this.engineManager.fire(
+            this.currentCfg,
+            v.history[v.plyCount].board,
+            moves,
+            this.engineManager.sessionId,
+            this.emNumSims,
+            this.emTemperature,
+            (move) => {
+                if (!this._active.bs.makeMove(move)) {
+                    console.error('em: engine returned an illegal move', move);
+                    this.engineManager.cancel();
+                } else {
+                    this._active.displayPlyNum = this._active.bs.getView().plyCount;
+                    if (this.engineManager.remainingMoves > 0) this._fireEngineMove();
+                }
+                this._render();
+            },
+            () => this._render(),
+        );
     }
 
     private _render() {
-        this._checkAsync();
         const v = this._active.bs.getView();
         this._renderMainBoard(v);
         this._renderControlBar(v);
@@ -720,8 +674,9 @@ else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${sideName(lastMover)
             if (this.activeIdx.startsWith('O_')) { this._setCmdOutput('Engine moves are disabled in online mode'); return; }
             const n = posInt(parts[1] ?? '1');
             if (n === null) { this._setCmdOutput('em: n must be a positive integer'); return; }
-            if (!this.engineManager.register(n)) console.warn('em: engine move already in progress');
-            return;  // EngineManager triggers _render() when done
+            if (this.engineManager.register(n)) this._fireEngineMove();
+            else console.warn('em: engine move already in progress');
+            return;
         }
         else if (cmd === 'cem') {
             this.engineManager.cancel();
