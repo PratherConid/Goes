@@ -8,7 +8,7 @@
 #include <memory>
 #include <cstdint>
 
-enum class MoveType { NOMOVE = 0, ILLEGAL = 1, PLACE = 2, PASS = 3, GAMEOVER = 4 };
+enum class MoveType { NOMOVE = 0, PLACE = 1, PASS = 2, GAMEOVER = 3 };
 
 // Compute per-player reward in (-1, 1) from a terminal board's stone distribution.
 // rank_reward = (# opp with fewer stones - # opp with more) * 2 / (2P-1)  [0 if P==1]

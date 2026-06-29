@@ -237,7 +237,7 @@ export class Renderer {
 
     // Online multiplayer state
     // Pending games: created/joined but not yet started. The players map is kept in sync
-    // by game/pending-players broadcasts; local slots have type='local'.
+    // by game/pending-games broadcasts; local slots have type='local'.
     pendingGames = new Map<string, PendingGame>();
     playerName: string = _defaultPlayerName();
     activeGames = new Map<string, ActiveGame>();
@@ -359,13 +359,13 @@ export class Renderer {
             this._render();
         }).catch(() => { this.aiEngineReady = false; });
 
-        conn.onEvent('game/pending-players', (msg: { id: string; players: { slot: number; type: PlayerType; name: string }[] }) => {
-            let pg = this.pendingGames.get(msg.id);
-            if (!pg) {
-                pg = { id: msg.id, players: new Map(), pendingSlots: [] };
-                this.pendingGames.set(msg.id, pg);
-            }
-            pg.players = new Map(msg.players.map(p => [p.slot, new PlayerInfo(p.type, p.name)]));
+        conn.onEvent('game/pending-games', (msg: { id: string; config: GameConfig; players: { slot: number; type: PlayerType; name: string }[] }) => {
+            this.pendingGames.set(msg.id, {
+                id: msg.id,
+                config: msg.config,
+                players: new Map(msg.players.map(p => [p.slot, new PlayerInfo(p.type, p.name)])),
+                pendingSlots: [],
+            });
             this._render();
         });
         conn.onEvent('game/start', (msg: { id: string; config: GameConfig; players: { slot: number; name: string; type: PlayerType }[] }) => {
@@ -570,8 +570,7 @@ export class Renderer {
 
         let lastMoveStr = '';
         if      (lm.moveType === MoveType.NOMOVE)   lastMoveStr = 'None';
-        else if (lm.moveType === MoveType.ILLEGAL)  lastMoveStr = `Illegal@${lm.pos}`;
-        else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${sideName(lastMover)}@${lm.pos}, captures ${lm.captures.length}`;
+else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${sideName(lastMover)}@${lm.pos}, captures ${lm.captures.length}`;
         else if (lm.moveType === MoveType.PASS)     lastMoveStr = `${sideName(lastMover)}@Pass`;
         else if (lm.moveType === MoveType.GAMEOVER) {
             const winnerNames = v.winners.map(w => `P${w}`);

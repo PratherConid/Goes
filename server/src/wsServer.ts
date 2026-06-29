@@ -9,12 +9,12 @@ import { aiMove, aiHealth } from './engineProxy.js';
 // Client → server:  { kind:'req', reqId, type, ...payload }
 // Server → client:  { kind:'res', reqId, ok:true,  data }
 //                   { kind:'res', reqId, ok:false, error, statusCode }
-//                   { kind:'event', type:'game/pending-players', id, players } (push, personalized)
+//                   { kind:'event', type:'game/pending-games', id, players } (push, personalized)
 //                   { kind:'event', type:'game/start',  id, config, players } (push, personalized)
 //                   { kind:'event', type:'game/move',   id, moveIndex }        (push)
 //                   { kind:'event', type:'game/resign', id, slots }            (push)
 //
-// While waiting, game/pending-players is broadcast after every join so clients see
+// While waiting, game/pending-games is broadcast after every join so clients see
 // who has joined. After a game starts only the minimal change is forwarded.
 // Reconnects use game/subscribe, which returns full OnlineStateResponse for catchup.
 
@@ -62,15 +62,17 @@ function buildStartPayload(id: string, ws: WebSocket): object {
     return { config: onlineGameManager.getConfig(id), players };
 }
 
-// Build the personalized players payload for one socket in a pending game.
-function buildPendingPlayersPayload(id: string, ws: WebSocket): object {
+// Build the personalized pending-game payload for one socket (game/pending-games).
+function buildPendingGamesPayload(id: string, ws: WebSocket): object {
     const players = onlineGameManager.getPendingPlayers(id) ?? new Map();
     const mySlots = new Set(onlineGameManager.getPositions(id, ws));
     return {
+        config: onlineGameManager.getConfig(id),
         players: [...players.entries()].map(([slot, pi]) => ({
             slot, name: pi.name,
             type: mySlots.has(slot) ? 'local' : 'server',
         })),
+        pendingSlots: [],
     };
 }
 
@@ -89,8 +91,8 @@ async function handleRequest(ws: WebSocket, msg: ReqMessage): Promise<Handled> {
             const sockets = onlineGameManager.getSockets(result.id) as WebSocket[];
             return {
                 data: result,
-                broadcast: { id: result.id, type: 'game/pending-players',
-                    perSocket: sockets.map(rcv => ({ ws: rcv, payload: buildPendingPlayersPayload(result.id, rcv) })) },
+                broadcast: { id: result.id, type: 'game/pending-games',
+                    perSocket: sockets.map(rcv => ({ ws: rcv, payload: buildPendingGamesPayload(result.id, rcv) })) },
             };
         }
         case 'game/join': {
@@ -102,8 +104,8 @@ async function handleRequest(ws: WebSocket, msg: ReqMessage): Promise<Handled> {
             const broadcast = result.status === 'playing'
                 ? { id, type: 'game/start',
                     perSocket: sockets.map(rcv => ({ ws: rcv, payload: buildStartPayload(id, rcv) })) }
-                : { id, type: 'game/pending-players',
-                    perSocket: sockets.map(rcv => ({ ws: rcv, payload: buildPendingPlayersPayload(id, rcv) })) };
+                : { id, type: 'game/pending-games',
+                    perSocket: sockets.map(rcv => ({ ws: rcv, payload: buildPendingGamesPayload(id, rcv) })) };
             return { data: { position: result.position }, broadcast };
         }
         case 'game/move': {

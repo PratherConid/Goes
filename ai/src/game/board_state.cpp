@@ -47,7 +47,6 @@ std::string move_to_string(const MoveInfo& m) {
         case MoveType::PLACE:    return "PLACE " + std::to_string(m.pos.value_or(-1));
         case MoveType::PASS:     return "PASS";
         case MoveType::GAMEOVER: return "GAMEOVER";
-        case MoveType::ILLEGAL:  return "ILLEGAL";
         default:                 return "NONE";   // NOMOVE
     }
 }

@@ -443,7 +443,6 @@ export class BoardState {
             resignedPlayers: [...this.resignedPlayers],
             plyCount: this.history.length - 1,
             history: this.history,
-            legalMoves: this.legalMovesWithTake,
             legalMoveHistory: this.legalMoveHistory,
             gameOver: this.gameOver(),
             // A resigned player may always pass; otherwise the forced-pass-only rule applies.

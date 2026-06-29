@@ -1,9 +1,8 @@
 export const enum MoveType {
     NOMOVE   = 0,
-    ILLEGAL  = 1,
-    PLACE    = 2,
-    PASS     = 3,
-    GAMEOVER = 4,
+    PLACE    = 1,
+    PASS     = 2,
+    GAMEOVER = 3,
 }
 
 export interface StoneInfo { name: string; color: string; }
@@ -118,7 +117,6 @@ export interface BoardView {
     resignedPlayers: number[];
     plyCount: number;
     history: HistoryEntry[];
-    legalMoves: (Set<number> | null)[];
     legalMoveHistory: (Set<number> | null)[][];
     gameOver: boolean;
     passEnabled: boolean;
