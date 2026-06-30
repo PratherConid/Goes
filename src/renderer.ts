@@ -553,10 +553,7 @@ else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${sideName(lastMover)
             });
             return chars.join('');
         };
-        const setupMap = fmtPlayerMap(this.newCfg.players, this.newCfg.numPlayers);
-        const setupSection = this.newCfg.players.size > 0 ? `
-            <div><b>Player setup:</b> ${[...this.newCfg.players.entries()]
-                .map(([s, pi]) => `${s}:${pi.type}${pi.type === 'serverEngine' && (pi.emsim || pi.temp) ? `(sim=${pi.emsim},t=${pi.temp})` : ''}`).join(', ')} [${setupMap}]</div>` : '';
+        const setupSection = `<div><b>Player setup:</b> ${fmtPlayerMap(this.newCfg.players, this.newCfg.numPlayers)}</div>`;
         const pendingGamesSection = this.pendingGames.size > 0 ? `
             <div><b>Pending games:</b> ${[...this.pendingGames.values()]
                 .map(pg => `${pg.id} (${fmtPlayerMap(pg.config.players, pg.config.numPlayers)})`)
