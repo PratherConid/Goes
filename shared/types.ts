@@ -59,6 +59,7 @@ export class GameConfig {
     turnStoneList: number[];
     stoneToPlayerMap: Record<number, number>;
     forcedPassOnly: boolean;
+    players: Map<number, PlayerInfo>;  // slot → player; empty slots are pending/unassigned
 
     constructor(
         boardType: string,
@@ -68,14 +69,16 @@ export class GameConfig {
         turnStoneList: number[],
         stoneToPlayerMap: Record<number, number>,
         forcedPassOnly: boolean,
+        players: Map<number, PlayerInfo> = new Map(),
     ) {
-        this.boardType       = boardType;
-        this.boardArgs       = boardArgs;
-        this.numStones       = numStones;
-        this.numPlayers      = numPlayers;
-        this.turnStoneList   = turnStoneList;
+        this.boardType        = boardType;
+        this.boardArgs        = boardArgs;
+        this.numStones        = numStones;
+        this.numPlayers       = numPlayers;
+        this.turnStoneList    = turnStoneList;
         this.stoneToPlayerMap = stoneToPlayerMap;
-        this.forcedPassOnly  = forcedPassOnly;
+        this.forcedPassOnly   = forcedPassOnly;
+        this.players          = players;
     }
 
     copy(): GameConfig {
@@ -87,20 +90,43 @@ export class GameConfig {
             [...this.turnStoneList],
             { ...this.stoneToPlayerMap },
             this.forcedPassOnly,
+            new Map([...this.players.entries()].map(
+                ([s, pi]) => [s, new PlayerInfo(pi.type, pi.name, null, pi.emsim, pi.temp)]
+            )),
+        );
+    }
+
+    // Serialise players Map as an array so JSON.stringify works.
+    toJSON() {
+        return {
+            boardType: this.boardType, boardArgs: this.boardArgs,
+            numStones: this.numStones, numPlayers: this.numPlayers,
+            turnStoneList: this.turnStoneList, stoneToPlayerMap: this.stoneToPlayerMap,
+            forcedPassOnly: this.forcedPassOnly,
+            players: [...this.players.entries()].map(([slot, pi]) =>
+                ({ slot, type: pi.type, name: pi.name, emsim: pi.emsim, temp: pi.temp })),
+        };
+    }
+
+    static fromJSON(raw: any): GameConfig {
+        const players = new Map<number, PlayerInfo>(
+            ((raw.players ?? []) as { slot: number; type: PlayerType; name: string; emsim: number; temp: number }[])
+                .map(p => [p.slot, new PlayerInfo(p.type, p.name, null, p.emsim ?? 0, p.temp ?? 0)])
+        );
+        return new GameConfig(
+            raw.boardType, raw.boardArgs, raw.numStones, raw.numPlayers,
+            raw.turnStoneList, raw.stoneToPlayerMap, raw.forcedPassOnly, players,
         );
     }
 }
 
 export interface PendingGame {
     id: string;
-    config?: GameConfig;                // always set server-side; set client-side only by creator
-    players: Map<number, PlayerInfo>;   // key = slot; socket always null on client
-    pendingSlots: number[];             // pre-shuffled unassigned slots (server); [] on client
+    config: GameConfig;   // always set; config.players tracks assigned slots
 }
 
 export interface OnlineStateResponse {
     status: 'waiting' | 'playing' | 'finished';
-    players: ({ name: string; slot: number } | null)[];
     moves: (number | null)[];
     winners: number[];
     resignedPlayers: number[];

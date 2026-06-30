@@ -1,8 +1,8 @@
 import { BoardState } from '@shared/boardState.js';
 import { PrescribedBoardMap, PrescribedBoardFns, PrescribedBoard } from '@shared/boardConfig.js';
 import type { BoardConfig } from '@shared/boardConfig.js';
-import { PlayerInfo, makeId } from '@shared/types.js';
-import type { GameConfig, OnlineStateResponse, PendingGame } from '@shared/types.js';
+import { PlayerInfo, GameConfig, makeId } from '@shared/types.js';
+import type { OnlineStateResponse, PendingGame } from '@shared/types.js';
 
 // Server-side pending game: extends PendingGame with a set of all connected
 // websockets (creator + joiners). Used by getSockets for broadcasting.
@@ -13,10 +13,9 @@ interface ServerPendingGame extends PendingGame {
 interface OnlineGame {
     id: string;
     config: GameConfig;
-    players: Map<number, PlayerInfo>;            // key = slot; insertion order = join order
-    boardState: BoardState;                      // always present (game has started)
-    engineSessions: Map<number, string>;         // slot → AI session ID for serverEngine slots
-    observers: Set<unknown>;                     // carried over from ServerPendingGame
+    boardState: BoardState;
+    engineSessions: Map<number, string>;   // slot → AI session ID for serverEngine slots
+    observers: Set<unknown>;               // all connected websockets; used for broadcasting
 }
 
 const boardTypeToFn = new Map<string, (...args: number[]) => BoardConfig>();
@@ -32,82 +31,66 @@ class OnlineGameManager {
     private pendingGames = new Map<string, ServerPendingGame>();
     private activeGames  = new Map<string, OnlineGame>();
 
-    createGame(
-        config: GameConfig, playerName: string,
-        playerSetup: Record<number, { type: 'local' | 'serverEngine'; emsim?: number; temp?: number }> = {},
-    ): { id: string; positions: number[]; status: 'waiting' | 'playing' } {
+    createGame(config: GameConfig): { id: string; status: 'waiting' | 'playing' } {
         const fn = boardTypeToFn.get(config.boardType);
         if (!fn) throw Object.assign(new Error(`Unknown board type: ${config.boardType}`), { statusCode: 400 });
         let id: string;
         do { id = makeId(12); } while (this.pendingGames.has(id) || this.activeGames.has(id));
 
-        const setupEntries = Object.entries(playerSetup).map(([k, v]) => [Number(k), v] as [number, { type: 'local' | 'serverEngine'; emsim?: number; temp?: number }]);
-        if (setupEntries.length > 0) {
-            // Validate slot numbers
-            for (const [slot] of setupEntries)
-                if (slot < 1 || slot > config.numPlayers)
-                    throw Object.assign(new Error(`Invalid slot ${slot} for ${config.numPlayers}-player game`), { statusCode: 400 });
-            const players = new Map<number, PlayerInfo>(setupEntries.map(([slot, entry]) =>
-                [slot, entry.type === 'local'
-                    ? new PlayerInfo('client', playerName)
-                    : new PlayerInfo('serverEngine', 'Engine', null, entry.emsim ?? 0, entry.temp ?? 0)]
-            ));
-            const assignedSlots = new Set(players.keys());
-            const pendingSlots = Array.from({ length: config.numPlayers }, (_, i) => i + 1)
-                .filter(s => !assignedSlots.has(s));
-            const positions = setupEntries.filter(([, e]) => e.type === 'local').map(([s]) => s);
-            if (pendingSlots.length === 0) {
-                // All slots filled — start immediately
-                const pending: ServerPendingGame = { id, config, players, pendingSlots: [], observers: new Set() };
-                this._startGame(pending);
-                return { id, positions, status: 'playing' };
-            }
-            this.pendingGames.set(id, { id, config, players, pendingSlots, observers: new Set() });
-            return { id, positions, status: 'waiting' };
+        // Validate and normalise incoming player setup: 'local' → 'client'.
+        const serverConfig = config.copy();
+        for (const [slot, pi] of serverConfig.players) {
+            if (slot < 1 || slot > config.numPlayers)
+                throw Object.assign(new Error(`Invalid slot ${slot} for ${config.numPlayers}-player game`), { statusCode: 400 });
+            if (pi.type === 'local')
+                serverConfig.players.set(slot, new PlayerInfo('client', pi.name));
         }
 
-        // Default: shuffle slots, assign first to creator
-        const slots = Array.from({ length: config.numPlayers }, (_, i) => i + 1);
-        for (let i = slots.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [slots[i], slots[j]] = [slots[j], slots[i]];
+        if (this._pendingSlots(serverConfig).length === 0) {
+            // All slots pre-assigned — start immediately.
+            const pending: ServerPendingGame = { id, config: serverConfig, observers: new Set() };
+            this._startGame(pending);
+            return { id, status: 'playing' };
         }
-        const creatorSlot = slots[0];
-        this.pendingGames.set(id, {
-            id, config,
-            players: new Map([[creatorSlot, new PlayerInfo('client', playerName)]]),
-            pendingSlots: slots.slice(1),
-            observers: new Set(),
-        });
-        return { id, positions: [creatorSlot], status: 'waiting' };
+        this.pendingGames.set(id, { id, config: serverConfig, observers: new Set() });
+        return { id, status: 'waiting' };
     }
 
-    joinGame(id: string, playerName: string): { position: number; config: GameConfig; status: 'waiting' | 'playing' } {
+    joinGame(id: string, playerName: string): { position: number; status: 'waiting' | 'playing' } {
         const pending = this.pendingGames.get(id);
         if (!pending) {
             if (this.activeGames.has(id)) throw Object.assign(new Error('Game already started'), { statusCode: 409 });
             throw Object.assign(new Error('Game not found'), { statusCode: 404 });
         }
-        if (pending.pendingSlots.length === 0)
+        const slots = this._pendingSlots(pending.config);
+        if (slots.length === 0)
             throw Object.assign(new Error('Game is full'), { statusCode: 409 });
-        const slot = pending.pendingSlots.shift()!;
-        pending.players.set(slot, new PlayerInfo('client', playerName));
-        if (pending.pendingSlots.length === 0) {
+        const slot = slots[0];
+        pending.config.players.set(slot, new PlayerInfo('client', playerName));
+        if (slots.length === 1) {
             this._startGame(pending);
-            return { position: slot, config: pending.config!, status: 'playing' };
+            return { position: slot, status: 'playing' };
         }
-        return { position: slot, config: pending.config!, status: 'waiting' };
+        return { position: slot, status: 'waiting' };
+    }
+
+    private _pendingSlots(config: GameConfig): number[] {
+        return Array.from({ length: config.numPlayers }, (_, i) => i + 1)
+            .filter(s => !config.players.has(s));
     }
 
     private _startGame(pending: ServerPendingGame) {
-        const bc = boardTypeToFn.get(pending.config!.boardType)!(...pending.config!.boardArgs);
+        const bc = boardTypeToFn.get(pending.config.boardType)!(...pending.config.boardArgs);
         const boardState = new BoardState(
-            pending.config!.numStones, pending.config!.numPlayers,
-            pending.config!.turnStoneList, pending.config!.stoneToPlayerMap,
-            pending.config!.forcedPassOnly, new Array(bc.N).fill(0), bc,
+            pending.config.numStones, pending.config.numPlayers,
+            pending.config.turnStoneList, pending.config.stoneToPlayerMap,
+            pending.config.forcedPassOnly, new Array(bc.N).fill(0), bc,
         );
         this.pendingGames.delete(pending.id);
-        this.activeGames.set(pending.id, { id: pending.id, config: pending.config!, players: pending.players, boardState, engineSessions: new Map(), observers: pending.observers });
+        this.activeGames.set(pending.id, {
+            id: pending.id, config: pending.config,
+            boardState, engineSessions: new Map(), observers: pending.observers,
+        });
     }
 
     // Record that a connection (identified by ws) owns a slot in a game.
@@ -115,7 +98,7 @@ class OnlineGameManager {
     acceptJoin(id: string, ws: unknown, slot: number): void {
         const game = this.pendingGames.get(id) ?? this.activeGames.get(id);
         if (!game) return;
-        const pi = game.players.get(slot);
+        const pi = game.config.players.get(slot);
         if (pi) pi.socket = ws as WebSocket | null;
         game.observers.add(ws);
     }
@@ -129,7 +112,7 @@ class OnlineGameManager {
     getPositions(id: string, ws: unknown): number[] {
         const game = this.pendingGames.get(id) ?? this.activeGames.get(id);
         if (!game) return [];
-        return [...game.players.entries()]
+        return [...game.config.players.entries()]
             .filter(([, pi]) => pi.socket === (ws as WebSocket | null))
             .map(([slot]) => slot);
     }
@@ -144,51 +127,51 @@ class OnlineGameManager {
     // Removes a closed connection from all games it was part of.
     removeConnection(ws: unknown): void {
         for (const g of [...this.pendingGames.values(), ...this.activeGames.values()]) {
-            for (const pi of g.players.values())
+            for (const pi of g.config.players.values())
                 if (pi.socket === (ws as WebSocket | null)) pi.socket = null;
             g.observers.delete(ws);
         }
     }
 
-    getPendingPlayers(id: string): Map<number, PlayerInfo> | null {
-        return this.pendingGames.get(id)?.players ?? null;
-    }
-
-    getPlayerInfo(id: string, slot: number): PlayerInfo | null {
-        const game = this.pendingGames.get(id) ?? this.activeGames.get(id);
-        return game?.players.get(slot) ?? null;
-    }
-
     getConfig(id: string): GameConfig {
         const game = this.pendingGames.get(id) ?? this.activeGames.get(id);
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
-        return game.config!;
+        return game.config;
+    }
+
+    // Returns a copy of the game config with player types personalised for `ws`:
+    // owned slots → 'local', serverEngine slots → 'serverEngine', others → 'server'.
+    getPersonalizedConfig(id: string, ws: unknown): GameConfig {
+        const game = this.pendingGames.get(id) ?? this.activeGames.get(id);
+        if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
+        const mySlots = new Set(this.getPositions(id, ws));
+        const config = game.config.copy();
+        for (const [slot, pi] of config.players) {
+            if (mySlots.has(slot))
+                config.players.set(slot, new PlayerInfo('local', pi.name, null, pi.emsim, pi.temp));
+            else if (pi.type !== 'serverEngine')
+                config.players.set(slot, new PlayerInfo('server', pi.name));
+        }
+        return config;
     }
 
     getState(id: string): OnlineStateResponse {
         const pending = this.pendingGames.get(id);
         if (pending) {
-            return {
-                status: 'waiting',
-                players: new Array(pending.players.size).fill(null),
-                moves: [],
-                winners: [],
-                resignedPlayers: [],
-            };
+            return { status: 'waiting', moves: [], winners: [], resignedPlayers: [] };
         }
         const game = this.activeGames.get(id);
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
         const v = game.boardState.getView();
         return {
             status: v.gameOver ? 'finished' : 'playing',
-            players: [...game.players.entries()].map(([slot, pi]) => ({ name: pi.name, slot })),
             moves: game.boardState.lastMoves.map(m => m.pos),
             winners: v.winners,
             resignedPlayers: v.resignedPlayers,
         };
     }
 
-    applyMove(id: string, positions: number[], moveIndex: number | null, clientIdx: number): OnlineStateResponse {
+    applyMove(id: string, positions: number[], moveIndex: number | null, clientIdx: number): void {
         const game = this.activeGames.get(id);
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
         if (game.boardState.gameOver()) throw Object.assign(new Error('Game is not in progress'), { statusCode: 409 });
@@ -199,7 +182,6 @@ class OnlineGameManager {
             throw Object.assign(new Error('Not your turn'), { statusCode: 403 });
         if (!game.boardState.makeMove(moveIndex)) throw Object.assign(new Error('Illegal move'), { statusCode: 400 });
         game.boardState.advanceResigned();
-        return this.getState(id);
     }
 
     // Returns the slot that should move next if it is a serverEngine slot; null otherwise.
@@ -208,7 +190,7 @@ class OnlineGameManager {
         if (!game || game.boardState.gameOver()) return null;
         const v = game.boardState.getView();
         const slot = game.config.stoneToPlayerMap[v.nextPlayer];
-        const pi = game.players.get(slot);
+        const pi = game.config.players.get(slot);
         return (pi?.type === 'serverEngine') ? slot : null;
     }
 
@@ -220,7 +202,7 @@ class OnlineGameManager {
         const game = this.activeGames.get(id);
         if (!game) return null;
         const v = game.boardState.getView();
-        const pi = game.players.get(slot)!;
+        const pi = game.config.players.get(slot)!;
         return {
             config: game.config,
             board: v.history[v.plyCount].board,
@@ -236,21 +218,20 @@ class OnlineGameManager {
         const game = this.activeGames.get(id);
         if (!game) return;
         if (sessionId) game.engineSessions.set(slot, sessionId);
-        game.boardState.makeMove(moveIndex);
+        if (!game.boardState.makeMove(moveIndex)) throw new Error(`Engine returned illegal move ${moveIndex} for slot ${slot}`);
         game.boardState.advanceResigned();
     }
 
-    resign(id: string, positions: number[]): OnlineStateResponse {
+    resign(id: string, positions: number[]): void {
         const game = this.activeGames.get(id);
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
         if (game.boardState.gameOver()) throw Object.assign(new Error('Game is not in progress'), { statusCode: 409 });
         const bs = game.boardState;
         for (const slot of positions) {
-            if (!game.players.has(slot)) throw Object.assign(new Error('Invalid position'), { statusCode: 400 });
+            if (!game.config.players.has(slot)) throw Object.assign(new Error('Invalid position'), { statusCode: 400 });
             bs.resign(slot);
         }
         bs.advanceResigned();
-        return this.getState(id);
     }
 }
 

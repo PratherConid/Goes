@@ -1,6 +1,6 @@
 import { BoardState, MoveType, STONE_MAP } from '@shared/boardState.js';
 import { PlayerInfo, GameConfig, makeId } from '@shared/types.js';
-import type { BoardView, OnlineStateResponse, PendingGame, PlayerType } from '@shared/types.js';
+import type { BoardView, OnlineStateResponse, PendingGame } from '@shared/types.js';
 import type { BoardConfig } from '@shared/boardConfig.js';
 import {
     PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns,
@@ -165,8 +165,7 @@ class EngineManager {
 
 interface ActiveGame {
     bs: BoardState;
-    positions: number[];                          // join indices of local players
-    players: Map<number, PlayerInfo>;             // key = slot; local players have type 'local'
+    config: GameConfig;
     displayPlyNum: number;
     idxShowHistory: number;
     randomEvaled: Record<number, number> | null;
@@ -176,8 +175,7 @@ export class Renderer {
     aiEngineReady = false;
     selfPlay   = false;
     autoForced = false;
-    newCfg     = new GameConfig(PrescribedBoardMap[PrescribedBoard.rectangularBoard][1], [9, 9], 2, 2, [1, 2], {1: 1, 2: 2}, true);
-    currentCfg = new GameConfig(PrescribedBoardMap[PrescribedBoard.rectangularBoard][1], [9, 9], 2, 2, [1, 2], {1: 1, 2: 2}, true);
+    newCfg = new GameConfig(PrescribedBoardMap[PrescribedBoard.rectangularBoard][1], [9, 9], 2, 2, [1, 2], {1: 1, 2: 2}, true);
     // Per-board-type dimension memory so 'bt' restores custom dimensions on type switch
     boardDimensionForNew: Record<PrescribedBoard, number[]> = {
         [PrescribedBoard.rectangularBoard]:         [9, 9],
@@ -198,7 +196,6 @@ export class Renderer {
     // by game/pending-games broadcasts; local slots have type='local'.
     pendingGames = new Map<string, PendingGame>();
     playerName: string = _defaultPlayerName();
-    playersSetup = new Map<number, PlayerInfo>();
     activeGames = new Map<string, ActiveGame>();
     activeIdx: string = '';   // always set before first render (constructor initializes)
 
@@ -227,11 +224,11 @@ export class Renderer {
     private engineManager = new EngineManager();
 
     constructor(game: BoardState) {
-        const players = new Map<number, PlayerInfo>();
-        for (const slot of new Set(Object.values(this.newCfg.stoneToPlayerMap)))
-            players.set(slot, new PlayerInfo('local', ''));
+        const initCfg = this.newCfg.copy();
+        for (const slot of new Set(Object.values(initCfg.stoneToPlayerMap)))
+            initCfg.players.set(slot, new PlayerInfo('local', ''));
         // Start with a default local game so there is always an active game.
-        this._registerGame('L_' + makeId(12), game, this.newCfg.copy(), players, []);
+        this._registerGame('L_' + makeId(12), game, initCfg);
         this.mainCanvas   = document.getElementById('main-canvas')    as HTMLCanvasElement;
         this.histBoards   = document.getElementById('history-boards') as HTMLDivElement;
         this.passBtn      = document.getElementById('pass-btn')        as HTMLButtonElement;
@@ -318,17 +315,12 @@ export class Renderer {
             this._render();
         }).catch(() => { this.aiEngineReady = false; });
 
-        conn.onEvent('game/pending-games', (msg: { id: string; config: GameConfig; players: { slot: number; type: PlayerType; name: string }[] }) => {
-            this.pendingGames.set(msg.id, {
-                id: msg.id,
-                config: msg.config,
-                players: new Map(msg.players.map(p => [p.slot, new PlayerInfo(p.type, p.name)])),
-                pendingSlots: [],
-            });
+        conn.onEvent('game/pending-games', (msg: { id: string; config: any }) => {
+            this.pendingGames.set(msg.id, { id: msg.id, config: GameConfig.fromJSON(msg.config) });
             this._render();
         });
-        conn.onEvent('game/start', (msg: { id: string; config: GameConfig; players: { slot: number; name: string; type: PlayerType }[] }) => {
-            this._activatePendingGame(msg.id, msg.players, msg.config);
+        conn.onEvent('game/start', (msg: { id: string; config: any }) => {
+            this._activatePendingGame(msg.id, GameConfig.fromJSON(msg.config));
         });
         conn.onEvent('game/move', (msg: { id: string; moveIndex: number | null }) => {
             this._handleOnlineMove(msg.id, msg.moveIndex);
@@ -340,19 +332,21 @@ export class Renderer {
         // server re-binds our slot. The reply carries full state for catchup sync.
         conn.onEvent('open', () => {
             const resub = (id: string, position: number) =>
-                conn.request<{ state: OnlineStateResponse; config: GameConfig }>(
+                conn.request<{ state: OnlineStateResponse; config: any }>(
                     'game/subscribe', { id, position })
-                    .promise.then(({ state, config }) => {
+                    .promise.then(({ state, config: rawConfig }) => {
                         if (state.status === 'playing' || state.status === 'finished') {
                             if (!this.activeGames.has('O_' + id))
-                                this._activatePendingGame(id, state.players.filter(Boolean) as { slot: number; name: string }[], config);
+                                this._activatePendingGame(id, GameConfig.fromJSON(rawConfig));
                             this._applyOnlineState(id, state);
                         }
                     }).catch(() => {});
             for (const [id, ag] of this.activeGames)
-                if (id.startsWith('O_')) for (const pos of ag.positions) resub(id.slice(2), pos);
+                if (id.startsWith('O_'))
+                    for (const [slot, pi] of ag.config.players)
+                        if (pi.type === 'local') resub(id.slice(2), slot);
             for (const [id, pg] of this.pendingGames)
-                for (const [slot, pi] of pg.players)
+                for (const [slot, pi] of pg.config.players)
                     if (pi.type === 'local') resub(id, slot);
         });
     }
@@ -363,7 +357,7 @@ export class Renderer {
         if (this._active.displayPlyNum !== v.plyCount) { console.warn('em: not at live position (navigate to end first)'); this.engineManager.cancel(); return; }
         const moves = this._active.bs.lastMoves.map(m => m.pos);
         this.engineManager.fire(
-            this.currentCfg,
+            this._active.config,
             v.history[v.plyCount].board,
             moves,
             this.engineManager.sessionId,
@@ -428,7 +422,7 @@ export class Renderer {
         this.passBtn.disabled = dpn !== v.plyCount || !v.passEnabled || !this._isMyTurn();
         this.resignBtn.hidden = this.activeIdx.startsWith('L_');
         this.resignBtn.disabled = this.activeIdx.startsWith('L_') || v.gameOver
-            || [...this._active.players.entries()].every(([s, pi]) => pi.type !== 'local' || v.resignedPlayers.includes(s));
+            || [...this._active.config.players.entries()].every(([s, pi]) => pi.type !== 'local' || v.resignedPlayers.includes(s));
     }
 
     private _renderHistoryPanel(v: BoardView) {
@@ -549,22 +543,36 @@ else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${sideName(lastMover)
             Object.entries(map).map(([s, p]) => `${sideName(Number(s))}→P${p}`).join(', ');
         const onlineGameIds = [...this.activeGames.keys()].filter(k => k.startsWith('O_'));
         const localGameIds  = [...this.activeGames.keys()].filter(k => k.startsWith('L_'));
-        const setupSection = this.playersSetup.size > 0 ? `
-            <div><b>Player setup:</b> ${[...this.playersSetup.entries()]
-                .map(([s, pi]) => `${s}:${pi.type}${pi.type === 'serverEngine' && (pi.emsim || pi.temp) ? `(sim=${pi.emsim},t=${pi.temp})` : ''}`).join(', ')}</div>` : '';
+        const fmtPlayerMap = (players: Map<number, PlayerInfo>, numPlayers: number) => {
+            const chars = Array.from({ length: numPlayers }, (_, i) => {
+                const pi = players.get(i + 1);
+                if (!pi) return 'N';
+                if (pi.type === 'local' || pi.type === 'client') return 'L';
+                if (pi.type === 'serverEngine' || pi.type === 'localEngine') return 'E';
+                return 'S';
+            });
+            return chars.join('');
+        };
+        const setupMap = fmtPlayerMap(this.newCfg.players, this.newCfg.numPlayers);
+        const setupSection = this.newCfg.players.size > 0 ? `
+            <div><b>Player setup:</b> ${[...this.newCfg.players.entries()]
+                .map(([s, pi]) => `${s}:${pi.type}${pi.type === 'serverEngine' && (pi.emsim || pi.temp) ? `(sim=${pi.emsim},t=${pi.temp})` : ''}`).join(', ')} [${setupMap}]</div>` : '';
         const pendingGamesSection = this.pendingGames.size > 0 ? `
             <div><b>Pending games:</b> ${[...this.pendingGames.values()]
-                .map(pg => `${pg.id} (${pg.players.size}/${pg.config?.numPlayers ?? '?'} joined)`)
+                .map(pg => `${pg.id} (${fmtPlayerMap(pg.config.players, pg.config.numPlayers)})`)
                 .join(', ')}</div>` : '';
         const activeGamesSection = onlineGameIds.length > 0 ? `
-            <div><b>Active online games:</b> ${onlineGameIds.map(id => id.slice(2)).join(', ')}</div>` : '';
+            <div><b>Active online games:</b> ${onlineGameIds.map(id => {
+                const ag = this.activeGames.get(id)!;
+                return `${id.slice(2)} (${fmtPlayerMap(ag.config.players, ag.config.numPlayers)})`;
+            }).join(', ')}</div>` : '';
         const localGamesSection = localGameIds.length > 0 ? `
             <div><b>Active local games:</b> ${localGameIds.map(id => id.slice(2)).join(', ')}</div>` : '';
         const gamesSectionHr = (this.pendingGames.size > 0 || onlineGameIds.length > 0 || localGameIds.length > 0) ? `
             <hr style="margin:6px 0">` : '';
         const onlineSection = this.activeIdx.startsWith('O_') ? `
             <div><b>Online game:</b> ${this.activeIdx.slice(2)}</div>
-            <div><b>Your player slot:</b> ${[...this._active.players.entries()].filter(([, pi]) => pi.type === 'local').map(([s]) => s).join(', ')}</div>
+            <div><b>Your player slot:</b> ${[...this._active.config.players.entries()].filter(([, pi]) => pi.type === 'local').map(([s]) => s).join(', ')} [${fmtPlayerMap(this._active.config.players, this._active.config.numPlayers)}]</div>
             <div><b>Your name:</b> ${this.playerName || '(not set)'}</div>
             <hr style="margin:6px 0">` : '';
         this.statusPanel.innerHTML = `${setupSection}${pendingGamesSection}${activeGamesSection}${localGamesSection}${gamesSectionHr}${onlineSection}
@@ -586,6 +594,7 @@ else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${sideName(lastMover)
             <div><b>&emsp;Turn stone list (current):</b> [${v.turnStoneList.join(', ')}]</div>
             <div><b>&emsp;Stone to player map (current):</b> ${fmtMap(v.stoneToPlayerMap)}</div>
             <div><b>&emsp;Forced pass only (current):</b> ${v.forcedPassOnly}</div>
+            <div><b>&emsp;Players:</b> ${fmtPlayerMap(this._active.config.players, this._active.config.numPlayers)}</div>
             <hr style="margin:6px 0">
             <div><b>New Game Setup</div>
             <div><b>&emsp;Type of stones:</b> ${this.newCfg.numStones}</div>
@@ -595,6 +604,7 @@ else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${sideName(lastMover)
             <div><b>&emsp;Forced pass only:</b> ${this.newCfg.forcedPassOnly}</div>
             <div><b>&emsp;Board type:</b> ${this.newCfg.boardType}</div>
             <div><b>&emsp;Board dimension:</b> ${this.newCfg.boardArgs}</div>
+            <div><b>&emsp;Players:</b> ${fmtPlayerMap(this.newCfg.players, this.newCfg.numPlayers)}</div>
         `;
     }
 
@@ -620,21 +630,21 @@ else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${sideName(lastMover)
     }
 
     private _createLocalGame(bc: BoardConfig) {
+        const config = this.newCfg.copy();
+        config.players.clear();
+        for (const slot of new Set(Object.values(config.stoneToPlayerMap)))
+            config.players.set(slot, new PlayerInfo('local', ''));
         const bs = new BoardState(
-            this.newCfg.numStones, this.newCfg.numPlayers, this.newCfg.turnStoneList,
-            this.newCfg.stoneToPlayerMap, this.newCfg.forcedPassOnly, new Array(bc.N).fill(0), bc,
+            config.numStones, config.numPlayers, config.turnStoneList,
+            config.stoneToPlayerMap, config.forcedPassOnly, new Array(bc.N).fill(0), bc,
         );
-        const players = new Map<number, PlayerInfo>();
-        for (const slot of new Set(Object.values(this.newCfg.stoneToPlayerMap)))
-            players.set(slot, new PlayerInfo('local', ''));
-        this._registerGame('L_' + makeId(12), bs, this.newCfg.copy(), players, []);
+        this._registerGame('L_' + makeId(12), bs, config);
     }
 
-    private _registerGame(id: string, bs: BoardState, config: GameConfig, players: Map<number, PlayerInfo>, positions: number[]): void {
+    private _registerGame(id: string, bs: BoardState, config: GameConfig): void {
         this.engineManager.cancel();
         this.engineManager.sessionId = null;
-        this.currentCfg = config;
-        this.activeGames.set(id, { bs, positions, players, displayPlyNum: 0, idxShowHistory: 0, randomEvaled: null });
+        this.activeGames.set(id, { bs, config, displayPlyNum: 0, idxShowHistory: 0, randomEvaled: null });
         this.activeIdx = id;
     }
 
@@ -656,15 +666,15 @@ else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${sideName(lastMover)
         }
         else if (cmd === 'sol') {
             const n = posInt(parts[1]); if (n === null) { this._setCmdOutput('Usage: sol <player-id>'); return; }
-            this.playersSetup.set(n, new PlayerInfo('local', this.playerName)); this._render();
+            this.newCfg.players.set(n, new PlayerInfo('local', this.playerName)); this._render();
         }
         else if (cmd === 'soe') {
             const n = posInt(parts[1]); if (n === null) { this._setCmdOutput('Usage: soe <player-id> [emsim] [temp]'); return; }
             const nonNeg = (s: string | undefined) => { const v = Number(s); return s !== undefined && isFinite(v) && v >= 0 ? v : null; };
-            const emsim = parts[2] !== undefined ? nonNeg(parts[2]) : 0;
-            const temp  = parts[3] !== undefined ? nonNeg(parts[3]) : 0;
+            const emsim = parts[2] !== undefined ? nonNeg(parts[2]) : this.emNumSims;
+            const temp  = parts[3] !== undefined ? nonNeg(parts[3]) : this.emTemperature;
             if (emsim === null || temp === null) { this._setCmdOutput('Usage: soe <player-id> [emsim] [temp]'); return; }
-            this.playersSetup.set(n, new PlayerInfo('serverEngine', 'Engine', null, emsim, temp)); this._render();
+            this.newCfg.players.set(n, new PlayerInfo('serverEngine', 'Engine', null, emsim, temp)); this._render();
         }
         else if (cmd === 'newo') {
             void this._createOnlineGame();
@@ -837,7 +847,7 @@ else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${sideName(lastMover)
     private _isMyTurn(): boolean {
         const ag = this._active;
         const v = ag.bs.getView();
-        return !v.gameOver && ag.players.get(v.stoneToPlayerMap[v.nextPlayer])?.type === 'local';
+        return !v.gameOver && ag.config.players.get(v.stoneToPlayerMap[v.nextPlayer])?.type === 'local';
     }
 
     private _tryMakeMove(moveIndex: number | null): void {
@@ -854,27 +864,13 @@ else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${sideName(lastMover)
     private async _createOnlineGame() {
         if (!this.playerName) { this._setCmdOutput('Set your name first: setname <name>'); return; }
         const config = this.newCfg.copy();
-        const setup = Object.fromEntries(
-            [...this.playersSetup.entries()].map(([slot, pi]) => [slot, { type: pi.type, emsim: pi.emsim, temp: pi.temp }])
-        );
-        const pendingCount = this.playersSetup.size > 0
-            ? this.newCfg.numPlayers - this.playersSetup.size
-            : this.newCfg.numPlayers - 1;
+        for (const [, pi] of config.players)
+            if (pi.type === 'local') pi.name = this.playerName;
         try {
-            const { id, positions, status } = await conn.request<{ id: string; positions: number[]; status: 'waiting' | 'playing' }>(
-                'game/create', { config, playerName: this.playerName, playerSetup: setup }).promise;
-            this.playersSetup.clear();
-            if (status === 'waiting') {
-                // Record as pending; active-game fields are set when game/start arrives.
-                this.pendingGames.set(id, {
-                    id, config: this.newCfg.copy(),
-                    players: new Map(positions.map(pos => [pos, new PlayerInfo('local', this.playerName)])),
-                    pendingSlots: [],
-                });
-                this._setCmdOutput(`Game created: ${id} - waiting for ${pendingCount} more player(s)…`);
-            } else {
-                this._setCmdOutput(`Game started: ${id}`);
-            }
+            const { id, status } = await conn.request<{ id: string; status: 'waiting' | 'playing' }>(
+                'game/create', { config }).promise;
+            this.newCfg.players.clear();
+            this._setCmdOutput(status === 'waiting' ? `Game created: ${id}` : `Game started: ${id}`);
             this._render();
         } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); }
     }
@@ -889,14 +885,7 @@ else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${sideName(lastMover)
     }
 
     // Promote a pending game to active once it starts.
-    // `players` carries `type` when called from game/start; no `type` on the reconnect path.
-    private _activatePendingGame(id: string, players: { slot: number; name: string; type?: PlayerType }[], config: GameConfig) {
-        const pg = this.pendingGames.get(id);
-        const hasTypeInfo = players.some(p => p.type !== undefined);
-        if (!hasTypeInfo && !pg) return;
-        const positions = hasTypeInfo
-            ? players.filter(p => p.type === 'local').map(p => p.slot)
-            : [...pg!.players.entries()].filter(([, pi]) => pi.type === 'local').map(([slot]) => slot);
+    private _activatePendingGame(id: string, config: GameConfig) {
         const boardEntry = _cmdToBoard.get(config.boardType);
         if (!boardEntry) { this._setCmdOutput(`Unknown board type: ${config.boardType}`); return; }
         const bc = boardEntry.fn(...config.boardArgs);
@@ -905,12 +894,9 @@ else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${sideName(lastMover)
             config.turnStoneList, config.stoneToPlayerMap,
             config.forcedPassOnly, new Array(bc.N).fill(0), bc,
         );
-        const playerMap = new Map<number, PlayerInfo>();
-        for (const p of players)
-            playerMap.set(p.slot, new PlayerInfo(p.type ?? (positions.includes(p.slot) ? 'local' : 'server'), p.name));
-        if (pg) this.pendingGames.delete(id);
-        this._registerGame('O_' + id, bs, config, playerMap, positions);
-        const localEntries = [...this._active.players.entries()].filter(([, pi]) => pi.type === 'local');
+        this.pendingGames.delete(id);
+        this._registerGame('O_' + id, bs, config);
+        const localEntries = [...this._active.config.players.entries()].filter(([, pi]) => pi.type === 'local');
         this._setCmdOutput(`Game started! You are player(s) ${localEntries.map(([s, pi]) => `${s} (${pi.name})`).join(', ')}`);
         this._render();
     }
@@ -978,11 +964,11 @@ else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${sideName(lastMover)
                 this._setCmdOutput(`Game over! ${winnerText}`);
             }
         } else {
-            if (ag.players.get(v.stoneToPlayerMap[v.nextPlayer])?.type === 'local')
+            if (ag.config.players.get(v.stoneToPlayerMap[v.nextPlayer])?.type === 'local')
                 this._setCmdOutput('Your turn!');
             else {
                 const slot = v.stoneToPlayerMap[v.nextPlayer];
-                const p = ag.players.get(slot);
+                const p = ag.config.players.get(slot);
                 this._setCmdOutput(p ? `${p.name} [${slot}]'s turn.` : "Opponent's turn.");
             }
         }
