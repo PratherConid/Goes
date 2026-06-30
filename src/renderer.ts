@@ -857,18 +857,24 @@ else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${sideName(lastMover)
         const setup = Object.fromEntries(
             [...this.playersSetup.entries()].map(([slot, pi]) => [slot, { type: pi.type, emsim: pi.emsim, temp: pi.temp }])
         );
+        const pendingCount = this.playersSetup.size > 0
+            ? this.newCfg.numPlayers - this.playersSetup.size
+            : this.newCfg.numPlayers - 1;
         try {
-            const { id, positions } = await conn.request<{ id: string; positions: number[] }>(
+            const { id, positions, status } = await conn.request<{ id: string; positions: number[]; status: 'waiting' | 'playing' }>(
                 'game/create', { config, playerName: this.playerName, playerSetup: setup }).promise;
             this.playersSetup.clear();
-            // Record it as pending only. The active-game fields and the board are not
-            // touched until the game actually starts (its game/start event arrives).
-            this.pendingGames.set(id, {
-                id, config: this.newCfg.copy(),
-                players: new Map(positions.map(pos => [pos, new PlayerInfo('local', this.playerName)])),
-                pendingSlots: [],
-            });
-            this._setCmdOutput(`Game created: ${id} - waiting for ${this.newCfg.numPlayers - positions.length} more player(s)…`);
+            if (status === 'waiting') {
+                // Record as pending; active-game fields are set when game/start arrives.
+                this.pendingGames.set(id, {
+                    id, config: this.newCfg.copy(),
+                    players: new Map(positions.map(pos => [pos, new PlayerInfo('local', this.playerName)])),
+                    pendingSlots: [],
+                });
+                this._setCmdOutput(`Game created: ${id} - waiting for ${pendingCount} more player(s)…`);
+            } else {
+                this._setCmdOutput(`Game started: ${id}`);
+            }
             this._render();
         } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); }
     }

@@ -112,6 +112,7 @@ async function handleRequest(ws: WebSocket, msg: ReqMessage): Promise<Handled> {
             const playerSetup = (msg['playerSetup'] as Record<number, { type: 'local' | 'serverEngine'; emsim?: number; temp?: number }>) ?? {};
             const result = onlineGameManager.createGame(config, playerName, playerSetup);
             for (const pos of result.positions) onlineGameManager.acceptJoin(result.id, ws, pos);
+            onlineGameManager.addObserver(result.id, ws);
             const sockets = onlineGameManager.getSockets(result.id) as WebSocket[];
             const broadcast = result.status === 'playing'
                 ? { id: result.id, type: 'game/start',
@@ -119,7 +120,7 @@ async function handleRequest(ws: WebSocket, msg: ReqMessage): Promise<Handled> {
                 : { id: result.id, type: 'game/pending-games',
                     perSocket: sockets.map(rcv => ({ ws: rcv, payload: buildPendingGamesPayload(result.id, rcv) })) };
             return {
-                data: { id: result.id, positions: result.positions },
+                data: { id: result.id, positions: result.positions, status: result.status },
                 broadcast,
                 engineGame: result.status === 'playing' ? result.id : undefined,
             };

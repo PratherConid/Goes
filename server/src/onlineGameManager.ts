@@ -4,12 +4,19 @@ import type { BoardConfig } from '@shared/boardConfig.js';
 import { PlayerInfo, makeId } from '@shared/types.js';
 import type { GameConfig, OnlineStateResponse, PendingGame } from '@shared/types.js';
 
+// Server-side pending game: extends PendingGame with a set of all connected
+// websockets (creator + joiners). Used by getSockets for broadcasting.
+interface ServerPendingGame extends PendingGame {
+    observers: Set<unknown>;
+}
+
 interface OnlineGame {
     id: string;
     config: GameConfig;
     players: Map<number, PlayerInfo>;            // key = slot; insertion order = join order
     boardState: BoardState;                      // always present (game has started)
     engineSessions: Map<number, string>;         // slot → AI session ID for serverEngine slots
+    observers: Set<unknown>;                     // carried over from ServerPendingGame
 }
 
 const boardTypeToFn = new Map<string, (...args: number[]) => BoardConfig>();
@@ -22,7 +29,7 @@ for (const key of Object.keys(PrescribedBoardMap)) {
 
 class OnlineGameManager {
     // In-memory store. All games are lost on server restart; no persistence.
-    private pendingGames = new Map<string, PendingGame>();
+    private pendingGames = new Map<string, ServerPendingGame>();
     private activeGames  = new Map<string, OnlineGame>();
 
     createGame(
@@ -51,11 +58,11 @@ class OnlineGameManager {
             const positions = setupEntries.filter(([, e]) => e.type === 'local').map(([s]) => s);
             if (pendingSlots.length === 0) {
                 // All slots filled — start immediately
-                const pending: PendingGame = { id, config, players, pendingSlots: [] };
+                const pending: ServerPendingGame = { id, config, players, pendingSlots: [], observers: new Set() };
                 this._startGame(pending);
                 return { id, positions, status: 'playing' };
             }
-            this.pendingGames.set(id, { id, config, players, pendingSlots });
+            this.pendingGames.set(id, { id, config, players, pendingSlots, observers: new Set() });
             return { id, positions, status: 'waiting' };
         }
 
@@ -70,6 +77,7 @@ class OnlineGameManager {
             id, config,
             players: new Map([[creatorSlot, new PlayerInfo('client', playerName)]]),
             pendingSlots: slots.slice(1),
+            observers: new Set(),
         });
         return { id, positions: [creatorSlot], status: 'waiting' };
     }
@@ -91,7 +99,7 @@ class OnlineGameManager {
         return { position: slot, config: pending.config!, status: 'waiting' };
     }
 
-    private _startGame(pending: PendingGame) {
+    private _startGame(pending: ServerPendingGame) {
         const bc = boardTypeToFn.get(pending.config!.boardType)!(...pending.config!.boardArgs);
         const boardState = new BoardState(
             pending.config!.numStones, pending.config!.numPlayers,
@@ -99,8 +107,7 @@ class OnlineGameManager {
             pending.config!.forcedPassOnly, new Array(bc.N).fill(0), bc,
         );
         this.pendingGames.delete(pending.id);
-        // Slots were already randomly assigned at join time; move players map directly.
-        this.activeGames.set(pending.id, { id: pending.id, config: pending.config!, players: pending.players, boardState, engineSessions: new Map() });
+        this.activeGames.set(pending.id, { id: pending.id, config: pending.config!, players: pending.players, boardState, engineSessions: new Map(), observers: pending.observers });
     }
 
     // Record that a connection (identified by ws) owns a slot in a game.
@@ -110,6 +117,12 @@ class OnlineGameManager {
         if (!game) return;
         const pi = game.players.get(slot);
         if (pi) pi.socket = ws as WebSocket | null;
+        game.observers.add(ws);
+    }
+
+    addObserver(id: string, ws: unknown): void {
+        const game = this.pendingGames.get(id) ?? this.activeGames.get(id);
+        game?.observers.add(ws);
     }
 
     // Returns the slots owned by ws in game id, or [] if none.
@@ -121,18 +134,20 @@ class OnlineGameManager {
             .map(([slot]) => slot);
     }
 
-    // Returns all WebSocket connections currently joined to a game (for broadcasting).
+    // Returns all WebSocket connections for a game (players + observers), deduplicated.
     getSockets(id: string): unknown[] {
         const game = this.pendingGames.get(id) ?? this.activeGames.get(id);
         if (!game) return [];
-        return [...game.players.values()].map(pi => pi.socket).filter(s => s !== null);
+        return [...game.observers];
     }
 
     // Removes a closed connection from all games it was part of.
     removeConnection(ws: unknown): void {
-        for (const g of [...this.pendingGames.values(), ...this.activeGames.values()])
+        for (const g of [...this.pendingGames.values(), ...this.activeGames.values()]) {
             for (const pi of g.players.values())
                 if (pi.socket === (ws as WebSocket | null)) pi.socket = null;
+            g.observers.delete(ws);
+        }
     }
 
     getPendingPlayers(id: string): Map<number, PlayerInfo> | null {
