@@ -63,6 +63,30 @@ Goes/
   ```
   The server listens on port 3000 (override with the `PORT` environment variable) and serves `dist/` as static files.
 
+## Player Modes
+
+Each slot in a game can be assigned one of several player modes. The mode is configured before starting a game using the `sol` and `soe` commands.
+
+| Mode | Who issues move | Display | Description |
+|------|-----------------|---------|-------------|
+| `local` | this client's user | `L` | A human player at this client. Moves are submitted by clicking the board. |
+| `server` | a remote client | `S` | A human player on a different client (online games). |
+| `serverEngine` | the server AI | `E` | A server-side AI engine plays this slot automatically. Moves advance without any client input. |
+| `client` | this client's user | `-` | Internal label the server assigns to `local` slots after game creation. Not visible to users. |
+
+`N` indicates an unassigned (pending) slot.
+
+### Online game setup commands
+
+Before running `newo` (new online game), use these commands to pre-assign slots:
+
+- `sol <slot>` — assign slot to yourself (local human player)
+- `soe <slot> [simulations] [temperature]` — assign slot to a server-side AI engine; `simulations` and `temperature` default to the current engine settings
+
+Slots not assigned via `sol`/`soe` remain open for other players to join with `joino`.
+
+If no `sol`/`soe` commands are issued, the creator joins as a pure observer and all slots wait for remote players.
+
 ## Notable Supported Go Variants
 
 ### Regular Go

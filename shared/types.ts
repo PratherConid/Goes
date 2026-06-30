@@ -32,7 +32,7 @@ export interface HistoryEntry {
     lenTurnList: number;
 }
 
-export type PlayerType = 'local' | 'localEngine' | 'server' | 'serverEngine' | 'client';
+export type PlayerType = 'local' | 'server' | 'serverEngine' | 'client';
 
 export class PlayerInfo {
     type: PlayerType;

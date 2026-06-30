@@ -548,7 +548,7 @@ else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${sideName(lastMover)
                 const pi = players.get(i + 1);
                 if (!pi) return 'N';
                 if (pi.type === 'local' || pi.type === 'client') return 'L';
-                if (pi.type === 'serverEngine' || pi.type === 'localEngine') return 'E';
+                if (pi.type === 'serverEngine') return 'E';
                 return 'S';
             });
             return chars.join('');
