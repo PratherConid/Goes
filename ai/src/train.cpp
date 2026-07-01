@@ -373,9 +373,9 @@ int main(int argc, char* argv[]) {
         double total_loss = 0, total_pol = 0, total_val = 0;
 
         for (int step = 0; step < args.train_steps; step++) {
-            auto [x, mask, p_tgt, v_tgt] = buffer.sample(args.batch_size, rng);
-            x     = x.to(device);
-            mask  = mask.to(device);
+            auto [x_, mask_, p_tgt, v_tgt] = buffer.sample(args.batch_size, rng);
+            torch::Tensor x    = x_.to(device);
+            torch::Tensor mask = mask_.to(device);
             p_tgt = p_tgt.to(device);
             v_tgt = v_tgt.to(device);
 
