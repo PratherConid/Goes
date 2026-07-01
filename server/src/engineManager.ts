@@ -38,8 +38,10 @@ class EngineManager {
             { stdio: 'inherit' },
         );
         proc.on('error', err => console.error(`[engine:${key}] error:`, err.message));
-        proc.on('exit', code => {
-            console.log(`[engine:${key}] exited with code ${code}`);
+        proc.on('exit', (code, signal) => {
+            // code is null when killed by a signal (our own release() call) — not an error.
+            if (code !== null) console.warn(`[engine:${key}] exited unexpectedly with code ${code}`);
+            else if (!signal) console.warn(`[engine:${key}] exited unexpectedly`);
             this.engines.delete(key);
         });
 
