@@ -121,8 +121,8 @@ async function handleRequest(ws: WebSocket, msg: ReqMessage): Promise<Handled> {
         case 'game/resign': {
             const id = msg['id'] as string;
             const positions = requirePositions(id, ws);
-            onlineGameManager.resign(id, positions);
-            return { results: [{ data: { ok: true }, broadcast: { id, type: 'game/resign', payload: { slots: positions } } }], engineGame: id };
+            const slot = onlineGameManager.resign(id, positions);
+            return { results: [{ data: { ok: true }, broadcast: { id, type: 'game/resign', payload: { slots: [slot] } } }], engineGame: id };
         }
         case 'game/subscribe': {
             // Re-bind this connection after a reconnect; reply with full state + personalised config for catchup.

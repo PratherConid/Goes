@@ -222,16 +222,25 @@ class OnlineGameManager {
         game.boardState.advanceResigned();
     }
 
-    resign(id: string, positions: number[]): void {
+    // Resigns the next slot among `positions` in the turn order (skipping already-resigned slots).
+    // Returns the slot that was resigned.
+    resign(id: string, positions: number[]): number {
         const game = this.activeGames.get(id);
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
         if (game.boardState.gameOver()) throw Object.assign(new Error('Game is not in progress'), { statusCode: 409 });
-        const bs = game.boardState;
-        for (const slot of positions) {
-            if (!game.config.players.has(slot)) throw Object.assign(new Error('Invalid position'), { statusCode: 400 });
-            bs.resign(slot);
+        const { turnStoneList, stoneToPlayerMap } = game.config;
+        const posSet = new Set(positions);
+        const resignedSet = new Set(game.boardState.resignedPlayers);
+        const startIdx = turnStoneList.indexOf(game.boardState.nextPlayer);
+        let slot: number | null = null;
+        for (let i = 0; i < turnStoneList.length; i++) {
+            const candidate = stoneToPlayerMap[turnStoneList[(startIdx + i) % turnStoneList.length]];
+            if (posSet.has(candidate) && !resignedSet.has(candidate)) { slot = candidate; break; }
         }
-        bs.advanceResigned();
+        if (slot === null) throw Object.assign(new Error('No resignable slot'), { statusCode: 409 });
+        game.boardState.resign(slot);
+        game.boardState.advanceResigned();
+        return slot;
     }
 }
 
