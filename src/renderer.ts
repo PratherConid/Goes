@@ -127,6 +127,7 @@ class EngineManager {
     // Fire one engine request. onMove is called with the resulting move on success;
     // onError is called on failure. Caller chains the next fire() inside onMove.
     fire(
+        game_id: string,
         config: GameConfig,
         board: number[],
         moves: (number | null)[],
@@ -136,7 +137,7 @@ class EngineManager {
         onMove: (move: number | null) => void,
         onError: () => void,
     ): void {
-        const body = { config, board, moves, session_id, num_simulations, temperature };
+        const body = { game_id, config, board, moves, session_id, num_simulations, temperature };
         const handle = conn.request<{ move: number | null; session_id?: string }>('ai/move', { body });
         this._handle = handle;
         handle.promise
@@ -357,6 +358,7 @@ export class Renderer {
         if (this._active.displayPlyNum !== v.plyCount) { console.warn('em: not at live position (navigate to end first)'); this.engineManager.cancel(); return; }
         const moves = this._active.bs.lastMoves.map(m => m.pos);
         this.engineManager.fire(
+            this.activeIdx.slice(2),
             this._active.config,
             v.history[v.plyCount].board,
             moves,

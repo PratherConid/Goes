@@ -2,7 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { Server } from 'node:http';
 import { onlineGameManager } from './onlineGameManager.js';
 import { GameConfig } from '@shared/types.js';
-import { aiMove, aiHealth } from './engineProxy.js';
+import { engineManager, aiMove } from './engineManager.js';
 
 // ── Wire protocol ──────────────────────────────────────────────────────────────
 //
@@ -66,13 +66,24 @@ function buildBroadcast(id: string, type: string): BroadcastMsg {
 }
 
 // Advances serverEngine turns until a human slot or game over.
+// Releases the engine process once the game is over.
 async function advanceServerEngine(id: string): Promise<void> {
     const slot = onlineGameManager.getEngineSlot(id);
-    if (slot === null) return;
+    if (slot === null) {
+        if (onlineGameManager.isGameOver(id)) engineManager.release(id);
+        return;
+    }
+    let url: string;
+    try {
+        url = await engineManager.getOrCreate(id);
+    } catch (e) {
+        console.error('[engine] failed to start process for game', id, e);
+        return;
+    }
     const params = onlineGameManager.getEngineRequestParams(id, slot);
     if (!params) return;
     try {
-        const result = await aiMove(params) as { move: number | null; session_id?: string };
+        const result = await aiMove(url, params) as { move: number | null; session_id?: string };
         onlineGameManager.applyEngineMove(id, slot, result.move, result.session_id);
         broadcastEvent(id, 'game/move', { moveIndex: result.move });
         await advanceServerEngine(id);
@@ -81,13 +92,25 @@ async function advanceServerEngine(id: string): Promise<void> {
     }
 }
 
+// Per-connection numeric IDs used to key local-game engine processes.
+let _wsCounter = 0;
+const _wsIds = new WeakMap<WebSocket, number>();
+
 // Dispatch one request; returns the ack data (+ optional broadcast), or throws { statusCode }.
 async function handleRequest(ws: WebSocket, msg: ReqMessage): Promise<Handled> {
     switch (msg.type) {
-        case 'ai/move':
-            return { results: [{ data: await aiMove(msg['body']) }] };
+        case 'ai/move': {
+            const body  = msg['body'] as Record<string, unknown>;
+            const gameId = body['game_id'] as string | undefined;
+            if (!gameId)
+                throw Object.assign(new Error('game_id is required for ai/move'), { statusCode: 400 });
+            const wsId = _wsIds.get(ws)!;
+            const url  = await engineManager.getOrCreate(`local:${wsId}:${gameId}`);
+            const { game_id: _gid, ...engineBody } = body;
+            return { results: [{ data: await aiMove(url, engineBody) }] };
+        }
         case 'ai/health':
-            return { results: [{ data: await aiHealth() }] };
+            return { results: [{ data: { status: engineManager.ready ? 'ok' : 'unavailable' } }] };
         case 'game/create': {
             const config = GameConfig.fromJSON(msg['config'] as any);
             const result = onlineGameManager.createGame(config);
@@ -140,6 +163,9 @@ export function attachWebSocket(server: Server) {
     const wss = new WebSocketServer({ server, path: '/ws' });
 
     wss.on('connection', (ws: WebSocket) => {
+        const wsId = ++_wsCounter;
+        _wsIds.set(ws, wsId);
+
         ws.on('message', (raw) => {
             let msg: ReqMessage;
             try {
@@ -170,7 +196,10 @@ export function attachWebSocket(server: Server) {
                 }));
         });
 
-        ws.on('close', () => onlineGameManager.removeConnection(ws));
+        ws.on('close', () => {
+            onlineGameManager.removeConnection(ws);
+            engineManager.releasePrefix(`local:${wsId}:`);
+        });
     });
 
     console.log('[ws] WebSocket server attached at /ws');

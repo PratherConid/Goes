@@ -171,6 +171,10 @@ class OnlineGameManager {
         };
     }
 
+    isGameOver(id: string): boolean {
+        return this.activeGames.get(id)?.boardState.gameOver() ?? false;
+    }
+
     applyMove(id: string, positions: number[], moveIndex: number | null, clientIdx: number): void {
         const game = this.activeGames.get(id);
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });

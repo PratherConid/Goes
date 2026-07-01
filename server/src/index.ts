@@ -2,48 +2,40 @@ import express from 'express';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { attachWebSocket } from './wsServer.js';
+import { engineManager } from './engineManager.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT ?? 3000;
 
-// ── AI engine startup ─────────────────────────────────────────────────────────
+// ── AI engine initialisation ──────────────────────────────────────────────────
+// No shared engine process is pre-spawned. Instead, EngineManager spawns one
+// goes_server process per game on demand. We only resolve the binary path here.
 
-const projectRoot  = path.resolve(__dirname, '../..');
-const isWin        = process.platform === 'win32';
-const exeName      = isWin ? 'goes_server.exe' : 'goes_server';
-// cmake puts the binary in Release/ on Windows (MSVC) and directly in build/ on Linux
-const candidates   = [
+const projectRoot = path.resolve(__dirname, '../..');
+const isWin       = process.platform === 'win32';
+const exeName     = isWin ? 'goes_server.exe' : 'goes_server';
+const candidates  = [
     path.join(projectRoot, 'ai', 'build', 'Release', exeName),
     path.join(projectRoot, 'ai', 'build', exeName),
 ];
-const aiExe        = candidates.find(p => existsSync(p)) ?? candidates[0];
-const ckptDir      = path.join(projectRoot, 'ai', 'checkpoints');
+const aiExe   = candidates.find(p => existsSync(p));
+const ckptDir = path.join(projectRoot, 'ai', 'checkpoints');
 
-const aiProc = (() => {
-    try {
-        const proc = spawn(aiExe, ['--checkpoint-dir', ckptDir], { stdio: 'inherit' });
-        proc.on('error', err => console.error('[ai] Failed to start goes_server:', err.message));
-        proc.on('exit',  code => console.log(`[ai] goes_server exited with code ${code}`));
-        console.log(`[ai] Spawned goes_server (pid ${proc.pid}): ${aiExe}`);
-        return proc;
-    } catch (err) {
-        console.error('[ai] Could not spawn goes_server:', err);
-        return null;
-    }
-})();
+if (aiExe) {
+    engineManager.init(aiExe, ckptDir);
+    console.log(`[ai] Engine binary found: ${aiExe}`);
+} else {
+    console.warn('[ai] goes_server binary not found — AI features unavailable');
+}
 
-// Clean up the AI process on server exit
-process.on('exit',    () => aiProc?.kill());
-process.on('SIGINT',  () => { aiProc?.kill(); process.exit(); });
-process.on('SIGTERM', () => { aiProc?.kill(); process.exit(); });
+process.on('exit',    () => engineManager.releaseAll());
+process.on('SIGINT',  () => { engineManager.releaseAll(); process.exit(); });
+process.on('SIGTERM', () => { engineManager.releaseAll(); process.exit(); });
 
-// ── Express app + WebSocket ─────────────────────────────────────────────────────
-// All client↔server traffic (AI proxy + online games) goes over the WebSocket at
-// /ws; Express only serves the built client. The server↔engine hop stays HTTP.
+// ── Express app + WebSocket ────────────────────────────────────────────────────
 
 app.use(express.static(path.resolve(__dirname, '../../dist')));
 

@@ -33,8 +33,8 @@ Goes/
   npm install
   npm run dev
   ```
-  The main server listens on port 3000 and **auto-spawns the AI engine** (port 8765)
-  itself, proxying AI requests to it over HTTP. The Vite dev server proxies the `/ws`
+  The main server listens on port 3000 and **spawns one AI engine process per game on demand**,
+  proxying AI requests to it over HTTP. The Vite dev server proxies the `/ws`
   WebSocket to `localhost:3000`. (`npm run ai` / `npm run ai-win` still launch the
   engine standalone for manual testing, but the dev client reaches it through the
   main server.)
@@ -45,7 +45,7 @@ Goes/
   npm install
   npm run dev
   ```
-  Open `http://localhost:3000` in browser. The backend automatically starts the AI engine on startup.
+  Open `http://localhost:3000` in browser. The backend spawns AI engine processes on demand as games are created.
 
 ## Deploying as a Web Service
 
