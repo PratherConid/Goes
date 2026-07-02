@@ -87,10 +87,11 @@ cmake -S ai -B ai/build \
       -DCUPTI_DIR="/usr/local/cuda/extras/CUPTI/lib64" \
       -DNVSHMEM_DIR="/usr/lib/x86_64-linux-gnu/nvshmem/12" \
       -DCMAKE_BUILD_TYPE=Release
+      -DCMAKE_CXX_COMPILER=clang++
 cmake --build ai/build --config Release
 ```
 
-If building with GCC triggers internal compiler errors, try switching to Clang (`-DCMAKE_CXX_COMPILER=clang++`).
+We recommend using the `clang` compiler for linux because compiling the project using `gcc` has triggered internal compiler errors, and has also produced buggy training programs that trains networks that only make nonsense moves. 
 
 **Windows:**
 ```powershell
