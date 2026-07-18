@@ -1,0 +1,19 @@
+{
+  "name": "goes-server",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts 3000 ./data true",
+    "start": "tsx src/index.ts 3000 ./data true"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/ws": "^8.5.12",
+    "typescript": "^5.0.0",
+    "tsx": "^4.0.0"
+  }
+}

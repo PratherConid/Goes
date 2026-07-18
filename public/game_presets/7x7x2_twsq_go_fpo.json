@@ -1,0 +1,19 @@
+{
+  "boardType": "twsq",
+  "boardArgs": [7, 7, 2],
+  "numStones": 2,
+  "numPlayers": 2,
+  "turnList": [
+    {"player": 1, "stones": [1, 0], "protected": [0, 0], "friendly": [0, 0]},
+    {"player": 2, "stones": [0, 1], "protected": [0, 0], "friendly": [0, 0]}
+  ],
+  "playerStonePlaceLimit": [[null, null], [null, null]],
+  "globalStonePlaceLimit": [null, null],
+  "stoneToPlayerMap": {"1": [1], "2": [2]},
+  "forcedPassOnly": true,
+  "scoreRule": "area",
+  "komi": [0, 0],
+  "koRule": "situational",
+  "allowSuicide": false,
+  "maxPlies": null
+}

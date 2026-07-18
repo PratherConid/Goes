@@ -1,0 +1,19 @@
+{
+  "boardType": "rect",
+  "boardArgs": [19, 19],
+  "numStones": 3,
+  "numPlayers": 2,
+  "turnList": [
+    {"player": 1, "stones": [1, 0, 1], "protected": [0, 0, 1], "friendly": [0, 0, 1]},
+    {"player": 2, "stones": [0, 1, 1], "protected": [0, 0, 1], "friendly": [0, 0, 1]}
+  ],
+  "playerStonePlaceLimit": [[null, null], [null, null], [10, 10]],
+  "globalStonePlaceLimit": [null, null, null],
+  "stoneToPlayerMap": {"1": [1], "2": [2], "3": []},
+  "forcedPassOnly": false,
+  "scoreRule": "area",
+  "komi": [0, 0],
+  "koRule": "situational",
+  "allowSuicide": false,
+  "maxPlies": null
+}

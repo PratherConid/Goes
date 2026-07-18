@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Goes</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* Suppresses the double-tap-to-zoom gesture on rapid taps (mobile
+       browsers), without disabling pinch-zoom elsewhere on the page. */
+    button { touch-action: manipulation; }
+
+    /* ── side-panel layout modes (see #panel-mode-bar) ──────────────────
+       No class on <body> = "locked": today's default docked layout, flex
+       ratio set on #main-area/#side-panel below - no override needed here. */
+    body.panel-hidden #side-panel { display: none; }
+    body.panel-hidden #main-area  { flex: 1 1 100%; }
+    body.panel-full #main-area  { display: none; }
+    body.panel-full #side-panel { flex: 1 1 100%; }
+
+    /* #board-wrap's own padding (below) assumes #main-area is 2/3 of the
+       viewport width (200dvw/3), matching the locked layout's 2:1 flex
+       ratio - wrong once panel-hidden makes #main-area the full viewport
+       width, so swap in the correct estimate here. */
+    body.panel-hidden #board-wrap {
+      padding: calc(min(100dvh, 100dvw) / 30);
+    }
+
+    /* While a popup is showing (Renderer.popUp/renderPopup()), everything
+       except the popup itself is inert - #popup-overlay is a body-level
+       sibling of these three, so it (and its own buttons) are unaffected. */
+    body.popup-active #main-area,
+    body.popup-active #side-panel,
+    body.popup-active #panel-mode-bar {
+      pointer-events: none;
+    }
+    #popup-overlay {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 3000;
+    }
+    #popup-overlay[hidden] { display: none; }
+    .popup-box {
+      background: #b0895c;
+      color: #000;
+      padding: 20px;
+      border-radius: 8px;
+      max-width: 320px;
+      text-align: center;
+    }
+    .popup-box .btn-row { margin-top: 10px; }
+
+    /* Fixed top-right so it's reachable regardless of layout mode - even
+       when #side-panel is hidden/fullscreen and nothing else is on screen. */
+    #panel-mode-bar {
+      position: fixed;
+      top: 8px;
+      right: 8px;
+      z-index: 1000;
+      display: flex;
+      gap: 4px;
+    }
+    .panel-mode-btn {
+      width: 28px;
+      height: 28px;
+      border: none;
+      border-radius: 4px;
+      background: #5c442e;
+      color: #fff;
+      font-size: 15px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    /* Scoped to real pointers only - on touchscreens, :hover gets "stuck"
+       applied to whatever element the browser re-hit-tests at the last touch
+       point after a DOM change, which happens on every side-panel navigation
+       since its buttons are rebuilt from scratch (see childButtons() call
+       sites). */
+    @media (hover: hover) and (pointer: fine) {
+      .panel-mode-btn:hover { background: #7a5827; }
+    }
+    /* The `hidden` attribute's UA-stylesheet display:none is normal-priority,
+       so it loses to .panel-mode-btn's own display:flex above (any
+       author-stylesheet rule beats UA-stylesheet ones, even at equal
+       specificity) unless re-asserted here at higher specificity. */
+    .panel-mode-btn[hidden] { display: none; }
+    /* Home/Back/Forward/Up's disabled state (Back/Forward at either end of
+       sidePanelBwFw's history, Up at Home) - Dock/Full/Hide never disable,
+       only hide, so this is otherwise unused by them. */
+    .panel-mode-btn:disabled { opacity: 0.5; cursor: default; }
+
+    body {
+      background: #997750;
+      color: #000;
+      font-family: Calibri, sans-serif;
+      font-size: 16px;
+      height: 100dvh;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* ── left: main area ─────────────────────────────── */
+    #main-area {
+      flex: 2 1 0;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    #board-wrap {
+      flex: 1 1 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: calc(min(100dvh, 200dvw / 3) / 30);
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    #main-canvas {
+      display: block;
+      cursor: pointer;
+      /* size set dynamically */
+    }
+
+    /* control bar */
+    #ctrl-bar {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: calc(var(--u) * 4 / 7);
+      padding: calc(var(--u) * 2 / 7) calc(var(--u) * 4 / 7);
+      flex-shrink: 0;
+      --u: max(16px, min(100dvw, 100dvh) / 25);
+    }
+
+    #turn-stone {
+      width: calc(var(--u) * 8 / 7);
+      height: calc(var(--u) * 8 / 7);
+      border-radius: 50%;
+      border: 1px solid #333;
+      flex-shrink: 0;
+    }
+
+    #pass-btn, #resign-btn {
+      padding: calc(var(--u) / 7) calc(var(--u) * 5 / 7);
+      border-radius: 999px;
+      border: none;
+      font-size: calc(var(--u) * 4 / 7);
+      color: #fff;
+      cursor: pointer;
+    }
+    #pass-btn {
+      background: #5c442e;
+      min-width: calc(var(--u) * 4);
+      text-align: center;
+    }
+    #resign-btn { background: #5c442e; }
+    #pass-btn:disabled, #resign-btn:disabled { background: #b5a99e; cursor: default; }
+
+    .ply-nav-btn {
+      height: var(--u);
+      border: none;
+      border-radius: 4px;
+      background: #5c442e;
+      color: #fff;
+      font-size: calc(var(--u) / 2);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .ply-nav-btn:disabled { background: #b5a99e; cursor: default; }
+    #bw-btn,   #fw-btn     { width: var(--u); }
+    #bw10-btn, #fw10-btn   { width: calc(var(--u) * 6 / 5); }
+    #bwend-btn, #fwend-btn { width: calc(var(--u) * 3 / 2); }
+
+    #ply-num {
+      position: absolute;
+      right: 16px;
+      font-size: calc(var(--u) * 11 / 14);
+    }
+
+    /* command input */
+    #cmd-area {
+      background: #1a1208;
+      padding: 4px 8px;
+      flex-shrink: 0;
+    }
+
+    #cmd-output {
+      min-height: 1.2em;
+      color: #aaa;
+      font-family: Consolas, monospace;
+      font-size: 15px;
+      white-space: pre-line;
+    }
+
+    #cmd-input {
+      width: 100%;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: #fff;
+      font-family: Consolas, monospace;
+      font-size: 15px;
+    }
+
+    /* ── right: side panel ───────────────────────────── */
+    #side-panel {
+      flex: 1 1 0;
+      display: flex;
+      flex-direction: column;
+      background: #b0895c;
+      min-width: 0;
+    }
+
+    #panel-title {
+      padding: 8px 10px 4px;
+      font-weight: bold;
+      font-size: 20px;
+      flex-shrink: 0;
+    }
+
+    .panel-child-btn {
+      display: block;
+      width: 100%;
+      padding: 8px 10px;
+      margin-top: 6px;
+      margin-bottom: 6px;
+      border: none;
+      background: #997750;
+      color: #000;
+      cursor: pointer;
+      font-size: 14px;
+      text-align: left;
+    }
+    @media (hover: hover) and (pointer: fine) {
+      .panel-child-btn:hover { background: #a78257; }
+    }
+    .panel-child-btn:disabled { opacity: 0.5; cursor: default; }
+
+    .status-login-btn {
+      display: inline-block;
+      width: auto;
+      padding: 2px 10px;
+      margin-left: 6px;
+      border: none;
+      background: #997750;
+      color: #000;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    @media (hover: hover) and (pointer: fine) {
+      .status-login-btn:hover { background: #a78257; }
+    }
+
+    #commands-panel {
+      flex: 1 1 0;
+      padding: 10px 12px;
+      overflow-y: auto;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    #commands-panel table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+    #commands-panel th {
+      text-align: left;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 8px 4px 2px;
+      border-bottom: 1px solid #8a6830;
+      color: #1a0a00;
+    }
+    #commands-panel td { padding: 2px 6px 2px 4px; vertical-align: top; }
+    #commands-panel td:first-child {
+      font-family: Consolas, monospace;
+      color: #000;
+    }
+    #commands-panel td:last-child { color: #000; }
+
+    #home-panel, #history-panel, #status-panel, #current-game-setup-panel, #new-game-panel, #game-records-panel, #game-preset-selection-panel,
+    #active-local-games-panel, #pending-games-panel, #active-online-games-panel, #finished-online-games-panel, #account-panel,
+    #configure-online-players-panel {
+      flex: 1 1 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #history-boards {
+      flex: 1 1 0;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-auto-rows: 1fr;
+      gap: 6px;
+      padding: 6px;
+      overflow: hidden;
+    }
+
+    .history-entry {
+      background: #997750;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px;
+      min-height: 0;
+      min-width: 0;
+      overflow: hidden;
+      container-type: size;
+    }
+
+    .history-entry-left {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+      padding-left: calc(100cqw / 15);
+    }
+
+    .hist-stone {
+      width: calc(max(min(100cqh / 4, 100cqw / 5), 16px));
+      height: calc(max(min(100cqh / 4, 100cqw / 5), 16px));
+      border-radius: 50%;
+      border: 1px solid #333;
+      flex-shrink: 0;
+    }
+
+    .hist-ply {
+      font-size: calc(max(min(100cqh / 6, 100cqw / 8), 12px));
+    }
+
+    .hist-canvas-wrap {
+      flex: 1 1 0;
+      align-self: stretch;
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .hist-canvas {
+      display: block;
+    }
+
+    #history-nav {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      grid-template-rows: 1fr 1fr;
+      flex-shrink: 0;
+    }
+
+    .nav-btn {
+      background: #997750;
+      color: #000;
+      border: none;
+      padding: 4px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    @media (hover: hover) and (pointer: fine) {
+      .nav-btn:hover { background: #a78257; }
+    }
+
+    #home-panel, #status-panel, #current-game-setup-panel, #new-game-panel, #game-records-panel, #game-preset-selection-panel,
+    #active-local-games-panel, #pending-games-panel, #active-online-games-panel, #finished-online-games-panel, #account-panel,
+    #configure-online-players-panel {
+      padding: 12px;
+      overflow-y: auto;
+      font-size: 14px;
+      line-height: 1.8;
+    }
+
+    .colp-grid {
+      display: grid;
+      grid-template-columns: auto auto auto auto auto;
+      align-items: center;
+      column-gap: 8px;
+    }
+    .colp-grid > * {
+      padding: 4px 0;
+      border-bottom: 1px solid rgba(0, 0, 0, 0.15);
+    }
+
+    .colp-invite-row {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 0;
+    }
+    .colp-invite-row .account-input { flex: 1 1 0; }
+
+    .account-form {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      align-items: center;
+      gap: 8px 10px;
+      margin-bottom: 10px;
+    }
+
+    .account-input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 6px 8px;
+      border: 1px solid #5c442e;
+      border-radius: 3px;
+      font-size: 14px;
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 8px;
+    }
+    .btn-row .panel-child-btn {
+      flex: 1 1 0;
+      width: auto;
+      text-align: center;
+    }
+    #new-game-buttons {
+      flex-shrink: 0;
+      margin: 8px 0;
+    }
+    #current-game-setup-buttons {
+      flex-shrink: 0;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div id="main-area">
+    <div id="board-wrap">
+      <svg id="main-canvas"></svg>
+    </div>
+    <div id="ctrl-bar">
+      <button id="bwend-btn" class="ply-nav-btn">&#10074;&#9664;&#9664;</button>
+      <button id="bw10-btn"  class="ply-nav-btn">&#9664;&#9664;</button>
+      <button id="bw-btn"    class="ply-nav-btn">&#9664;</button>
+      <div id="turn-stone"></div>
+      <button id="pass-btn">Pass</button>
+      <button id="resign-btn" hidden>Resign</button>
+      <button id="fw-btn"    class="ply-nav-btn">&#9654;</button>
+      <button id="fw10-btn"  class="ply-nav-btn">&#9654;&#9654;</button>
+      <button id="fwend-btn" class="ply-nav-btn">&#9654;&#9654;&#10074;</button>
+      <span id="ply-num">0</span>
+    </div>
+    <div id="cmd-area">
+      <div id="cmd-output"></div>
+      <input id="cmd-input" type="text" spellcheck="false"
+             placeholder="type command and press Enter…" autocomplete="off" />
+    </div>
+  </div>
+
+  <div id="side-panel">
+    <div id="panel-title"></div>
+    <div id="home-panel" style="display:none"></div>
+    <div id="history-panel" style="display:none">
+      <div id="history-boards"></div>
+      <div id="history-nav">
+        <button class="nav-btn" data-action="prev" data-step="1">←1</button>
+        <button class="nav-btn" data-action="prev" data-step="10">←10</button>
+        <button class="nav-btn" data-action="prev" data-step="100">←100</button>
+        <button class="nav-btn" data-action="start">||←</button>
+        <button class="nav-btn" data-action="next" data-step="1">→1</button>
+        <button class="nav-btn" data-action="next" data-step="10">→10</button>
+        <button class="nav-btn" data-action="next" data-step="100">→100</button>
+        <button class="nav-btn" data-action="end">→||</button>
+      </div>
+    </div>
+    <div id="status-panel" style="display:none"></div>
+    <div id="commands-panel" style="display:none"></div>
+    <div id="current-game-setup-panel" style="display:none">
+      <div id="current-game-setup-details"></div>
+      <div id="current-game-setup-buttons"></div>
+    </div>
+    <div id="new-game-panel" style="display:none">
+      <div id="new-game-setup-details"></div>
+      <div id="new-game-buttons"></div>
+    </div>
+    <div id="game-records-panel" style="display:none"></div>
+    <div id="game-preset-selection-panel" style="display:none"></div>
+    <div id="active-local-games-panel" style="display:none"></div>
+    <div id="pending-games-panel" style="display:none"></div>
+    <div id="active-online-games-panel" style="display:none"></div>
+    <div id="finished-online-games-panel" style="display:none"></div>
+    <div id="account-panel" style="display:none"></div>
+    <div id="configure-online-players-panel" style="display:none"></div>
+  </div>
+
+  <div id="panel-mode-bar">
+    <button id="panel-home-btn" class="panel-mode-btn" title="Home"><img src="/icons/home.svg" width="16" height="16" alt=""></button>
+    <button id="panel-back-btn" class="panel-mode-btn" title="Back"><img src="/icons/back.svg" width="16" height="16" alt=""></button>
+    <button id="panel-forward-btn" class="panel-mode-btn" title="Forward"><img src="/icons/forward.svg" width="16" height="16" alt=""></button>
+    <button id="panel-up-btn" class="panel-mode-btn" title="Up"><img src="/icons/up.svg" width="16" height="16" alt=""></button>
+    <button id="panel-dock-btn" class="panel-mode-btn" title="Dock panel" hidden>&minus;</button>
+    <button id="panel-full-btn" class="panel-mode-btn" title="Full-screen panel"><img src="/icons/full.svg" width="16" height="16" alt=""></button>
+    <button id="panel-hide-btn" class="panel-mode-btn" title="Hide panel"><img src="/icons/hide.svg" width="16" height="16" alt=""></button>
+  </div>
+
+  <div id="popup-overlay" hidden></div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
