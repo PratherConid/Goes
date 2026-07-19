@@ -263,6 +263,15 @@ interface LoginResponse {
     finishedGames: { id: string; finishedGame: any }[];
 }
 
+// One entry in Renderer's popup queue (see currentPopup/popupQueue) - a
+// discriminated union so renderPopup() can render each kind's specific
+// content/buttons.
+type PopupInfo =
+    | { kind: 'invite'; id: string; from: string }
+    | { kind: 'create-failed'; message: string }
+    | { kind: 'login-prompt' }
+    | { kind: 'confirm'; message: string; onYes: () => void; onNo: () => void };
+
 export class Renderer {
     aiEngineReady = false;
     selfPlay   = false;
@@ -301,12 +310,8 @@ export class Renderer {
     // UI (see renderPopup(), index.html). Additional popups queue rather
     // than interrupting whichever one is currently showing.
     popUp = false;
-    private currentPopup:
-        | { kind: 'invite'; id: string; from: string }
-        | { kind: 'invite-failed'; id: string }
-        | { kind: 'confirm'; message: string; onYes: () => void; onNo: () => void }
-        | null = null;
-    private popupQueue: NonNullable<Renderer['currentPopup']>[] = [];
+    private currentPopup: PopupInfo | null = null;
+    private popupQueue: PopupInfo[] = [];
     // Loaded at startup from public/game_presets/ (see _loadPresets()); name -> config.
     presets = new Map<string, GameConfig>();
     // Per-board-type dimension memory so 'bt' restores custom dimensions on type switch
@@ -605,6 +610,22 @@ export class Renderer {
         this._render();
     }
 
+    // Jumps to the Account (login) panel, making the side panel visible
+    // first if it's currently hidden - 'full' on a narrow screen (docking
+    // isn't usable there, but here we specifically need the panel visible
+    // so the user can see the login form, unlike the hide-on-narrow-screen
+    // fallback used elsewhere - see _buildStartLocalGameBtn/
+    // _buildStartOnlineGameBtn) or 'locked' otherwise. Left alone if the
+    // panel is already visible in some mode. _navigateSidePanel() itself
+    // never touches panelMode, so this must happen first.
+    private _goToLoginPanel() {
+        if (this.panelMode === 'hidden') {
+            this.panelMode = this._screenIsSmall() ? 'full' : 'locked';
+            this._applyPanelMode();
+        }
+        this._navigateSidePanel(SidePanelContent.Account);
+    }
+
     // Move within sidePanelBwFw's existing history without mutating it -
     // mirrors _navigateSidePanel()'s tail (refresh + render) but skips the
     // truncate+push step, since we're retracing already-visited ground.
@@ -741,9 +762,9 @@ export class Renderer {
             this.popupQueue.push({ kind: 'invite', id: msg.id, from: msg.from });
             this._advancePopupQueue();
         });
-        conn.onEvent('game/invite-failed', (msg: { id: string }) => {
+        conn.onEvent('game/invite-failed', (msg: { id: string; message: string }) => {
             this.pendingGames.delete(msg.id);
-            this.popupQueue.push({ kind: 'invite-failed', id: msg.id });
+            this.popupQueue.push({ kind: 'create-failed', message: msg.message });
             this._advancePopupQueue();
             this._render();
         });
@@ -1434,8 +1455,19 @@ export class Renderer {
             noBtn.textContent = 'No';
             noBtn.addEventListener('click', () => { onNo(); this._dismissPopup(); });
             btnRow.append(yesBtn, noBtn);
+        } else if (this.currentPopup.kind === 'login-prompt') {
+            text.textContent = 'Please log in to play online games';
+            const loginBtn = document.createElement('button');
+            loginBtn.className = 'panel-child-btn';
+            loginBtn.textContent = 'Login now';
+            loginBtn.addEventListener('click', () => { this._goToLoginPanel(); this._dismissPopup(); });
+            const laterBtn = document.createElement('button');
+            laterBtn.className = 'panel-child-btn';
+            laterBtn.textContent = 'Later';
+            laterBtn.addEventListener('click', () => this._dismissPopup());
+            btnRow.append(loginBtn, laterBtn);
         } else {
-            text.textContent = `Creation of invited online game ${this.currentPopup.id} failed`;
+            text.textContent = this.currentPopup.message;
             const okBtn = document.createElement('button');
             okBtn.className = 'panel-child-btn';
             okBtn.textContent = 'Ok';
@@ -2182,7 +2214,11 @@ export class Renderer {
     // anything about the side panel itself - the 'newo' command (_parseCommand)
     // just ignores the return value.
     private async _createOnlineGame(): Promise<boolean> {
-        if (!this.userName) { this._setCmdOutput('Please log in first: login <name> <password>'); return false; }
+        if (!this.userName) {
+            this.popupQueue.push({ kind: 'login-prompt' });
+            this._advancePopupQueue();
+            return false;
+        }
         const config = this.newCfg.copy();
         const request = this.onlinePlayerRequest.copy();
         const renameLocal = (pi: PlayerInfo) => { if (pi.type === 'local') pi.name = this.userName!; };
@@ -2195,11 +2231,19 @@ export class Renderer {
             this._setCmdOutput(status === 'waiting' ? `Game created: ${id}` : `Game started: ${id}`);
             this._render();
             return true;
-        } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); return false; }
+        } catch (e: any) {
+            this.popupQueue.push({ kind: 'create-failed', message: e.message });
+            this._advancePopupQueue();
+            return false;
+        }
     }
 
     private async _joinOnlineGame(id: string) {
-        if (!this.userName) { this._setCmdOutput('Please log in first: login <name> <password>'); return; }
+        if (!this.userName) {
+            this.popupQueue.push({ kind: 'login-prompt' });
+            this._advancePopupQueue();
+            return;
+        }
         try {
             await conn.request('game/join', { id }).promise;
             this._setCmdOutput(`Joined game: ${id} - waiting for the game to start…`);

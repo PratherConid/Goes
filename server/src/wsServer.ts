@@ -16,7 +16,7 @@ import { loadGameRecordStore } from './gameRecordStore.js';
 //                   { kind:'event', type:'game/move',   id, moveIndex, stone } (push)
 //                   { kind:'event', type:'game/resign', id, slots }          (push)
 //                   { kind:'event', type:'game/invite', id, from }           (push, personalized - to one invited user)
-//                   { kind:'event', type:'game/invite-failed', id }          (push, personalized - to everyone involved)
+//                   { kind:'event', type:'game/invite-failed', id, message } (push, personalized - to everyone involved)
 //                   { kind:'event', type:'game/engine-error', id, message }  (push)
 //
 // While waiting, game/pending-games is broadcast after every join so clients see
@@ -207,15 +207,30 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                 for (const pi of request.fixedOrder.values())  if (pi.type === 'local') pi.name = userName;
                 for (const pi of request.randomOrder)          if (pi.type === 'local') pi.name = userName;
                 // Refuse the whole request (no game created at all) if any invited
-                // username isn't a real account - checked before createGame() runs.
-                // Only the list request.fixed actually selects is checked - createGame()
-                // itself ignores the other one entirely (see its own fixed-branch), so a
-                // stale invite left over in the inactive list (e.g. from before switching
-                // fixed/random modes) must not block a request that no longer uses it.
+                // username isn't a real account, or isn't currently online - checked
+                // before createGame() runs, since an offline invitee would otherwise
+                // never learn about the invite (the game/invite push below is only
+                // delivered to a live connection, with no persistence/catch-up for a
+                // missed one). Only the list request.fixed actually selects is checked
+                // - createGame() itself ignores the other one entirely (see its own
+                // fixed-branch), so a stale invite left over in the inactive list (e.g.
+                // from before switching fixed/random modes) must not block a request
+                // that no longer uses it.
                 const activeEntries = request.fixed ? [...request.fixedOrder.values()] : request.randomOrder;
-                for (const pi of activeEntries)
-                    if (pi.type === 'pendingInvitedOnline' && !userExists(userStoreState, pi.name))
+                const offlineInvited = new Set<string>();
+                for (const pi of activeEntries) {
+                    if (pi.type !== 'pendingInvitedOnline') continue;
+                    if (!userExists(userStoreState, pi.name))
                         throw Object.assign(new Error(`Invited user "${pi.name}" does not exist`), { statusCode: 400 });
+                    if (!userToWs.has(pi.name)) offlineInvited.add(pi.name);
+                }
+                if (offlineInvited.size > 0) {
+                    const names = [...offlineInvited];
+                    const label = names.length === 1
+                        ? `User ${names[0]} is offline.`
+                        : `Users ${names.join(', ')} are offline.`;
+                    throw Object.assign(new Error(`Cannot create game. ${label}`), { statusCode: 409 });
+                }
                 const result = onlineGameManager.createGame(config, request);
                 // Slot ownership already follows from pi.name (set above); just mark the
                 // creator as observing the game for broadcast purposes.
@@ -246,7 +261,7 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                 if (result.status === 'cancelled') {
                     return {
                         results: [{ data: { status: result.status } }],
-                        pushes: result.notify.map(name => ({ to: name, type: 'game/invite-failed', payload: { id } })),
+                        pushes: result.notify.map(name => ({ to: name, type: 'game/invite-failed', payload: { id, message: `Creation of invited online game ${id} failed due to user refusal` } })),
                     };
                 }
                 return {

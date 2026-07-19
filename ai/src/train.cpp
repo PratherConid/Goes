@@ -471,7 +471,7 @@ int main(int argc, char* argv[]) {
             auto t_ply0 = std::chrono::high_resolution_clock::now();
             auto [ply_results, timing] = generate_one_ply_per_game(
                 evaluator, ptrs, model_cfg->input_descr,
-                args.num_simulations, /*temperature_threshold=*/bc.N / 3, args.c_puct,
+                args.num_simulations, /*temperature_threshold=*/static_cast<int>(2 * std::sqrt(bc.N)) + 3, args.c_puct,
                 args.verbosity);
             double total_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::high_resolution_clock::now() - t_ply0).count();

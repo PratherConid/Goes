@@ -172,6 +172,95 @@ test('game/create rejects an invited username that does not exist', async () => 
     await alice.close();
 });
 
+// Regression tests for the offline-invitee rejection in wsServer.ts's
+// game/create handler. These need a genuinely offline account - i.e. no live
+// WebSocket connection anywhere in userToWs for that name - which the
+// client-only protocol here can't prove deterministically: there's no
+// LOGOUT acknowledgment, so a connection's own close() resolving only
+// reflects what that client observed, never what the server has processed
+// (its 'close' handler, which clears userToWs, runs on a separate event from
+// a separate socket object). A real process restart sidesteps this rather
+// than racing it: killing the server process destroys every live connection
+// (and userToWs itself) structurally, so there is no ordering to prove -
+// same startTestServerProcess() + dedicated temp dataDir pattern as the
+// restart test above (an isolated dir, not any real/shared store).
+test('game/create rejects invited usernames that are offline, proven via a real process restart', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'goes-test-offline-invite-'));
+    const first = await startTestServerProcess(dataDir);
+    let stopped = false;
+    try {
+        for (const name of ['xavier', 'zoe', 'amir']) {
+            const c = await connect(first.url);
+            await c.req('REGISTER', { name, password: 'pw' });
+            await c.close();
+        }
+        await first.stop();
+        stopped = true;
+
+        const second = await startTestServerProcess(dataDir);
+        try {
+            const alice = await connect(second.url);
+            await alice.req('REGISTER', { name: 'walter', password: 'pw' });
+
+            await assert.rejects(
+                alice.req('game/create', {
+                    config: passOnlyConfig(),
+                    onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'pendingInvitedOnline', name: 'xavier' }]]),
+                }),
+                (e: any) => {
+                    assert.equal(e.message, 'Cannot create game. User xavier is offline.');
+                    assert.equal(e.statusCode, 409);
+                    return true;
+                },
+            );
+
+            const threePlayerConfig = {
+                ...passOnlyConfig(), numPlayers: 3, numStones: 3,
+                turnList: [
+                    { player: 1, stones: [1, 0, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },
+                    { player: 2, stones: [0, 1, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },
+                    { player: 3, stones: [0, 0, 1], protected: [0, 0, 0], friendly: [0, 0, 0] },
+                ],
+                stoneToPlayerMap: { 1: [1], 2: [2], 3: [3] },
+            };
+            await assert.rejects(
+                alice.req('game/create', {
+                    config: threePlayerConfig,
+                    onlinePlayerRequest: fixedRequest([
+                        [1, { type: 'local', name: '' }],
+                        [2, { type: 'pendingInvitedOnline', name: 'zoe' }],
+                        [3, { type: 'pendingInvitedOnline', name: 'amir' }],
+                    ]),
+                }),
+                (e: any) => {
+                    assert.match(e.message, /^Cannot create game\. Users .* are offline\.$/);
+                    assert.match(e.message, /zoe/);
+                    assert.match(e.message, /amir/);
+                    assert.equal(e.statusCode, 409);
+                    return true;
+                },
+            );
+
+            // No game (and thus no invite) should have actually been created for
+            // the rejected xavier invite above - confirm by logging back in as
+            // xavier and checking no invite arrived.
+            const xavierAgain = await connect(second.url);
+            const xavierInvites: unknown[] = [];
+            xavierAgain.onEvent('game/invite', m => xavierInvites.push(m));
+            await xavierAgain.req('LOGIN', { name: 'xavier', password: 'pw' });
+            await new Promise(r => setImmediate(r));
+            assert.equal(xavierInvites.length, 0);
+
+            await alice.close();
+            await xavierAgain.close();
+        } finally {
+            await second.stop();
+        }
+    } finally {
+        if (!stopped) await first.stop();
+    }
+});
+
 test('game/create ignores a stale invite left in the inactive list (fixed vs random)', async () => {
     const alice = await registerAndLogin('nadia');
     // onlinePlayerRequest carries a 'pendingInvitedOnline' entry for a
@@ -261,6 +350,9 @@ test('a multi-invite decline waits for every invitee before cancelling, and a to
     const aliceFailedEvents: any[] = [];
     alice.onEvent('game/invite-failed', m => aliceFailedEvents.push(m));
 
+    const bobFailedEvents: any[] = [];
+    bob.onEvent('game/invite-failed', m => bobFailedEvents.push(m));
+
     const bobRespond = await bob.req<{ status: string }>('game/invite-respond', { id, accept: false });
     assert.equal(bobRespond.status, 'cancelled');
 
@@ -280,6 +372,12 @@ test('a multi-invite decline waits for every invitee before cancelling, and a to
     );
     const failedMsg = await aliceFailed;
     assert.equal(failedMsg.id, id);
+    // Bob already knows he declined (his own game/invite-respond call
+    // already got {status:'cancelled'}) - he shouldn't get a redundant
+    // game/invite-failed push. alice's push above arriving is proof the
+    // same notify computation already ran, so if bob's were coming, it
+    // would already be here too.
+    assert.equal(bobFailedEvents.length, 0);
 
     // Fully torn down now - a further response 404s, matching the
     // single-invite case above.
