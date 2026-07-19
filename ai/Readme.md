@@ -240,6 +240,7 @@ The `GOES_CHECKPOINT_DIR` environment variable overrides the checkpoint director
 | `--gnn-hidden-dim N` | `128` | GNN hidden dimension (cub/hcub boards) |
 | `--unet-hidden-dim N` | `16` | UNet hidden dimension (2D boards) |
 | `--cnn-hidden-dim N` | `64` | CNN hidden dimension (2D boards) |
+| `--cnn-conv-size N` | `5` | CNN convolution kernel size (2D boards) - must be odd and > 1 |
 | `--num-layers N` | `9` | GNN message-passing layers |
 | `--save-every N` | `10` | Save a checkpoint every N iterations |
 | `--checkpoint-dir PATH` | `ai/checkpoints` | Checkpoint directory |

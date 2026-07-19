@@ -46,13 +46,22 @@ struct ModelConfig {
     virtual nlohmann::json to_json() const;
 };
 
-// CNN-specific model config. No additional fields today - CNN's block count
-// (num_blocks_) is derived from board geometry at construction time, not
-// user-configurable (see CNNImpl's ctor) - kept as its own type for symmetry
-// with UNetConfig/GNNConfig and so CNNImpl only depends on CNN's own fields.
+// CNN-specific model config. CNN's block count (num_blocks_) is derived from
+// board geometry at construction time, not user-configurable (see CNNImpl's
+// ctor) - kept as its own type for symmetry with UNetConfig/GNNConfig and so
+// CNNImpl only depends on CNN's own fields.
 struct CNNConfig : ModelConfig {
-    CNNConfig(int feature_dim, int hidden_dim, nlohmann::json input_descr)
-        : ModelConfig("cnn", feature_dim, hidden_dim, std::move(input_descr)) {}
+    // Convolution kernel size for every conv in every block (see CNNImpl's
+    // ctor) - must be odd (so "same" padding via conv_size/2 keeps spatial
+    // dims exactly unchanged, required for the block's residual add) and > 1
+    // (a 1x1 kernel can't be validated the same way and defeats the point of
+    // a spatial conv here) - enforced by train.cpp's --cnn-conv-size parsing.
+    int conv_size;
+
+    CNNConfig(int feature_dim, int hidden_dim, nlohmann::json input_descr, int conv_size_ = 5)
+        : ModelConfig("cnn", feature_dim, hidden_dim, std::move(input_descr)), conv_size(conv_size_) {}
+
+    nlohmann::json to_json() const override;
 };
 
 // UNet-specific model config. No additional fields today - UNet's depth is

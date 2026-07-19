@@ -50,13 +50,18 @@ CNNImpl::CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_players, i
     num_blocks_ = std::max(gw, gh);
 
     // Blocks: constant hidden_dim width throughout; only block 0's input
-    // channel count differs (feature_dim + 1 validity channel).
+    // channel count differs (feature_dim + 1 validity channel). "Same"
+    // padding (conv_size/2, integer division - exact since conv_size is
+    // enforced odd) keeps H,W unchanged across every conv, which the
+    // residual add below requires (match_channels only reconciles channel
+    // count, not spatial dims).
     int in_ch = cfg_.feature_dim + 1;
+    int pad = cfg_.conv_size / 2;
     for (int k = 0; k < num_blocks_; k++) {
         torch::nn::Sequential seq;
-        seq->push_back(torch::nn::Conv2d(torch::nn::Conv2dOptions(in_ch, cfg_.hidden_dim, 3).padding(1)));
+        seq->push_back(torch::nn::Conv2d(torch::nn::Conv2dOptions(in_ch, cfg_.hidden_dim, cfg_.conv_size).padding(pad)));
         seq->push_back(torch::nn::ReLU());
-        seq->push_back(torch::nn::Conv2d(torch::nn::Conv2dOptions(cfg_.hidden_dim, cfg_.hidden_dim, 3).padding(1)));
+        seq->push_back(torch::nn::Conv2d(torch::nn::Conv2dOptions(cfg_.hidden_dim, cfg_.hidden_dim, cfg_.conv_size).padding(pad)));
         blocks_.push_back(register_module("block_" + std::to_string(k), seq));
         in_ch = cfg_.hidden_dim;
     }

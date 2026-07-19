@@ -33,8 +33,9 @@ TORCH_MODULE(CNNPolicyHead);
 // every block operates at the board's tight bounding box resolution (no
 // power-of-two padding either).
 //
-// Blocks: max(grid_w_, grid_h_) blocks, each two 3×3 convs (no
-// normalization) at a constant hidden_dim width, with a residual shortcut
+// Blocks: max(grid_w_, grid_h_) blocks, each two cfg.conv_size×cfg.conv_size
+// convs (no normalization, "same" padding = conv_size/2 so spatial dims
+// never change) at a constant hidden_dim width, with a residual shortcut
 // from the block's input to its output (channel-matched via clip/zero-pad,
 // not a learned projection - see match_channels() in cnn.cpp). Only the
 // first block's shortcut actually pads (in_dim+1 -> hidden_dim); every

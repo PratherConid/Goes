@@ -42,6 +42,7 @@ struct Args {
     int gnn_hidden_dim    = 128;
     int unet_hidden_dim   = 16;
     int cnn_hidden_dim    = 64;
+    int cnn_conv_size     = 5;
     int num_layers        = 9;
     int iterations        = 200;
     int self_play_games   = 10;
@@ -75,6 +76,8 @@ static void print_usage(const char* prog) {
               << "  --gnn-hidden-dim N        GNN hidden dimension (default: 128)\n"
               << "  --unet-hidden-dim N       UNet hidden dimension (default: 16)\n"
               << "  --cnn-hidden-dim N        CNN hidden dimension (default: 64)\n"
+              << "  --cnn-conv-size N         CNN convolution kernel size - must be odd and > 1\n"
+              << "                            (default: 5)\n"
               << "  --num-layers N            GNN message-passing layers (default: 9)\n"
               << "  --iterations N            Training iterations (default: 200)\n"
               << "  --self-play-games N       Games to complete before each training step (default: 10)\n"
@@ -112,6 +115,13 @@ static Args parse_args(int argc, char* argv[]) {
         else if (a == "--gnn-hidden-dim")  args.gnn_hidden_dim  = std::stoi(argv[++i]);
         else if (a == "--unet-hidden-dim") args.unet_hidden_dim = std::stoi(argv[++i]);
         else if (a == "--cnn-hidden-dim")  args.cnn_hidden_dim  = std::stoi(argv[++i]);
+        else if (a == "--cnn-conv-size") {
+            args.cnn_conv_size = std::stoi(argv[++i]);
+            if (args.cnn_conv_size <= 1 || args.cnn_conv_size % 2 == 0) {
+                std::cerr << "--cnn-conv-size must be an odd integer > 1 (got " << args.cnn_conv_size << ")\n";
+                std::exit(1);
+            }
+        }
         else if (a == "--num-layers")      args.num_layers      = std::stoi(argv[++i]);
         else if (a == "--iterations")      args.iterations      = std::stoi(argv[++i]);
         else if (a == "--self-play-games") args.self_play_games = std::stoi(argv[++i]);
@@ -413,7 +423,7 @@ int main(int argc, char* argv[]) {
                     : (arch == "unet") ? args.unet_hidden_dim
                                         : args.gnn_hidden_dim;
     std::unique_ptr<ModelConfig> model_cfg;
-    if (arch == "cnn")       model_cfg = std::make_unique<CNNConfig>(in_dim, hidden_dim, input_descr);
+    if (arch == "cnn")       model_cfg = std::make_unique<CNNConfig>(in_dim, hidden_dim, input_descr, args.cnn_conv_size);
     else if (arch == "unet") model_cfg = std::make_unique<UNetConfig>(in_dim, hidden_dim, input_descr);
     else                     model_cfg = std::make_unique<GNNConfig>(in_dim, hidden_dim, args.num_layers, input_descr);
     auto model_var = build_model(bc, *model_cfg, game_cfg);
