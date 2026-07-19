@@ -9,7 +9,7 @@ import { ServerConnection, type RequestHandle } from './serverConnection.js';
 import {
     SidePanelContent, SidePanelHierarchy, SidePanelBwFw, renderSidePanelChrome, sidePanelParent, childButtons, renderGamePresetSelection,
     currentGameSetupHtml, newGameSetupHtml,
-    coloredStoneCircle, coloredStoneDot, fmtTurnList,
+    coloredStoneCircle, fmtTurnList,
 } from './sidePanel.js';
 
 // Single persistent WebSocket connection to the main server, shared by the
@@ -957,9 +957,16 @@ export class Renderer {
 
     private _renderControlBar(v: BoardView) {
         const dpn = this._active.displayPlyNum;
-        // Cosmetic preview only - if multiple stones are offered, this just
-        // previews the first one; the actual choice is made via the popup.
-        this.turnStone.style.background = STONE_MAP[v.nextTurn.stones.indexOf(1) + 1]?.color ?? '#888';
+        // Cosmetic preview of every stone color this turn offers - a pie
+        // slice per offered stone (#turn-stone's own border supplies the
+        // outline, so a 0-stone turn just renders hollow/transparent). The
+        // actual choice among multiple offered stones is still made via the
+        // popup (_stonePopupCircles) - this is display-only.
+        const offeredStones: number[] = [];
+        for (let s = 0; s < v.nextTurn.stones.length; s++) if (v.nextTurn.stones[s]) offeredStones.push(s + 1);
+        this.turnStone.style.background = offeredStones.length === 0 ? 'transparent' : `conic-gradient(${
+            offeredStones.map((stone, i) => `${STONE_MAP[stone].color} ${i / offeredStones.length * 100}% ${(i + 1) / offeredStones.length * 100}%`).join(', ')
+        })`;
         this.plyNum.textContent = `${dpn}/${v.plyCount}`;
         this.bwEndBtn.disabled = dpn === 0;
         this.bw10Btn.disabled  = dpn === 0;
@@ -1100,22 +1107,6 @@ export class Renderer {
         </table>`;
     }
 
-    // Maps a game's player-slot config to e.g. "LSN" - one char per slot (in
-    // order): 'L' = you (a 'local' slot, or a 'client' slot whose name
-    // matches your own userName), 'E' = a server-side AI engine, 'S' = some
-    // other human (spectatable but not yours), 'N' = the slot is still
-    // unassigned.
-    private _fmtPlayerMap(players: Map<number, PlayerInfo>, numPlayers: number): string {
-        const chars = Array.from({ length: numPlayers }, (_, i) => {
-            const pi = players.get(i + 1);
-            if (!pi) return 'N';
-            if (pi.type === 'local' || (pi.type === 'client' && pi.name === this.userName)) return 'L';
-            if (pi.type === 'serverEngine') return 'E';
-            return 'S';
-        });
-        return chars.join('');
-    }
-
     // Makes `id` the active game and cancels any in-flight engine request for
     // the previous one - the same switching logic as the 'swl'/'swo'/'swf'
     // commands (_parseCommand), reused by the clickable game-record buttons
@@ -1138,8 +1129,8 @@ export class Renderer {
         el.innerHTML = '';
         for (const id of ids) {
             const btn = document.createElement('button');
-            btn.className = 'panel-child-btn';
-            btn.textContent = label(id);
+            btn.className = 'panel-child-btn truncate-line';
+            btn.innerHTML = label(id);
             btn.addEventListener('click', () => {
                 this._switchToGame(id);
                 this.panelMode = this._screenIsSmall() ? 'hidden' : 'locked';
@@ -1150,22 +1141,31 @@ export class Renderer {
         }
     }
 
+    // Turn list + [game ID] - same content shape as currentGameSetupHtml/
+    // newGameSetupHtml's own "Turn list:" line (fmtTurnList), so a game
+    // record reads consistently with the rest of the UI; truncated with an
+    // ellipsis rather than wrapping (see the 'truncate-line' CSS class) since
+    // a long turn list would otherwise push the game ID off-screen.
+    private _fmtGameRecordLabel(id: string, config: GameConfig): string {
+        return `${fmtTurnList(config.turnList, config.players)}${'&emsp;'.repeat(2)}[${id}]`;
+    }
+
     private _renderActiveLocalGames() {
         const ids = [...this.activeGames.keys()].filter(k => k.startsWith('L_'));
-        this._renderGameButtons(this.activeLocalGamesPanel, ids, id => id.slice(2));
+        this._renderGameButtons(this.activeLocalGamesPanel, ids,
+            id => this._fmtGameRecordLabel(id.slice(2), this.activeGames.get(id)!.config));
     }
 
     private _renderActiveOnlineGames() {
         const ids = [...this.activeGames.keys()].filter(k => k.startsWith('O_'));
-        this._renderGameButtons(this.activeOnlineGamesPanel, ids, id => {
-            const ag = this.activeGames.get(id)!;
-            return `${id.slice(2)} (${this._fmtPlayerMap(ag.config.players, ag.config.numPlayers)})`;
-        });
+        this._renderGameButtons(this.activeOnlineGamesPanel, ids,
+            id => this._fmtGameRecordLabel(id.slice(2), this.activeGames.get(id)!.config));
     }
 
     private _renderFinishedOnlineGames() {
         const ids = [...this.finishedGames.keys()].filter(k => k.startsWith('O_'));
-        this._renderGameButtons(this.finishedOnlineGamesPanel, ids, id => id.slice(2));
+        this._renderGameButtons(this.finishedOnlineGamesPanel, ids,
+            id => this._fmtGameRecordLabel(id.slice(2), this.finishedGames.get(id)!.config));
     }
 
     // Builds the Account side-panel node's content: a username/password
@@ -1503,7 +1503,7 @@ export class Renderer {
     // listing, one row per pending game.
     private _renderPendingGames() {
         this.pendingGamesPanel.innerHTML = [...this.pendingGames.values()]
-            .map(pg => `<div>${pg.id} (${this._fmtPlayerMap(pg.config.players, pg.config.numPlayers)})</div>`)
+            .map(pg => `<div class="truncate-line">${this._fmtGameRecordLabel(pg.id, pg.config)}</div>`)
             .join('');
     }
 
@@ -1565,17 +1565,8 @@ export class Renderer {
             : `<div><b>Please login to play online games</b> <span id="status-login-btn-slot"></span></div>`;
         this.statusPanel.innerHTML = `
             ${nameLine}
-            <div><b>Your player slot:</b> ${this._active.config.turnList
-                .map(({ player, stones }) => {
-                    const pi = this._active.config.players.get(player);
-                    const isMine = pi?.type === 'local' || (pi?.type === 'client' && pi.name === this.userName);
-                    const offeredStones = stones
-                        .map((s, i) => s === 1 ? i + 1 : -1)
-                        .filter(s => s >= 0);
-                    return offeredStones.map(stone => isMine ? coloredStoneCircle(stone) : coloredStoneDot(stone)).join('');
-                })
-                .join('&nbsp;'.repeat(5))}</div>
             <div><b>Game ID:</b> ${this.activeIdx.slice(2)}</div>
+            <div><b>Turn list:</b> ${fmtTurnList(this._active.config.turnList, this._active.config.players)}</div>
             <div><b>To move:</b> ${fmtTurnList([v.turnList[v.plyCount % v.turnList.length]], this._active.config.players)}</div>
             <div><b>Last move:</b> ${lastMoveStr}</div>
             <div><b>Stones:</b> ${stoneLine}</div>

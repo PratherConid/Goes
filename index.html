@@ -250,6 +250,15 @@
     }
     .panel-child-btn:disabled { opacity: 0.5; cursor: default; }
 
+    /* One-line truncation with a trailing ellipsis instead of wrapping -
+       used by the game-record list entries (turn list + [game ID] can run
+       long). */
+    .truncate-line {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
     .status-login-btn {
       display: inline-block;
       width: auto;
