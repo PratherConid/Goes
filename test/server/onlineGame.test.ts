@@ -244,3 +244,78 @@ test('invite + refuse cancels the game and notifies everyone involved', async ()
     await alice.close();
     await bob.close();
 });
+
+test('a multi-invite decline waits for every invitee before cancelling, and a too-late accept is rejected with a specific message', async () => {
+    const alice = await registerAndLogin('olga');
+    const bob = await registerAndLogin('peter');
+    const carol = await registerAndLogin('quinn');
+
+    const bobInvite = new Promise<any>(resolve => bob.onEvent('game/invite', resolve));
+    const carolInvite = new Promise<any>(resolve => carol.onEvent('game/invite', resolve));
+    const { id } = await alice.req<{ id: string }>('game/create', {
+        config: passOnlyConfig(),
+        onlinePlayerRequest: fixedRequest([[1, { type: 'pendingInvitedOnline', name: 'peter' }], [2, { type: 'pendingInvitedOnline', name: 'quinn' }]]),
+    });
+    await Promise.all([bobInvite, carolInvite]);
+
+    const aliceFailedEvents: any[] = [];
+    alice.onEvent('game/invite-failed', m => aliceFailedEvents.push(m));
+
+    const bobRespond = await bob.req<{ status: string }>('game/invite-respond', { id, accept: false });
+    assert.equal(bobRespond.status, 'cancelled');
+
+    // Carol hasn't responded yet - the game must not be torn down/notified
+    // to alice yet (only the first of two invitees has declined).
+    await new Promise(r => setImmediate(r));
+    assert.equal(aliceFailedEvents.length, 0);
+
+    // Carol tries to accept, too late - the game was already refused by bob.
+    // She never actually gets seated, and gets a specific message instead of
+    // a raw 404 - this is also the response that finally tears the game down
+    // and notifies alice.
+    const aliceFailed = new Promise<any>(resolve => alice.onEvent('game/invite-failed', resolve));
+    await assert.rejects(
+        carol.req('game/invite-respond', { id, accept: true }),
+        (e: any) => { assert.match(e.message, /already refused by another invited player/); assert.equal(e.statusCode, 409); return true; },
+    );
+    const failedMsg = await aliceFailed;
+    assert.equal(failedMsg.id, id);
+
+    // Fully torn down now - a further response 404s, matching the
+    // single-invite case above.
+    await assert.rejects(
+        bob.req('game/invite-respond', { id, accept: true }),
+        (e: any) => { assert.equal(e.statusCode, 404); return true; },
+    );
+
+    await alice.close();
+    await bob.close();
+    await carol.close();
+});
+
+test('inviting the same user into two slots resolves both from one response, with only one invite popup', async () => {
+    const alice = await registerAndLogin('rachel');
+    const bob = await registerAndLogin('sam');
+
+    const bobInvites: any[] = [];
+    const firstBobInvite = new Promise<any>(resolve =>
+        bob.onEvent('game/invite', m => { bobInvites.push(m); if (bobInvites.length === 1) resolve(m); }));
+    const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
+        config: passOnlyConfig(),
+        onlinePlayerRequest: fixedRequest([[1, { type: 'pendingInvitedOnline', name: 'sam' }], [2, { type: 'pendingInvitedOnline', name: 'sam' }]]),
+    });
+    assert.equal(status, 'waiting');
+    await firstBobInvite;
+
+    // Deduped by username - exactly one invite popup, not one per slot.
+    await new Promise(r => setImmediate(r));
+    assert.equal(bobInvites.length, 1);
+
+    const aliceStart = new Promise(resolve => alice.onEvent('game/start', resolve));
+    const respond = await bob.req<{ status: string }>('game/invite-respond', { id, accept: true });
+    assert.equal(respond.status, 'playing');   // both slots resolved by this one response
+    await aliceStart;
+
+    await alice.close();
+    await bob.close();
+});

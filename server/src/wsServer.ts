@@ -222,10 +222,15 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                 onlineGameManager.addObserver(result.id, userName);
                 // Personally notify each invited user (if currently connected) - they
                 // aren't observers yet (see OnlineGameManager.respondToInvite's doc
-                // comment), so the regular observer-set broadcast below won't reach them.
-                const pushes = [...onlineGameManager.getConfig(result.id).players.values()]
-                    .filter(pi => pi.type === 'pendingInvitedOnline')
-                    .map(pi => ({ to: pi.name, type: 'game/invite', payload: { id: result.id, from: userName } }));
+                // comment), so the regular observer-set broadcast below won't reach
+                // them. Deduped by username - a user invited into multiple slots
+                // (respondToInvite() resolves all of them at once) should still only
+                // get a single invite popup.
+                const pushes = [...new Set(
+                    [...onlineGameManager.getConfig(result.id).players.values()]
+                        .filter(pi => pi.type === 'pendingInvitedOnline')
+                        .map(pi => pi.name)
+                )].map(name => ({ to: name, type: 'game/invite', payload: { id: result.id, from: userName } }));
                 return {
                     results: [{ data: { id: result.id, status: result.status }, broadcast: buildBroadcast(result.id, result.status === 'playing' ? 'game/start' : 'game/pending-games') }],
                     engineGame: result.status === 'playing' ? result.id : undefined,
@@ -316,11 +321,21 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                     }
                     if (engineGame) void advanceServerEngine(engineGame);
                 })
-                .catch((e: any) => send(ws, {
-                    kind: 'res', reqId: msg.reqId, ok: false,
-                    error: e?.message ?? 'Internal error',
-                    statusCode: e?.statusCode ?? 500,
-                }));
+                .catch((e: any) => {
+                    // A thrown error can still carry `pushes` (see e.g.
+                    // OnlineGameManager.respondToInvite()'s already-refused-game
+                    // branch) - forward them exactly like the success path above,
+                    // before sending the error response to the original requester.
+                    for (const { to, type, payload } of e?.pushes ?? []) {
+                        const targetWs = userToWs.get(to);
+                        if (targetWs) send(targetWs, { kind: 'event', type, ...payload });
+                    }
+                    send(ws, {
+                        kind: 'res', reqId: msg.reqId, ok: false,
+                        error: e?.message ?? 'Internal error',
+                        statusCode: e?.statusCode ?? 500,
+                    });
+                });
         });
 
         ws.on('close', () => {

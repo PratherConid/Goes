@@ -16,6 +16,16 @@ interface ServerPendingGame extends PendingGame {
     // random-empty (not fixed), keeping the whole random-mode experience
     // consistent rather than only randomizing the initial batch.
     fixed: boolean;
+    // True once any invited player has declined - see respondToInvite()'s
+    // doc comment for how this interacts with unrespondedInvited.
+    refused: boolean;
+    // username -> every slot that user was invited to and hasn't yet
+    // responded to (as a whole - see respondToInvite()). Keying by username
+    // rather than by individual slot lets one response resolve every slot
+    // that user holds in this game at once, and lets a genuinely-redundant
+    // second response 403 for free (the username's entry is gone after the
+    // first call).
+    unrespondedInvited: Map<string, number[]>;
 }
 
 export interface OnlineGame {
@@ -99,13 +109,18 @@ export class OnlineGameManager {
         const normalize = (pi: PlayerInfo) => pi.type === 'local' ? new PlayerInfo('client', pi.name) : pi;
         serverConfig.players = new Map([...resolved].map(([slot, pi]) => [slot, normalize(pi)]));
 
+        const unrespondedInvited = new Map<string, number[]>();
+        for (const [slot, pi] of serverConfig.players)
+            if (pi.type === 'pendingInvitedOnline')
+                unrespondedInvited.set(pi.name, [...(unrespondedInvited.get(pi.name) ?? []), slot]);
+
         if (this._readyToStart(serverConfig)) {
             // All slots pre-assigned and confirmed — start immediately.
-            const pending: ServerPendingGame = { id, config: serverConfig, observers: new Set(), fixed: request.fixed };
+            const pending: ServerPendingGame = { id, config: serverConfig, observers: new Set(), fixed: request.fixed, refused: false, unrespondedInvited };
             this._startGame(pending);
             return { id, status: 'playing' };
         }
-        this.pendingGames.set(id, { id, config: serverConfig, observers: new Set(), fixed: request.fixed });
+        this.pendingGames.set(id, { id, config: serverConfig, observers: new Set(), fixed: request.fixed, refused: false, unrespondedInvited });
         return { id, status: 'waiting' };
     }
 
@@ -132,34 +147,64 @@ export class OnlineGameManager {
     }
 
     // The invite-side counterpart to joinGame() - joinGame fills any open
-    // slot for any caller; this instead resolves the ONE slot specifically
-    // reserved for userName (a 'pendingInvitedOnline' PlayerInfo), mirroring
-    // acceptJoin()'s ownership check below. A refusal cancels the whole
-    // pending game - there is no per-slot failure, per the feature's spec -
-    // and `notify` covers everyone who needs to know: current observers
-    // (creator + anyone already accepted/joined) plus every username still
-    // referenced in config.players (covers other invitees who haven't
-    // responded yet, and thus aren't observers - invite recipients only
-    // become observers once they accept, same "commit on join" timing as a
-    // regular game/join).
+    // slot for any caller; this instead resolves EVERY slot specifically
+    // reserved for userName (unrespondedInvited.get(userName) - a user can
+    // hold more than one invited slot in the same game), mirroring
+    // acceptJoin()'s ownership check below.
+    //
+    // A decline doesn't tear the pending game down immediately - it only
+    // sets `refused`, so other invitees who haven't responded yet still get
+    // a normal accept/decline experience rather than a raw 404. The game is
+    // only actually torn down once unrespondedInvited is empty (everyone
+    // has responded, one way or another) - at that point `notify` covers
+    // everyone who needs to know: current observers (creator + anyone
+    // already accepted/joined) plus every username still referenced in
+    // config.players (declined/never-seated invitees are deliberately left
+    // in place rather than removed - see below - so they're included too).
+    //
+    // Once `refused` is true, a further accept can no longer actually seat
+    // anyone (the game is doomed regardless) - it throws instead, so the
+    // caller gets a specific message rather than silently joining a dead
+    // game. If that response happens to be the one that empties
+    // unrespondedInvited, the resulting `notify` pushes are attached to the
+    // thrown Error's `pushes` property - see wsServer.ts's dispatch catch,
+    // which forwards them exactly like a normal Handled result would.
+    //
+    // config.players is intentionally never mutated for a decline/too-late
+    // accept - the slot simply stays 'pendingInvitedOnline' forever, which
+    // is harmless since the pending game itself is torn down once every
+    // invite is accounted for anyway.
     respondToInvite(id: string, userName: string, accept: boolean):
         { status: 'waiting' | 'playing' } | { status: 'cancelled'; notify: string[] } {
         const pending = this.pendingGames.get(id);
         if (!pending) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
-        const slot = [...pending.config.players.entries()]
-            .find(([, pi]) => pi.type === 'pendingInvitedOnline' && pi.name === userName)?.[0];
-        if (slot === undefined) throw Object.assign(new Error('No pending invite for you in this game'), { statusCode: 403 });
+        const slots = pending.unrespondedInvited.get(userName);
+        if (!slots) throw Object.assign(new Error('No pending invite for you in this game'), { statusCode: 403 });
+        pending.unrespondedInvited.delete(userName);
 
-        if (!accept) {
-            const notify = new Set([...pending.observers, ...[...pending.config.players.values()].map(pi => pi.name)]);
-            this.pendingGames.delete(id);
-            return { status: 'cancelled', notify: [...notify] };
+        if (accept && !pending.refused) {
+            for (const slot of slots) pending.config.players.set(slot, new PlayerInfo('client', userName));
+            pending.observers.add(userName);
+            if (this._readyToStart(pending.config)) { this._startGame(pending); return { status: 'playing' }; }
+            return { status: 'waiting' };
         }
 
-        pending.config.players.set(slot, new PlayerInfo('client', userName));
-        pending.observers.add(userName);
-        if (this._readyToStart(pending.config)) { this._startGame(pending); return { status: 'playing' }; }
-        return { status: 'waiting' };
+        // Decline, or an accept arriving after some OTHER invitee already
+        // declined - either way userName's slot(s) are never seated.
+        if (!accept) pending.refused = true;
+
+        let notify: string[] | undefined;
+        if (pending.unrespondedInvited.size === 0) {
+            notify = [...new Set([...pending.observers, ...[...pending.config.players.values()].map(pi => pi.name)])];
+            this.pendingGames.delete(id);
+        }
+
+        if (accept)  // only reachable here when the game was already refused
+            throw Object.assign(
+                new Error(`Game ${id} already refused by another invited player`),
+                { statusCode: 409, pushes: (notify ?? []).map(name => ({ to: name, type: 'game/invite-failed', payload: { id } })) },
+            );
+        return { status: 'cancelled', notify: notify ?? [] };
     }
 
     private _pendingSlots(config: GameConfig): number[] {
