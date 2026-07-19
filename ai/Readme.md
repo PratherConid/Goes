@@ -114,9 +114,9 @@ ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 1 
 
 ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192 --net-arch gnn --gnn-hidden-dim 256
 
-ai/build/goes_train --game-config public/game_presets/7x7x2_twsq_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192
+ai/build/goes_train --game-config public/game_presets/7x7x2_twsq_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192 --cnn-hidden-dim 128
 
-ai/build/goes_train --game-config public/game_presets/13x13_two_ply_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 16384
+ai/build/goes_train --game-config public/game_presets/13x13_two_ply_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 16384 --cnn-hidden-dim 128
 ```
 
 **Windows:**
