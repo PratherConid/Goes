@@ -457,6 +457,15 @@
       border: 1px solid #5c442e;
       border-radius: 3px;
       font-size: 14px;
+      /* 10% lighter than #side-panel's #b0895c background. */
+      background: #c29765;
+    }
+    /* Default browser placeholder gray doesn't have enough contrast against
+       the lighter #c29765 background above - match the input's own border
+       color instead (e.g. the "Username to invite" textbox's placeholder). */
+    .account-input::placeholder {
+      color: #533d29;
+      opacity: 0.6;
     }
 
     .btn-row {

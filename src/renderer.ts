@@ -557,8 +557,8 @@ export class Renderer {
             for (const btn of childButtons(children, onNav)) this.currentGameSetupButtons.appendChild(btn);
 
         // The "Select Game Preset" nav button (via childButtons(), like
-        // Home/CurrentGameSetup above) and the "Start New Game"/"Start new
-        // online game" action buttons (not SidePanelContent nav targets, so
+        // Home/CurrentGameSetup above) and the "Start New Local Game"/"Start
+        // New Online Game" action buttons (not SidePanelContent nav targets, so
         // built directly rather than via childButtons()) live in the same
         // #new-game-buttons div, rebuilt together each navigation to New Game.
         this.newGameButtons.innerHTML = '';
@@ -1133,7 +1133,7 @@ export class Renderer {
 
     // Builds one full-width, clickable button per game id into el - clicking
     // one switches to that game, then does the same two mode changes as the
-    // "Start New Game" button: dock/hide the panel (docking isn't usable on a
+    // "Start New Local Game" button: dock/hide the panel (docking isn't usable on a
     // narrow screen - see _screenIsSmall()'s doc comment) and jump to Status
     // so the switched-to game's state is what the player sees immediately
     // (_navigateSidePanel() triggers its own _render()). Shared by the three
@@ -1264,7 +1264,7 @@ export class Renderer {
     private _buildStartLocalGameBtn(): HTMLButtonElement {
         const btn = document.createElement('button');
         btn.className = 'panel-child-btn';
-        btn.textContent = 'Start New Game';
+        btn.textContent = 'Start New Local Game';
         btn.addEventListener('click', () => {
             // Deferred to onStarted - _createLocalGame() may show a
             // confirm popup first (invited players in Configure Players),
@@ -1594,7 +1594,6 @@ export class Renderer {
             <div><b>Engine temperature:</b> ${this.emTemperature}</div>
             <div><b>Self play:</b> ${this.selfPlay}</div>
             <div><b>Auto forced:</b> ${this.autoForced}</div>
-            <div><b>History Entries:</b> ${this.nShowHistory}</div>
             <div><b>Show Territory:</b> ${this.showTerritory}</div>
             <div><b>Show Illegal Moves:</b> ${this.showIllegalMoves}</div>
             <div><b>Evaluation:</b> ${evalStr}</div>
@@ -1671,7 +1670,7 @@ export class Renderer {
     }
 
     // Shared by the 'new' command and the New Game side-panel node's
-    // "Start New Game" button (built in _refreshSidePanel(), #new-game-buttons).
+    // "Start New Local Game" button (built in _refreshSidePanel(), #new-game-buttons).
     // onStarted (if given) fires once the game actually gets registered -
     // which may happen synchronously (below) or, if onlinePlayerRequest
     // resolves to any invited slots, only once the user confirms the
