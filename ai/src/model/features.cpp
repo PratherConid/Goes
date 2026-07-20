@@ -87,6 +87,11 @@ static float clamp_scale(int value, int bit_index) {
 //   "plyMod":               [turn_list_len] - turn_list_len channels:
 //                         one-hot at (ply_count % turn_list_len), broadcast
 //                         to all nodes.
+//   "consectivePassOneHot": [turn_list_len+1] - turn_list_len+1 channels:
+//                         one-hot at the current consecutive-pass count
+//                         (MoveInfo::consecutive_passes, which ranges over
+//                         [0, turn_list_len] - the game ends once it would
+//                         exceed turn_list_len), broadcast to all nodes.
 //   "playerStoneBudget":   [bits_grid] - bits_grid is a dense num_stones x
 //                         num_players list of channel counts (stone-major); a
 //                         0 entry means "no limit configured for this pair,
@@ -168,6 +173,12 @@ FeatureTensors board_to_features(const BoardState& state, torch::Device device, 
                     feat_a[i][off + ply_mod] = 1.0f;
             }
             off += tl_len;
+        } else if (name == "consectivePassOneHot") {
+            int bits = entry.at(1).get<int>();
+            int cp = state.last_move().consecutive_passes;
+            for (int i = 0; i < N; i++)
+                feat_a[i][off + cp] = 1.0f;
+            off += bits;
         } else if (name == "playerStoneBudget") {
             auto& rows = entry.at(1);
             for (size_t s = 0; s < rows.size(); s++) {

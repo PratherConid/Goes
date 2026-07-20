@@ -1,6 +1,3 @@
-## TODO
-Add number of most recent consecutive passes as AI model input. This is very important, for example white needs to decide whether to pass or not in a winning state based on whether black has passed or not.
-
 ## AI Training Pipeline
 
 Self-play training pipeline for Goes using Monte Carlo Tree Search (MCTS), in the style of AlphaZero.
@@ -261,6 +258,7 @@ The model's input is a self-describing JSON descriptor with shape `{"blocks": [[
 - `liberty` `[bits]` - `bits` channels: each node's raw liberty count, clamp-scale encoded (see below) - channel `i` is `max(0, 1 - liberty/2^i)`.
 - `groupSize` `[]` - 1 channel: `group_size / N`.
 - `plyMod` `[turn_list_len]` - `turn_list_len` channels: one-hot at `(ply_count % turn_list_len)`, broadcast to all nodes.
+- `consectivePassOneHot` `[turn_list_len+1]` - `turn_list_len+1` channels: one-hot at the current consecutive-pass count (`MoveInfo::consecutive_passes`, which ranges over `[0, turn_list_len]` - the game ends once it would exceed `turn_list_len`), broadcast to all nodes.
 - `playerStoneBudget` `[bits_grid]` - `bits_grid` is a dense `num_stones x num_players` list of channel counts (stone-major); a 0 entry means "no limit configured for this pair, contributes zero channels." Each nonzero entry contributes that many broadcast channels: the remaining placement count for that `(stone, player)` pair, clamp-scale encoded like `liberty` above.
 - `globalStoneBudget` `[bits]` - `bits` is a dense `num_stones`-length list of channel counts, same 0-means-absent/clamp-scale/broadcast convention as `playerStoneBudget`, but per-stone (summed across all players).
 

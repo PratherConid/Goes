@@ -196,6 +196,7 @@ nlohmann::json compute_input_descr(const GameConfig& cfg, int N) {
     blocks.push_back(json::array({"liberty", lib_bits}));    total += lib_bits;
     blocks.push_back(json::array({"groupSize"}));              total += 1;
     blocks.push_back(json::array({"plyMod", tl_len}));          total += tl_len;
+    blocks.push_back(json::array({"consectivePassOneHot", tl_len + 1})); total += tl_len + 1;
 
     auto pspl = resolve_player_stone_place_limit(cfg.player_stone_place_limit, ns, np);
     json player_budget_bits = json::array();
