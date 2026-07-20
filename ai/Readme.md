@@ -1,3 +1,6 @@
+## TODO
+Add number of most recent consecutive passes as AI model input. This is very important, for example white needs to decide whether to pass or not in a winning state based on whether black has passed or not.
+
 ## AI Training Pipeline
 
 Self-play training pipeline for Goes using Monte Carlo Tree Search (MCTS), in the style of AlphaZero.
