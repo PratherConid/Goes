@@ -131,16 +131,21 @@
       /* size set dynamically */
     }
 
-    /* control bar */
+    /* control bar - two rows (top: turn indicator + pass/resign, bottom: ply
+       navigation), each sized identically to how the single row used to be. */
     #ctrl-bar {
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      --u: max(16px, min(100dvw, 100dvh) / 25);
+    }
+    #ctrl-bar-top, #ctrl-bar-bottom {
       position: relative;
       display: flex;
       align-items: center;
       justify-content: center;
       gap: calc(var(--u) * 4 / 7);
       padding: calc(var(--u) * 2 / 7) calc(var(--u) * 4 / 7);
-      flex-shrink: 0;
-      --u: max(16px, min(100dvw, 100dvh) / 25);
     }
 
     #turn-stone {
@@ -151,21 +156,25 @@
       flex-shrink: 0;
     }
 
-    #pass-btn, #resign-btn {
-      padding: calc(var(--u) / 7) calc(var(--u) * 5 / 7);
-      border-radius: 999px;
+    #pass-btn, #withdraw-btn, #wcd-btn, #resign-btn {
+      height: var(--u);
+      padding: 0 calc(var(--u) * 5 / 7);
+      border-radius: 4px;
       border: none;
-      font-size: calc(var(--u) * 4 / 7);
+      background: #5c442e;
+      font-size: calc(var(--u) / 2);
       color: #fff;
       cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
-    #pass-btn {
-      background: #5c442e;
-      min-width: calc(var(--u) * 4);
-      text-align: center;
-    }
-    #resign-btn { background: #5c442e; }
-    #pass-btn:disabled, #resign-btn:disabled { background: #b5a99e; cursor: default; }
+    #pass-btn:disabled, #withdraw-btn:disabled, #wcd-btn:disabled, #resign-btn:disabled { background: #b5a99e; cursor: default; }
+    /* Same gotcha as .panel-mode-btn[hidden] below: the hidden attribute's
+       UA-stylesheet display:none loses to this file's own #resign-btn
+       display:flex above (any author rule beats UA-stylesheet ones), so it
+       must be re-asserted here at higher specificity. */
+    #resign-btn[hidden] { display: none; }
 
     .ply-nav-btn {
       height: var(--u);
@@ -188,7 +197,15 @@
     #ply-num {
       position: absolute;
       right: 16px;
-      font-size: calc(var(--u) * 11 / 14);
+      height: var(--u);
+      padding: 0 calc(var(--u) * 4 / 7);
+      border-radius: 4px;
+      background: #5c442e;
+      color: #fff;
+      font-size: calc(var(--u) / 2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
 
     /* command input */
@@ -239,14 +256,15 @@
       margin-top: 6px;
       margin-bottom: 6px;
       border: none;
-      background: #997750;
+      border-radius: 6px;
+      background: #8a6b48;
       color: #000;
       cursor: pointer;
       font-size: 14px;
       text-align: left;
     }
     @media (hover: hover) and (pointer: fine) {
-      .panel-child-btn:hover { background: #a78257; }
+      .panel-child-btn:hover { background: #9e7b52; }
     }
     .panel-child-btn:disabled { opacity: 0.5; cursor: default; }
 
@@ -265,13 +283,14 @@
       padding: 2px 10px;
       margin-left: 6px;
       border: none;
-      background: #997750;
+      border-radius: 6px;
+      background: #8a6b48;
       color: #000;
       cursor: pointer;
       font-size: 14px;
     }
     @media (hover: hover) and (pointer: fine) {
-      .status-login-btn:hover { background: #a78257; }
+      .status-login-btn:hover { background: #9e7b52; }
     }
 
     #commands-panel {
@@ -368,21 +387,30 @@
 
     #history-nav {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(4, max-content);
       grid-template-rows: 1fr 1fr;
+      justify-content: space-around;
+      /* Slightly smaller than .panel-child-btn's 6px vertical stacking
+         margin (other side-panel button arrays), since four buttons share a
+         row here rather than one per row. */
+      gap: 4px;
+      /* Same 6px as #history-boards' own padding above, so the button area's
+         edges keep that same margin from the side panel's edges. */
+      padding: 6px;
       flex-shrink: 0;
     }
 
     .nav-btn {
-      background: #997750;
+      background: #8a6b48;
       color: #000;
       border: none;
+      border-radius: 6px;
       padding: 4px;
       cursor: pointer;
       font-size: 13px;
     }
     @media (hover: hover) and (pointer: fine) {
-      .nav-btn:hover { background: #a78257; }
+      .nav-btn:hover { background: #9e7b52; }
     }
 
     #home-panel, #status-panel, #current-game-setup-panel, #new-game-panel, #game-records-panel, #game-preset-selection-panel,
@@ -456,16 +484,22 @@
       <svg id="main-canvas"></svg>
     </div>
     <div id="ctrl-bar">
-      <button id="bwend-btn" class="ply-nav-btn">&#10074;&#9664;&#9664;</button>
-      <button id="bw10-btn"  class="ply-nav-btn">&#9664;&#9664;</button>
-      <button id="bw-btn"    class="ply-nav-btn">&#9664;</button>
-      <div id="turn-stone"></div>
-      <button id="pass-btn">Pass</button>
-      <button id="resign-btn" hidden>Resign</button>
-      <button id="fw-btn"    class="ply-nav-btn">&#9654;</button>
-      <button id="fw10-btn"  class="ply-nav-btn">&#9654;&#9654;</button>
-      <button id="fwend-btn" class="ply-nav-btn">&#9654;&#9654;&#10074;</button>
-      <span id="ply-num">0</span>
+      <div id="ctrl-bar-top">
+        <button id="pass-btn">Pass</button>
+        <button id="withdraw-btn">Withdraw</button>
+        <button id="wcd-btn">WCD</button>
+        <button id="resign-btn" hidden>Resign</button>
+      </div>
+      <div id="ctrl-bar-bottom">
+        <button id="bwend-btn" class="ply-nav-btn">&#10074;&#9664;</button>
+        <button id="bw10-btn"  class="ply-nav-btn">&#9664;&#9664;</button>
+        <button id="bw-btn"    class="ply-nav-btn">&#9664;</button>
+        <div id="turn-stone"></div>
+        <button id="fw-btn"    class="ply-nav-btn">&#9654;</button>
+        <button id="fw10-btn"  class="ply-nav-btn">&#9654;&#9654;</button>
+        <button id="fwend-btn" class="ply-nav-btn">&#9654;&#10074;</button>
+        <span id="ply-num">0</span>
+      </div>
     </div>
     <div id="cmd-area">
       <div id="cmd-output"></div>
@@ -480,14 +514,14 @@
     <div id="history-panel" style="display:none">
       <div id="history-boards"></div>
       <div id="history-nav">
-        <button class="nav-btn" data-action="prev" data-step="1">←1</button>
-        <button class="nav-btn" data-action="prev" data-step="10">←10</button>
-        <button class="nav-btn" data-action="prev" data-step="100">←100</button>
-        <button class="nav-btn" data-action="start">||←</button>
-        <button class="nav-btn" data-action="next" data-step="1">→1</button>
-        <button class="nav-btn" data-action="next" data-step="10">→10</button>
-        <button class="nav-btn" data-action="next" data-step="100">→100</button>
-        <button class="nav-btn" data-action="end">→||</button>
+        <button class="nav-btn" data-action="prev" data-step="1">&#9654; 1</button>
+        <button class="nav-btn" data-action="prev" data-step="10">&#9654; 10</button>
+        <button class="nav-btn" data-action="prev" data-step="100">&#9654; 100</button>
+        <button class="nav-btn" data-action="start">&#9654;&#10074;</button>
+        <button class="nav-btn" data-action="next" data-step="1">&#9664; 1</button>
+        <button class="nav-btn" data-action="next" data-step="10">&#9664; 10</button>
+        <button class="nav-btn" data-action="next" data-step="100">&#9664; 100</button>
+        <button class="nav-btn" data-action="end">&#10074;&#9664;</button>
       </div>
     </div>
     <div id="status-panel" style="display:none"></div>

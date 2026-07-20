@@ -29,7 +29,7 @@ export enum SidePanelContent {
 // PrescribedBoardMap Record<Enum, [...]> pattern (shared/boardConfig.ts).
 export const SidePanelHierarchy: Record<SidePanelContent, [SidePanelContent | null, SidePanelContent[]]> = {
     [SidePanelContent.Home]:             [null, [
-        SidePanelContent.Status, SidePanelContent.NewGame, SidePanelContent.CurrentGameSetup,
+        SidePanelContent.Status, SidePanelContent.CurrentGameSetup, SidePanelContent.NewGame,
         SidePanelContent.GameRecords, SidePanelContent.CommandReference, SidePanelContent.Account,
     ]],
     // History's nav button isn't rendered in the generic #home-panel slot -

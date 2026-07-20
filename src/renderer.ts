@@ -367,6 +367,8 @@ export class Renderer {
     private histBoards:   HTMLDivElement;
     private passBtn:       HTMLButtonElement;
     private resignBtn:    HTMLButtonElement;
+    private withdrawBtn:  HTMLButtonElement;
+    private wcdBtn:       HTMLButtonElement;
     private bwEndBtn:     HTMLButtonElement;
     private bw10Btn:      HTMLButtonElement;
     private bwBtn:        HTMLButtonElement;
@@ -423,6 +425,8 @@ export class Renderer {
         this.histBoards   = document.getElementById('history-boards') as HTMLDivElement;
         this.passBtn       = document.getElementById('pass-btn')        as HTMLButtonElement;
         this.resignBtn    = document.getElementById('resign-btn')      as HTMLButtonElement;
+        this.withdrawBtn  = document.getElementById('withdraw-btn')    as HTMLButtonElement;
+        this.wcdBtn       = document.getElementById('wcd-btn')         as HTMLButtonElement;
         this.bwEndBtn     = document.getElementById('bwend-btn')      as HTMLButtonElement;
         this.bw10Btn      = document.getElementById('bw10-btn')       as HTMLButtonElement;
         this.bwBtn        = document.getElementById('bw-btn')         as HTMLButtonElement;
@@ -700,6 +704,11 @@ export class Renderer {
             if (v.passEnabled && !v.gameOver) this._tryMakeMove(null);
         });
         this.resignBtn.addEventListener('click', () => { void this._resign(); });
+        // Same underlying logic as the 'w 1'/'wcd' commands - see
+        // _withdrawMove/_withdrawToCurrentDisplay, shared with _parseCommand's
+        // 'w'/'wcd' branches so the guards live in exactly one place.
+        this.withdrawBtn.addEventListener('click', () => { this._withdrawMove(1); this._render(); });
+        this.wcdBtn.addEventListener('click', () => { this._withdrawToCurrentDisplay(); this._render(); });
         this.cmdInput.addEventListener('keydown', e => {
             if (e.key === 'Enter') { this._parseCommand(this.cmdInput.value.trim()); this.cmdInput.value = ''; this._render(); }
         });
@@ -974,6 +983,12 @@ export class Renderer {
         this.fwBtn.disabled    = dpn === v.plyCount;
         this.fw10Btn.disabled  = dpn === v.plyCount;
         this.fwEndBtn.disabled = dpn === v.plyCount;
+        // Withdraws a real move (not just a display-position change like
+        // bw/fw), so it's gated on plyCount (actual moves made), not dpn.
+        this.withdrawBtn.disabled = v.plyCount === 0;
+        // wcd withdraws down to the displayed ply - a no-op once dpn already
+        // equals plyCount (nothing ahead of the display position left to cut).
+        this.wcdBtn.disabled = dpn === v.plyCount;
         // Disabled while selecting a stone - clicking elsewhere on the board
         // cancels the popup instead (see _onBoardClick); Pass is no longer
         // double-purposed as Cancel.
@@ -1734,6 +1749,29 @@ export class Renderer {
         this.activeIdx = id;
     }
 
+    // Withdraws n real moves (see BoardState.withdrawMove) - shared by the
+    // 'w' command and the Withdraw button, so the online/finished-game
+    // guards live in exactly one place.
+    private _withdrawMove(n: number) {
+        if (this.activeIdx.startsWith('O_')) { this._setCmdOutput('Cannot withdraw moves in online games'); return; }
+        if (this.finishedGames.has(this.activeIdx)) { this._setCmdOutput('Cannot withdraw moves from a finished game'); return; }
+        this.engineManager.cancel();
+        this.engineManager.sessionId = null;
+        for (let i = 0; i < n; i++) this._active.bs.withdrawMove();
+        this._active.displayPlyNum = Math.min(this._active.displayPlyNum, this._active.bs.situations.length - 1);
+    }
+
+    // Withdraws down to the currently displayed ply - shared by the 'wcd'
+    // command and the WCD button.
+    private _withdrawToCurrentDisplay() {
+        if (this.activeIdx.startsWith('O_')) { this._setCmdOutput('Cannot withdraw moves in online games'); return; }
+        if (this.finishedGames.has(this.activeIdx)) { this._setCmdOutput('Cannot withdraw moves from a finished game'); return; }
+        this.engineManager.cancel();
+        this.engineManager.sessionId = null;
+        const n = this._active.bs.situations.length - 1 - this._active.displayPlyNum;
+        for (let i = 0; i < n; i++) this._active.bs.withdrawMove();
+    }
+
     private _parseCommand(raw: string) {
         const parts = raw.trim().split(/\s+/);
         this.cmdOutput.textContent = '';
@@ -2059,22 +2097,12 @@ export class Renderer {
             this.nShowHistory = n;
         }
         else if (cmd === 'w') {
-            if (this.activeIdx.startsWith('O_')) { this._setCmdOutput('Cannot withdraw moves in online games'); return; }
-            if (this.finishedGames.has(this.activeIdx)) { this._setCmdOutput('Cannot withdraw moves from a finished game'); return; }
             const n = posInt(parts[1]);
             if (n === null) { this._setCmdOutput('Usage: w <n>  (positive integer)'); return; }
-            this.engineManager.cancel();
-            this.engineManager.sessionId = null;
-            for (let i = 0; i < n; i++) this._active.bs.withdrawMove();
-            this._active.displayPlyNum = Math.min(this._active.displayPlyNum, this._active.bs.situations.length - 1);
+            this._withdrawMove(n);
         }
         else if (cmd === 'wcd') {
-            if (this.activeIdx.startsWith('O_')) { this._setCmdOutput('Cannot withdraw moves in online games'); return; }
-            if (this.finishedGames.has(this.activeIdx)) { this._setCmdOutput('Cannot withdraw moves from a finished game'); return; }
-            this.engineManager.cancel();
-            this.engineManager.sessionId = null;
-            const n = this._active.bs.situations.length - 1 - this._active.displayPlyNum;
-            for (let i = 0; i < n; i++) this._active.bs.withdrawMove();
+            this._withdrawToCurrentDisplay();
         }
         else if (cmd === 'fw') {
             const n = posInt(parts[1]);
