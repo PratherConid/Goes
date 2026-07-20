@@ -507,10 +507,23 @@ int main(int argc, char* argv[]) {
                     trajectories[slot], pool[slot].board, pool[slot].score().territory_owner);
 
                 if (args.verbosity >= 1) {
+                    auto& score = pool[slot].score();
+                    // stone_count/territory are stone-indexed maps (ScoreData) that
+                    // omit a stone type entirely if it never appears on the board -
+                    // .count()/.at() below default those absent entries to 0.
+                    auto stone_at = [](const std::unordered_map<int,int>& m, int s) {
+                        auto it = m.find(s);
+                        return it != m.end() ? it->second : 0;
+                    };
+
                     std::cout << "  game " << (games_this_iter + 1)
                               << "/" << args.self_play_games
                               << "  plies=" << trajectories[slot].size()
-                              << "  winners=[";
+                              << "  stones=[";
+                    for (int s = 1; s <= pool[slot].num_stones; s++) std::cout << stone_at(score.stone_count, s) << ",";
+                    std::cout << "]  territories=[";
+                    for (int s = 1; s <= pool[slot].num_stones; s++) std::cout << stone_at(score.territory, s) << ",";
+                    std::cout << "]  winners=[";
                     // done implies game_over(), so winners should always be set here.
                     if (pool[slot].winners.has_value())
                         for (int w : pool[slot].winners.value()) std::cout << w << ",";
