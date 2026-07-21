@@ -245,6 +245,7 @@ The `GOES_CHECKPOINT_DIR` environment variable overrides the checkpoint director
 | `--save-every N` | `10` | Save a checkpoint every N iterations |
 | `--checkpoint-dir PATH` | `ai/checkpoints` | Checkpoint directory |
 | `--resume TAG` | _(none)_ | Continue an existing hash-named checkpoint directory instead of starting a fresh one - see **Checkpoint Directories and Matching** |
+| `--retrain TAG` | _(none)_ | Train a fresh model against an existing checkpoint directory's recorded self-play (its `_traj.json` files, replayed in order into a *new* checkpoint directory) instead of generating new games, then continue with live self-play for any remaining `--iterations`. Only requires the game config to match (not the architecture/hidden-dim) - it never loads `TAG`'s weights. Mutually exclusive with `--resume` |
 | `--verbosity N` | `1` | 0=silent, 1=per-game, ≥2=per-ply |
 
 ## Input Features

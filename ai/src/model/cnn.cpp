@@ -4,18 +4,6 @@
 #include <cassert>
 #include <omp.h>
 
-// Match x's channel count to out_ch for a parameter-free residual shortcut:
-// clip the extra channels if x has more than out_ch, zero-pad if it has fewer.
-static torch::Tensor match_channels(const torch::Tensor& x, int64_t out_ch) {
-    int64_t in_ch = x.size(1);
-    if (in_ch == out_ch) return x;
-    if (in_ch > out_ch) return x.slice(1, 0, out_ch);
-    auto pad_sizes = x.sizes().vec();
-    pad_sizes[1] = out_ch - in_ch;
-    auto pad = torch::zeros(pad_sizes, x.options());
-    return torch::cat({x, pad}, 1);
-}
-
 CNNImpl::CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_players, int num_stones)
     : cfg_(cfg), num_players_(num_players), num_stones_(num_stones)
 {
@@ -49,31 +37,34 @@ CNNImpl::CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_players, i
 
     num_blocks_ = std::max(gw, gh);
 
-    // Blocks: constant hidden_dim width throughout; only block 0's input
-    // channel count differs (feature_dim + 1 validity channel). "Same"
+    // input_proj maps feature_dim+1 (validity channel included) -> hidden_dim
+    // once, so every block below operates at a constant hidden_dim width on
+    // both sides of its residual shortcut (see forward()) - no channel
+    // matching needed anywhere in the block loop itself.
+    input_proj = register_module("input_proj",
+        torch::nn::Conv2d(torch::nn::Conv2dOptions(cfg_.feature_dim + 1, cfg_.hidden_dim, 1)));
+
+    // Blocks: constant hidden_dim width throughout, both in and out. "Same"
     // padding (conv_size/2, integer division - exact since conv_size is
     // enforced odd) keeps H,W unchanged across every conv, which the
-    // residual add below requires (match_channels only reconciles channel
-    // count, not spatial dims).
-    int in_ch = cfg_.feature_dim + 1;
+    // residual add below requires.
     int pad = cfg_.conv_size / 2;
     for (int k = 0; k < num_blocks_; k++) {
         torch::nn::Sequential seq;
-        seq->push_back(torch::nn::Conv2d(torch::nn::Conv2dOptions(in_ch, cfg_.hidden_dim, cfg_.conv_size).padding(pad)));
+        seq->push_back(torch::nn::Conv2d(torch::nn::Conv2dOptions(cfg_.hidden_dim, cfg_.hidden_dim, cfg_.conv_size).padding(pad)));
         seq->push_back(torch::nn::ReLU());
         seq->push_back(torch::nn::Conv2d(torch::nn::Conv2dOptions(cfg_.hidden_dim, cfg_.hidden_dim, cfg_.conv_size).padding(pad)));
         blocks_.push_back(register_module("block_" + std::to_string(k), seq));
-        in_ch = cfg_.hidden_dim;
     }
 
     stone_head = register_module("stone_head", torch::nn::Sequential(
-        torch::nn::Linear(cfg_.hidden_dim, 64),
+        torch::nn::Linear(cfg_.hidden_dim, cfg_.hidden_dim),
         torch::nn::ReLU(),
-        torch::nn::Linear(64, num_stones + 1)));
+        torch::nn::Linear(cfg_.hidden_dim, num_stones + 1)));
     territory_head = register_module("territory_head", torch::nn::Sequential(
-        torch::nn::Linear(cfg_.hidden_dim, 64),
+        torch::nn::Linear(cfg_.hidden_dim, cfg_.hidden_dim),
         torch::nn::ReLU(),
-        torch::nn::Linear(64, num_stones + 1)));
+        torch::nn::Linear(cfg_.hidden_dim, num_stones + 1)));
 
     policy_head = register_module("policy_head", CNNPolicyHead(cfg_.hidden_dim, bc.N, num_stones));
 }
@@ -130,12 +121,13 @@ std::pair<torch::Tensor, torch::Tensor> CNNImpl::forward(
 
     int64_t B = x.size(0);
 
-    // Each block: two 3x3 convs, then a residual shortcut from the block's
-    // input (channel-matched via clip/zero-pad) added before the final ReLU.
-    auto h = features_to_grid(x); // (B, F+1, H, W)
+    // input_proj brings every block to a constant hidden_dim width, so each
+    // block's residual shortcut (its own input added to its two-conv output,
+    // before the final ReLU) is a plain identity add - no channel matching.
+    auto h = torch::relu(input_proj->forward(features_to_grid(x))); // (B, hidden_dim, H, W)
     for (int k = 0; k < num_blocks_; k++) {
         auto out = blocks_[k]->forward(h);
-        h = torch::relu(out + match_channels(h, cfg_.hidden_dim));
+        h = torch::relu(out + h);
     }
     // h: (B, hidden_dim, H, W)
 

@@ -65,6 +65,14 @@ struct Args {
     // named deterministically from --game-config, so resuming requires
     // explicitly naming which one.
     std::string resume_tag;
+    // Opaque checkpoint-directory hash to retrain from - see
+    // validate_retrain_source_dir/main()'s replay phase. Mutually exclusive
+    // with resume_tag (enforced at parse time in parse_args): unlike
+    // --resume, this trains a FRESH model (never loads the source's weights)
+    // against the source directory's existing _traj.json games, replayed in
+    // order into a NEW checkpoint directory, before continuing with live
+    // self-play for any remaining iterations.
+    std::string retrain_tag;
 };
 
 static void print_usage(const char* prog) {
@@ -97,6 +105,13 @@ static void print_usage(const char* prog) {
               << "                            a fresh one - errors if TAG doesn't exist or its saved\n"
               << "                            config doesn't exactly match the current --game-config/\n"
               << "                            architecture flags\n"
+              << "  --retrain TAG             Train a FRESH model against ai/checkpoints/TAG's existing\n"
+              << "                            self-play data instead of generating new games: replays\n"
+              << "                            its _traj.json files in order into a new checkpoint\n"
+              << "                            directory, then continues with live self-play for any\n"
+              << "                            remaining --iterations - errors if TAG doesn't exist or\n"
+              << "                            its saved game config doesn't exactly match --game-config.\n"
+              << "                            Mutually exclusive with --resume\n"
               << "  --net-arch auto|cnn|unet|gnn  Network architecture (default: auto)\n"
               << "  --cpu                     Force CPU even if CUDA is available\n"
               << "  --verbosity N             0=silent, 1=per-game, >=2=per-ply (default: 1)\n"
@@ -135,7 +150,18 @@ static Args parse_args(int argc, char* argv[]) {
         else if (a == "--c-puct")          args.c_puct          = std::stof(argv[++i]);
         else if (a == "--save-every")      args.save_every      = std::stoi(argv[++i]);
         else if (a == "--checkpoint-dir")  args.checkpoint_dir  = argv[++i];
-        else if (a == "--resume")          args.resume_tag      = argv[++i];
+        else if (a == "--resume") {
+            if (!args.retrain_tag.empty()) {
+                std::cerr << "--resume and --retrain are mutually exclusive\n"; std::exit(1);
+            }
+            args.resume_tag = argv[++i];
+        }
+        else if (a == "--retrain") {
+            if (!args.resume_tag.empty()) {
+                std::cerr << "--resume and --retrain are mutually exclusive\n"; std::exit(1);
+            }
+            args.retrain_tag = argv[++i];
+        }
         else if (a == "--net-arch")        args.net_arch        = argv[++i];
         else if (a == "--cpu")             args.cpu             = true;
         else if (a == "--verbosity")       args.verbosity       = std::stoi(argv[++i]);
@@ -245,59 +271,99 @@ static std::optional<fs::path> find_config_json(const fs::path& dir) {
     return std::nullopt;
 }
 
-// Determines this run's checkpoint directory:
-// - no --resume: hashes model_cfg+game_cfg+a timestamp into a fresh, unique
-//   directory name (see sha256_hex, util/sha256.h) and creates it - errors
-//   (exits) if that path somehow already exists.
-// - --resume TAG: errors (exits) if ai/checkpoints/TAG doesn't exist, has no
-//   checkpoint config to validate against, or that config doesn't
-//   strong_equal-match the current game_cfg/model_cfg exactly - otherwise
-//   returns the existing directory as-is for resume() to load from.
+// Hashes model_cfg+game_cfg+a timestamp into a fresh, unique directory name
+// (see sha256_hex, util/sha256.h) and creates it - errors (exits) if that
+// path somehow already exists. Used for a plain fresh run, and for
+// --retrain's output directory (always distinct from its source - see
+// main()'s --retrain handling).
+static fs::path fresh_checkpoint_dir(const Args& args, const GameConfig& game_cfg,
+                                      const ModelConfig& model_cfg)
+{
+    auto timestamp = std::to_string(
+        std::chrono::system_clock::now().time_since_epoch().count());
+    std::string hash = sha256_hex(model_cfg.to_json().dump() + game_cfg.to_json().dump() + timestamp);
+    fs::path ckpt_dir = fs::path(args.checkpoint_dir) / hash;
+    if (fs::exists(ckpt_dir)) {
+        std::cerr << "Error: checkpoint directory already exists (hash collision?): " << ckpt_dir << "\n";
+        std::exit(1);
+    }
+    fs::create_directories(ckpt_dir);
+    std::cout << "New checkpoint directory: " << hash
+              << " (pass --resume " << hash << " to continue this run later)\n";
+    return ckpt_dir;
+}
+
+// Errors (exits) if `dir` has no checkpoint config to validate against, or
+// that config doesn't strong_equal-match the current game_cfg/model_cfg
+// exactly. Used for --resume, where the model architecture must match too
+// (weights get loaded directly into it) - see validate_retrain_source_dir
+// for --retrain's separately/more-loosely-checked case.
+static void validate_checkpoint_dir_config(const fs::path& dir, const GameConfig& game_cfg,
+                                            const ModelConfig& model_cfg)
+{
+    auto cfg_path = find_config_json(dir);
+    if (!cfg_path.has_value()) {
+        std::cerr << "Error: --resume directory has no checkpoint config to validate against: "
+                  << dir << "\n";
+        std::exit(1);
+    }
+    json existing = json::parse(std::ifstream(*cfg_path));
+    GameConfig existing_game_cfg = parse_game_cfg(existing);
+    auto existing_model_cfg = parse_model_config(existing);
+    if (!strong_equal(game_cfg, existing_game_cfg) || !strong_equal(model_cfg, *existing_model_cfg)) {
+        // Same combined game+model shape the checkpoint's own config.json is
+        // saved as (see save_checkpoint(), below) - so "current" is directly
+        // comparable to `existing`, already in that same shape.
+        json current = game_cfg.to_json();
+        current.update(model_cfg.to_json());
+        // json::diff() (RFC 6902 JSON Patch: source=current, target=existing)
+        // shows only what differs rather than two full configs to eyeball.
+        std::cerr << "Error: --resume config mismatch - current --game-config/model flags don't "
+                      "exactly match " << *cfg_path << "\n"
+                  << "Diff (current -> to be resumed):\n" << json::diff(current, existing).dump(2) << "\n";
+        std::exit(1);
+    }
+}
+
+// Errors (exits) if `dir` has no checkpoint config to validate against, or
+// its saved GameConfig doesn't strong_equal-match the current one. Deliberately
+// does NOT check model config (architecture/hidden_dim/etc.) - unlike
+// --resume, --retrain never loads the source directory's weights, so only
+// the game rules need to match for its _traj.json games to replay
+// meaningfully into the current (freshly-initialized) model.
+static void validate_retrain_source_dir(const fs::path& dir, const GameConfig& game_cfg) {
+    auto cfg_path = find_config_json(dir);
+    if (!cfg_path.has_value()) {
+        std::cerr << "Error: --retrain directory has no checkpoint config to validate against: "
+                  << dir << "\n";
+        std::exit(1);
+    }
+    json existing = json::parse(std::ifstream(*cfg_path));
+    GameConfig existing_game_cfg = parse_game_cfg(existing);
+    if (!strong_equal(game_cfg, existing_game_cfg)) {
+        std::cerr << "Error: --retrain config mismatch - current --game-config doesn't exactly match "
+                  << *cfg_path << "\n"
+                  << "Diff (current -> to be retrained from):\n"
+                  << json::diff(game_cfg.to_json(), existing_game_cfg.to_json()).dump(2) << "\n";
+        std::exit(1);
+    }
+}
+
+// Determines this run's checkpoint directory for the non-retrain case:
+// - no --resume: a fresh directory (fresh_checkpoint_dir).
+// - --resume TAG: errors (exits) if ai/checkpoints/TAG doesn't exist;
+//   otherwise validates it (validate_checkpoint_dir_config) and returns the
+//   existing directory as-is for resume() to load from.
 static fs::path handle_checkpoint_dir(const Args& args, const GameConfig& game_cfg,
                                        const ModelConfig& model_cfg)
 {
-    fs::path ckpt_dir;
-    if (args.resume_tag.empty()) {
-        auto timestamp = std::to_string(
-            std::chrono::system_clock::now().time_since_epoch().count());
-        std::string hash = sha256_hex(model_cfg.to_json().dump() + game_cfg.to_json().dump() + timestamp);
-        ckpt_dir = fs::path(args.checkpoint_dir) / hash;
-        if (fs::exists(ckpt_dir)) {
-            std::cerr << "Error: checkpoint directory already exists (hash collision?): " << ckpt_dir << "\n";
-            std::exit(1);
-        }
-        fs::create_directories(ckpt_dir);
-        std::cout << "New checkpoint directory: " << hash
-                  << " (pass --resume " << hash << " to continue this run later)\n";
-    } else {
-        ckpt_dir = fs::path(args.checkpoint_dir) / args.resume_tag;
-        if (!fs::exists(ckpt_dir)) {
-            std::cerr << "Error: --resume directory does not exist: " << ckpt_dir << "\n";
-            std::exit(1);
-        }
-        auto cfg_path = find_config_json(ckpt_dir);
-        if (!cfg_path.has_value()) {
-            std::cerr << "Error: --resume directory has no checkpoint config to validate against: "
-                      << ckpt_dir << "\n";
-            std::exit(1);
-        }
-        json existing = json::parse(std::ifstream(*cfg_path));
-        GameConfig existing_game_cfg = parse_game_cfg(existing);
-        auto existing_model_cfg = parse_model_config(existing);
-        if (!strong_equal(game_cfg, existing_game_cfg) || !strong_equal(model_cfg, *existing_model_cfg)) {
-            // Same combined game+model shape the checkpoint's own config.json is
-            // saved as (see main()'s checkpoint block, below) - so "current" is
-            // directly comparable to `existing`, already in that same shape.
-            json current = game_cfg.to_json();
-            current.update(model_cfg.to_json());
-            // json::diff() (RFC 6902 JSON Patch: source=current, target=existing)
-            // shows only what differs rather than two full configs to eyeball.
-            std::cerr << "Error: --resume config mismatch - current --game-config/model flags don't "
-                          "exactly match " << *cfg_path << "\n"
-                      << "Diff (current -> to be resumed):\n" << json::diff(current, existing).dump(2) << "\n";
-            std::exit(1);
-        }
+    if (args.resume_tag.empty()) return fresh_checkpoint_dir(args, game_cfg, model_cfg);
+    fs::path ckpt_dir = fs::path(args.checkpoint_dir) / args.resume_tag;
+    if (!fs::exists(ckpt_dir)) {
+        std::cerr << "Error: --resume directory does not exist: " << ckpt_dir << "\n";
+        std::exit(1);
     }
+    validate_checkpoint_dir_config(ckpt_dir, game_cfg, model_cfg);
     return ckpt_dir;
 }
 
@@ -379,6 +445,168 @@ static int resume(const fs::path& ckpt_dir, const ModelConfig& model_cfg, AnyMod
     return start_iter;
 }
 
+// ── Training step ─────────────────────────────────────────────────────────────
+
+// Runs one iteration's worth of backprop against whatever is currently in
+// `buffer` (sampling train_fraction*buffer.size()/batch_size batches,
+// rounded up), and prints the same "[iter ...] loss=..." summary line the
+// live self-play loop always has. `t0` is purely for the printed elapsed
+// time - the live loop passes a start time from before self-play so
+// generation+training are reported together, while a replay-phase caller can
+// pass a start time from just before this call to report training time
+// alone; this function doesn't care which.
+//
+// Returns false (and prints "buffer too small, skipping train step" instead)
+// exactly when buffer.size() < batch_size - callers must skip
+// checkpoint-saving too in that case, matching the original inline code's
+// `continue` past the whole rest of the iteration.
+static bool run_training_iteration(
+    int iter, AnyModel& model_var, torch::optim::Adam& optimizer, ReplayBuffer& buffer,
+    std::mt19937& rng, const GameConfig& game_cfg, const BoardConfig& bc,
+    const AdjNorms& adj_norms, torch::Device device,
+    float train_fraction, int batch_size,
+    std::chrono::high_resolution_clock::time_point t0)
+{
+    if (buffer.size() < batch_size) {
+        std::cout << "[iter " << iter << "] buffer too small ("
+                  << buffer.size() << "), skipping train step" << std::endl;
+        return false;
+    }
+
+    std::visit([](auto& m) { m->train(); }, model_var);
+    double total_loss = 0, total_pol = 0, total_stone = 0, total_territory = 0, total_point = 0;
+
+    int train_steps = static_cast<int>(
+        std::ceil(train_fraction * buffer.size() / batch_size));
+    int num_stones = game_cfg.num_stones;
+
+    for (int step = 0; step < train_steps; step++) {
+        auto [x_, mask_, p_tgt, so_tgt_, to_tgt_] = buffer.sample(batch_size, rng);
+        torch::Tensor x      = x_.to(device);
+        torch::Tensor mask   = mask_.to(device);
+        p_tgt = p_tgt.to(device);
+        torch::Tensor so_tgt = so_tgt_.to(device);
+        torch::Tensor to_tgt = to_tgt_.to(device);
+
+        auto [policy, ownership] = std::visit(
+            [&](auto& m) -> std::pair<torch::Tensor, torch::Tensor> {
+                using M = std::decay_t<decltype(m)>;
+                if constexpr (std::is_same_v<M, MessagePassingGNN>)
+                    return m->forward(x, adj_norms, mask);
+                else
+                    return m->forward(x, mask);
+            }, model_var);
+
+        // Policy loss: cross-entropy against MCTS visit distribution, scaled down by
+        // log(action count) - cross-entropy over num_stones*N+1 actions grows with
+        // both board size and stone count, so this keeps the loss magnitude
+        // comparable across differently sized action spaces.
+        auto log_policy  = torch::log(policy.clamp_min(1e-8f));
+        auto policy_loss = -(p_tgt * log_policy).sum(-1).mean() / std::log(static_cast<float>(bc.N * num_stones));
+
+        // ownership: (B, 2, N, num_stones+1) - index 0 = stone estimate, index 1 = territory estimate
+        auto stone_est     = ownership.select(1, 0);   // (B, N, num_stones+1)
+        auto territory_est = ownership.select(1, 1);   // (B, N, num_stones+1)
+
+        // Ownership loss: per-location MSE between predicted and actual stone/territory
+        // ownership distributions (channel 0 = none, channels 1..num_stones = that stone type).
+        // Summed (not averaged) over the num_stones+1 channels, then averaged over locations
+        // and batch only - torch::mse_loss's default per-element mean would additionally
+        // divide by (num_stones+1), making the loss too small to carry much gradient signal.
+        auto actual_stone_owner     = torch::one_hot(so_tgt, num_stones + 1).to(torch::kFloat32);  // (B,N,S+1)
+        auto actual_territory_owner = torch::one_hot(to_tgt, num_stones + 1).to(torch::kFloat32);  // (B,N,S+1)
+        auto stone_loss     = (stone_est - actual_stone_owner).pow(2).sum(-1).mean();
+        auto territory_loss = (territory_est - actual_territory_owner).pow(2).sum(-1).mean();
+
+        // Point loss: raw per-stone-type point total (no rank adjustment, no player
+        // aggregation) - actual vs. the model's own expected total under the game's
+        // scoring rule. Analogous to the pre-ownership-refactor scalar value loss, but
+        // supervises raw points instead of the rank-adjusted reward. Reuses
+        // estimate_stone_points() for both sides: the model's prediction from
+        // `ownership`, and the ground truth by treating the one-hot stone/territory
+        // owner tensors as an ownership-shaped input. The raw point difference is
+        // scaled by (num_stones / board size) before squaring - unscaled, it can be as
+        // large as N, dwarfing the per-location stone_loss/territory_loss terms.
+        auto actual_ownership = torch::stack({actual_stone_owner, actual_territory_owner}, 1); // (B,2,N,S+1)
+        auto predicted_points = estimate_stone_points(ownership, game_cfg.score_rule);        // (B,num_stones)
+        auto actual_points    = estimate_stone_points(actual_ownership, game_cfg.score_rule);  // (B,num_stones)
+        auto point_diff = (predicted_points - actual_points) / bc.N * num_stones;              // (B,num_stones)
+        auto point_loss = point_diff.pow(2).sum(-1).mean();
+
+        auto loss = policy_loss + stone_loss + territory_loss + point_loss;
+
+        optimizer.zero_grad();
+        loss.backward();
+        torch::nn::utils::clip_grad_norm_(
+            std::visit([](auto& m) { return m->parameters(); }, model_var), 1.0);
+        optimizer.step();
+
+        total_loss     += loss.item<double>();
+        total_pol      += policy_loss.item<double>();
+        total_stone    += stone_loss.item<double>();
+        total_territory += territory_loss.item<double>();
+        total_point    += point_loss.item<double>();
+    }
+
+    auto t1 = std::chrono::high_resolution_clock::now();
+    double elapsed = std::chrono::duration<double>(t1 - t0).count();
+    int n = train_steps;
+    std::cout << "[iter " << std::setw(4) << iter << "] "
+              << "loss=" << std::fixed << std::setprecision(4) << total_loss/n
+              << "  policy="   << total_pol/n
+              << "  stone="    << total_stone/n
+              << "  territory=" << total_territory/n
+              << "  point="    << total_point/n
+              << "  buf="    << buffer.size()
+              << "  time="   << std::setprecision(1) << elapsed << "s" << std::endl;
+    return true;
+}
+
+// Writes <arch>_XXXXXX.pt (weights), <arch>_config.json (game_cfg+model_cfg,
+// same combined shape validate_checkpoint_dir_config()/validate_retrain_source_dir()
+// read back), and <arch>_XXXXXX_traj.json (games_to_dump, JSON-array-of-arrays
+// via PlyResult::to_json()) into ckpt_dir for iteration `iter`. Shared by the
+// live self-play loop (games_to_dump = its accumulated traj_store) and
+// --retrain's replay phase (games_to_dump = the current span's historical
+// games, re-dumped into the new output directory so a later --resume from it
+// doesn't start with an empty buffer).
+static void save_checkpoint(
+    const fs::path& ckpt_dir, const std::string& arch, int iter,
+    AnyModel& model_var, const GameConfig& game_cfg, const ModelConfig& model_cfg,
+    const std::vector<std::vector<PlyResult>>& games_to_dump)
+{
+    std::ostringstream oss;
+    oss << arch << "_" << std::setfill('0') << std::setw(6) << iter << ".pt";
+    fs::path ckpt_path = ckpt_dir / oss.str();
+    std::visit([&](auto& m) { torch::save(m, ckpt_path.string()); }, model_var);
+    fs::path json_path = ckpt_dir / (arch + "_config.json");
+    {
+        // featureDim/inputDescr persisted directly (rather than
+        // re-derived from player_stone_place_limit/global_stone_place_limit)
+        // so server.cpp's load_model() doesn't need to round-trip the
+        // full limit structure through the checkpoint JSON - see
+        // compute_input_descr()'s doc comment (training/self_play.h).
+        // model_cfg is the same one build_model() constructed the
+        // network from.
+        json cfg_json = game_cfg.to_json();
+        cfg_json.update(model_cfg.to_json());
+        std::ofstream(json_path) << cfg_json.dump(2) << "\n";
+    }
+    std::ostringstream toss;
+    toss << arch << "_" << std::setfill('0') << std::setw(6) << iter << "_traj" << ".json";
+    fs::path traj_path = ckpt_dir / toss.str();
+    {
+        json trajs = json::array();
+        for (auto& traj : games_to_dump) {
+            json t = json::array();
+            for (auto& ply : traj) t.push_back(ply.to_json());
+            trajs.push_back(std::move(t));
+        }
+        std::ofstream(traj_path) << trajs.dump() << "\n";
+    }
+    std::cout << "  Saved " << ckpt_path << std::endl;
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 int main(int argc, char* argv[]) {
@@ -429,11 +657,27 @@ int main(int argc, char* argv[]) {
     auto model_var = build_model(bc, *model_cfg, game_cfg);
     std::visit([&](auto& m) { m->to(device); }, model_var);
 
-    // Resume from checkpoint (weights + replay buffer state)
-    fs::path ckpt_dir = handle_checkpoint_dir(args, game_cfg, *model_cfg);
+    // Resume from checkpoint (weights + replay buffer state), or set up
+    // --retrain's source (read-only, existing) + destination (fresh) split.
+    fs::path ckpt_dir;
+    fs::path retrain_source_dir;
     ReplayBuffer buffer(args.buffer_size);
-    int start_iter = resume(ckpt_dir, *model_cfg, model_var, game_cfg, bc,
+    int start_iter = 0;
+    if (!args.retrain_tag.empty()) {
+        retrain_source_dir = fs::path(args.checkpoint_dir) / args.retrain_tag;
+        if (!fs::exists(retrain_source_dir)) {
+            std::cerr << "Error: --retrain directory does not exist: " << retrain_source_dir << "\n";
+            return 1;
+        }
+        validate_retrain_source_dir(retrain_source_dir, game_cfg);
+        // Never write into retrain_source_dir - always a fresh directory, so
+        // the source run's own checkpoints/trajectories are never touched.
+        ckpt_dir = fresh_checkpoint_dir(args, game_cfg, *model_cfg);
+    } else {
+        ckpt_dir = handle_checkpoint_dir(args, game_cfg, *model_cfg);
+        start_iter = resume(ckpt_dir, *model_cfg, model_var, game_cfg, bc,
                              args.buffer_size, buffer);
+    }
 
     auto optimizer = torch::optim::Adam(
         std::visit([](auto& m) { return m->parameters(); }, model_var),
@@ -462,8 +706,63 @@ int main(int argc, char* argv[]) {
     std::vector<std::vector<PlyResult>> traj_store;
     traj_store.reserve(args.gamegen_batch_size * args.save_every);
 
+    int iter = start_iter;
+
+    // ── --retrain replay phase ───────────────────────────────────────────────
+    // Replays retrain_source_dir's existing _traj.json files, in ascending
+    // (chronological) order, into the freshly-initialized model_var/buffer -
+    // no self-play here, just the games that were already recorded. Each
+    // file's games are added to the buffer, then exactly as many training
+    // iterations run as the source file originally spanned (its own iteration
+    // number minus the previous file's), before a checkpoint is saved into
+    // ckpt_dir (never retrain_source_dir) so the new output directory stays
+    // self-contained for a later --resume. Once every source file is
+    // consumed (or args.iterations is reached first), execution falls
+    // through into the live self-play loop below exactly as an ordinary run
+    // would, continuing from wherever `iter` ended up.
+    if (!args.retrain_tag.empty()) {
+        // trajectory_iterations_desc returns newest-first (mirrors resume()'s
+        // own use of it); reversed here for the ascending order this phase needs.
+        std::vector<int> iters_desc = trajectory_iterations_desc(retrain_source_dir, model_cfg->model_type);
+        int prev_it = -1;
+        bool hit_iteration_cap = false;
+        for (auto it_rit = iters_desc.rbegin(); it_rit != iters_desc.rend() && !hit_iteration_cap; ++it_rit) {
+            int it = *it_rit;
+            std::ostringstream toss;
+            toss << model_cfg->model_type << "_" << std::setfill('0') << std::setw(6) << it << "_traj.json";
+            std::ifstream f(retrain_source_dir / toss.str());
+            if (!f) { prev_it = it; continue; }
+            json trajs; f >> trajs;
+
+            std::vector<std::vector<PlyResult>> span_games;
+            span_games.reserve(trajs.size());
+            for (auto& gj : trajs) {
+                std::vector<PlyResult> game;
+                game.reserve(gj.size());
+                for (auto& p : gj) game.push_back(parse_ply_result(p));
+                buffer.add(trajectory_to_record(game, game_cfg, bc, model_cfg->input_descr));
+                span_games.push_back(std::move(game));
+            }
+
+            int k = it - prev_it;  // # original iterations this file spans
+            bool did_train = false;
+            for (int j = 0; j < k; j++) {
+                if (iter >= args.iterations) { hit_iteration_cap = true; break; }
+                auto t0 = std::chrono::high_resolution_clock::now();
+                did_train = run_training_iteration(iter, model_var, optimizer, buffer, rng,
+                                                    game_cfg, bc, adj_norms, device,
+                                                    args.train_fraction, args.batch_size, t0);
+                iter++;
+            }
+            if (!hit_iteration_cap && did_train)
+                save_checkpoint(ckpt_dir, arch, iter - 1, model_var, game_cfg, *model_cfg, span_games);
+
+            prev_it = it;
+        }
+    }
+
     int ply_iter = 0;
-    for (int iter = start_iter; iter < args.iterations; iter++) {
+    for (; iter < args.iterations; iter++) {
         auto t0 = std::chrono::high_resolution_clock::now();
         std::visit([](auto& m) { m->eval(); }, model_var);
 
@@ -544,133 +843,15 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        if (buffer.size() < args.batch_size) {
-            std::cout << "[iter " << iter << "] buffer too small ("
-                      << buffer.size() << "), skipping train step" << std::endl;
-            continue;
-        }
-
-        // ── Training ─────────────────────────────────────────────────────────
-        std::visit([](auto& m) { m->train(); }, model_var);
-        double total_loss = 0, total_pol = 0, total_stone = 0, total_territory = 0, total_point = 0;
-
-        int train_steps = static_cast<int>(
-            std::ceil(args.train_fraction * buffer.size() / args.batch_size));
-        int num_stones = game_cfg.num_stones;
-
-        for (int step = 0; step < train_steps; step++) {
-            auto [x_, mask_, p_tgt, so_tgt_, to_tgt_] = buffer.sample(args.batch_size, rng);
-            torch::Tensor x      = x_.to(device);
-            torch::Tensor mask   = mask_.to(device);
-            p_tgt = p_tgt.to(device);
-            torch::Tensor so_tgt = so_tgt_.to(device);
-            torch::Tensor to_tgt = to_tgt_.to(device);
-
-            auto [policy, ownership] = std::visit(
-                [&](auto& m) -> std::pair<torch::Tensor, torch::Tensor> {
-                    using M = std::decay_t<decltype(m)>;
-                    if constexpr (std::is_same_v<M, MessagePassingGNN>)
-                        return m->forward(x, adj_norms, mask);
-                    else
-                        return m->forward(x, mask);
-                }, model_var);
-
-            // Policy loss: cross-entropy against MCTS visit distribution, scaled down by
-            // log(action count) - cross-entropy over num_stones*N+1 actions grows with
-            // both board size and stone count, so this keeps the loss magnitude
-            // comparable across differently sized action spaces.
-            auto log_policy  = torch::log(policy.clamp_min(1e-8f));
-            auto policy_loss = -(p_tgt * log_policy).sum(-1).mean() / std::log(static_cast<float>(bc.N * num_stones));
-
-            // ownership: (B, 2, N, num_stones+1) - index 0 = stone estimate, index 1 = territory estimate
-            auto stone_est     = ownership.select(1, 0);   // (B, N, num_stones+1)
-            auto territory_est = ownership.select(1, 1);   // (B, N, num_stones+1)
-
-            // Ownership loss: per-location MSE between predicted and actual stone/territory
-            // ownership distributions (channel 0 = none, channels 1..num_stones = that stone type).
-            // Summed (not averaged) over the num_stones+1 channels, then averaged over locations
-            // and batch only - torch::mse_loss's default per-element mean would additionally
-            // divide by (num_stones+1), making the loss too small to carry much gradient signal.
-            auto actual_stone_owner     = torch::one_hot(so_tgt, num_stones + 1).to(torch::kFloat32);  // (B,N,S+1)
-            auto actual_territory_owner = torch::one_hot(to_tgt, num_stones + 1).to(torch::kFloat32);  // (B,N,S+1)
-            auto stone_loss     = (stone_est - actual_stone_owner).pow(2).sum(-1).mean();
-            auto territory_loss = (territory_est - actual_territory_owner).pow(2).sum(-1).mean();
-
-            // Point loss: raw per-stone-type point total (no rank adjustment, no player
-            // aggregation) - actual vs. the model's own expected total under the game's
-            // scoring rule. Analogous to the pre-ownership-refactor scalar value loss, but
-            // supervises raw points instead of the rank-adjusted reward. Reuses
-            // estimate_stone_points() for both sides: the model's prediction from
-            // `ownership`, and the ground truth by treating the one-hot stone/territory
-            // owner tensors as an ownership-shaped input. The raw point difference is
-            // scaled by (num_stones / board size) before squaring - unscaled, it can be as
-            // large as N, dwarfing the per-location stone_loss/territory_loss terms.
-            auto actual_ownership = torch::stack({actual_stone_owner, actual_territory_owner}, 1); // (B,2,N,S+1)
-            auto predicted_points = estimate_stone_points(ownership, game_cfg.score_rule);        // (B,num_stones)
-            auto actual_points    = estimate_stone_points(actual_ownership, game_cfg.score_rule);  // (B,num_stones)
-            auto point_diff = (predicted_points - actual_points) / bc.N * num_stones;              // (B,num_stones)
-            auto point_loss = point_diff.pow(2).sum(-1).mean();
-
-            auto loss = policy_loss + stone_loss + territory_loss + point_loss;
-
-            optimizer.zero_grad();
-            loss.backward();
-            torch::nn::utils::clip_grad_norm_(
-                std::visit([](auto& m) { return m->parameters(); }, model_var), 1.0);
-            optimizer.step();
-
-            total_loss     += loss.item<double>();
-            total_pol      += policy_loss.item<double>();
-            total_stone    += stone_loss.item<double>();
-            total_territory += territory_loss.item<double>();
-            total_point    += point_loss.item<double>();
-        }
-
-        auto t1 = std::chrono::high_resolution_clock::now();
-        double elapsed = std::chrono::duration<double>(t1 - t0).count();
-        int n = train_steps;
-        std::cout << "[iter " << std::setw(4) << iter << "] "
-                  << "loss=" << std::fixed << std::setprecision(4) << total_loss/n
-                  << "  policy="   << total_pol/n
-                  << "  stone="    << total_stone/n
-                  << "  territory=" << total_territory/n
-                  << "  point="    << total_point/n
-                  << "  buf="    << buffer.size()
-                  << "  time="   << std::setprecision(1) << elapsed << "s" << std::endl;
+        bool did_train = run_training_iteration(iter, model_var, optimizer, buffer, rng,
+                                                 game_cfg, bc, adj_norms, device,
+                                                 args.train_fraction, args.batch_size, t0);
+        if (!did_train) continue;
 
         // ── Checkpoint ───────────────────────────────────────────────────────
         if ((iter + 1) % args.save_every == 0 || iter == args.iterations - 1) {
-            std::ostringstream oss;
-            oss << arch << "_" << std::setfill('0') << std::setw(6) << iter << ".pt";
-            fs::path ckpt_path = ckpt_dir / oss.str();
-            std::visit([&](auto& m) { torch::save(m, ckpt_path.string()); }, model_var);
-            fs::path json_path = ckpt_dir / (arch + "_config.json");
-            {
-                // featureDim/inputDescr persisted directly (rather than
-                // re-derived from player_stone_place_limit/global_stone_place_limit)
-                // so server.cpp's load_model() doesn't need to round-trip the
-                // full limit structure through the checkpoint JSON - see
-                // compute_input_descr()'s doc comment (training/self_play.h).
-                // model_cfg is the same one build_model() constructed the
-                // network from, above.
-                json cfg_json = game_cfg.to_json();
-                cfg_json.update(model_cfg->to_json());
-                std::ofstream(json_path) << cfg_json.dump(2) << "\n";
-            }
-            std::ostringstream toss;
-            toss << arch << "_" << std::setfill('0') << std::setw(6) << iter << "_traj" << ".json";
-            fs::path traj_path = ckpt_dir / toss.str();
-            {
-                json trajs = json::array();
-                for (auto& traj : traj_store) {
-                    json t = json::array();
-                    for (auto& ply : traj) t.push_back(ply.to_json());
-                    trajs.push_back(std::move(t));
-                }
-                std::ofstream(traj_path) << trajs.dump() << "\n";
-            }
+            save_checkpoint(ckpt_dir, arch, iter, model_var, game_cfg, *model_cfg, traj_store);
             traj_store.clear();
-            std::cout << "  Saved " << ckpt_path << std::endl;
         }
     }
 

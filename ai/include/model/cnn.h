@@ -33,19 +33,24 @@ TORCH_MODULE(CNNPolicyHead);
 // every block operates at the board's tight bounding box resolution (no
 // power-of-two padding either).
 //
+// A 1×1 conv (input_proj, same role as MessagePassingGNN's own input_proj)
+// maps the feature_dim+1 input channels (validity channel included - see
+// features_to_grid) to hidden_dim once, up front - so every block afterward
+// operates at a constant hidden_dim width on both sides of its residual
+// shortcut, which is then a plain identity add (no channel-matching needed
+// anywhere in the block loop, unlike UNet's per-level clip/zero-pad).
+//
 // Blocks: max(grid_w_, grid_h_) blocks, each two cfg.conv_size×cfg.conv_size
 // convs (no normalization, "same" padding = conv_size/2 so spatial dims
 // never change) at a constant hidden_dim width, with a residual shortcut
-// from the block's input to its output (channel-matched via clip/zero-pad,
-// not a learned projection - see match_channels() in cnn.cpp). Only the
-// first block's shortcut actually pads (in_dim+1 -> hidden_dim); every
-// later block already matches (hidden_dim -> hidden_dim).
+// from the block's input to its output.
 // Ownership: per-node gather (via lin_idx_, same mechanism as the policy head) of the
 //            final block output, then two independent Linear/ReLU/Linear softmax heads
 //            (stone estimate, territory estimate) - see MessagePassingGNN's ownership doc.
 // Policy: extracted from the final block output via CNNPolicyHead.
 // Requires bc.emb_dim == 2.
 struct CNNImpl : torch::nn::Module {
+    torch::nn::Conv2d input_proj{nullptr};       // 1x1 conv: feature_dim+1 -> hidden_dim
     std::vector<torch::nn::Sequential> blocks_;  // [k=0..num_blocks_-1]: Conv3x3->ReLU->Conv3x3
     torch::nn::Sequential stone_head{nullptr};
     torch::nn::Sequential territory_head{nullptr};
@@ -61,8 +66,8 @@ struct CNNImpl : torch::nn::Module {
     torch::Tensor valid_tensor_; // (1,1,grid_h_,grid_w_) float - 1 at valid (true board) cells
 
     // cfg.feature_dim: per-node feature dimension F (as produced by board_to_features), NOT
-    // the number of input channels to the first convolution. features_to_grid appends
-    // a validity channel, so the first conv actually receives feature_dim + 1 channels.
+    // the number of input channels to input_proj. features_to_grid appends
+    // a validity channel, so input_proj actually receives feature_dim + 1 channels.
     CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_players, int num_stones);
 
     // x: (N,F) or (B,N,F) → (1,F+1,H,W) or (B,F+1,H,W)

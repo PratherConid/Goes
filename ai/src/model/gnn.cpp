@@ -28,14 +28,14 @@ MessagePassingGNNImpl::MessagePassingGNNImpl(const GNNConfig& cfg, int num_playe
     }
 
     stone_head = register_module("stone_head", torch::nn::Sequential(
-        torch::nn::Linear(cfg_.hidden_dim, 64),
+        torch::nn::Linear(cfg_.hidden_dim, cfg_.hidden_dim),
         torch::nn::ReLU(),
-        torch::nn::Linear(64, num_stones + 1)
+        torch::nn::Linear(cfg_.hidden_dim, num_stones + 1)
     ));
     territory_head = register_module("territory_head", torch::nn::Sequential(
-        torch::nn::Linear(cfg_.hidden_dim, 64),
+        torch::nn::Linear(cfg_.hidden_dim, cfg_.hidden_dim),
         torch::nn::ReLU(),
-        torch::nn::Linear(64, num_stones + 1)
+        torch::nn::Linear(cfg_.hidden_dim, num_stones + 1)
     ));
     policy_head = register_module("policy_head", GNNPolicyHead(cfg_.hidden_dim, num_stones));
 }

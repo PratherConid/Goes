@@ -34,15 +34,25 @@ TORCH_MODULE(UNetPolicyHead);
 // MaxPool2d(2,2) halves exactly, so no board row/column is ever silently
 // dropped by floor-mode pooling.
 //
+// input_proj (1×1 conv, same role as CNN's/MessagePassingGNN's own
+// input_proj) maps the feature_dim+1 input channels (validity channel
+// included) to hidden_dim once, as a plain embedding step with no residual
+// around it - unlike the repeated encoder/decoder blocks below, it isn't
+// part of the architecture's doubling pattern, so there's nothing meaningful
+// to shortcut around it.
 // Encoder: progressively pool (H,W) → 1×1 via MaxPool2d, doubling channels at
 //          each level (C_k = hidden_dim * 2^k). Each level's conv block also
 //          has its own residual shortcut (block(h) + h, channel-matched via
-//          clip/zero-pad rather than a learned 1×1 projection).
+//          clip/zero-pad rather than a learned 1×1 projection where channels
+//          actually change - level 0, right after input_proj, already has
+//          matching channels, so match_channels is a plain identity there).
 // Decoder: upsample 2× via nearest-neighbor pixel replication (exact, since
 //          each level is exactly double the next), reduce channels with a
 //          1×1 conv, then add the matching encoder skip connection
-//          (additive residual). Each decoder block has the same per-block
-//          residual shortcut as the encoder.
+//          (additive residual). Each decoder block's own shortcut is a plain
+//          identity add (dec_reduce_'s 1×1 conv plus the skip add above
+//          already bring h to dec_blocks_[k]'s constant enc_channels_[k]
+//          width, so no channel matching is ever needed here).
 // Ownership: same full-resolution decoder output as the policy head, gathered per-node
 //            (via lin_idx_) and passed through two independent softmax heads (stone
 //            estimate, territory estimate) - see MessagePassingGNN's ownership doc.
@@ -55,6 +65,7 @@ TORCH_MODULE(UNetPolicyHead);
 // num_layers is not a parameter - depth is determined by grid dimensions.
 // Requires bc.emb_dim == 2.
 struct UNetImpl : torch::nn::Module {
+    torch::nn::Conv2d input_proj{nullptr};           // 1x1 conv: feature_dim+1 -> hidden_dim
     std::vector<torch::nn::Sequential> enc_blocks_;  // [k=0..L]: encoder conv groups
     std::vector<torch::nn::Conv2d>     dec_reduce_;  // [k=0..L-1]: C_{k+1}→C_k, 1×1
     std::vector<torch::nn::Sequential> dec_blocks_;  // [k=0..L-1]: decoder conv groups
@@ -74,8 +85,8 @@ struct UNetImpl : torch::nn::Module {
     torch::Tensor valid_tensor_; // (1,1,side,side) float - 1 at valid (true board) cells
 
     // cfg.feature_dim: per-node feature dimension F (as produced by board_to_features), NOT
-    // the number of input channels to the first convolution. features_to_grid appends
-    // a validity channel, so the first conv actually receives feature_dim + 1 channels.
+    // the number of input channels to input_proj. features_to_grid appends
+    // a validity channel, so input_proj actually receives feature_dim + 1 channels.
     UNetImpl(const BoardConfig& bc, const UNetConfig& cfg, int num_players, int num_stones);
 
     // x: (N,F) or (B,N,F) → (1,F+1,H,W) or (B,F+1,H,W)

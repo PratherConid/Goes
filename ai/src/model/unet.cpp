@@ -111,8 +111,14 @@ UNetImpl::UNetImpl(const BoardConfig& bc, const UNetConfig& cfg, int num_players
         return register_module(name, seq);
     };
 
+    // input_proj maps feature_dim+1 (validity channel included) -> hidden_dim
+    // once, as a plain embedding step (see forward()) - so enc_blocks_[0]
+    // below already starts at hidden_dim width like every other level.
+    input_proj = register_module("input_proj",
+        torch::nn::Conv2d(torch::nn::Conv2dOptions(cfg_.feature_dim + 1, cfg_.hidden_dim, 1)));
+
     // Encoder blocks: 4 convs at k=0 (full resolution), 2 convs at deeper levels.
-    int in_ch = cfg_.feature_dim + 1;  // F node features + 1 validity channel
+    int in_ch = cfg_.hidden_dim;
     for (int k = 0; k < num_levels_; k++) {
         enc_blocks_.push_back(build_block("enc_" + std::to_string(k),
             in_ch, enc_channels_[k], k == 0 ? 4 : 2, level_size_[k]));
@@ -133,13 +139,13 @@ UNetImpl::UNetImpl(const BoardConfig& bc, const UNetConfig& cfg, int num_players
     // Value heads: same full-resolution decoder output as the policy head
     // (see forward()), gathered per-node.
     stone_head = register_module("stone_head", torch::nn::Sequential(
-        torch::nn::Linear(enc_channels_[0], 64),
+        torch::nn::Linear(enc_channels_[0], enc_channels_[0]),
         torch::nn::ReLU(),
-        torch::nn::Linear(64, num_stones + 1)));
+        torch::nn::Linear(enc_channels_[0], num_stones + 1)));
     territory_head = register_module("territory_head", torch::nn::Sequential(
-        torch::nn::Linear(enc_channels_[0], 64),
+        torch::nn::Linear(enc_channels_[0], enc_channels_[0]),
         torch::nn::ReLU(),
-        torch::nn::Linear(64, num_stones + 1)));
+        torch::nn::Linear(enc_channels_[0], num_stones + 1)));
 
     policy_head = register_module("policy_head", UNetPolicyHead(enc_channels_[0], bc.N, num_stones));
 }
@@ -195,10 +201,12 @@ std::pair<torch::Tensor, torch::Tensor> UNetImpl::forward(
     int64_t B = x.size(0);
 
     // Encoder: apply each block (with a parameter-free residual shortcut
-    // around it, channel-matched via clip/zero-pad), save skip output, then
-    // MaxPool to the next level.
+    // around it, channel-matched via clip/zero-pad where channels actually
+    // change), save skip output, then MaxPool to the next level. input_proj
+    // brings the raw input to hidden_dim width first, as a plain embedding
+    // step with no residual of its own (see class doc comment).
     std::vector<torch::Tensor> skips(num_levels_);
-    auto h = features_to_grid(x);            // (B, F+1, H, W)
+    auto h = torch::relu(input_proj->forward(features_to_grid(x))); // (B, hidden_dim, H, W)
     for (int k = 0; k < num_levels_; k++) {
         h = enc_blocks_[k]->forward(h) + match_channels(h, enc_channels_[k]);
         skips[k] = h;
@@ -214,14 +222,15 @@ std::pair<torch::Tensor, torch::Tensor> UNetImpl::forward(
     //      side is a power of two, so each level is exactly double the next)
     //   2. Reduce channels C_{k+1}→C_k via 1×1 conv
     //   3. Add encoder skip (additive residual)
-    //   4. Apply decoder conv block, with the same residual shortcut as the
-    //      encoder (always a plain identity add here, since dec_blocks_ never
-    //      changes channel count)
+    //   4. Apply decoder conv block, with a plain identity residual shortcut
+    //      (dec_reduce_'s 1×1 conv plus the skip add above already bring h to
+    //      dec_blocks_[k]'s constant enc_channels_[k] width, so no channel
+    //      matching is ever needed here)
     for (int k = num_levels_ - 2; k >= 0; k--) {
         h = h.repeat_interleave(2, /*dim=*/2).repeat_interleave(2, /*dim=*/3);
         h = dec_reduce_[k]->forward(h);     // C_{k+1} → C_k
         h = h + skips[k];                   // additive residual from encoder
-        h = dec_blocks_[k]->forward(h) + match_channels(h, enc_channels_[k]);
+        h = dec_blocks_[k]->forward(h) + h;
     }
     // h: (B, C_0, H, W) - same full-resolution decoder output the policy head reads
 
