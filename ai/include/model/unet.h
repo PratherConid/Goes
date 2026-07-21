@@ -7,22 +7,23 @@
 #include <vector>
 #include <utility>
 
-// Policy head: 1×1 conv over the decoder's full-resolution feature map
-// produces, per node, num_stones place-logit channels and 1 pass-field
-// channel; the pass field is reduced to a single pass logit via a learned
-// affine combination over the board's valid nodes. Place logits are
-// flattened stone-major (index (stone-1)*N+pos), matching legal_mask's
-// layout in features.cpp.
+// Policy head: per-node Linear produces num_stones place-logit channels and 1
+// pass-field channel; the pass field is reduced to a single pass logit via a
+// learned attention-weighted sum over nodes, so it stays valid for any N
+// (attention weights come from node features, not fixed node positions) -
+// identical in structure to MessagePassingGNN's own policy head
+// (GNNPolicyHeadImpl, gnn.h/gnn.cpp). Place logits are flattened stone-major
+// (index (stone-1)*N+pos), matching legal_mask's layout in features.cpp.
 struct UNetPolicyHeadImpl : torch::nn::Module {
-    torch::nn::Conv2d conv{nullptr};
-    torch::nn::Linear pass_reduce{nullptr};
+    torch::nn::Linear proj{nullptr};  // hidden_dim -> num_stones+1 (place logits, pass field)
+    torch::nn::Linear attn{nullptr};  // hidden_dim -> 1 (unnormalised attention score)
     int num_stones_;
 
-    UNetPolicyHeadImpl(int in_channels, int num_nodes, int num_stones);
+    UNetPolicyHeadImpl(int hidden_dim, int num_stones);
 
-    // h: (B, C, H, W), lin_idx: (N,) long node positions in the flattened grid.
-    // Returns (B, num_stones*N+1) logits.
-    torch::Tensor forward(const torch::Tensor& h, const torch::Tensor& lin_idx);
+    // h: (B, N, hidden_dim) - already gathered to real board nodes (see
+    // UNetImpl::forward()'s h_nodes). Returns (B, num_stones*N+1) logits.
+    torch::Tensor forward(const torch::Tensor& h);
 };
 TORCH_MODULE(UNetPolicyHead);
 

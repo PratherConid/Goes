@@ -147,24 +147,28 @@ UNetImpl::UNetImpl(const BoardConfig& bc, const UNetConfig& cfg, int num_players
         torch::nn::ReLU(),
         torch::nn::Linear(enc_channels_[0], num_stones + 1)));
 
-    policy_head = register_module("policy_head", UNetPolicyHead(enc_channels_[0], bc.N, num_stones));
+    policy_head = register_module("policy_head", UNetPolicyHead(enc_channels_[0], num_stones));
 }
 
-UNetPolicyHeadImpl::UNetPolicyHeadImpl(int in_channels, int num_nodes, int num_stones)
+UNetPolicyHeadImpl::UNetPolicyHeadImpl(int hidden_dim, int num_stones)
     : num_stones_(num_stones)
 {
-    conv = register_module("conv",
-        torch::nn::Conv2d(torch::nn::Conv2dOptions(in_channels, num_stones + 1, 1)));
-    pass_reduce = register_module("pass_reduce", torch::nn::Linear(num_nodes, 1));
+    proj = register_module("proj", torch::nn::Linear(hidden_dim, num_stones + 1));
+    attn = register_module("attn", torch::nn::Linear(hidden_dim, 1));
 }
 
-torch::Tensor UNetPolicyHeadImpl::forward(const torch::Tensor& h, const torch::Tensor& lin_idx) {
-    int64_t N = lin_idx.size(0);
-    auto out = conv->forward(h).view({h.size(0), num_stones_ + 1, -1}); // (B, ns+1, H*W)
-    auto place_logits = out.slice(1, 0, num_stones_).index_select(2, lin_idx)
-                            .reshape({h.size(0), num_stones_ * N});    // (B, ns*N)
-    auto pass_field   = out.select(1, num_stones_).index_select(1, lin_idx); // (B, N)
-    auto pass_logit   = pass_reduce->forward(pass_field);              // (B, 1)
+torch::Tensor UNetPolicyHeadImpl::forward(const torch::Tensor& h) {
+    int64_t B = h.size(0), N = h.size(1);
+    auto out          = proj->forward(h);                        // (B, N, ns+1)
+    // Place logits are node-major out of `proj` ((B,N,numStones)) but must be
+    // flattened stone-major (index (stone-1)*N+pos, matching legal_mask's
+    // layout in features.cpp) - permute before reshaping to make this happen.
+    auto place_logits = out.slice(-1, 0, num_stones_)
+                            .permute({0, 2, 1})
+                            .reshape({B, num_stones_ * N});        // (B, ns*N)
+    auto pass_field   = out.select(-1, num_stones_);               // (B, N)
+    auto attn_weights = torch::softmax(attn->forward(h).squeeze(-1), -1); // (B, N)
+    auto pass_logit   = (attn_weights * pass_field).sum(-1, /*keepdim=*/true); // (B, 1)
     return torch::cat({place_logits, pass_logit}, -1);                 // (B, ns*N+1)
 }
 
@@ -234,9 +238,10 @@ std::pair<torch::Tensor, torch::Tensor> UNetImpl::forward(
     }
     // h: (B, C_0, H, W) - same full-resolution decoder output the policy head reads
 
-    // Value: same input as the policy head, gathered per-node (same lin_idx_
-    // mechanism the policy head uses) then passed through two independent
-    // per-location softmax heads (stone estimate, territory estimate).
+    // Gather the decoder's full-resolution output at each node's grid
+    // position - feeds both the value heads (stone/territory estimate) and
+    // the policy head, all of which now operate purely on this per-node
+    // (B,N,C_0) tensor rather than the raw grid.
     auto h_nodes = h.reshape({B, enc_channels_[0], -1})
                     .index_select(2, lin_idx_)
                     .permute({0, 2, 1});                                  // (B, N, C_0)
@@ -244,7 +249,7 @@ std::pair<torch::Tensor, torch::Tensor> UNetImpl::forward(
     auto territory_est = torch::softmax(territory_head->forward(h_nodes), -1);  // (B, N, num_stones+1)
     auto ownership = torch::stack({stone_est, territory_est}, 1);              // (B, 2, N, num_stones+1)
 
-    auto logits = policy_head->forward(h, lin_idx_); // (B, num_stones*N+1)
+    auto logits = policy_head->forward(h_nodes); // (B, num_stones*N+1)
     const float NEG_INF = -std::numeric_limits<float>::infinity();
     logits = logits.masked_fill(legal_mask.logical_not(), NEG_INF);
     logits = logits.masked_fill(legal_mask.any(-1, true).logical_not(), 0.0f);

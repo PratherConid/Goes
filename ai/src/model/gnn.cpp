@@ -51,8 +51,8 @@ torch::Tensor GNNPolicyHeadImpl::forward(const torch::Tensor& h) {
     int64_t B = h.size(0), N = h.size(1);
     auto out          = proj->forward(h);                        // (B, N, ns+1)
     // Node-major (B,N,ns) -> stone-major (B,ns,N) -> flat (B,ns*N). The permute
-    // is required here (unlike CNN, whose conv output is already channel-first)
-    // to match legal_mask's stone-major flatten order.
+    // is required to match legal_mask's stone-major flatten order (same for
+    // CNNPolicyHeadImpl/UNetPolicyHeadImpl, which share this exact structure).
     auto place_logits = out.slice(-1, 0, num_stones_)
                             .permute({0, 2, 1})
                             .reshape({B, num_stones_ * N});        // (B, ns*N)
