@@ -22,7 +22,7 @@ struct AdjNorms {
 
 // Compute per-node feature matrix and legal mask for one state. descr is the
 // self-describing feature-block descriptor built by
-// compute_input_descr(const GameConfig&, int) (training/self_play.h) - see
+// compute_input_descr(const GameConfig&, int, const std::string&) (training/self_play.h) - see
 // that function's doc comment for the JSON shape and this function's own doc
 // comment (features.cpp) for the recognized block names/args. The feature
 // width F is read directly from descr["totalDims"], not recomputed here.
@@ -30,6 +30,21 @@ struct AdjNorms {
 // descriptor into the config JSON once (at train time) and reads it back
 // directly rather than recomputing it.
 FeatureTensors board_to_features(const BoardState& state, torch::Device device, const nlohmann::json& descr);
+
+// Computes per-node features for one historical ply of `state`, under whatever descr is passed -
+// ply may be anything in [0, state.ply_count()], including the current ply. Fully descriptor-
+// agnostic (just a thin forward to board_to_features_at_ply(), below); used exclusively by the
+// Transformer architecture (transformer.cpp), which applies this identically to every PAST ply
+// (0..ply_count()-1) via BoardState::board_at()/consecutive_passes_at() rather than the live
+// state.board/state.next_turn/state.last_move() board_to_features() reads - the current ply's own
+// features (and its legal mask) still come from the unmodified board_to_features() above, since
+// that already works unchanged for any descr, current-ply-only case. The Transformer passes
+// TransformerConfig::history_descr here - a small 2-block (plyMod, stoneOccupancy) descriptor
+// built directly in train.cpp, independent of compute_input_descr() (training/self_play.h), not
+// board_to_features()'s full descr. Returns (N, F) float32 on CPU (caller stacks across
+// plies/states and moves to device once). No legal mask - only the current ply's legality matters
+// for the policy output, so callers that need a mask use board_to_features() for that ply instead.
+torch::Tensor history_features_at_ply(const BoardState& state, int ply, const nlohmann::json& descr);
 
 // Compute the multi-scale adjacency set. Call once per BoardConfig.
 AdjNorms compute_adj_norms(const BoardConfig& bc, torch::Device device);

@@ -280,7 +280,7 @@ GameRecord trajectory_and_result_to_record(
     auto stone_owner     = to_int64_tensor(board);
     auto territory_owner = to_int64_tensor(territory_owner_stone);
 
-    std::vector<torch::Tensor> feats, masks, policies;
+    std::vector<torch::Tensor> feats, masks, policies, history_feats;
     feats.reserve(trajectory.size());
     masks.reserve(trajectory.size());
     policies.reserve(trajectory.size());
@@ -293,20 +293,32 @@ GameRecord trajectory_and_result_to_record(
         policies.push_back(p_tensor);
     }
 
-    return GameRecord{
+    GameRecord record{
         torch::stack(feats, 0),     // (P, N, F)
         torch::stack(masks, 0),     // (P, numStones*N+1)
         torch::stack(policies, 0),  // (P, numStones*N+1)
         stone_owner,                 // (N,)
         territory_owner,             // (N,)
     };
+
+    // history_features is only populated when the run passed a history_descr (Transformer only) -
+    // check the first ply as a stand-in for the whole trajectory (history_descr is either always
+    // passed for a whole run, or never).
+    if (!trajectory.empty() && trajectory[0].history_features.defined()) {
+        history_feats.reserve(trajectory.size());
+        for (auto& pr : trajectory) history_feats.push_back(pr.history_features);
+        record.history_features = torch::stack(history_feats, 0);  // (P, N, F_hist)
+    }
+
+    return record;
 }
 
 GameRecord trajectory_to_record(
     const std::vector<PlyResult>& trajectory,
     const GameConfig& cfg,
     const BoardConfig& bc,
-    const nlohmann::json& descr)
+    const nlohmann::json& descr,
+    const nlohmann::json* history_descr)
 {
     BoardState state = new_state(cfg, bc);
     // Replaying a sequence that already completed successfully once - a
@@ -322,6 +334,7 @@ GameRecord trajectory_to_record(
         PlyResult full = pr;
         full.features   = ft;
         full.legal_mask = mask;
+        if (history_descr) full.history_features = board_to_features(state, torch::kCPU, *history_descr).features;
         replayed.push_back(std::move(full));
 
         std::optional<int> k, stone_opt;
@@ -343,7 +356,8 @@ std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
     int num_simulations,
     int temperature_threshold,
     float c_puct,
-    int verbosity)
+    int verbosity,
+    const nlohmann::json* history_descr)
 {
     MCTS mcts(evaluator, c_puct, rng());
 
@@ -366,6 +380,8 @@ std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
         auto* s = states[j];
         auto& [policy, move] = results[j];
         auto [ft, mask] = board_to_features(*s, torch::kCPU, descr);
+        torch::Tensor hist_ft;
+        if (history_descr) hist_ft = board_to_features(*s, torch::kCPU, *history_descr).features;
         int N = s->N, ns = s->num_stones;
         // Decode the flat action (stone-major, matching MCTS::select()'s
         // layout) into (stone, pos) - not knowable before the move, since a
@@ -388,7 +404,7 @@ std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
             std::cerr << "MCTS returned illegal move: slot=" << j
                       << " ply=" << s->ply_count() << " move=" << move << std::endl;
 
-        ply_results.push_back({ft, mask, std::move(policy), move, stone_opt.value_or(0)});
+        ply_results.push_back({ft, mask, hist_ft, std::move(policy), move, stone_opt.value_or(0)});
     }
 
     return {std::move(ply_results), timing};

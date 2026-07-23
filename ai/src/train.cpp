@@ -36,14 +36,16 @@ struct Args {
     // Path to a GameConfig JSON file (shared/types.ts's GameConfig.toJSON()
     // wire shape - same as server.cpp's /move request `config` object).
     // Required: there's no safe universal default, since forced_pass_only
-    // must be false for training (see the assert in main()) but the
+    // requires --net-arch transformer (see the assert in main()) but the
     // browser-facing public/game_presets/*_fpo.json presets all set it true.
     std::string game_config_path;
     int gnn_hidden_dim    = 128;
     int unet_hidden_dim   = 16;
     int cnn_hidden_dim    = 64;
     int cnn_conv_size     = 5;
+    int transformer_hidden_dim = 128;
     int num_layers        = 9;
+    int num_attn_layers   = 3;  // Transformer's cross-attention/history self-attention depth
     int iterations        = 200;
     int self_play_games   = 10;
     int gamegen_batch_size = 25;
@@ -79,14 +81,17 @@ static void print_usage(const char* prog) {
     std::cout << "Usage: " << prog << " [options]\n"
               << "  --game-config PATH        (required) Path to a GameConfig JSON file (same shape\n"
               << "                            as shared/types.ts's GameConfig.toJSON(), e.g. a file\n"
-              << "                            under public/game_presets/) - forcedPassOnly must be\n"
-              << "                            false (see the assert in main())\n"
+              << "                            under public/game_presets/) - forcedPassOnly requires\n"
+              << "                            --net-arch transformer (see the assert in main())\n"
               << "  --gnn-hidden-dim N        GNN hidden dimension (default: 128)\n"
               << "  --unet-hidden-dim N       UNet hidden dimension (default: 16)\n"
               << "  --cnn-hidden-dim N        CNN hidden dimension (default: 64)\n"
               << "  --cnn-conv-size N         CNN convolution kernel size - must be odd and > 1\n"
               << "                            (default: 5)\n"
+              << "  --transformer-hidden-dim N  Transformer hidden dimension (default: 128)\n"
               << "  --num-layers N            GNN message-passing layers (default: 9)\n"
+              << "  --num-attn-layers N       Transformer history self-attention/cross-attention\n"
+              << "                            layers (default: 3)\n"
               << "  --iterations N            Training iterations (default: 200)\n"
               << "  --self-play-games N       Games to complete before each training step (default: 10)\n"
               << "  --gamegen-batch-size N    Games generated in parallel (default: 10)\n"
@@ -112,7 +117,7 @@ static void print_usage(const char* prog) {
               << "                            remaining --iterations - errors if TAG doesn't exist or\n"
               << "                            its saved game config doesn't exactly match --game-config.\n"
               << "                            Mutually exclusive with --resume\n"
-              << "  --net-arch auto|cnn|unet|gnn  Network architecture (default: auto)\n"
+              << "  --net-arch auto|cnn|unet|gnn|transformer  Network architecture (default: auto)\n"
               << "  --cpu                     Force CPU even if CUDA is available\n"
               << "  --verbosity N             0=silent, 1=per-game, >=2=per-ply (default: 1)\n"
               << "  --linear-move-bound K1 K2 End games after Uniform(K1,K2)*N plies, resampled per game\n"
@@ -137,7 +142,9 @@ static Args parse_args(int argc, char* argv[]) {
                 std::exit(1);
             }
         }
+        else if (a == "--transformer-hidden-dim") args.transformer_hidden_dim = std::stoi(argv[++i]);
         else if (a == "--num-layers")      args.num_layers      = std::stoi(argv[++i]);
+        else if (a == "--num-attn-layers") args.num_attn_layers = std::stoi(argv[++i]);
         else if (a == "--iterations")      args.iterations      = std::stoi(argv[++i]);
         else if (a == "--self-play-games") args.self_play_games = std::stoi(argv[++i]);
         else if (a == "--gamegen-batch-size") args.gamegen_batch_size = std::stoi(argv[++i]);
@@ -187,7 +194,7 @@ static Args parse_args(int argc, char* argv[]) {
 
 // ── Model factory ─────────────────────────────────────────────────────────────
 
-// Returns "cnn", "unet", or "gnn" — the architecture that will actually be used.
+// Returns "cnn", "unet", "gnn", or "transformer" — the architecture that will actually be used.
 static std::string effective_arch(const Args& args, const std::string& board_kind) {
     bool grid2d_supported = (board_kind == "rect" || board_kind == "rectd" || board_kind == "tri" ||
                           board_kind == "twsq" || board_kind == "gtsq");
@@ -208,9 +215,12 @@ static std::string effective_arch(const Args& args, const std::string& board_kin
         return "unet";
     }
     if (args.net_arch == "gnn") return "gnn";
+    // Topology-agnostic by design (flattens features into one MLP, no adjacency/shape assumption),
+    // so no board-type gate here - unlike cnn/unet above.
+    if (args.net_arch == "transformer") return "transformer";
     if (args.net_arch == "auto") return grid2d_supported ? "cnn" : "gnn";
     std::cerr << "Error: unknown --net-arch '" << args.net_arch
-              << "'. Valid options: auto, cnn, unet, gnn.\n";
+              << "'. Valid options: auto, cnn, unet, gnn, transformer.\n";
     std::exit(1);
 }
 
@@ -223,11 +233,24 @@ static AnyModel build_model(const BoardConfig& bc, const ModelConfig& cfg, const
         return CNN(bc, static_cast<const CNNConfig&>(cfg), game_cfg.num_players, game_cfg.num_stones);
     if (cfg.model_type == "unet")
         return UNet(bc, static_cast<const UNetConfig&>(cfg), game_cfg.num_players, game_cfg.num_stones);
+    if (cfg.model_type == "transformer")
+        return Transformer(bc, static_cast<const TransformerConfig&>(cfg), game_cfg.num_players, game_cfg.num_stones);
     // adj_norms is only needed to size the GNN's neighbor-count embedding
     // table (max_degree); compute it locally rather than threading it
     // through build_model's signature for architectures that don't use it.
     auto adj_norms = compute_adj_norms(bc, torch::kCPU);
     return MessagePassingGNN(static_cast<const GNNConfig&>(cfg), game_cfg.num_players, game_cfg.num_stones, adj_norms);
+}
+
+// Returns a pointer to TransformerConfig::history_descr when cfg is a transformer config, else
+// nullptr - used to thread the Transformer's minimal per-ply history descriptor into self-play
+// calls (generate_one_ply_per_game()/trajectory_to_record()) without adding a parameter anywhere
+// else, since TransformerConfig's own persisted field is the single source of truth. Same safe-
+// downcast reasoning as build_model()'s static_casts above.
+static const nlohmann::json* history_descr_ptr(const ModelConfig& cfg) {
+    return cfg.model_type == "transformer"
+        ? &static_cast<const TransformerConfig&>(cfg).history_descr
+        : nullptr;
 }
 
 // ── Checkpoint utilities ──────────────────────────────────────────────────────
@@ -438,7 +461,7 @@ static int resume(const fs::path& ckpt_dir, const ModelConfig& model_cfg, AnyMod
     // ReplayBuffer's FIFO eviction/insertion-order assumptions hold exactly
     // as if these games had been added live, in their original sequence.
     for (auto git = recent_games.rbegin(); git != recent_games.rend(); ++git)
-        buffer.add(trajectory_to_record(*git, game_cfg, bc, model_cfg.input_descr));
+        buffer.add(trajectory_to_record(*git, game_cfg, bc, model_cfg.input_descr, history_descr_ptr(model_cfg)));
 
     if (!recent_games.empty())
         std::cout << "  Reconstructed replay buffer: " << recent_games.size() << " games" << std::endl;
@@ -460,6 +483,58 @@ static int resume(const fs::path& ckpt_dir, const ModelConfig& model_cfg, AnyMod
 // exactly when buffer.size() < batch_size - callers must skip
 // checkpoint-saving too in that case, matching the original inline code's
 // `continue` past the whole rest of the iteration.
+struct Losses {
+    torch::Tensor total, policy, stone, territory, point;
+};
+
+// Shared loss math for every architecture - factored out so the training loop's per-architecture
+// std::visit branch only differs in how (policy, ownership, p_tgt, so_tgt, to_tgt) are obtained,
+// not in how they're turned into a loss.
+static Losses compute_losses(const torch::Tensor& policy, const torch::Tensor& ownership,
+                              const torch::Tensor& p_tgt, const torch::Tensor& so_tgt,
+                              const torch::Tensor& to_tgt, const std::string& score_rule,
+                              int num_stones, int N)
+{
+    // Policy loss: cross-entropy against MCTS visit distribution, scaled down by
+    // log(action count) - cross-entropy over num_stones*N+1 actions grows with
+    // both board size and stone count, so this keeps the loss magnitude
+    // comparable across differently sized action spaces.
+    auto log_policy  = torch::log(policy.clamp_min(1e-8f));
+    auto policy_loss = -(p_tgt * log_policy).sum(-1).mean() / std::log(static_cast<float>(N * num_stones));
+
+    // ownership: (B, 2, N, num_stones+1) - index 0 = stone estimate, index 1 = territory estimate
+    auto stone_est     = ownership.select(1, 0);   // (B, N, num_stones+1)
+    auto territory_est = ownership.select(1, 1);   // (B, N, num_stones+1)
+
+    // Ownership loss: per-location MSE between predicted and actual stone/territory
+    // ownership distributions (channel 0 = none, channels 1..num_stones = that stone type).
+    // Summed (not averaged) over the num_stones+1 channels, then averaged over locations
+    // and batch only - torch::mse_loss's default per-element mean would additionally
+    // divide by (num_stones+1), making the loss too small to carry much gradient signal.
+    auto actual_stone_owner     = torch::one_hot(so_tgt, num_stones + 1).to(torch::kFloat32);  // (B,N,S+1)
+    auto actual_territory_owner = torch::one_hot(to_tgt, num_stones + 1).to(torch::kFloat32);  // (B,N,S+1)
+    auto stone_loss     = (stone_est - actual_stone_owner).pow(2).sum(-1).mean();
+    auto territory_loss = (territory_est - actual_territory_owner).pow(2).sum(-1).mean();
+
+    // Point loss: raw per-stone-type point total (no rank adjustment, no player
+    // aggregation) - actual vs. the model's own expected total under the game's
+    // scoring rule. Analogous to the pre-ownership-refactor scalar value loss, but
+    // supervises raw points instead of the rank-adjusted reward. Reuses
+    // estimate_stone_points() for both sides: the model's prediction from
+    // `ownership`, and the ground truth by treating the one-hot stone/territory
+    // owner tensors as an ownership-shaped input. The raw point difference is
+    // scaled by (num_stones / board size) before squaring - unscaled, it can be as
+    // large as N, dwarfing the per-location stone_loss/territory_loss terms.
+    auto actual_ownership = torch::stack({actual_stone_owner, actual_territory_owner}, 1); // (B,2,N,S+1)
+    auto predicted_points = estimate_stone_points(ownership, score_rule);        // (B,num_stones)
+    auto actual_points    = estimate_stone_points(actual_ownership, score_rule);  // (B,num_stones)
+    auto point_diff = (predicted_points - actual_points) / N * num_stones;              // (B,num_stones)
+    auto point_loss = point_diff.pow(2).sum(-1).mean();
+
+    auto loss = policy_loss + stone_loss + territory_loss + point_loss;
+    return {loss, policy_loss, stone_loss, territory_loss, point_loss};
+}
+
 static bool run_training_iteration(
     int iter, AnyModel& model_var, torch::optim::Adam& optimizer, ReplayBuffer& buffer,
     std::mt19937& rng, const GameConfig& game_cfg, const BoardConfig& bc,
@@ -481,71 +556,42 @@ static bool run_training_iteration(
     int num_stones = game_cfg.num_stones;
 
     for (int step = 0; step < train_steps; step++) {
-        auto [x_, mask_, p_tgt, so_tgt_, to_tgt_] = buffer.sample(batch_size, rng);
-        torch::Tensor x      = x_.to(device);
-        torch::Tensor mask   = mask_.to(device);
-        p_tgt = p_tgt.to(device);
-        torch::Tensor so_tgt = so_tgt_.to(device);
-        torch::Tensor to_tgt = to_tgt_.to(device);
+        torch::Tensor policy, ownership, p_tgt, so_tgt, to_tgt;
 
-        auto [policy, ownership] = std::visit(
-            [&](auto& m) -> std::pair<torch::Tensor, torch::Tensor> {
-                using M = std::decay_t<decltype(m)>;
+        std::visit([&](auto& m) {
+            using M = std::decay_t<decltype(m)>;
+            if constexpr (std::is_same_v<M, Transformer>) {
+                auto hb = buffer.sample_with_history(batch_size, rng);
+                std::tie(policy, ownership) = m->forward(hb.hist_features.to(device), hb.hist_mask.to(device),
+                                                          hb.cur_features.to(device), hb.legal_mask.to(device));
+                p_tgt = hb.policy_target.to(device);
+                so_tgt = hb.stone_owner.to(device);
+                to_tgt = hb.territory_owner.to(device);
+            } else {
+                auto [x_, mask_, p_, so_, to_] = buffer.sample(batch_size, rng);
+                torch::Tensor x = x_.to(device), mask = mask_.to(device);
+                p_tgt = p_.to(device); so_tgt = so_.to(device); to_tgt = to_.to(device);
                 if constexpr (std::is_same_v<M, MessagePassingGNN>)
-                    return m->forward(x, adj_norms, mask);
+                    std::tie(policy, ownership) = m->forward(x, adj_norms, mask);
                 else
-                    return m->forward(x, mask);
-            }, model_var);
+                    std::tie(policy, ownership) = m->forward(x, mask);
+            }
+        }, model_var);
 
-        // Policy loss: cross-entropy against MCTS visit distribution, scaled down by
-        // log(action count) - cross-entropy over num_stones*N+1 actions grows with
-        // both board size and stone count, so this keeps the loss magnitude
-        // comparable across differently sized action spaces.
-        auto log_policy  = torch::log(policy.clamp_min(1e-8f));
-        auto policy_loss = -(p_tgt * log_policy).sum(-1).mean() / std::log(static_cast<float>(bc.N * num_stones));
-
-        // ownership: (B, 2, N, num_stones+1) - index 0 = stone estimate, index 1 = territory estimate
-        auto stone_est     = ownership.select(1, 0);   // (B, N, num_stones+1)
-        auto territory_est = ownership.select(1, 1);   // (B, N, num_stones+1)
-
-        // Ownership loss: per-location MSE between predicted and actual stone/territory
-        // ownership distributions (channel 0 = none, channels 1..num_stones = that stone type).
-        // Summed (not averaged) over the num_stones+1 channels, then averaged over locations
-        // and batch only - torch::mse_loss's default per-element mean would additionally
-        // divide by (num_stones+1), making the loss too small to carry much gradient signal.
-        auto actual_stone_owner     = torch::one_hot(so_tgt, num_stones + 1).to(torch::kFloat32);  // (B,N,S+1)
-        auto actual_territory_owner = torch::one_hot(to_tgt, num_stones + 1).to(torch::kFloat32);  // (B,N,S+1)
-        auto stone_loss     = (stone_est - actual_stone_owner).pow(2).sum(-1).mean();
-        auto territory_loss = (territory_est - actual_territory_owner).pow(2).sum(-1).mean();
-
-        // Point loss: raw per-stone-type point total (no rank adjustment, no player
-        // aggregation) - actual vs. the model's own expected total under the game's
-        // scoring rule. Analogous to the pre-ownership-refactor scalar value loss, but
-        // supervises raw points instead of the rank-adjusted reward. Reuses
-        // estimate_stone_points() for both sides: the model's prediction from
-        // `ownership`, and the ground truth by treating the one-hot stone/territory
-        // owner tensors as an ownership-shaped input. The raw point difference is
-        // scaled by (num_stones / board size) before squaring - unscaled, it can be as
-        // large as N, dwarfing the per-location stone_loss/territory_loss terms.
-        auto actual_ownership = torch::stack({actual_stone_owner, actual_territory_owner}, 1); // (B,2,N,S+1)
-        auto predicted_points = estimate_stone_points(ownership, game_cfg.score_rule);        // (B,num_stones)
-        auto actual_points    = estimate_stone_points(actual_ownership, game_cfg.score_rule);  // (B,num_stones)
-        auto point_diff = (predicted_points - actual_points) / bc.N * num_stones;              // (B,num_stones)
-        auto point_loss = point_diff.pow(2).sum(-1).mean();
-
-        auto loss = policy_loss + stone_loss + territory_loss + point_loss;
+        auto losses = compute_losses(policy, ownership, p_tgt, so_tgt, to_tgt,
+                                      game_cfg.score_rule, num_stones, bc.N);
 
         optimizer.zero_grad();
-        loss.backward();
+        losses.total.backward();
         torch::nn::utils::clip_grad_norm_(
             std::visit([](auto& m) { return m->parameters(); }, model_var), 1.0);
         optimizer.step();
 
-        total_loss     += loss.item<double>();
-        total_pol      += policy_loss.item<double>();
-        total_stone    += stone_loss.item<double>();
-        total_territory += territory_loss.item<double>();
-        total_point    += point_loss.item<double>();
+        total_loss     += losses.total.item<double>();
+        total_pol      += losses.policy.item<double>();
+        total_stone    += losses.stone.item<double>();
+        total_territory += losses.territory.item<double>();
+        total_point    += losses.point.item<double>();
     }
 
     auto t1 = std::chrono::high_resolution_clock::now();
@@ -625,34 +671,51 @@ int main(int argc, char* argv[]) {
     // rather than part of --game-config.
     game_cfg.linear_move_bound = args.linear_move_bound;
 
-    // Requires forced_pass_only=False. When forced_pass_only is enabled, a player
-    // may only pass when no traditional placement is legal. In this case, players
-    // will be forced to kill their own groups, and the game only ends when both
-    // players have no legal moves simultaneously, which closely depends on the full
-    // history of the game. The model receives only per-node features derived from the
-    // current board, so it cannot function correctly in this case,
-    // This restriction will be lifted once history-aware models are implemented.
-    assert(!game_cfg.forced_pass_only &&
-           "forced_pass_only=true is not supported: model lacks history-aware features");
-
-    torch::Device device = (torch::cuda::is_available() && !args.cpu)
-        ? torch::kCUDA : torch::kCPU;
-    std::cout << "Device: " << device << std::endl;
-
     auto bc = build_board_config(game_cfg.board_type, game_cfg.board_args);
     std::cout << "Board: " << game_cfg.board_type;
     for (int a : game_cfg.board_args) std::cout << " " << a;
     std::cout << "  N=" << bc.N << std::endl;
 
     const std::string arch = effective_arch(args, game_cfg.board_type);
+
+    // Requires forced_pass_only=False, unless --net-arch transformer. When forced_pass_only is
+    // enabled, a player may only pass when no traditional placement is legal. In this case, players
+    // will be forced to kill their own groups, and the game only ends when both players have no
+    // legal moves simultaneously, which closely depends on the full history of the game. CNN/UNet/GNN
+    // receive only per-node features derived from the current board, so they cannot function
+    // correctly in this case - only the history-aware transformer architecture can.
+    assert((!game_cfg.forced_pass_only || arch == "transformer") &&
+           "forced_pass_only=true requires --net-arch transformer");
+
+    torch::Device device = (torch::cuda::is_available() && !args.cpu)
+        ? torch::kCUDA : torch::kCPU;
+    std::cout << "Device: " << device << std::endl;
+
     nlohmann::json input_descr = compute_input_descr(game_cfg, bc.N);
     int in_dim = input_descr.at("totalDims").get<int>();
+
+    // The transformer's separate, much narrower per-ply HISTORY descriptor (plyMod +
+    // stoneOccupancy only) - built directly here rather than via any shared function/filter on
+    // compute_input_descr(), since it has exactly one call site (TransformerConfig construction,
+    // just below) and no reuse to justify one. Never used for the current ply (which uses
+    // input_descr above, like every other architecture) and never used by CNN/UNet/GNN.
+    nlohmann::json history_descr;
+    if (arch == "transformer") {
+        int tl_len = (int)game_cfg.turn_list.size();
+        int ns = game_cfg.num_stones;
+        history_descr = {
+            {"blocks", json::array({json::array({"plyMod", tl_len}), json::array({"stoneOccupancy", ns})})},
+            {"totalDims", tl_len + ns + 1}
+        };
+    }
     int hidden_dim = (arch == "cnn")  ? args.cnn_hidden_dim
                     : (arch == "unet") ? args.unet_hidden_dim
+                    : (arch == "transformer") ? args.transformer_hidden_dim
                                         : args.gnn_hidden_dim;
     std::unique_ptr<ModelConfig> model_cfg;
     if (arch == "cnn")       model_cfg = std::make_unique<CNNConfig>(in_dim, hidden_dim, input_descr, args.cnn_conv_size);
     else if (arch == "unet") model_cfg = std::make_unique<UNetConfig>(in_dim, hidden_dim, input_descr);
+    else if (arch == "transformer") model_cfg = std::make_unique<TransformerConfig>(in_dim, hidden_dim, args.num_attn_layers, input_descr, history_descr);
     else                     model_cfg = std::make_unique<GNNConfig>(in_dim, hidden_dim, args.num_layers, input_descr);
     auto model_var = build_model(bc, *model_cfg, game_cfg);
     std::visit([&](auto& m) { m->to(device); }, model_var);
@@ -740,7 +803,7 @@ int main(int argc, char* argv[]) {
                 std::vector<PlyResult> game;
                 game.reserve(gj.size());
                 for (auto& p : gj) game.push_back(parse_ply_result(p));
-                buffer.add(trajectory_to_record(game, game_cfg, bc, model_cfg->input_descr));
+                buffer.add(trajectory_to_record(game, game_cfg, bc, model_cfg->input_descr, history_descr_ptr(*model_cfg)));
                 span_games.push_back(std::move(game));
             }
 
@@ -781,7 +844,7 @@ int main(int argc, char* argv[]) {
             auto [ply_results, timing] = generate_one_ply_per_game(
                 evaluator, ptrs, model_cfg->input_descr,
                 args.num_simulations, /*temperature_threshold=*/static_cast<int>(2 * std::sqrt(bc.N)) + 3, args.c_puct,
-                args.verbosity);
+                args.verbosity, history_descr_ptr(*model_cfg));
             double total_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::high_resolution_clock::now() - t_ply0).count();
             if (args.verbosity >= 1) {

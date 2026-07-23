@@ -248,6 +248,34 @@ public:
     }
     int ply_count() const { return static_cast<int>(history_ids_.size()) - 1; }
 
+    // Board content at any reached ply (0 = genesis, ..., ply_count() = current) - O(1), backed by
+    // HistoryManager's existing board interning (no extra storage). Used by the Transformer
+    // architecture's per-ply feature reconstruction (features.h's history_features_at_ply()) - no
+    // other architecture needs per-ply history, only the current board.
+    const std::vector<int>& board_at(int ply) const { return hm_->board_of(history_ids_[ply]); }
+
+    // MoveInfo::consecutive_passes as it stood at the end of the given ply - O(1), backed by the
+    // existing per-ply HistoryEntry interning. Same genesis-is-ply-0 convention as last_move().
+    // Used alongside board_at() by history_features_at_ply().
+    int consecutive_passes_at(int ply) const {
+        return hm_->history_entry_of(history_entry_ids_[ply]).move_info.consecutive_passes;
+    }
+
+    // Legal-move table as it stood at the given ply - O(1), same per-ply HistoryEntry interning as
+    // consecutive_passes_at(). legal_moves_data_at(ply_count()) == legal_moves_data() (both read
+    // history_entry_ids_.back()). Used by features.cpp's shared board_to_features_at_ply() for the
+    // legalPlace block at any ply, not just the current one.
+    const LegalMovesData& legal_moves_data_at(int ply) const {
+        return hm_->history_entry_of(history_entry_ids_[ply]).legal_moves;
+    }
+
+    // Stone placement counts as they stood at the given ply, indexed [stone-1][player-1] - O(1),
+    // same per-ply HistoryEntry interning as consecutive_passes_at(). Used by features.cpp's
+    // shared board_to_features_at_ply() for the playerStoneBudget/globalStoneBudget blocks.
+    const std::vector<std::vector<int>>& player_stone_place_cnt_at(int ply) const {
+        return hm_->history_entry_of(history_entry_ids_[ply]).player_stone_place_cnt;
+    }
+
     // Current score (stone count + territory, both per stone type), i.e. the
     // last history entry's.
     const ScoreData& score() const { return hm_->history_entry_of(history_entry_ids_.back()).score; }

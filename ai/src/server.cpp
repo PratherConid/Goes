@@ -113,19 +113,21 @@ using json = nlohmann::json;
 
 // ── Checkpoint helpers ────────────────────────────────────────────────────────
 
-// Returns the latest checkpoint, preferring CNN over UNet over GNN when multiple are present.
+// Returns the latest checkpoint, preferring CNN over UNet over Transformer over GNN when multiple are present.
 static std::optional<fs::path> latest_checkpoint(const fs::path& dir) {
     if (!fs::exists(dir)) return std::nullopt;
-    std::vector<fs::path> cnn_ckpts, unet_ckpts, gnn_ckpts;
+    std::vector<fs::path> cnn_ckpts, unet_ckpts, transformer_ckpts, gnn_ckpts;
     for (auto& e : fs::directory_iterator(dir)) {
         if (e.path().extension() != ".pt") continue;
         auto name = e.path().filename().string();
         if      (name.rfind("cnn_", 0) == 0)  cnn_ckpts.push_back(e.path());
         else if (name.rfind("unet_", 0) == 0) unet_ckpts.push_back(e.path());
+        else if (name.rfind("transformer_", 0) == 0) transformer_ckpts.push_back(e.path());
         else if (name.rfind("gnn_", 0) == 0)  gnn_ckpts.push_back(e.path());
     }
     if (!cnn_ckpts.empty()) { std::sort(cnn_ckpts.begin(), cnn_ckpts.end()); return cnn_ckpts.back(); }
     if (!unet_ckpts.empty()) { std::sort(unet_ckpts.begin(), unet_ckpts.end()); return unet_ckpts.back(); }
+    if (!transformer_ckpts.empty()) { std::sort(transformer_ckpts.begin(), transformer_ckpts.end()); return transformer_ckpts.back(); }
     if (!gnn_ckpts.empty()) { std::sort(gnn_ckpts.begin(), gnn_ckpts.end()); return gnn_ckpts.back(); }
     return std::nullopt;
 }
@@ -288,6 +290,7 @@ static AnyModel& load_model(ServerState& ss, const std::string& tag,
     const std::string fname = latest.value().filename().string();
     std::string arch = (fname.rfind("cnn_", 0) == 0)  ? "cnn"
                       : (fname.rfind("unet_", 0) == 0) ? "unet"
+                      : (fname.rfind("transformer_", 0) == 0) ? "transformer"
                                                         : "gnn";
     fs::path json_path = latest.value().parent_path() / (arch + "_config.json");
     if (!fs::exists(json_path)) {
@@ -311,6 +314,8 @@ static AnyModel& load_model(ServerState& ss, const std::string& tag,
             return CNN(bc, static_cast<const CNNConfig&>(*model_cfg), game_cfg.num_players, game_cfg.num_stones);
         } else if (arch == "unet") {
             return UNet(bc, static_cast<const UNetConfig&>(*model_cfg), game_cfg.num_players, game_cfg.num_stones);
+        } else if (arch == "transformer") {
+            return Transformer(bc, static_cast<const TransformerConfig&>(*model_cfg), game_cfg.num_players, game_cfg.num_stones);
         } else {
             // adj_norms is only needed to size the GNN's neighbor-count embedding
             // table (max_degree); compute it locally rather than threading it

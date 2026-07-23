@@ -98,6 +98,13 @@ std::vector<std::optional<int>> resolve_global_stone_place_limit(
 struct PlyResult {
     torch::Tensor features;
     torch::Tensor legal_mask;
+    // Minimal per-ply history features (TransformerConfig::history_descr's descriptor) - only
+    // populated for a Transformer run (see generate_one_ply_per_game()/trajectory_to_record()'s
+    // history_descr parameter); left default-constructed (undefined) otherwise. Used only when
+    // this ply later falls in some later-sampled ply's history prefix (ReplayBuffer::
+    // sample_with_history()) - never read when this ply itself is the sampled "current" one,
+    // which always uses `features` (the full descriptor) instead.
+    torch::Tensor history_features;
     std::vector<float> policy;
     int move;    // flat MCTS action index (stone-major: (stone-1)*N+pos for a
                  // placement, numStones*N for pass) - see Policy Head and
@@ -106,13 +113,13 @@ struct PlyResult {
                  // `move` after MCTS picks it - a turn can now offer several
                  // stones, so this isn't knowable beforehand.
 
-    // move/stone/policy only - features/legal_mask are never persisted (large
+    // move/stone/policy only - features/legal_mask/history_features are never persisted (large
     // per-node tensors; not needed for the trajectory dump - see train.cpp -
     // which exists for human inspection via analysis.py, not replay).
     nlohmann::json to_json() const;
 };
 
-// Inverse of PlyResult::to_json() - move/stone/policy only; features/legal_mask
+// Inverse of PlyResult::to_json() - move/stone/policy only; features/legal_mask/history_features
 // are left default-constructed (undefined) torch::Tensors, since those are
 // never part of the dumped JSON to begin with.
 PlyResult parse_ply_result(const nlohmann::json& j);
@@ -137,6 +144,11 @@ PlyResult parse_ply_result(const nlohmann::json& j);
 // is fine here: an empty/unset field contributes the same all-zero-bits grid
 // either way - resolution only matters where BoardState needs a
 // concretely-shaped array to index into, not for this size computation.
+//
+// Used identically by all four architectures for their CURRENT-ply-only input - including the
+// Transformer, whose separate, much smaller per-ply HISTORY descriptor (plyMod + stoneOccupancy
+// only) is built directly in train.cpp and stored as TransformerConfig::history_descr, entirely
+// independent of this function.
 nlohmann::json compute_input_descr(const GameConfig& cfg, int N);
 
 // Create a fresh starting board state for a game.
@@ -167,6 +179,11 @@ GameRecord trajectory_and_result_to_record(
 // trajectory_and_result_to_record(). Used by train.cpp's resume() to rebuild
 // ReplayBuffer state from historical trajectory dumps.
 //
+// history_descr, when non-null, additionally regenerates each ply's minimal history features
+// (PlyResult::history_features) via a second board_to_features() call under that descriptor -
+// used only for a Transformer run (pass TransformerConfig::history_descr; null for every other
+// architecture, leaving history_features undefined).
+//
 // Always builds features/legal_mask on CPU - ReplayBuffer entries live on
 // CPU regardless of the training device, and only get moved to GPU (if any)
 // for the duration of one sampled training batch (see train.cpp's training
@@ -177,7 +194,8 @@ GameRecord trajectory_to_record(
     const std::vector<PlyResult>& trajectory,
     const GameConfig& cfg,
     const BoardConfig& bc,
-    const nlohmann::json& descr);
+    const nlohmann::json& descr,
+    const nlohmann::json* history_descr = nullptr);
 
 // Produce one training record per active game: run batched MCTS on all states,
 // capture board features before the move, then apply the chosen move in place.
@@ -198,6 +216,10 @@ GameRecord trajectory_to_record(
 // here) already carries its own model's device internally, and is all MCTS
 // itself needs for evaluation; these particular tensors exist only to be
 // stored into the replay buffer via the caller's trajectory_and_result_to_record().
+//
+// history_descr, when non-null, additionally captures each ply's minimal history features
+// (PlyResult::history_features) via a second board_to_features() call under that descriptor -
+// used only for a Transformer run (see trajectory_to_record()'s matching parameter).
 std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
     Evaluator& evaluator,
     const std::vector<BoardState*>& states,
@@ -205,4 +227,5 @@ std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
     int num_simulations,
     int temperature_threshold,
     float c_puct,
-    int verbosity = 0);
+    int verbosity = 0,
+    const nlohmann::json* history_descr = nullptr);

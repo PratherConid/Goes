@@ -2,10 +2,11 @@
 
 Self-play training pipeline for Goes using Monte Carlo Tree Search (MCTS), in the style of AlphaZero.
 
-Three model architectures are used depending on board topology:
+Four model architectures are available:
 - **CNN**: a plain residual conv stack (no pooling) for boards with a 2D integer embedding — `rect`, `rectd`, `tri`, `twsq`, `gtsq`. The default for these boards.
 - **UNet**: an alternative for the same board types (U-Net encoder/decoder with pooling), selectable via `--net-arch unet`.
 - **MessagePassingGNN**: for higher-dimensional boards whose nodes cannot be laid out on a 2D grid — `cub`, `hcub`.
+- **Transformer**: history-aware (attends over every previously reached board state, not just the current one), topology-agnostic, selectable via `--net-arch transformer` on any board type. This is the **only** architecture that supports `forcedPassOnly: true` — see **Transformer Architecture**, below.
 
 ## Differences from the TypeScript engine
 
@@ -32,6 +33,7 @@ ai/
 │   │   ├── gnn.{h,cpp}                 MessagePassingGNN (policy + ownership heads, for cub/hcub)
 │   │   ├── unet.{h,cpp}                U-Net (policy + ownership heads, for 2D boards)
 │   │   ├── cnn.{h,cpp}                 Plain residual CNN (policy + ownership heads, for 2D boards)
+│   │   ├── transformer.{h,cpp}         History-aware Transformer (policy + ownership heads, any board; only arch supporting forcedPassOnly)
 │   │   ├── evaluator.h                 Type-erased Evaluator used by MCTS and self-play
 │   │   └── any_model.h                 AnyModel variant + make_evaluator() factory
 │   ├── mcts/
@@ -229,7 +231,7 @@ The `GOES_CHECKPOINT_DIR` environment variable overrides the checkpoint director
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--game-config PATH` | _(required)_ | Path to a GameConfig JSON file (`shared/types.ts`'s `GameConfig.toJSON()` wire shape - see `public/game_presets/`) - board type/dims, stone/player counts, turn list, scoring rule, komi, ko rule, suicide, etc. all come from here; `forcedPassOnly` must be `false` (the model isn't history-aware yet) |
+| `--game-config PATH` | _(required)_ | Path to a GameConfig JSON file (`shared/types.ts`'s `GameConfig.toJSON()` wire shape - see `public/game_presets/`) - board type/dims, stone/player counts, turn list, scoring rule, komi, ko rule, suicide, etc. all come from here; `forcedPassOnly: true` requires `--net-arch transformer` (the other three architectures aren't history-aware) |
 | `--iterations N` | `200` | Training iterations |
 | `--self-play-games N` | `10` | Games to complete before each training step |
 | `--gamegen-batch-size N` | `25` | Games generated in parallel (pool size) |
@@ -241,7 +243,9 @@ The `GOES_CHECKPOINT_DIR` environment variable overrides the checkpoint director
 | `--unet-hidden-dim N` | `16` | UNet hidden dimension (2D boards) |
 | `--cnn-hidden-dim N` | `64` | CNN hidden dimension (2D boards) |
 | `--cnn-conv-size N` | `5` | CNN convolution kernel size (2D boards) - must be odd and > 1 |
+| `--transformer-hidden-dim N` | `128` | Transformer hidden dimension (any board) |
 | `--num-layers N` | `9` | GNN message-passing layers |
+| `--num-attn-layers N` | `3` | Transformer history self-attention/cross-attention layer count (separate flag from `--num-layers` - not shared with GNN) |
 | `--save-every N` | `10` | Save a checkpoint every N iterations |
 | `--checkpoint-dir PATH` | `ai/checkpoints` | Checkpoint directory |
 | `--resume TAG` | _(none)_ | Continue an existing hash-named checkpoint directory instead of starting a fresh one - see **Checkpoint Directories and Matching** |
@@ -250,7 +254,7 @@ The `GOES_CHECKPOINT_DIR` environment variable overrides the checkpoint director
 
 ## Input Features
 
-The model's input is a self-describing JSON descriptor with shape `{"blocks": [[name, ...args], ...], "totalDims": N}`, built once per fresh training run by `compute_input_descr(const GameConfig&, int N)` (`ai/include/training/self_play.h`) and persisted into the checkpoint's `_config.json` as `ModelConfig::input_descr` - never recomputed on `--resume` or by the server (`server.cpp`'s `load_model()`), both of which only ever read whatever descriptor is already stored, so a checkpoint stays self-describing even if the block formulas below change later.
+The model's input is a self-describing JSON descriptor with shape `{"blocks": [[name, ...args], ...], "totalDims": N}`, built once per fresh training run by `compute_input_descr(const GameConfig&, int N)` (`ai/include/training/self_play.h`) and persisted into the checkpoint's `_config.json` as `ModelConfig::input_descr` - never recomputed on `--resume` or by the server (`server.cpp`'s `load_model()`), both of which only ever read whatever descriptor is already stored, so a checkpoint stays self-describing even if the block formulas below change later. Used identically by all four architectures for their CURRENT-ply-only input.
 
 `board_to_features()` (`ai/src/model/features.cpp`) consumes this descriptor "event loop style": it walks `descr["blocks"]` in order and dispatches each entry by name to that block's fill logic, using the entry's own args (not a fresh `GameConfig` lookup) to know its width. Recognized block names:
 
@@ -265,15 +269,31 @@ The model's input is a self-describing JSON descriptor with shape `{"blocks": [[
 
 The `liberty`/`playerStoneBudget`/`globalStoneBudget` blocks use a soft, continuous stand-in for raw binary bit-encoding: `clamp_scale(value, bit_index) = max(0, 1 - value/2^bit_index)`, one channel per `bit_index` in `[0, bits)` - 1 at `value=0`, ramping linearly down to 0 at `value=2^bit_index` and clamped at 0 beyond, so a small change in `value` moves every channel by a small, continuous amount rather than flipping a bit discontinuously.
 
+**Transformer's two descriptors**: the Transformer is the only architecture that uses two independent descriptors instead of one. Its CURRENT ply uses the exact same `compute_input_descr()` output as CNN/UNet/GNN, unmodified - a single current state is always safe to describe fully, since there's no risk of it recurring at a different point in time with different bits. Every PAST ply instead uses a much smaller, separate 2-block descriptor (`plyMod`, `stoneOccupancy` only) built directly in `train.cpp` and stored as `TransformerConfig::history_descr` - `legalPlace` (and every other block) is excluded here because it depends on transient per-turn context (protected/friendly flags, which stones a turn happens to offer) rather than the board's physical content, so the same physical position recurring later in a game could get different `legalPlace` bits - breaking the "one board position → one embedding" property the transformer's cross-state comparison relies on. `liberty`/`consectivePassOneHot` are also omitted from the history descriptor (a further narrowing versus an earlier iteration of this design) since they add cost (`liberty` needs a `group_liberty()` traversal per historical ply) without being essential to the history signal.
+
 ## Policy Head and Action Space
 
 A turn can offer several stone colors at once (`TurnInfo.stones`), so the action space is per-`(stone, position)` rather than per-position: width `numStones*N + 1` (the `+1` is pass), flattened **stone-major** — `flat_index = (stone-1)*N + pos` for a placement, `flat_index = numStones*N` for pass. Every model's policy head, `board_to_features()`'s `legal_mask`, and MCTS's node arrays (`prior`/`visit_count`/`total_value`) all share this exact layout, so a flat action index decodes the same way everywhere: `stone = action / N + 1; pos = action % N` (unless `action == numStones*N`, which means pass).
 
-Each architecture produces `numStones` per-position/per-node place-logit channels plus one pass-field channel, pooled to a single scalar via a learned attention-weighted sum over nodes (identical mechanism across all three - see `*PolicyHeadImpl` in `cnn.cpp`/`unet.cpp`/`gnn.cpp`); the place channels are reshaped to `(B, numStones*N)` and concatenated with the pooled pass logit before a single softmax over the whole `(B, numStones*N+1)` vector - one probability distribution over "place this stone at this position, or pass," not a separate distribution per stone or per position.
+Each architecture produces `numStones` per-position/per-node place-logit channels plus one pass-field channel, pooled to a single scalar via a learned attention-weighted sum over nodes (identical mechanism across all four - see `*PolicyHeadImpl` in `cnn.cpp`/`unet.cpp`/`gnn.cpp`/`transformer.cpp`); the place channels are reshaped to `(B, numStones*N)` and concatenated with the pooled pass logit before a single softmax over the whole `(B, numStones*N+1)` vector - one probability distribution over "place this stone at this position, or pass," not a separate distribution per stone or per position.
 
 Worked example: `numStones=3`, `N=9` (3×3 board) → width `3*9+1=28`. Stone 2 at position 5 → index `(2-1)*9+5=14`. Stone 1 at position 0 → index `0`. Pass → index `27`.
 
 Stones a turn doesn't offer are simply illegal everywhere that ply (masked out via `legal_mask`, like any other illegal action) rather than shrinking the action space - the tensor width never changes turn-to-turn, only turn-to-turn *legality* does.
+
+## Transformer Architecture
+
+Unlike CNN/UNet/GNN, which evaluate only the current `BoardState`, the transformer attends over every board state reached so far in the game - this is what lets it support `forcedPassOnly: true`, where legality (superko in particular) depends on the *set* of previously-reached states, not just the current one. `BoardState` already content-interns its full history via `HistoryManager` (`board_at(ply)`, `consecutive_passes_at(ply)`), so `Evaluator`/MCTS need no interface changes at all - the transformer's own `evaluate()`/`evaluate_batch()` (`ai/src/model/transformer.cpp`) reconstruct the history internally from a single `const BoardState&`.
+
+Pipeline, applied per sampled ply during training (and per MCTS leaf during self-play):
+
+1. **Encoders** (two - see **Transformer's two descriptors** in Input Features, above): the *current* state's full-descriptor `(N, F)` features flatten to `(N·F,)`, then `Linear(N·F, D) → ReLU → Linear(D, D)` (`encoder_in`/`encoder_out`). Every *past* state's narrower `(N, F_hist)` history-descriptor features go through a separate, identically-shaped MLP with its own weights (`hist_encoder_in`/`hist_encoder_out`, shared across every past ply), landing in the same `D`-dim space. Both deliberately destroy board topology information (no adjacency/shape assumption) in exchange for being usable on any board type.
+2. **History set**: every *past* state's `(D,)` embedding forms an unordered set, refined by `--num-attn-layers` self-attention layers. No positional/recency encoding is ever added, so the set stays permutation-equivariant (order-symmetric) by construction. A learned "history sentinel" token is prepended (never masked) so attention always has at least one valid key, even for a genesis state with zero past plies.
+3. **Cross-attention**: the *current* state's `(D,)` embedding is the query (it never joins the history set itself), attending over the self-attended history set as keys/values, stacked `--num-attn-layers` times.
+4. **Decoder**: the literal inverse of the encoder - a monolithic MLP `Linear(D, D) → ReLU → Linear(D, N·D)`, reshaped to `(N, D)`. No per-node operation anywhere in the decode path either, keeping the whole pipeline topology-agnostic end to end.
+5. **Heads**: the resulting `(N, D)` tensor feeds the same shared `stone_head`/`territory_head`/policy-head shapes CNN/UNet/GNN use, unmodified.
+
+**Cost tradeoff**: unlike the other three architectures' O(1)-per-leaf evaluation, this is O(ply_count) per leaf (it reconstructs every historical ply's features from scratch) - noticeably more expensive per MCTS simulation for long games, though each past-ply reconstruction skips the liberty computation entirely now (the history descriptor never needs it - see `board_to_features_at_ply()`'s perf guard, `features.cpp`); only the current ply's full-descriptor reconstruction still pays for it. Worth tuning `--num-simulations`/`--gamegen-batch-size` down accordingly for a transformer run.
 
 ## Checkpoint Directories and Matching
 

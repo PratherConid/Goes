@@ -82,6 +82,29 @@ struct GNNConfig : ModelConfig {
     nlohmann::json to_json() const override;
 };
 
+// Transformer-specific model config.
+struct TransformerConfig : ModelConfig {
+    // Cross-attention stack depth AND history self-attention stack depth (same count for both -
+    // see TransformerImpl's ctor doc comment for why one CLI-configurable count serves both
+    // stacks). Deliberately NOT GNNConfig::num_layers/--num-layers (GNN's own message-passing
+    // depth flag, default 9) - kept as its own flag/field, per an explicit decision not to
+    // complicate the shared --num-layers default or its meaning.
+    int num_attn_layers;
+    // Minimal per-ply feature descriptor for PAST plies only (plyMod + stoneOccupancy) - built
+    // directly in train.cpp from the GameConfig, independent of compute_input_descr(). The
+    // inherited ModelConfig::input_descr now uniformly means "the full descriptor," used for the
+    // CURRENT ply only, same meaning as CNN/UNet/GNN's input_descr. See TransformerImpl's ctor for
+    // how this sizes the separate history-encoder MLP.
+    nlohmann::json history_descr;
+
+    TransformerConfig(int feature_dim, int hidden_dim, int num_attn_layers_,
+                       nlohmann::json input_descr, nlohmann::json history_descr_)
+        : ModelConfig("transformer", feature_dim, hidden_dim, std::move(input_descr)),
+          num_attn_layers(num_attn_layers_), history_descr(std::move(history_descr_)) {}
+
+    nlohmann::json to_json() const override;
+};
+
 // Parses a checkpoint's <arch>_config.json modelType/featureDim/hiddenDim
 // (/numLayers for gnn) keys into the matching concrete subclass, selected by
 // the modelType key - call parse_game_cfg (training/self_play.h) on the same

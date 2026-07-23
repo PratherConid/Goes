@@ -1,6 +1,7 @@
 #include "model/features.h"
 #include <algorithm>
 #include <cassert>
+#include <iostream>
 #include <stdexcept>
 
 AdjNorms compute_adj_norms(const BoardConfig& bc, torch::Device device) {
@@ -52,75 +53,47 @@ static float clamp_scale(int value, int bit_index) {
     return std::max(0.0f, 1.0f - static_cast<float>(value) / static_cast<float>(1 << bit_index));
 }
 
-// Convert a BoardState to tensors for the GNN.
-//
-// Returns
-//   features  : float32 (N, F)               per-node feature matrix
-//   legal_mask: bool    (num_stones*N + 1,)   True = legal action (stone-major
-//                                             flattened: index (stone-1)*N+pos;
-//                                             last entry = pass) - see the
-//                                             matching policy-head layout in
-//                                             cnn.cpp/gnn.cpp/unet.cpp.
-//
-// descr is the self-describing feature-block descriptor built once by
-// compute_input_descr() (training/self_play.h) at the start of a fresh
-// training run and persisted verbatim thereafter (ModelConfig::input_descr,
-// model_config.h) - shape {"blocks": [[name, ...args], ...], "totalDims": F}.
-// This function is "event loop style": it walks descr["blocks"] in order and
-// dispatches each entry by name to the matching block's fill logic below,
-// which uses that entry's own args (not a fresh GameConfig lookup) to know
-// its width, and `state` for live per-node values. F comes straight from
-// descr["totalDims"] rather than being recomputed - an assert at the end
-// checks the dispatch loop's own running offset agrees with it.
-//
-// Recognized block names and their args:
-//   "stoneOccupancy":    [num_stones] - num_stones+1 channels: is_stone[k]
-//                         one-hot (k=0..num_stones-1) + is_empty.
-//   "legalPlace":        [num_stones] - num_stones channels: is_legal[stone],
-//                         one channel per stone color (a turn can offer
-//                         several, with different legality via
-//                         protected/friendly).
-//   "liberty":            [bits] - bits channels: each node's raw liberty
-//                         count, clamp-scale encoded (see clamp_scale below) -
-//                         channel i is max(0, 1 - liberty/2^i).
-//   "groupSize":           [] - 1 channel: group_size / N.
-//   "plyMod":               [turn_list_len] - turn_list_len channels:
-//                         one-hot at (ply_count % turn_list_len), broadcast
-//                         to all nodes.
-//   "consectivePassOneHot": [turn_list_len+1] - turn_list_len+1 channels:
-//                         one-hot at the current consecutive-pass count
-//                         (MoveInfo::consecutive_passes, which ranges over
-//                         [0, turn_list_len] - the game ends once it would
-//                         exceed turn_list_len), broadcast to all nodes.
-//   "playerStoneBudget":   [bits_grid] - bits_grid is a dense num_stones x
-//                         num_players list of channel counts (stone-major); a
-//                         0 entry means "no limit configured for this pair,
-//                         contributes zero channels". Each nonzero entry
-//                         contributes that many broadcast channels: the
-//                         remaining placement count for that (stone,player)
-//                         pair, clamp-scale encoded like liberty above.
-//   "globalStoneBudget":   [bits] - bits is a dense num_stones-length list of
-//                         channel counts, same 0-means-absent/clamp-scale/
-//                         broadcast convention as playerStoneBudget, but
-//                         per-stone (summed across all players).
-//
-// Liberty/group_size are computed unconditionally (regardless of
-// game_over()) via one shared group_liberty() traversal up front, feeding
-// whichever of the "liberty"/"groupSize" blocks descr's list requests -
-// group_liberty() is a pure function of board/adj/next_turn.friendly, all of
-// which stay well-defined for a terminal state, so there's no correctness
-// reason to special-case it.
-FeatureTensors board_to_features(const BoardState& state, torch::Device device, const nlohmann::json& descr) {
+// Computes the (N,F) feature tensor for `state` as of a given ply - shared by board_to_features()
+// (ply = state.ply_count(), i.e. "now") and history_features_at_ply() (any past ply). Every block
+// reads ply-indexed accessors (board_at(), turn_list[ply % len], legal_moves_data_at(),
+// player_stone_place_cnt_at(), consecutive_passes_at()) rather than state's own "live" fields
+// (state.board, state.next_turn, state.legal_moves_data(), ...) - those live fields are themselves
+// exactly the ply_count()-indexed case of each accessor (e.g. next_turn ==
+// turn_list[ply_count() % len], confirmed via make_move()'s own use of that formula), so this is
+// behaviorally identical to the old board_to_features() when ply == state.ply_count(). All of
+// these accessors are O(1), backed by HistoryManager's per-ply interning - no BoardState mutation
+// (withdraw_move()) is ever needed to reconstruct a past ply's features.
+static torch::Tensor board_to_features_at_ply(const BoardState& state, int ply, const nlohmann::json& descr) {
+    if (ply < 0 || ply > state.ply_count()) {
+        std::cerr << "board_to_features_at_ply: ply " << ply << " out of bounds [0, "
+                  << state.ply_count() << "]\n";
+        throw std::out_of_range("board_to_features_at_ply: ply out of bounds");
+    }
+
     int N = state.N;
     int ns = state.num_stones;
     int F = descr.at("totalDims").get<int>();
+    int tl_len = (int)state.turn_list.size();
 
     auto features = torch::zeros({N, F}, torch::kFloat32);
     auto feat_a = features.accessor<float, 2>();
 
+    const std::vector<int>& board = state.board_at(ply);
+    const TurnInfo& turn_at_ply = state.turn_list[ply % tl_len];
+
+    // group_liberty() is only needed to fill node_liberty/node_group_size, which only the
+    // "liberty"/"groupSize" blocks read - skip the traversal entirely when descr requests neither
+    // (e.g. the Transformer's minimal history descriptor never does), rather than always paying
+    // for it and discarding the result.
+    bool needs_liberty = false;
+    for (auto& entry : descr.at("blocks")) {
+        std::string name = entry.at(0).get<std::string>();
+        if (name == "liberty" || name == "groupSize") { needs_liberty = true; break; }
+    }
+
     std::vector<int> node_liberty(N, 0), node_group_size(N, 0);
-    {
-        auto gdict = group_liberty(state.board, *state.adj, N, state.next_turn.friendly);
+    if (needs_liberty) {
+        auto gdict = group_liberty(board, *state.adj, N, turn_at_ply.friendly);
         for (auto& [color, entries] : gdict) {
             for (auto& e : entries) {
                 int lib_count  = static_cast<int>(e.liberties.size());
@@ -133,7 +106,8 @@ FeatureTensors board_to_features(const BoardState& state, torch::Device device, 
         }
     }
 
-    auto& place_cnt = state.player_stone_place_cnt();
+    auto& legal     = state.legal_moves_data_at(ply);
+    auto& place_cnt = state.player_stone_place_cnt_at(ply);
 
     int off = 0;
     for (auto& entry : descr.at("blocks")) {
@@ -141,7 +115,7 @@ FeatureTensors board_to_features(const BoardState& state, torch::Device device, 
 
         if (name == "stoneOccupancy") {
             for (int i = 0; i < N; i++) {
-                int stone = state.board[i];
+                int stone = board[i];
                 if (stone > 0) feat_a[i][off + stone - 1] = 1.0f;
                 else            feat_a[i][off + ns] = 1.0f;
             }
@@ -149,7 +123,7 @@ FeatureTensors board_to_features(const BoardState& state, torch::Device device, 
         } else if (name == "legalPlace") {
             for (int s = 1; s <= ns; s++)
                 for (int i = 0; i < N; i++)
-                    if (state.legal_moves_data().captures[s][i].has_value())
+                    if (legal.captures[s][i].has_value())
                         feat_a[i][off + s - 1] = 1.0f;
             off += ns;
         } else if (name == "liberty") {
@@ -166,16 +140,16 @@ FeatureTensors board_to_features(const BoardState& state, torch::Device device, 
                 feat_a[i][off] = node_group_size[i] * inv_N;
             off += 1;
         } else if (name == "plyMod") {
-            int tl_len = entry.at(1).get<int>();
-            if (tl_len > 0) {
-                int ply_mod = state.ply_count() % tl_len;
+            int block_tl_len = entry.at(1).get<int>();
+            if (block_tl_len > 0) {
+                int ply_mod = ply % block_tl_len;
                 for (int i = 0; i < N; i++)
                     feat_a[i][off + ply_mod] = 1.0f;
             }
-            off += tl_len;
+            off += block_tl_len;
         } else if (name == "consectivePassOneHot") {
             int bits = entry.at(1).get<int>();
-            int cp = state.last_move().consecutive_passes;
+            int cp = state.consecutive_passes_at(ply);
             for (int i = 0; i < N; i++)
                 feat_a[i][off + cp] = 1.0f;
             off += bits;
@@ -211,10 +185,38 @@ FeatureTensors board_to_features(const BoardState& state, torch::Device device, 
                 off += bits;
             }
         } else {
-            throw std::runtime_error("board_to_features: unknown feature block: " + name);
+            throw std::runtime_error("board_to_features_at_ply: unknown feature block: " + name);
         }
     }
-    assert(off == F && "board_to_features offset accounting must match descr's totalDims");
+    assert(off == F && "board_to_features_at_ply offset accounting must match descr's totalDims");
+
+    return features;
+}
+
+// Convert a BoardState to tensors for the GNN.
+//
+// Returns
+//   features  : float32 (N, F)               per-node feature matrix
+//   legal_mask: bool    (num_stones*N + 1,)   True = legal action (stone-major
+//                                             flattened: index (stone-1)*N+pos;
+//                                             last entry = pass) - see the
+//                                             matching policy-head layout in
+//                                             cnn.cpp/gnn.cpp/unet.cpp.
+//
+// descr is the self-describing feature-block descriptor built once by
+// compute_input_descr() (training/self_play.h) at the start of a fresh
+// training run and persisted verbatim thereafter (ModelConfig::input_descr,
+// model_config.h) - shape {"blocks": [[name, ...args], ...], "totalDims": F}.
+// See board_to_features_at_ply() above for the recognized block names/args
+// and per-block fill logic (shared with this function).
+//
+// Features come from board_to_features_at_ply() at the current ply; the legal mask stays here
+// rather than moving into that shared function, since it depends on game_over()/no_trad_legal(),
+// concepts that are only meaningful for the current position, not an arbitrary past ply.
+FeatureTensors board_to_features(const BoardState& state, torch::Device device, const nlohmann::json& descr) {
+    int N = state.N;
+    int ns = state.num_stones;
+    auto features = board_to_features_at_ply(state, state.ply_count(), descr);
 
     // Legal mask: num_stones*N place actions (stone-major) + 1 pass -
     // independent of descr.
@@ -230,4 +232,8 @@ FeatureTensors board_to_features(const BoardState& state, torch::Device device, 
     }
 
     return {features.to(device), legal_mask.to(device)};
+}
+
+torch::Tensor history_features_at_ply(const BoardState& state, int ply, const nlohmann::json& descr) {
+    return board_to_features_at_ply(state, ply, descr);
 }
