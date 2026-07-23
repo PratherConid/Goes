@@ -684,8 +684,17 @@ int main(int argc, char* argv[]) {
     // legal moves simultaneously, which closely depends on the full history of the game. CNN/UNet/GNN
     // receive only per-node features derived from the current board, so they cannot function
     // correctly in this case - only the history-aware transformer architecture can.
-    assert((!game_cfg.forced_pass_only || arch == "transformer") &&
-           "forced_pass_only=true requires --net-arch transformer");
+    //
+    // A plain assert() would be compiled out entirely under NDEBUG (this project's Release builds),
+    // silently letting a stateless architecture train against forced_pass_only=true games - a real
+    // correctness bug, not just a debug-time sanity check - so this must be a live, unconditional
+    // runtime check instead.
+    if (game_cfg.forced_pass_only && arch != "transformer") {
+        std::cerr << "Error: forced_pass_only=true requires --net-arch transformer (got '" << arch
+                  << "') - CNN/UNet/GNN aren't history-aware and can't function correctly under "
+                     "forced_pass_only rules.\n";
+        return 1;
+    }
 
     torch::Device device = (torch::cuda::is_available() && !args.cpu)
         ? torch::kCUDA : torch::kCPU;
