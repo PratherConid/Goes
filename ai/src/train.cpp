@@ -45,7 +45,7 @@ struct Args {
     int cnn_conv_size     = 5;
     int transformer_hidden_dim = 128;
     int num_layers        = 9;
-    int num_attn_layers   = 3;  // Transformer's cross-attention/history self-attention depth
+    int num_attn_layers   = 8;  // Transformer's cross-attention/history self-attention depth
     int iterations        = 200;
     int self_play_games   = 10;
     int gamegen_batch_size = 25;
@@ -91,7 +91,7 @@ static void print_usage(const char* prog) {
               << "  --transformer-hidden-dim N  Transformer hidden dimension (default: 128)\n"
               << "  --num-layers N            GNN message-passing layers (default: 9)\n"
               << "  --num-attn-layers N       Transformer history self-attention/cross-attention\n"
-              << "                            layers (default: 3)\n"
+              << "                            layers (default: 8)\n"
               << "  --iterations N            Training iterations (default: 200)\n"
               << "  --self-play-games N       Games to complete before each training step (default: 10)\n"
               << "  --gamegen-batch-size N    Games generated in parallel (default: 10)\n"

@@ -245,7 +245,7 @@ The `GOES_CHECKPOINT_DIR` environment variable overrides the checkpoint director
 | `--cnn-conv-size N` | `5` | CNN convolution kernel size (2D boards) - must be odd and > 1 |
 | `--transformer-hidden-dim N` | `128` | Transformer hidden dimension (any board) |
 | `--num-layers N` | `9` | GNN message-passing layers |
-| `--num-attn-layers N` | `3` | Transformer history self-attention/cross-attention layer count (separate flag from `--num-layers` - not shared with GNN) |
+| `--num-attn-layers N` | `8` | Transformer history self-attention/cross-attention layer count (separate flag from `--num-layers` - not shared with GNN) |
 | `--save-every N` | `10` | Save a checkpoint every N iterations |
 | `--checkpoint-dir PATH` | `ai/checkpoints` | Checkpoint directory |
 | `--resume TAG` | _(none)_ | Continue an existing hash-named checkpoint directory instead of starting a fresh one - see **Checkpoint Directories and Matching** |
