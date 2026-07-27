@@ -251,7 +251,7 @@ The `GOES_CHECKPOINT_DIR` environment variable overrides the checkpoint director
 | `--save-every N` | `10` | Dump self-play trajectories every N iterations - does *not* save model checkpoints (see **Tournament-Based Model Selection**, below) |
 | `--num-selfplay-models N` | `4` | Target size of the active self-play model set - see **Tournament-Based Model Selection**, below |
 | `--num-tournament-models N` | `8` | Participants per tournament: the active models plus randomly sampled challengers, filling up to this many total - must be `> --num-selfplay-models` |
-| `--tournament-every N` | `32` | Training iterations between tournaments |
+| `--tournament-every N` | `16` | Training iterations between tournaments |
 | `--num-tournament-games N` | `512` | Games played per tournament |
 | `--tournament-num-simulations N` | `128` | MCTS sims per move during tournament games (separate, usually lower, than `--num-simulations`) |
 | `--checkpoint-dir PATH` | `ai/checkpoints` | Checkpoint directory |

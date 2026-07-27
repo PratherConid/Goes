@@ -75,7 +75,7 @@ struct Args {
     // snapshots captured in between accumulate as challengers until the next tournament (or until
     // active_models is still growing towards num_selfplay_models capacity, in which case they join
     // active_models directly instead - see main()).
-    int tournament_every = 32;
+    int tournament_every = 16;
     // Games played per tournament, distributed across participants via the "least chosen so far
     // for this game" balancing rule (see assign_tournament_models()).
     int num_tournament_games = 512;
@@ -138,7 +138,7 @@ static void print_usage(const char* prog) {
               << "  --num-tournament-models N Participants per tournament (active models + random\n"
               << "                            challengers) - must be > --num-selfplay-models\n"
               << "                            (default: 8)\n"
-              << "  --tournament-every N      Training iterations between tournaments (default: 32)\n"
+              << "  --tournament-every N      Training iterations between tournaments (default: 16)\n"
               << "  --num-tournament-games N  Games played per tournament (default: 512)\n"
               << "  --tournament-num-simulations N  MCTS simulations per ply during tournament\n"
               << "                            games (default: 128)\n"
@@ -435,14 +435,31 @@ static void run_tournament_games(
     }
     int temperature_threshold = static_cast<int>(2 * std::sqrt(bc.N)) + 3;
 
-    int games_started = batch_n, games_done = 0;
+    int games_started = batch_n, games_done = 0, tournament_ply_iter = 0;
     while (games_done < num_games) {
         std::vector<BoardState*> ptrs;
         ptrs.reserve(tpool.size());
         for (auto& s : tpool) ptrs.push_back(&s);
 
-        generate_one_ply_per_game(evaluators, ptrs, input_descr, num_simulations,
-                                   temperature_threshold, c_puct, verbosity, history_descr);
+        auto t_ply0 = std::chrono::high_resolution_clock::now();
+        auto [ply_results, timing] = generate_one_ply_per_game(
+            evaluators, ptrs, input_descr, num_simulations,
+            temperature_threshold, c_puct, verbosity, history_descr);
+        double total_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - t_ply0).count();
+        if (verbosity >= 1) {
+            // Mirrors the live loop's own per-ply timing print (train.cpp's main()),
+            // "tournament iter" instead of "ply iter" to distinguish it in the log.
+            std::cout << std::fixed << std::setprecision(0)
+                      << "  tournament iter " << tournament_ply_iter << ": generate=" << total_ms << "ms"
+                      << "  search=" << timing.search * 1000.0 << "ms"
+                      << "  simulate=" << timing.simulate * 1000.0 << "ms"
+                      << "  teardown=" << timing.teardown * 1000.0 << "ms"
+                      << "  eval=" << timing.eval * 1000.0 << "ms"
+                      << "  select=" << timing.select * 1000.0 << "ms"
+                      << std::defaultfloat << std::endl;
+        }
+        ++tournament_ply_iter;
 
         for (int slot = 0; slot < (int)tpool.size(); slot++) {
             if (!tpool[slot].game_over()) continue;
@@ -458,6 +475,30 @@ static void run_tournament_games(
                 reward_sum[model_id] += it->second;
                 game_count[model_id] += 1;
             }
+
+            if (verbosity >= 1) {
+                // Mirrors the live loop's own per-self-play-game print (train.cpp's main()),
+                // "Tournament"-prefixed to distinguish it in the log.
+                auto& score = tpool[slot].score();
+                auto stone_at = [](const std::unordered_map<int,int>& m, int s) {
+                    auto it = m.find(s);
+                    return it != m.end() ? it->second : 0;
+                };
+                std::cout << "  Tournament game " << (games_done + 1)
+                          << "/" << num_games
+                          << "  plies=" << tpool[slot].ply_count()
+                          << "  stones=[";
+                for (int s = 1; s <= tpool[slot].num_stones; s++) std::cout << stone_at(score.stone_count, s) << ",";
+                std::cout << "]  territories=[";
+                for (int s = 1; s <= tpool[slot].num_stones; s++) std::cout << stone_at(score.territory, s) << ",";
+                std::cout << "]  winners=[";
+                if (tpool[slot].winners.has_value())
+                    for (int w : tpool[slot].winners.value()) std::cout << w << ",";
+                else
+                    std::cout << "error, winner has not been computed";
+                std::cout << "]" << std::endl;
+            }
+
             games_done++;
 
             if (games_started < num_games) {
