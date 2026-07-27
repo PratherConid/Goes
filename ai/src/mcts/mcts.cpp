@@ -132,7 +132,10 @@ std::pair<torch::Tensor, torch::Tensor> MCTS::evaluate_batch(const std::vector<c
                 own_sub.options());
         }
 
-        auto idx_t = torch::tensor(idxs, torch::kLong);
+        // index_copy_ requires the index tensor to be on the same device as the tensor it's
+        // writing into - torch::tensor(idxs, torch::kLong) alone defaults to CPU, which throws
+        // ("Expected all tensors to be on the same device") once policy/ownership live on CUDA.
+        auto idx_t = torch::tensor(idxs, torch::TensorOptions().dtype(torch::kLong).device(policy.device()));
         policy.index_copy_(0, idx_t, pol_sub);
         ownership.index_copy_(0, idx_t, own_sub);
     }
