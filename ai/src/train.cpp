@@ -8,7 +8,6 @@
 #include "model/model_config.h"
 #include "training/self_play.h"
 #include "training/replay_buffer.h"
-#include "training/model_pool.h"
 #include "util/sha256.h"
 #include <torch/torch.h>
 #include <iostream>
@@ -20,6 +19,7 @@
 #include <algorithm>
 #include <chrono>
 #include <random>
+#include <numeric>
 #include <sstream>
 #include <iomanip>
 #include <fstream>
@@ -58,13 +58,31 @@ struct Args {
     float lr              = 1e-3f;
     float l2              = 1e-4f;
     float c_puct          = 1.0f;
+    // Controls only the self-play trajectory (_traj.json) dump cadence now - see main()'s
+    // save_trajectories() call sites. Model weights are no longer saved on this cadence; they're
+    // saved only as tournament winners (see num_tournament_models et al., below).
     int save_every        = 10;
-    // Size of the rotating pool of recent model snapshots used for self-play game generation (see
-    // ModelPool, training/model_pool.h) - each self-play player is independently randomly assigned
-    // one of the currently-active snapshots when their game is created. Default 1 preserves the
-    // exact single-model behavior from before this flag existed (a pool of size 1 always has
-    // exactly one entry to "randomly" assign every player to).
-    int num_selfplay_models = 1;
+    // Target size of the active self-play model set (see ModelSnapshots, train.cpp) - each
+    // self-play player is independently randomly assigned one of the currently-active snapshots
+    // when their game is created. Grows directly (one fresh snapshot per iteration) until it
+    // reaches this size, then only changes via tournament promotion (see tournament_every et al.).
+    int num_selfplay_models = 4;
+    // Number of participants in each tournament: the current active_models set plus randomly
+    // sampled challengers, filling up to this many total - must be > num_selfplay_models (validated
+    // after parsing) so every tournament has at least one wildcard slot.
+    int num_tournament_models = 8;
+    // Training iterations between tournaments - see main()'s tournament block. Fresh model
+    // snapshots captured in between accumulate as challengers until the next tournament (or until
+    // active_models is still growing towards num_selfplay_models capacity, in which case they join
+    // active_models directly instead - see main()).
+    int tournament_every = 32;
+    // Games played per tournament, distributed across participants via the "least chosen so far
+    // for this game" balancing rule (see assign_tournament_models()).
+    int num_tournament_games = 512;
+    // MCTS simulations per ply during tournament games - independent of (and typically much lower
+    // than) --num-simulations, since tournament games exist purely to rank models, not to produce
+    // training data.
+    int tournament_num_simulations = 128;
     std::string checkpoint_dir = "ai/checkpoints";
     std::string net_arch  = "auto";
     bool cpu              = false;
@@ -111,10 +129,19 @@ static void print_usage(const char* prog) {
               << "  --lr F                    Learning rate (default: 0.001)\n"
               << "  --l2 F                    Weight decay (default: 0.0001)\n"
               << "  --c-puct F                MCTS exploration constant (default: 1.0)\n"
-              << "  --save-every N            Save checkpoint every N iterations (default: 10)\n"
-              << "  --num-selfplay-models N   Rotating pool size of recent model snapshots used for\n"
-              << "                            self-play - each player is independently randomly\n"
-              << "                            assigned one active snapshot per game (default: 1)\n"
+              << "  --save-every N            Dump self-play trajectories every N iterations - no\n"
+              << "                            longer controls model checkpointing, see\n"
+              << "                            --num-tournament-models (default: 10)\n"
+              << "  --num-selfplay-models N   Target size of the active self-play model set - each\n"
+              << "                            player is independently randomly assigned one active\n"
+              << "                            snapshot per game (default: 4)\n"
+              << "  --num-tournament-models N Participants per tournament (active models + random\n"
+              << "                            challengers) - must be > --num-selfplay-models\n"
+              << "                            (default: 8)\n"
+              << "  --tournament-every N      Training iterations between tournaments (default: 32)\n"
+              << "  --num-tournament-games N  Games played per tournament (default: 512)\n"
+              << "  --tournament-num-simulations N  MCTS simulations per ply during tournament\n"
+              << "                            games (default: 128)\n"
               << "  --checkpoint-dir PATH     Checkpoint directory (default: ai/checkpoints)\n"
               << "  --resume TAG              Resume from ai/checkpoints/TAG (an existing hash-named\n"
               << "                            directory printed by a previous run) instead of starting\n"
@@ -174,6 +201,35 @@ static Args parse_args(int argc, char* argv[]) {
                 std::exit(1);
             }
         }
+        else if (a == "--num-tournament-models") {
+            args.num_tournament_models = std::stoi(argv[++i]);
+            if (args.num_tournament_models < 1) {
+                std::cerr << "--num-tournament-models must be >= 1 (got " << args.num_tournament_models << ")\n";
+                std::exit(1);
+            }
+        }
+        else if (a == "--tournament-every") {
+            args.tournament_every = std::stoi(argv[++i]);
+            if (args.tournament_every < 1) {
+                std::cerr << "--tournament-every must be >= 1 (got " << args.tournament_every << ")\n";
+                std::exit(1);
+            }
+        }
+        else if (a == "--num-tournament-games") {
+            args.num_tournament_games = std::stoi(argv[++i]);
+            if (args.num_tournament_games < 1) {
+                std::cerr << "--num-tournament-games must be >= 1 (got " << args.num_tournament_games << ")\n";
+                std::exit(1);
+            }
+        }
+        else if (a == "--tournament-num-simulations") {
+            args.tournament_num_simulations = std::stoi(argv[++i]);
+            if (args.tournament_num_simulations < 1) {
+                std::cerr << "--tournament-num-simulations must be >= 1 (got "
+                          << args.tournament_num_simulations << ")\n";
+                std::exit(1);
+            }
+        }
         else if (a == "--checkpoint-dir")  args.checkpoint_dir  = argv[++i];
         else if (a == "--resume") {
             if (!args.retrain_tag.empty()) {
@@ -206,6 +262,11 @@ static Args parse_args(int argc, char* argv[]) {
     }
     if (args.game_config_path.empty()) {
         std::cerr << "--game-config is required\n"; print_usage(argv[0]); std::exit(1);
+    }
+    if (args.num_tournament_models <= args.num_selfplay_models) {
+        std::cerr << "--num-tournament-models must be > --num-selfplay-models (got "
+                  << args.num_tournament_models << " <= " << args.num_selfplay_models << ")\n";
+        std::exit(1);
     }
     return args;
 }
@@ -271,14 +332,20 @@ static const nlohmann::json* history_descr_ptr(const ModelConfig& cfg) {
         : nullptr;
 }
 
-// ── Multi-model self-play (ModelPool) ───────────────────────────────────────────
+// ── Multi-model self-play & tournament-based model selection ───────────────────
+
+// id -> frozen model snapshot; id is the training iteration it was captured at. Used for both the
+// active self-play model set and the pool of not-yet-tournament-tested challengers (see main()).
+using ModelSnapshots = std::vector<std::pair<int, AnyModel>>;
 
 // Produces an independent, frozen copy of src - not just another reference to the same
-// shared_ptr-backed torch module (which a plain AnyModel copy would be), since ModelPool needs to
-// keep old snapshots' weights unaffected by further training on the live model_var. Goes through
-// the exact same torch::save/torch::load (via std::visit) already used for checkpoints, just
-// round-tripped through an in-memory stream instead of a file - build_model() constructs the
-// fresh AnyModel of the right architecture to load into.
+// shared_ptr-backed torch module (which a plain AnyModel copy would be), since a snapshot must
+// stay unaffected by further training on the live model_var. Goes through the exact same
+// torch::save/torch::load (via std::visit) already used for checkpoints, just round-tripped
+// through an in-memory stream instead of a file - build_model() constructs the fresh AnyModel of
+// the right architecture to load into. Only needed when snapshotting model_var itself - copying an
+// already-frozen ModelSnapshots entry (active_models/challengers/participants) is safe as a plain
+// (shallow, shared_ptr-aliasing) AnyModel copy, since nothing ever trains those further.
 static AnyModel clone_model(const AnyModel& src, const BoardConfig& bc, const ModelConfig& cfg,
                              const GameConfig& game_cfg, torch::Device device) {
     std::ostringstream oss;
@@ -289,32 +356,121 @@ static AnyModel clone_model(const AnyModel& src, const BoardConfig& bc, const Mo
     return fresh;
 }
 
-// Randomly (re)assigns every player of `state` to one of active_models' current entries - used
-// both for a brand-new game (every player) and, via refresh_player() below, for a single player
-// whose previously-assigned model just got evicted.
-static void assign_random_models(BoardState& state, const ModelPool& active_models, std::mt19937& rng) {
-    for (int p = 0; p < state.num_players; p++)
-        state.player_model_id[p] = active_models.random_id(rng);
+// Uniformly random id from `models` - a lookup key into `models` itself and into an evaluators
+// map built from the same vector via build_evaluators().
+static int pick_random_model_id(const ModelSnapshots& models, std::mt19937& rng) {
+    std::uniform_int_distribution<size_t> dist(0, models.size() - 1);
+    return models[dist(rng)].first;
 }
 
-// After active_models evicts a model, `state` may still have a player referencing the evicted id -
-// if so, that would otherwise fail MCTS::evaluate_batch()'s lookup once the evaluators map is
-// rebuilt to match the new window. Reassigns exactly that player to a fresh random pick from the
-// current window instead, keeping `state`'s assignments a subset of the pool's current window.
-static void refresh_player(BoardState& state, const ModelPool& active_models, int evicted_id, std::mt19937& rng) {
+// Randomly (re)assigns every player of `state` to one of `models`' current entries - used both for
+// a brand-new self-play game (every player) and, via refresh_player() below, for a single player
+// whose previously-assigned model is no longer active.
+static void assign_random_models(BoardState& state, const ModelSnapshots& models, std::mt19937& rng) {
     for (int p = 0; p < state.num_players; p++)
-        if (state.player_model_id[p] == evicted_id)
-            state.player_model_id[p] = active_models.random_id(rng);
+        state.player_model_id[p] = pick_random_model_id(models, rng);
 }
 
-// (Re)builds the full evaluators map from active_models' current window - called once whenever
-// the pool changes (not per ply; the pool only changes once per training iteration, and many
-// ply-generation calls happen within one iteration's self-play phase against an unchanged pool).
-static std::map<int, Evaluator> build_evaluators(ModelPool& active_models, const AdjNorms& adj_norms) {
+// After active_models changes (a tournament can replace more than one entry at once, unlike the
+// old per-iteration FIFO eviction), `state` may still have a player referencing an id that's no
+// longer present - if so, that would otherwise fail MCTS::evaluate_batch()'s lookup once the
+// evaluators map is rebuilt to match the new set. Reassigns exactly that player to a fresh random
+// pick instead, keeping `state`'s assignments always a subset of `models`.
+static void refresh_player(BoardState& state, const ModelSnapshots& models, std::mt19937& rng) {
+    for (int p = 0; p < state.num_players; p++) {
+        int id = state.player_model_id[p];
+        bool still_present = std::any_of(models.begin(), models.end(),
+                                          [&](auto& e) { return e.first == id; });
+        if (!still_present) state.player_model_id[p] = pick_random_model_id(models, rng);
+    }
+}
+
+// (Re)builds the full evaluators map from `models` - called whenever active_models changes (not
+// per ply; active_models only changes a few times per training iteration at most, and many
+// ply-generation calls happen within one iteration's self-play phase against an unchanged set).
+static std::map<int, Evaluator> build_evaluators(ModelSnapshots& models, const AdjNorms& adj_norms) {
     std::map<int, Evaluator> evaluators;
-    for (auto& [id, model] : active_models.entries())
+    for (auto& [id, model] : models)
         evaluators[id] = make_evaluator(model, adj_norms);
     return evaluators;
+}
+
+// One slot at a time, uniformly choosing among whichever participant model(s) have been assigned
+// fewest times *for this game* - counts reset per game/state, so this keeps one multiplayer game's
+// own slots diverse without tracking how often a model has played elsewhere in the tournament.
+static void assign_tournament_models(BoardState& state, const ModelSnapshots& participants, std::mt19937& rng) {
+    std::unordered_map<int,int> counts;
+    for (auto& [id, m] : participants) counts[id] = 0;
+    for (int p = 0; p < state.num_players; p++) {
+        int min_count = std::min_element(counts.begin(), counts.end(),
+            [](const auto& a, const auto& b) { return a.second < b.second; })->second;
+        std::vector<int> candidates;
+        for (auto& [id, c] : counts) if (c == min_count) candidates.push_back(id);
+        std::uniform_int_distribution<size_t> dist(0, candidates.size() - 1);
+        int chosen = candidates[dist(rng)];
+        state.player_model_id[p] = chosen;
+        counts[chosen]++;
+    }
+}
+
+// Runs `num_games` tournament games (batched `gamegen_batch_size` at a time) among `participants`,
+// discarding trajectories (tournament games are for ranking models only, never trained on) and
+// accumulating each participant's total reward + games played into reward_sum/game_count (both
+// assumed already zero-initialized for every id in participants by the caller). Reuses
+// generate_one_ply_per_game() unchanged - the same MCTS/model-routing machinery self-play uses -
+// simply dropping the returned PlyResults each ply instead of recording them.
+static void run_tournament_games(
+    ModelSnapshots& participants, std::map<int, Evaluator>& evaluators,
+    const GameConfig& game_cfg, const BoardConfig& bc, const nlohmann::json& input_descr,
+    const nlohmann::json* history_descr, int num_games, int gamegen_batch_size,
+    int num_simulations, float c_puct, int verbosity, std::mt19937& rng,
+    std::unordered_map<int,float>& reward_sum, std::unordered_map<int,int>& game_count)
+{
+    int batch_n = std::min(gamegen_batch_size, num_games);
+    std::vector<BoardState> tpool;
+    tpool.reserve(batch_n);
+    for (int i = 0; i < batch_n; i++) {
+        tpool.push_back(new_state(game_cfg, bc));
+        assign_tournament_models(tpool.back(), participants, rng);
+    }
+    int temperature_threshold = static_cast<int>(2 * std::sqrt(bc.N)) + 3;
+
+    int games_started = batch_n, games_done = 0;
+    while (games_done < num_games) {
+        std::vector<BoardState*> ptrs;
+        ptrs.reserve(tpool.size());
+        for (auto& s : tpool) ptrs.push_back(&s);
+
+        generate_one_ply_per_game(evaluators, ptrs, input_descr, num_simulations,
+                                   temperature_threshold, c_puct, verbosity, history_descr);
+
+        for (int slot = 0; slot < (int)tpool.size(); slot++) {
+            if (!tpool[slot].game_over()) continue;
+
+            auto rewards = compute_player_rewards(
+                BoardState::compute_points(tpool[slot].score_rule, tpool[slot].score()),
+                tpool[slot].stone_to_player_map, tpool[slot].komi,
+                tpool[slot].score_rule, tpool[slot].capture_count());
+            for (int p = 0; p < tpool[slot].num_players; p++) {
+                int model_id = tpool[slot].player_model_id[p];
+                auto it = rewards.find(p + 1);
+                if (it == rewards.end()) continue;  // e.g. a player none of this turn's stones scores for
+                reward_sum[model_id] += it->second;
+                game_count[model_id] += 1;
+            }
+            games_done++;
+
+            if (games_started < num_games) {
+                tpool[slot] = new_state(game_cfg, bc);
+                assign_tournament_models(tpool[slot], participants, rng);
+                games_started++;
+            } else {
+                tpool[slot] = std::move(tpool.back());
+                tpool.pop_back();
+                slot--;  // re-visit the swapped-in state at this index
+            }
+        }
+    }
 }
 
 // ── Checkpoint utilities ──────────────────────────────────────────────────────
@@ -672,49 +828,58 @@ static bool run_training_iteration(
     return true;
 }
 
-// Writes <arch>_XXXXXX.pt (weights), <arch>_config.json (game_cfg+model_cfg,
-// same combined shape validate_checkpoint_dir_config()/validate_retrain_source_dir()
-// read back), and <arch>_XXXXXX_traj.json (games_to_dump, JSON-array-of-arrays
-// via PlyResult::to_json()) into ckpt_dir for iteration `iter`. Shared by the
-// live self-play loop (games_to_dump = its accumulated traj_store) and
-// --retrain's replay phase (games_to_dump = the current span's historical
-// games, re-dumped into the new output directory so a later --resume from it
-// doesn't start with an empty buffer).
-static void save_checkpoint(
-    const fs::path& ckpt_dir, const std::string& arch, int iter,
-    AnyModel& model_var, const GameConfig& game_cfg, const ModelConfig& model_cfg,
-    const std::vector<std::vector<PlyResult>>& games_to_dump)
+// Writes <arch>_config.json (game_cfg+model_cfg, same combined shape
+// validate_checkpoint_dir_config()/validate_retrain_source_dir() read back) into ckpt_dir. Called
+// once, early in main() (both fresh-run and --resume paths - idempotent on --resume, since its
+// content is already validated to match) rather than tied to any particular checkpoint event, so
+// it's guaranteed to exist well before the first model weights or trajectories are ever saved.
+static void save_config_json(const fs::path& ckpt_dir, const std::string& arch,
+                              const GameConfig& game_cfg, const ModelConfig& model_cfg)
+{
+    // featureDim/inputDescr persisted directly (rather than re-derived from
+    // player_stone_place_limit/global_stone_place_limit) so server.cpp's load_model() doesn't need
+    // to round-trip the full limit structure through the checkpoint JSON - see
+    // compute_input_descr()'s doc comment (training/self_play.h). model_cfg is the same one
+    // build_model() constructed the network from.
+    json cfg_json = game_cfg.to_json();
+    cfg_json.update(model_cfg.to_json());
+    std::ofstream(ckpt_dir / (arch + "_config.json")) << cfg_json.dump(2) << "\n";
+}
+
+// Writes <arch>_XXXXXX.pt (weights) into ckpt_dir, tagged with `id` - the live self-play loop
+// passes a tournament winner's own capture iteration (may be well before the current training
+// iteration - see main()'s tournament block); --retrain's replay phase passes model_var's own
+// current iteration directly (that phase has no tournament concept). Either way,
+// iteration_from_model_path()/latest_checkpoint() read `id` back the same way regardless of which
+// case produced it.
+static void save_model_weights(const fs::path& ckpt_dir, const std::string& arch, int id,
+                                AnyModel& model, const GameConfig&, const ModelConfig&)
 {
     std::ostringstream oss;
-    oss << arch << "_" << std::setfill('0') << std::setw(6) << iter << ".pt";
+    oss << arch << "_" << std::setfill('0') << std::setw(6) << id << ".pt";
     fs::path ckpt_path = ckpt_dir / oss.str();
-    std::visit([&](auto& m) { torch::save(m, ckpt_path.string()); }, model_var);
-    fs::path json_path = ckpt_dir / (arch + "_config.json");
-    {
-        // featureDim/inputDescr persisted directly (rather than
-        // re-derived from player_stone_place_limit/global_stone_place_limit)
-        // so server.cpp's load_model() doesn't need to round-trip the
-        // full limit structure through the checkpoint JSON - see
-        // compute_input_descr()'s doc comment (training/self_play.h).
-        // model_cfg is the same one build_model() constructed the
-        // network from.
-        json cfg_json = game_cfg.to_json();
-        cfg_json.update(model_cfg.to_json());
-        std::ofstream(json_path) << cfg_json.dump(2) << "\n";
-    }
+    std::visit([&](auto& m) { torch::save(m, ckpt_path.string()); }, model);
+    std::cout << "  Saved " << ckpt_path << std::endl;
+}
+
+// Writes <arch>_XXXXXX_traj.json (games_to_dump, JSON-array-of-arrays via PlyResult::to_json())
+// into ckpt_dir for iteration `iter` - shared by the live self-play loop's --save-every cadence
+// (games_to_dump = its accumulated traj_store) and --retrain's replay phase (games_to_dump = the
+// current span's historical games, re-dumped into the new output directory so a later --resume
+// from it doesn't start with an empty buffer).
+static void save_trajectories(const fs::path& ckpt_dir, const std::string& arch, int iter,
+                               const std::vector<std::vector<PlyResult>>& games_to_dump)
+{
     std::ostringstream toss;
     toss << arch << "_" << std::setfill('0') << std::setw(6) << iter << "_traj" << ".json";
     fs::path traj_path = ckpt_dir / toss.str();
-    {
-        json trajs = json::array();
-        for (auto& traj : games_to_dump) {
-            json t = json::array();
-            for (auto& ply : traj) t.push_back(ply.to_json());
-            trajs.push_back(std::move(t));
-        }
-        std::ofstream(traj_path) << trajs.dump() << "\n";
+    json trajs = json::array();
+    for (auto& traj : games_to_dump) {
+        json t = json::array();
+        for (auto& ply : traj) t.push_back(ply.to_json());
+        trajs.push_back(std::move(t));
     }
-    std::cout << "  Saved " << ckpt_path << std::endl;
+    std::ofstream(traj_path) << trajs.dump() << "\n";
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -814,6 +979,10 @@ int main(int argc, char* argv[]) {
         start_iter = resume(ckpt_dir, *model_cfg, model_var, game_cfg, bc,
                              args.buffer_size, buffer);
     }
+    // Written unconditionally/early (rather than tied to any particular checkpoint event) so it's
+    // guaranteed to exist from the very start of the run, well before the first tournament winner
+    // or --save-every trajectory dump - see save_config_json()'s doc comment.
+    save_config_json(ckpt_dir, arch, game_cfg, *model_cfg);
 
     auto optimizer = torch::optim::Adam(
         std::visit([](auto& m) { return m->parameters(); }, model_var),
@@ -823,14 +992,24 @@ int main(int argc, char* argv[]) {
 
     auto adj_norms = compute_adj_norms(bc, device);
 
-    // Rotating pool of recent model snapshots for multi-model self-play (see ModelPool's doc
-    // comment, training/model_pool.h) - seeded with a single snapshot of the current model_var,
-    // which uniformly covers a fresh run, a --resume'd run, and the post---retrain fall-through
-    // (none of those paths need special-casing here, since this only ever looks at whatever
-    // model_var currently holds).
-    ModelPool active_models(args.num_selfplay_models);
-    active_models.add(start_iter, clone_model(model_var, bc, *model_cfg, game_cfg, device));
+    // Active self-play model set, grown directly (see the live loop below) until it reaches
+    // num_selfplay_models capacity, then only ever changed wholesale via tournament promotion -
+    // seeded with a single snapshot of the current model_var, which uniformly covers a fresh run,
+    // a --resume'd run, and the post---retrain fall-through (none of those paths need
+    // special-casing here, since this only ever looks at whatever model_var currently holds).
+    // Tagged start_iter - 1 (matching the id of the checkpoint it was just loaded from, on
+    // --resume - see resume()'s "start_iter = id + 1"; -1 for a fresh run, a sentinel that never
+    // collides with any real iteration) rather than start_iter itself - the live loop's first pass
+    // (iter == start_iter) captures its own post-backprop snapshot tagged `iter`, i.e. start_iter;
+    // reusing that same id for the seed would collide in the evaluators map (std::map silently
+    // drops the second insert for a repeated key), silently losing one of two distinct models.
+    ModelSnapshots active_models;
+    active_models.push_back({start_iter - 1, clone_model(model_var, bc, *model_cfg, game_cfg, device)});
     auto evaluators = build_evaluators(active_models, adj_norms);
+
+    // Fresh model_var snapshots captured since the last tournament (once active_models is at
+    // capacity - see the live loop) - candidates for promotion. Cleared after every tournament.
+    ModelSnapshots challengers;
 
     // ── Game pool ─────────────────────────────────────────────────────────────
     // Pool of gamegen_batch_size in-progress games. Slots are replenished
@@ -899,8 +1078,12 @@ int main(int argc, char* argv[]) {
                                                     args.train_fraction, args.batch_size, t0);
                 iter++;
             }
-            if (!hit_iteration_cap && did_train)
-                save_checkpoint(ckpt_dir, arch, iter - 1, model_var, game_cfg, *model_cfg, span_games);
+            if (!hit_iteration_cap && did_train) {
+                // No tournament concept here (this phase never runs self-play/MCTS) - model_var
+                // itself is the only thing to save, tagged by its own current iteration.
+                save_model_weights(ckpt_dir, arch, iter - 1, model_var, game_cfg, *model_cfg);
+                save_trajectories(ckpt_dir, arch, iter - 1, span_games);
+            }
 
             prev_it = it;
         }
@@ -994,20 +1177,128 @@ int main(int argc, char* argv[]) {
                                                  args.train_fraction, args.batch_size, t0);
         if (!did_train) continue;
 
-        // A fresh snapshot of the just-updated model_var becomes the newest entry in the rotating
-        // pool, possibly evicting the oldest. If it did, any pool state still referencing the
-        // evicted id gets reassigned to a fresh pick from the pool's new window - and evaluators is
-        // rebuilt regardless (evicted or not), since a new entry was just added either way. All
-        // three steps must complete before the self-play loop's next generate_one_ply_per_game()
-        // call above.
-        auto evicted = active_models.add(iter, clone_model(model_var, bc, *model_cfg, game_cfg, device));
-        if (evicted)
-            for (auto& state : pool) refresh_player(state, active_models, *evicted, rng);
-        evaluators = build_evaluators(active_models, adj_norms);
+        // A fresh snapshot of the just-updated model_var either grows active_models directly (still
+        // below capacity - nothing to displace yet, so no reason to gate it behind a tournament) or,
+        // once active_models is full, joins challengers to await the next tournament.
+        auto snapshot = clone_model(model_var, bc, *model_cfg, game_cfg, device);
+        if ((int)active_models.size() < args.num_selfplay_models) {
+            active_models.push_back({iter, std::move(snapshot)});
+            evaluators = build_evaluators(active_models, adj_norms);
+        } else {
+            challengers.push_back({iter, std::move(snapshot)});
+        }
 
-        // ── Checkpoint ───────────────────────────────────────────────────────
+        // ── Tournament ───────────────────────────────────────────────────────
+        // iter == args.iterations - 1 mirrors --save-every's own end-of-run flush below, so
+        // whatever's accumulated in challengers always gets one last shot before the run ends.
+        if ((iter + 1) % args.tournament_every == 0 || iter == args.iterations - 1) {
+            int wildcards_needed = args.num_tournament_models - (int)active_models.size();
+            if ((int)challengers.size() < wildcards_needed) {
+                // Not enough challengers yet to fill a full num_tournament_models tournament with
+                // all-distinct participants - skip this round entirely (challengers keeps
+                // accumulating untouched) rather than running an under-sized tournament.
+                if (args.verbosity >= 1)
+                    std::cout << "[iter " << std::setw(4) << iter << "] tournament: only "
+                              << challengers.size() << " challengers available (" << wildcards_needed
+                              << " needed) - skipping this tournament" << std::endl;
+            } else {
+                // Distinct wildcard challengers: shuffle indices and take the first
+                // wildcards_needed - each index used at most once, so participants never
+                // contains the same challenger twice.
+                std::vector<int> idx(challengers.size());
+                std::iota(idx.begin(), idx.end(), 0);
+                std::shuffle(idx.begin(), idx.end(), rng);
+                ModelSnapshots participants = active_models;
+                for (int k = 0; k < wildcards_needed; k++) participants.push_back(challengers[idx[k]]);
+
+                auto tournament_evaluators = build_evaluators(participants, adj_norms);
+
+                if (args.verbosity >= 1)
+                    std::cout << "[iter " << std::setw(4) << iter << "] tournament (" << participants.size()
+                              << " models, " << args.num_tournament_games << " games, batch="
+                              << args.gamegen_batch_size << ") ..." << std::endl;
+
+                std::unordered_map<int,float> reward_sum;
+                std::unordered_map<int,int> game_count;
+                for (auto& [id, m] : participants) { reward_sum[id] = 0.0f; game_count[id] = 0; }
+
+                run_tournament_games(participants, tournament_evaluators, game_cfg, bc,
+                                      model_cfg->input_descr, history_descr_ptr(*model_cfg),
+                                      args.num_tournament_games, args.gamegen_batch_size,
+                                      args.tournament_num_simulations, args.c_puct, args.verbosity, rng,
+                                      reward_sum, game_count);
+
+                // Standings: participants with >=1 game, ranked by avg reward descending;
+                // participants with zero games (pathological - only possible if
+                // num_tournament_games is far too small relative to num_tournament_models) are
+                // kept separately, unranked.
+                std::vector<std::pair<int,float>> ranked;
+                std::vector<int> unranked;
+                for (auto& [id, m] : participants) {
+                    int cnt = game_count[id];
+                    if (cnt > 0) ranked.push_back({id, reward_sum[id] / cnt});
+                    else unranked.push_back(id);
+                }
+                std::sort(ranked.begin(), ranked.end(),
+                          [](auto& a, auto& b) { return a.second > b.second; });
+
+                int top_k = std::min(args.num_selfplay_models, (int)participants.size());
+                std::vector<int> winner_ids;
+                for (auto& [id, avg] : ranked) { if ((int)winner_ids.size() >= top_k) break; winner_ids.push_back(id); }
+                for (int id : unranked) { if ((int)winner_ids.size() >= top_k) break; winner_ids.push_back(id); }
+                auto is_winner = [&](int id) {
+                    return std::find(winner_ids.begin(), winner_ids.end(), id) != winner_ids.end();
+                };
+                // A winner is either a genuinely new challenger being promoted for the first time,
+                // or an incumbent active model that simply prevailed again - distinguished for both
+                // the standings print and the save-gating below, since only the former needs saving.
+                auto was_challenger = [&](int id) {
+                    return std::any_of(challengers.begin(), challengers.end(),
+                                        [&](auto& e) { return e.first == id; });
+                };
+                auto winner_tag = [&](int id) {
+                    if (!is_winner(id)) return "";
+                    return was_challenger(id) ? "  [promoted]" : "  [prevailed]";
+                };
+
+                if (args.verbosity >= 1) {
+                    std::cout << "[iter " << std::setw(4) << iter << "] tournament standings:" << std::endl;
+                    int rank = 1;
+                    for (auto& [id, avg] : ranked) {
+                        std::cout << "  #" << rank++ << " model " << id
+                                  << "  avg_reward=" << std::fixed << std::setprecision(4) << avg
+                                  << "  games=" << game_count[id]
+                                  << winner_tag(id)
+                                  << std::defaultfloat << std::endl;
+                    }
+                    for (int id : unranked)
+                        std::cout << "  model " << id << "  (no games played)"
+                                  << winner_tag(id) << std::endl;
+                }
+
+                // Promote: winner_ids become the new active_models. Only save the ones genuinely
+                // new (were challengers) - an incumbent that simply prevailed again was already
+                // saved the tournament it was first promoted, so re-saving it here would just
+                // duplicate that file.
+                ModelSnapshots new_active;
+                new_active.reserve(winner_ids.size());
+                for (int id : winner_ids) {
+                    auto pit = std::find_if(participants.begin(), participants.end(),
+                                             [&](auto& e) { return e.first == id; });
+                    if (was_challenger(id)) save_model_weights(ckpt_dir, arch, id, pit->second, game_cfg, *model_cfg);
+                    new_active.push_back(*pit);
+                }
+                active_models = std::move(new_active);
+
+                for (auto& state : pool) refresh_player(state, active_models, rng);
+                evaluators = build_evaluators(active_models, adj_norms);
+                challengers.clear();
+            }
+        }
+
+        // ── Trajectory checkpoint ───────────────────────────────────────────────
         if ((iter + 1) % args.save_every == 0 || iter == args.iterations - 1) {
-            save_checkpoint(ckpt_dir, arch, iter, model_var, game_cfg, *model_cfg, traj_store);
+            save_trajectories(ckpt_dir, arch, iter, traj_store);
             traj_store.clear();
         }
     }

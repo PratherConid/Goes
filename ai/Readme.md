@@ -248,8 +248,12 @@ The `GOES_CHECKPOINT_DIR` environment variable overrides the checkpoint director
 | `--transformer-hidden-dim N` | `128` | Transformer hidden dimension (any board) |
 | `--num-layers N` | `9` | GNN message-passing layers |
 | `--num-attn-layers N` | `8` | Transformer history self-attention/cross-attention layer count (separate flag from `--num-layers` - not shared with GNN) |
-| `--save-every N` | `10` | Save a checkpoint every N iterations |
-| `--num-selfplay-models N` | `1` | Rotating pool size of recent model snapshots used for self-play - see **Multi-Model Self-Play**, below |
+| `--save-every N` | `10` | Dump self-play trajectories every N iterations - does *not* save model checkpoints (see **Tournament-Based Model Selection**, below) |
+| `--num-selfplay-models N` | `4` | Target size of the active self-play model set - see **Tournament-Based Model Selection**, below |
+| `--num-tournament-models N` | `8` | Participants per tournament: the active models plus randomly sampled challengers, filling up to this many total - must be `> --num-selfplay-models` |
+| `--tournament-every N` | `32` | Training iterations between tournaments |
+| `--num-tournament-games N` | `512` | Games played per tournament |
+| `--tournament-num-simulations N` | `128` | MCTS sims per move during tournament games (separate, usually lower, than `--num-simulations`) |
 | `--checkpoint-dir PATH` | `ai/checkpoints` | Checkpoint directory |
 | `--resume TAG` | _(none)_ | Continue an existing hash-named checkpoint directory instead of starting a fresh one - see **Checkpoint Directories and Matching** |
 | `--retrain TAG` | _(none)_ | Train a fresh model against an existing checkpoint directory's recorded self-play (its `_traj.json` files, replayed in order into a *new* checkpoint directory) instead of generating new games, then continue with live self-play for any remaining `--iterations`. Only requires the game config to match (not the architecture/hidden-dim) - it never loads `TAG`'s weights. Mutually exclusive with `--resume` |
@@ -337,29 +341,59 @@ matched checkpoint, same as before this scheme existed.
 3. **Training**: mini-batches are sampled from a replay buffer. The model is trained to predict the MCTS visit distribution (policy head, cross-entropy scaled by `1/log(numStones*N)` so the loss magnitude stays comparable across both board sizes and stone counts) and the final per-location stone/territory ownership (see Ownership Heads, below).
 4. **Iteration**: the updated model is used for the next round of self-play.
 
-## Multi-Model Self-Play
+## Tournament-Based Model Selection
 
-By default (`--num-selfplay-models 1`) every player in every self-play game is evaluated by the
-single, current model - `--iteration`'s update simply replaces it. Setting `--num-selfplay-models N
-> 1` instead maintains a rotating pool of the `N` most recent model snapshots (`ModelPool`,
-`ai/include/training/model_pool.h`), each tagged with the training iteration it was captured at.
-Every time a self-play game is created (both the initial game pool and each slot's replenishment
-once a game ends), each player is **independently** randomly assigned one of the currently-active
-snapshots - so a single game can have different players evaluated by different (recent) versions
-of the model, not just the latest one. After each backprop iteration, a fresh snapshot of the
-just-updated model becomes the newest pool entry, evicting the oldest one once the pool is at
-capacity.
+Every player in every self-play game is evaluated by one of the currently-**active** models
+(`ModelSnapshots active_models`, `train.cpp`) - each tagged with the training iteration it was
+captured at. Every time a self-play game is created (both the initial game pool and each slot's
+replenishment once a game ends), each player is **independently** randomly assigned one of the
+active snapshots, so a single game can have different players evaluated by different models.
 
-A game can easily outlive one pool rotation (self-play games aren't bounded to finish within a
-single training iteration). To keep this safe, every time a model is evicted, any in-progress
-game still assigning a player to that evicted id immediately reassigns that player to a fresh
-random pick from the pool's *current* window (`train.cpp`'s `refresh_player()`) - so every live
-game's player-to-model assignments are always a subset of the pool's current window, and the
-per-model evaluator map (`build_evaluators()`) only ever needs to mirror that window exactly.
+`active_models` starts as a single snapshot of the initial model and grows by one fresh snapshot
+per iteration - directly, with no evaluation - until it reaches `--num-selfplay-models` capacity.
+From then on, fresh snapshots no longer join `active_models` automatically; they accumulate in a
+separate `challengers` list instead, awaiting the next **tournament**.
 
-This is purely an in-memory, self-play-time concept - `--resume` always restarts the pool from a
-single snapshot of the resumed weights, and `--retrain`'s trajectory-replay phase never touches it
-(that phase doesn't run self-play at all - see `--retrain` in **Key Flags**, above).
+**Tournaments** are attempted every `--tournament-every` iterations (immediately after that
+iteration's backprop step): the current `active_models` plus a random sample of *distinct*
+`challengers` (filling up to `--num-tournament-models` participants total - always more than
+`--num-selfplay-models`, so there's always at least one challenger slot wanted) play
+`--num-tournament-games` games against each other, using
+`--tournament-num-simulations` MCTS simulations per move. Unlike self-play games, tournament games
+are **not** trajectory-recorded or trained on - only each participant's final per-game reward
+(the same terminal reward formula MCTS itself backs up, `compute_player_rewards()`) is tallied, then
+averaged per model across however many games it played. Which player slot a game hands to which
+participant is chosen one slot at a time, uniformly among whichever model(s) have been used least
+*within that game* (`assign_tournament_models()`) - keeping a single multiplayer game's own slots
+diverse, independent of how often a model has played elsewhere in the tournament.
+
+If there aren't yet enough distinct challengers to fill every wanted wildcard slot, the tournament
+is skipped entirely for this check (`challengers` is left untouched, to keep accumulating towards
+the next `--tournament-every` boundary) rather than running an under-sized one.
+
+At `--verbosity >= 1`, the resulting standings (each participant's average reward and games played,
+ranked) are printed, with the `--num-selfplay-models` participants with the highest average reward
+marked `[promoted]` (came from `challengers` - genuinely new) or `[prevailed]` (was already in
+`active_models` and simply won again) - either way, those become the new `active_models`,
+wholesale-replacing the old set. Only `[promoted]` winners get a `.pt` file written (tagged with
+their own capture iteration rather than the iteration the tournament ran at) - a `[prevailed]`
+incumbent was already saved the tournament it was first promoted, so re-saving it would just
+duplicate that file. `challengers` is emptied whenever a tournament actually runs, regardless of
+its outcome.
+
+A self-play game can easily outlive one tournament (self-play games aren't bounded to finish within
+a single training iteration). To keep this safe, once `active_models` is replaced, any in-progress
+game still assigning a player to a now-dropped id immediately reassigns that player to a fresh
+random pick from the *new* `active_models` (`train.cpp`'s `refresh_player()`) - so every live game's
+player-to-model assignments are always a subset of the current active set, and the self-play
+evaluator map (`build_evaluators()`) only ever needs to mirror that set exactly.
+
+This is purely an in-memory, self-play-time concept - `--resume` always restarts `active_models`
+from a single snapshot of the resumed weights (see `--resume`'s note in **Key Flags**: this can
+replay up to `tournament_every - 1` iterations' worth of gradient progress that was never captured
+as a tournament-proven winner), and `--retrain`'s trajectory-replay phase never touches it (that
+phase doesn't run self-play at all - see `--retrain` in **Key Flags**, above; it saves `model_var`
+directly instead, on the same span boundaries it always has).
 
 ## Reward
 
