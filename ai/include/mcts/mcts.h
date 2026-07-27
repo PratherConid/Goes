@@ -3,6 +3,7 @@
 #include "model/evaluator.h"
 #include <vector>
 #include <unordered_map>
+#include <map>
 #include <memory>
 #include <optional>
 #include <random>
@@ -58,7 +59,10 @@ struct NoiseConfig {
 // for the leaf's current player (others get 0 for that simulation).
 class MCTS {
 public:
-    MCTS(Evaluator evaluator, float c_puct, uint64_t seed = 42);
+    // models: model id -> Evaluator (see BoardState::player_model_id's doc comment) - every state
+    // passed to evaluate_batch() below is routed to models.at(state->player_model_id[player-1]),
+    // where player is whoever's next_turn.player it is at that state.
+    MCTS(std::map<int, Evaluator> models, float c_puct, uint64_t seed = 42);
 
     // Move-count truncation is read per-state from BoardState::max_plies
     // (propagated to every node of a game's own search tree via copy() /
@@ -70,9 +74,18 @@ public:
         std::vector<float> temperatures = {});
 
 private:
-    Evaluator model_;
+    std::map<int, Evaluator> models_;
     float c_puct_;
     std::mt19937 rng_;
+
+    // Tallies `states` by which model evaluates them (models_.at(state->player_model_id[player-1]),
+    // player = state->next_turn.player - every state reaching this point is already known
+    // non-terminal, so next_turn is always well-defined), dispatches one sub-batch per distinct
+    // model, then rearranges the per-model results back into full-size (policy, ownership) tensors
+    // in the caller's original order. Replaces the single model_.evaluate_batch(states) call this
+    // codebase used before multi-model support - same shape/semantics either way, so callers don't
+    // need to know how many distinct models were actually involved.
+    std::pair<torch::Tensor, torch::Tensor> evaluate_batch(const std::vector<const BoardState*>& states);
 
     // Returns (path, leaf, per-player-rewards-or-nullopt)
     std::tuple<std::vector<std::pair<MCTSNode*, int>>,

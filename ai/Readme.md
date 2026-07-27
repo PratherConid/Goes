@@ -244,11 +244,12 @@ The `GOES_CHECKPOINT_DIR` environment variable overrides the checkpoint director
 | `--gnn-hidden-dim N` | `128` | GNN hidden dimension (cub/hcub boards) |
 | `--unet-hidden-dim N` | `16` | UNet hidden dimension (2D boards) |
 | `--cnn-hidden-dim N` | `64` | CNN hidden dimension (2D boards) |
-| `--cnn-conv-size N` | `5` | CNN convolution kernel size (2D boards) - must be odd and > 1 |
+| `--cnn-conv-size N` | `3` | CNN convolution kernel size (2D boards) - must be odd and > 1 |
 | `--transformer-hidden-dim N` | `128` | Transformer hidden dimension (any board) |
 | `--num-layers N` | `9` | GNN message-passing layers |
 | `--num-attn-layers N` | `8` | Transformer history self-attention/cross-attention layer count (separate flag from `--num-layers` - not shared with GNN) |
 | `--save-every N` | `10` | Save a checkpoint every N iterations |
+| `--num-selfplay-models N` | `1` | Rotating pool size of recent model snapshots used for self-play - see **Multi-Model Self-Play**, below |
 | `--checkpoint-dir PATH` | `ai/checkpoints` | Checkpoint directory |
 | `--resume TAG` | _(none)_ | Continue an existing hash-named checkpoint directory instead of starting a fresh one - see **Checkpoint Directories and Matching** |
 | `--retrain TAG` | _(none)_ | Train a fresh model against an existing checkpoint directory's recorded self-play (its `_traj.json` files, replayed in order into a *new* checkpoint directory) instead of generating new games, then continue with live self-play for any remaining `--iterations`. Only requires the game config to match (not the architecture/hidden-dim) - it never loads `TAG`'s weights. Mutually exclusive with `--resume` |
@@ -335,6 +336,30 @@ matched checkpoint, same as before this scheme existed.
 2. **Record collection**: each ply stores `(features, MCTS visit distribution)`; once a game ends, its final board's stone/territory ownership is recorded once, stone-type indexed with no player mapping (see Ownership Heads, below), and shared across every ply of that game as the ownership heads' training target.
 3. **Training**: mini-batches are sampled from a replay buffer. The model is trained to predict the MCTS visit distribution (policy head, cross-entropy scaled by `1/log(numStones*N)` so the loss magnitude stays comparable across both board sizes and stone counts) and the final per-location stone/territory ownership (see Ownership Heads, below).
 4. **Iteration**: the updated model is used for the next round of self-play.
+
+## Multi-Model Self-Play
+
+By default (`--num-selfplay-models 1`) every player in every self-play game is evaluated by the
+single, current model - `--iteration`'s update simply replaces it. Setting `--num-selfplay-models N
+> 1` instead maintains a rotating pool of the `N` most recent model snapshots (`ModelPool`,
+`ai/include/training/model_pool.h`), each tagged with the training iteration it was captured at.
+Every time a self-play game is created (both the initial game pool and each slot's replenishment
+once a game ends), each player is **independently** randomly assigned one of the currently-active
+snapshots - so a single game can have different players evaluated by different (recent) versions
+of the model, not just the latest one. After each backprop iteration, a fresh snapshot of the
+just-updated model becomes the newest pool entry, evicting the oldest one once the pool is at
+capacity.
+
+A game can easily outlive one pool rotation (self-play games aren't bounded to finish within a
+single training iteration). To keep this safe, every time a model is evicted, any in-progress
+game still assigning a player to that evicted id immediately reassigns that player to a fresh
+random pick from the pool's *current* window (`train.cpp`'s `refresh_player()`) - so every live
+game's player-to-model assignments are always a subset of the pool's current window, and the
+per-model evaluator map (`build_evaluators()`) only ever needs to mirror that window exactly.
+
+This is purely an in-memory, self-play-time concept - `--resume` always restarts the pool from a
+single snapshot of the resumed weights, and `--retrain`'s trajectory-replay phase never touches it
+(that phase doesn't run self-play at all - see `--retrain` in **Key Flags**, above).
 
 ## Reward
 

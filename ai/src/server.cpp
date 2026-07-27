@@ -464,7 +464,10 @@ int main(int argc, char* argv[]) {
 
             int num_sims = j.value("num_simulations", ss.default_sims);
             float temperature = j.value("temperature", ss.default_temperature);
-            MCTS mcts(evaluator, 1.0f);
+            // Server sessions always evaluate with a single model (BoardState::player_model_id is
+            // always the default all-1s from new_state() here) - wrap it as a 1-entry map purely
+            // to match MCTS's multi-model constructor signature.
+            MCTS mcts({{1, evaluator}}, 1.0f);
             auto [results, _timing] = mcts.search_batch(
                 {sess->state.get()}, num_sims, NoiseConfig{/*add_noise=*/false, 0.3f, 0.25f},
                 {temperature});

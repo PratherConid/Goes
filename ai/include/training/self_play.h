@@ -9,6 +9,7 @@
 #include "nlohmann/json.hpp"
 #include <vector>
 #include <unordered_map>
+#include <map>
 #include <optional>
 #include <string>
 
@@ -212,16 +213,21 @@ GameRecord trajectory_to_record(
 // verbosity >=2: one line per ply plus a timing summary per batch.
 //
 // The returned PlyResults' features/legal_mask are always built on CPU (see
-// trajectory_to_record()'s doc comment) - `evaluator` (not a device param
-// here) already carries its own model's device internally, and is all MCTS
+// trajectory_to_record()'s doc comment) - `evaluators` (not a device param
+// here) already carry their own models' devices internally, and are all MCTS
 // itself needs for evaluation; these particular tensors exist only to be
 // stored into the replay buffer via the caller's trajectory_and_result_to_record().
+//
+// evaluators: model id -> Evaluator, keyed to match BoardState::player_model_id (each state in
+// `states` is routed to the model its own next_turn.player is assigned to - see
+// MCTS::evaluate_batch()). Copied into the MCTS instance constructed internally, same as passing a
+// single Evaluator used to be.
 //
 // history_descr, when non-null, additionally captures each ply's minimal history features
 // (PlyResult::history_features) via a second board_to_features() call under that descriptor -
 // used only for a Transformer run (see trajectory_to_record()'s matching parameter).
 std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
-    Evaluator& evaluator,
+    std::map<int, Evaluator>& evaluators,
     const std::vector<BoardState*>& states,
     const nlohmann::json& descr,
     int num_simulations,

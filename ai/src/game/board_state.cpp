@@ -557,6 +557,7 @@ BoardState::BoardState(int num_stones_,
                        bool forced_pass_only_,
                        std::string score_rule_,
                        std::vector<float> komi_,
+                       std::vector<int> player_model_id_,
                        KoRule ko_rule_,
                        bool allow_suicide_,
                        std::optional<int> max_plies_,
@@ -571,6 +572,7 @@ BoardState::BoardState(int num_stones_,
       forced_pass_only(forced_pass_only_),
       score_rule(std::move(score_rule_)),
       komi(std::move(komi_)),
+      player_model_id(std::move(player_model_id_)),
       ko_rule(ko_rule_),
       allow_suicide(allow_suicide_),
       max_plies(max_plies_),
@@ -600,6 +602,7 @@ BoardState::BoardState(int num_stones_,
     for (auto& v : global_stone_place_limit) assert((!v.has_value() || *v >= 0) && "global_stone_place_limit values must be nullopt or non-negative");
     assert((!max_plies.has_value() || *max_plies >= 1) && "max_plies must be nullopt or a positive integer");
     assert(std::all_of(komi.begin(), komi.end(), [](float k) { return k >= 0.0f; }) && "komi values must be >= 0");
+    assert((int)player_model_id.size() == num_players && "player_model_id length must equal num_players");
 
     owned_hm_ = std::make_unique<HistoryManager>();
     hm_ = owned_hm_.get();
@@ -733,6 +736,7 @@ BoardState BoardState::make_copy_skeleton(const BoardState& src) {
     c.forced_pass_only    = src.forced_pass_only;
     c.score_rule          = src.score_rule;
     c.komi                = src.komi;
+    c.player_model_id     = src.player_model_id;
     c.ko_rule              = src.ko_rule;
     c.allow_suicide       = src.allow_suicide;
     c.max_plies           = src.max_plies;

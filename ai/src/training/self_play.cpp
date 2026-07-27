@@ -230,10 +230,14 @@ BoardState new_state(const GameConfig& cfg, const BoardConfig& bc) {
     if (komi.empty())
         komi = std::vector<float>(cfg.num_players, 0.0f);
 
+    // Every player currently maps to model id 1 - real per-player model assignment isn't wired
+    // through GameConfig yet (see BoardState::player_model_id's doc comment).
+    std::vector<int> player_model_id(cfg.num_players, 1);
+
     BoardState state(
         cfg.num_stones, cfg.num_players,
         cfg.turn_list, pspl, gspl, cfg.stone_to_player_map,
-        cfg.forced_pass_only, cfg.score_rule, komi, cfg.ko_rule, cfg.allow_suicide, cfg.max_plies,
+        cfg.forced_pass_only, cfg.score_rule, komi, player_model_id, cfg.ko_rule, cfg.allow_suicide, cfg.max_plies,
         std::vector<int>(bc.N, 0),
         bc);
     // linear_move_bound combines with (rather than being overridden by) a
@@ -350,7 +354,7 @@ GameRecord trajectory_to_record(
 
 // Not thread-safe: uses the file-scope std::mt19937 rng to seed each MCTS instance.
 std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
-    Evaluator& evaluator,
+    std::map<int, Evaluator>& evaluators,
     const std::vector<BoardState*>& states,
     const nlohmann::json& descr,
     int num_simulations,
@@ -359,7 +363,7 @@ std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
     int verbosity,
     const nlohmann::json* history_descr)
 {
-    MCTS mcts(evaluator, c_puct, rng());
+    MCTS mcts(evaluators, c_puct, rng());
 
     std::vector<float> temps;
     temps.reserve(states.size());

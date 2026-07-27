@@ -99,10 +99,45 @@ std::vector<float> MCTSNode::ucb_scores(float c_puct) const {
 
 // ── MCTS ─────────────────────────────────────────────────────────────────────
 
-MCTS::MCTS(Evaluator evaluator, float c_puct, uint64_t seed)
-    : model_(std::move(evaluator)), c_puct_(c_puct),
+MCTS::MCTS(std::map<int, Evaluator> models, float c_puct, uint64_t seed)
+    : models_(std::move(models)), c_puct_(c_puct),
       rng_(static_cast<unsigned>(seed))
 {}
+
+std::pair<torch::Tensor, torch::Tensor> MCTS::evaluate_batch(const std::vector<const BoardState*>& states) {
+    // model id -> indices into `states` assigned to that model (the model belonging to whoever's
+    // next_turn.player it is at each state).
+    std::map<int, std::vector<int>> groups;
+    for (int i = 0; i < (int)states.size(); i++) {
+        int player = states[i]->next_turn.player;
+        int model_id = states[i]->player_model_id[player - 1];
+        groups[model_id].push_back(i);
+    }
+
+    torch::Tensor policy, ownership;
+    for (auto& [model_id, idxs] : groups) {
+        std::vector<const BoardState*> sub;
+        sub.reserve(idxs.size());
+        for (int i : idxs) sub.push_back(states[i]);
+
+        auto [pol_sub, own_sub] = models_.at(model_id).evaluate_batch(sub);
+
+        if (!policy.defined()) {
+            // Allocate the full-size result tensors once we know shape/dtype/device, from the
+            // first group's sub-batch - every model in one run is assumed to share a device, same
+            // as the single-model path this replaces.
+            policy = torch::empty({(int64_t)states.size(), pol_sub.size(1)}, pol_sub.options());
+            ownership = torch::empty(
+                {(int64_t)states.size(), own_sub.size(1), own_sub.size(2), own_sub.size(3)},
+                own_sub.options());
+        }
+
+        auto idx_t = torch::tensor(idxs, torch::kLong);
+        policy.index_copy_(0, idx_t, pol_sub);
+        ownership.index_copy_(0, idx_t, own_sub);
+    }
+    return {policy, ownership};
+}
 
 std::vector<float> MCTS::dirichlet_sample(int n, float alpha) {
     std::gamma_distribution<float> gamma(alpha, 1.0f);
@@ -299,7 +334,7 @@ MCTSTiming MCTS::simulate_batch(const std::vector<MCTSNode*>& roots) {
         for (int i : eval_indices) batch_states.push_back(&nodes[i]->state);
 
         auto t0 = std::chrono::high_resolution_clock::now();
-        auto [policy_t, ownership_t] = model_.evaluate_batch(batch_states);
+        auto [policy_t, ownership_t] = evaluate_batch(batch_states);
         auto t1 = std::chrono::high_resolution_clock::now();
         eval_time = std::chrono::duration<double>(t1 - t0).count();
 
@@ -410,7 +445,7 @@ MCTS::search_batch(
     // Initial root-prior batch evaluation
     std::vector<const BoardState*> cstates(states.begin(), states.end());
     auto t0 = std::chrono::high_resolution_clock::now();
-    auto [policy_t, ownership_t] = model_.evaluate_batch(cstates);
+    auto [policy_t, ownership_t] = evaluate_batch(cstates);
     auto t1 = std::chrono::high_resolution_clock::now();
     MCTSTiming total;
     total.eval = std::chrono::duration<double>(t1 - t0).count();

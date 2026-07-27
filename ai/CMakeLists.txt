@@ -67,6 +67,7 @@ add_library(goes_core STATIC
   src/mcts/mcts.cpp
   src/training/replay_buffer.cpp
   src/training/self_play.cpp
+  src/training/model_pool.cpp
   src/util/sha256.cpp
 )
 target_include_directories(goes_core PUBLIC include third_party)

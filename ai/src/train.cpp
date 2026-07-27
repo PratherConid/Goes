@@ -8,12 +8,14 @@
 #include "model/model_config.h"
 #include "training/self_play.h"
 #include "training/replay_buffer.h"
+#include "training/model_pool.h"
 #include "util/sha256.h"
 #include <torch/torch.h>
 #include <iostream>
 #include <string>
 #include <vector>
 #include <optional>
+#include <map>
 #include <filesystem>
 #include <algorithm>
 #include <chrono>
@@ -42,7 +44,7 @@ struct Args {
     int gnn_hidden_dim    = 128;
     int unet_hidden_dim   = 16;
     int cnn_hidden_dim    = 64;
-    int cnn_conv_size     = 5;
+    int cnn_conv_size     = 3;
     int transformer_hidden_dim = 128;
     int num_layers        = 9;
     int num_attn_layers   = 8;  // Transformer's cross-attention/history self-attention depth
@@ -57,6 +59,12 @@ struct Args {
     float l2              = 1e-4f;
     float c_puct          = 1.0f;
     int save_every        = 10;
+    // Size of the rotating pool of recent model snapshots used for self-play game generation (see
+    // ModelPool, training/model_pool.h) - each self-play player is independently randomly assigned
+    // one of the currently-active snapshots when their game is created. Default 1 preserves the
+    // exact single-model behavior from before this flag existed (a pool of size 1 always has
+    // exactly one entry to "randomly" assign every player to).
+    int num_selfplay_models = 1;
     std::string checkpoint_dir = "ai/checkpoints";
     std::string net_arch  = "auto";
     bool cpu              = false;
@@ -87,7 +95,7 @@ static void print_usage(const char* prog) {
               << "  --unet-hidden-dim N       UNet hidden dimension (default: 16)\n"
               << "  --cnn-hidden-dim N        CNN hidden dimension (default: 64)\n"
               << "  --cnn-conv-size N         CNN convolution kernel size - must be odd and > 1\n"
-              << "                            (default: 5)\n"
+              << "                            (default: 3)\n"
               << "  --transformer-hidden-dim N  Transformer hidden dimension (default: 128)\n"
               << "  --num-layers N            GNN message-passing layers (default: 9)\n"
               << "  --num-attn-layers N       Transformer history self-attention/cross-attention\n"
@@ -104,6 +112,9 @@ static void print_usage(const char* prog) {
               << "  --l2 F                    Weight decay (default: 0.0001)\n"
               << "  --c-puct F                MCTS exploration constant (default: 1.0)\n"
               << "  --save-every N            Save checkpoint every N iterations (default: 10)\n"
+              << "  --num-selfplay-models N   Rotating pool size of recent model snapshots used for\n"
+              << "                            self-play - each player is independently randomly\n"
+              << "                            assigned one active snapshot per game (default: 1)\n"
               << "  --checkpoint-dir PATH     Checkpoint directory (default: ai/checkpoints)\n"
               << "  --resume TAG              Resume from ai/checkpoints/TAG (an existing hash-named\n"
               << "                            directory printed by a previous run) instead of starting\n"
@@ -156,6 +167,13 @@ static Args parse_args(int argc, char* argv[]) {
         else if (a == "--l2")              args.l2              = std::stof(argv[++i]);
         else if (a == "--c-puct")          args.c_puct          = std::stof(argv[++i]);
         else if (a == "--save-every")      args.save_every      = std::stoi(argv[++i]);
+        else if (a == "--num-selfplay-models") {
+            args.num_selfplay_models = std::stoi(argv[++i]);
+            if (args.num_selfplay_models < 1) {
+                std::cerr << "--num-selfplay-models must be >= 1 (got " << args.num_selfplay_models << ")\n";
+                std::exit(1);
+            }
+        }
         else if (a == "--checkpoint-dir")  args.checkpoint_dir  = argv[++i];
         else if (a == "--resume") {
             if (!args.retrain_tag.empty()) {
@@ -251,6 +269,52 @@ static const nlohmann::json* history_descr_ptr(const ModelConfig& cfg) {
     return cfg.model_type == "transformer"
         ? &static_cast<const TransformerConfig&>(cfg).history_descr
         : nullptr;
+}
+
+// ── Multi-model self-play (ModelPool) ───────────────────────────────────────────
+
+// Produces an independent, frozen copy of src - not just another reference to the same
+// shared_ptr-backed torch module (which a plain AnyModel copy would be), since ModelPool needs to
+// keep old snapshots' weights unaffected by further training on the live model_var. Goes through
+// the exact same torch::save/torch::load (via std::visit) already used for checkpoints, just
+// round-tripped through an in-memory stream instead of a file - build_model() constructs the
+// fresh AnyModel of the right architecture to load into.
+static AnyModel clone_model(const AnyModel& src, const BoardConfig& bc, const ModelConfig& cfg,
+                             const GameConfig& game_cfg, torch::Device device) {
+    std::ostringstream oss;
+    std::visit([&](auto& m) { torch::save(m, oss); }, src);
+    AnyModel fresh = build_model(bc, cfg, game_cfg);
+    std::istringstream iss(oss.str());
+    std::visit([&](auto& m) { torch::load(m, iss); m->to(device); m->eval(); }, fresh);
+    return fresh;
+}
+
+// Randomly (re)assigns every player of `state` to one of active_models' current entries - used
+// both for a brand-new game (every player) and, via refresh_player() below, for a single player
+// whose previously-assigned model just got evicted.
+static void assign_random_models(BoardState& state, const ModelPool& active_models, std::mt19937& rng) {
+    for (int p = 0; p < state.num_players; p++)
+        state.player_model_id[p] = active_models.random_id(rng);
+}
+
+// After active_models evicts a model, `state` may still have a player referencing the evicted id -
+// if so, that would otherwise fail MCTS::evaluate_batch()'s lookup once the evaluators map is
+// rebuilt to match the new window. Reassigns exactly that player to a fresh random pick from the
+// current window instead, keeping `state`'s assignments a subset of the pool's current window.
+static void refresh_player(BoardState& state, const ModelPool& active_models, int evicted_id, std::mt19937& rng) {
+    for (int p = 0; p < state.num_players; p++)
+        if (state.player_model_id[p] == evicted_id)
+            state.player_model_id[p] = active_models.random_id(rng);
+}
+
+// (Re)builds the full evaluators map from active_models' current window - called once whenever
+// the pool changes (not per ply; the pool only changes once per training iteration, and many
+// ply-generation calls happen within one iteration's self-play phase against an unchanged pool).
+static std::map<int, Evaluator> build_evaluators(ModelPool& active_models, const AdjNorms& adj_norms) {
+    std::map<int, Evaluator> evaluators;
+    for (auto& [id, model] : active_models.entries())
+        evaluators[id] = make_evaluator(model, adj_norms);
+    return evaluators;
 }
 
 // ── Checkpoint utilities ──────────────────────────────────────────────────────
@@ -759,7 +823,14 @@ int main(int argc, char* argv[]) {
 
     auto adj_norms = compute_adj_norms(bc, device);
 
-    auto evaluator = make_evaluator(model_var, adj_norms);
+    // Rotating pool of recent model snapshots for multi-model self-play (see ModelPool's doc
+    // comment, training/model_pool.h) - seeded with a single snapshot of the current model_var,
+    // which uniformly covers a fresh run, a --resume'd run, and the post---retrain fall-through
+    // (none of those paths need special-casing here, since this only ever looks at whatever
+    // model_var currently holds).
+    ModelPool active_models(args.num_selfplay_models);
+    active_models.add(start_iter, clone_model(model_var, bc, *model_cfg, game_cfg, device));
+    auto evaluators = build_evaluators(active_models, adj_norms);
 
     // ── Game pool ─────────────────────────────────────────────────────────────
     // Pool of gamegen_batch_size in-progress games. Slots are replenished
@@ -769,8 +840,10 @@ int main(int argc, char* argv[]) {
     // carried on its BoardState, so no separate list is needed here.
     std::vector<BoardState> pool;
     pool.reserve(args.gamegen_batch_size);
-    for (int i = 0; i < args.gamegen_batch_size; i++)
+    for (int i = 0; i < args.gamegen_batch_size; i++) {
         pool.push_back(new_state(game_cfg, bc));
+        assign_random_models(pool.back(), active_models, rng);
+    }
     std::vector<std::vector<PlyResult>> trajectories(args.gamegen_batch_size);
 
     // Accumulates completed game trajectories between checkpoints; dumped and
@@ -851,7 +924,7 @@ int main(int argc, char* argv[]) {
 
             auto t_ply0 = std::chrono::high_resolution_clock::now();
             auto [ply_results, timing] = generate_one_ply_per_game(
-                evaluator, ptrs, model_cfg->input_descr,
+                evaluators, ptrs, model_cfg->input_descr,
                 args.num_simulations, /*temperature_threshold=*/static_cast<int>(2 * std::sqrt(bc.N)) + 3, args.c_puct,
                 args.verbosity, history_descr_ptr(*model_cfg));
             double total_ms = std::chrono::duration<double, std::milli>(
@@ -911,6 +984,7 @@ int main(int argc, char* argv[]) {
                 // Replenish slot immediately with a fresh game (new_state()
                 // rolls this game's own max_plies from game_cfg.linear_move_bound)
                 pool[slot] = new_state(game_cfg, bc);
+                assign_random_models(pool[slot], active_models, rng);
                 trajectories[slot].clear();
             }
         }
@@ -919,6 +993,17 @@ int main(int argc, char* argv[]) {
                                                  game_cfg, bc, adj_norms, device,
                                                  args.train_fraction, args.batch_size, t0);
         if (!did_train) continue;
+
+        // A fresh snapshot of the just-updated model_var becomes the newest entry in the rotating
+        // pool, possibly evicting the oldest. If it did, any pool state still referencing the
+        // evicted id gets reassigned to a fresh pick from the pool's new window - and evaluators is
+        // rebuilt regardless (evicted or not), since a new entry was just added either way. All
+        // three steps must complete before the self-play loop's next generate_one_ply_per_game()
+        // call above.
+        auto evicted = active_models.add(iter, clone_model(model_var, bc, *model_cfg, game_cfg, device));
+        if (evicted)
+            for (auto& state : pool) refresh_player(state, active_models, *evicted, rng);
+        evaluators = build_evaluators(active_models, adj_norms);
 
         // ── Checkpoint ───────────────────────────────────────────────────────
         if ((iter + 1) % args.save_every == 0 || iter == args.iterations - 1) {

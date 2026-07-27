@@ -198,6 +198,7 @@ public:
                bool forced_pass_only,
                std::string score_rule,
                std::vector<float> komi,
+               std::vector<int> player_model_id,
                KoRule ko_rule,
                bool allow_suicide,
                std::optional<int> max_plies,
@@ -350,6 +351,16 @@ public:
     // MCTS reward formulas (compute_player_rewards() below,
     // estimate_player_rewards() in evaluator.h) - 1-indexed via komi[p-1].
     std::vector<float> komi;
+    // Training/self-play concept only - server.cpp's per-request /move inference path never reads
+    // this (a session's BoardState always gets the default all-1s from new_state(), and the server
+    // always evaluates with a single model regardless of this field's contents). Which model
+    // evaluates each player's turns during self-play - 1-indexed via player_model_id[p-1], an id
+    // key into MCTS::models_ (mcts.h). Lets different players in the same self-play game be
+    // evaluated by different models (e.g. a candidate checkpoint vs. a previous one), routed off
+    // whoever's next_turn.player it is at each state (see MCTS::evaluate_batch()). Currently always
+    // all-1s (new_state() hardcodes it) - no GameConfig field wires this up yet, so real per-player
+    // customization is a future addition on top of this plumbing.
+    std::vector<int> player_model_id;
     // Superko variant enforced by calculate_legal_moves()'s repeat-position
     // check ('positional' | 'situational').
     KoRule ko_rule;
