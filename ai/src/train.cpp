@@ -486,7 +486,9 @@ static void run_tournament_games(
                 };
                 std::cout << "  Tournament game " << (games_done + 1)
                           << "/" << num_games
-                          << "  plies=" << tpool[slot].ply_count()
+                          << "  players=[";
+                for (int id : tpool[slot].player_model_id) std::cout << id << ",";
+                std::cout << "]  plies=" << tpool[slot].ply_count()
                           << "  stones=[";
                 for (int s = 1; s <= tpool[slot].num_stones; s++) std::cout << stone_at(score.stone_count, s) << ",";
                 std::cout << "]  territories=[";
