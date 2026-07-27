@@ -19,7 +19,6 @@
 #include <algorithm>
 #include <chrono>
 #include <random>
-#include <numeric>
 #include <sstream>
 #include <iomanip>
 #include <fstream>
@@ -64,9 +63,10 @@ struct Args {
     int save_every        = 10;
     // Target size of the active self-play model set (see ModelSnapshots, train.cpp) - each
     // self-play player is independently randomly assigned one of the currently-active snapshots
-    // when their game is created. Grows directly (one fresh snapshot per iteration) until it
+    // when their game is created. Grows directly (each iteration's freshly-trained challenger is
+    // promoted straight in - see ChallengerPool/main()'s per-iteration training step) until it
     // reaches this size, then only changes via tournament promotion (see tournament_every et al.).
-    int num_selfplay_models = 4;
+    int num_selfplay_models = 3;
     // Number of participants in each tournament: the current active_models set plus randomly
     // sampled challengers, filling up to this many total - must be > num_selfplay_models (validated
     // after parsing) so every tournament has at least one wildcard slot.
@@ -76,8 +76,8 @@ struct Args {
     // active_models is still growing towards num_selfplay_models capacity, in which case they join
     // active_models directly instead - see main()).
     int tournament_every = 16;
-    // Games played per tournament, distributed across participants via the "least chosen so far
-    // for this game" balancing rule (see assign_tournament_models()).
+    // Games played per tournament, distributed across participants via a balanced random sequence
+    // spanning the whole tournament (see assign_by_sequence()).
     int num_tournament_games = 512;
     // MCTS simulations per ply during tournament games - independent of (and typically much lower
     // than) --num-simulations, since tournament games exist purely to rank models, not to produce
@@ -134,7 +134,7 @@ static void print_usage(const char* prog) {
               << "                            --num-tournament-models (default: 10)\n"
               << "  --num-selfplay-models N   Target size of the active self-play model set - each\n"
               << "                            player is independently randomly assigned one active\n"
-              << "                            snapshot per game (default: 4)\n"
+              << "                            snapshot per game (default: 3)\n"
               << "  --num-tournament-models N Participants per tournament (active models + random\n"
               << "                            challengers) - must be > --num-selfplay-models\n"
               << "                            (default: 8)\n"
@@ -334,18 +334,76 @@ static const nlohmann::json* history_descr_ptr(const ModelConfig& cfg) {
 
 // ── Multi-model self-play & tournament-based model selection ───────────────────
 
-// id -> frozen model snapshot; id is the training iteration it was captured at. Used for both the
-// active self-play model set and the pool of not-yet-tournament-tested challengers (see main()).
+// id -> frozen model snapshot; id is the training iteration whose training step produced it (or,
+// for the very first seed, start_iter - 1 - see main()). Entries are never mutated in place - each
+// training step operates on a fresh clone (see ChallengerPool, below, and main()'s per-iteration
+// training step), so every stored entry stays a valid, freely shallow-copyable snapshot for as
+// long as it's kept around. Used both for the active self-play model set (active_models, a plain
+// ModelSnapshots) and, wrapped in ChallengerPool below, the pool of not-yet-promoted challengers.
 using ModelSnapshots = std::vector<std::pair<int, AnyModel>>;
+
+// Ordered list of challenger model snapshots awaiting either further training or tournament
+// promotion. Entries at index < trained_boundary_ have already been used once as a training base
+// (see pick_untrained_challenger()/mark_picked_trained()) - a challenger is only ever trained once
+// in its lifetime, producing a child that's appended at the tail (push_back()) and is itself
+// untrained. Because every mutation either appends at the tail or advances the boundary by exactly
+// one, "trained = prefix, untrained = suffix" holds at all times, so a single index fully captures
+// trained/untrained status - no per-id set needed.
+class ChallengerPool {
+public:
+    // Resets to `models` (each considered untrained) - used at run startup and after every
+    // tournament ("initialize challengers with active models").
+    void reset(ModelSnapshots models) { entries_ = std::move(models); trained_boundary_ = 0; }
+
+    // The oldest not-yet-trained entry, or nullptr if every current entry has already been used as
+    // a training base (shouldn't happen given the replenishment invariant in main()'s per-iteration
+    // training step, but guarded defensively rather than assumed). The returned pointer is only
+    // valid until the next push_back() (which may reallocate) - callers must extract what they
+    // need (clone the model, note the id) before calling push_back().
+    std::pair<int, AnyModel>* pick_untrained_challenger() {
+        return trained_boundary_ < (int)entries_.size() ? &entries_[trained_boundary_] : nullptr;
+    }
+
+    // Marks the current pick_untrained_challenger() entry trained (advances the boundary by one) -
+    // call only after successfully training a clone of it.
+    void mark_picked_trained() { trained_boundary_++; }
+
+    // Appends a fresh, untrained entry at the tail - preserves the prefix/suffix invariant above.
+    void push_back(int id, AnyModel model) { entries_.push_back({id, std::move(model)}); }
+
+    // Indices of wildcard-eligible entries for a tournament: every entry whose id isn't currently
+    // in active_models - excludes exactly the entries reset() just copied in from active_models
+    // and that haven't been trained since, which would otherwise be redundant, bit-identical
+    // tournament participants.
+    std::vector<int> eligible_wildcard_indices(const ModelSnapshots& active_models) const {
+        std::vector<int> idx;
+        for (int i = 0; i < (int)entries_.size(); i++) {
+            int id = entries_[i].first;
+            bool is_active = std::any_of(active_models.begin(), active_models.end(),
+                                          [&](auto& e) { return e.first == id; });
+            if (!is_active) idx.push_back(i);
+        }
+        return idx;
+    }
+
+    ModelSnapshots& entries() { return entries_; }
+
+private:
+    ModelSnapshots entries_;
+    int trained_boundary_ = 0;
+};
 
 // Produces an independent, frozen copy of src - not just another reference to the same
 // shared_ptr-backed torch module (which a plain AnyModel copy would be), since a snapshot must
-// stay unaffected by further training on the live model_var. Goes through the exact same
-// torch::save/torch::load (via std::visit) already used for checkpoints, just round-tripped
-// through an in-memory stream instead of a file - build_model() constructs the fresh AnyModel of
-// the right architecture to load into. Only needed when snapshotting model_var itself - copying an
+// stay unaffected by further training on src (seed_model during setup, or a picked challenger
+// still undergoing its one training step - see main()'s per-iteration training step). Goes through
+// the exact same torch::save/torch::load (via std::visit) already used for checkpoints, just
+// round-tripped through an in-memory stream instead of a file - build_model() constructs the fresh
+// AnyModel of the right architecture to load into. Only needed when independently cloning
+// something that either is or might still become subject to further training - copying an
 // already-frozen ModelSnapshots entry (active_models/challengers/participants) is safe as a plain
-// (shallow, shared_ptr-aliasing) AnyModel copy, since nothing ever trains those further.
+// (shallow, shared_ptr-aliasing) AnyModel copy, since nothing ever trains those further (only
+// clones of them, produced via this function, ever get trained).
 static AnyModel clone_model(const AnyModel& src, const BoardConfig& bc, const ModelConfig& cfg,
                              const GameConfig& game_cfg, torch::Device device) {
     std::ostringstream oss;
@@ -395,22 +453,31 @@ static std::map<int, Evaluator> build_evaluators(ModelSnapshots& models, const A
     return evaluators;
 }
 
-// One slot at a time, uniformly choosing among whichever participant model(s) have been assigned
-// fewest times *for this game* - counts reset per game/state, so this keeps one multiplayer game's
-// own slots diverse without tracking how often a model has played elsewhere in the tournament.
-static void assign_tournament_models(BoardState& state, const ModelSnapshots& participants, std::mt19937& rng) {
-    std::unordered_map<int,int> counts;
-    for (auto& [id, m] : participants) counts[id] = 0;
-    for (int p = 0; p < state.num_players; p++) {
-        int min_count = std::min_element(counts.begin(), counts.end(),
-            [](const auto& a, const auto& b) { return a.second < b.second; })->second;
-        std::vector<int> candidates;
-        for (auto& [id, c] : counts) if (c == min_count) candidates.push_back(id);
-        std::uniform_int_distribution<size_t> dist(0, candidates.size() - 1);
-        int chosen = candidates[dist(rng)];
-        state.player_model_id[p] = chosen;
-        counts[chosen]++;
+// Assigns every slot across all of `states` the next ids from a sequence built by concatenating
+// enough independent random shuffles of `participants`' ids - each containing every participant
+// exactly once - to cover every slot `states` has (states.size() * num_players, assuming every
+// state shares the same num_players). Consumption order alone balances how often each participant
+// plays across the whole tournament: called exactly once, up front, with `states` = every game the
+// tournament will run (see run_tournament_games()) - not per-batch-slot, so the whole tournament's
+// slot sequence is one coherent list rather than being decided batch-by-batch as games start.
+static void assign_by_sequence(const std::vector<BoardState*>& states, const ModelSnapshots& participants,
+                                std::mt19937& rng) {
+    std::vector<int> ids;
+    ids.reserve(participants.size());
+    for (auto& [id, m] : participants) ids.push_back(id);
+
+    int total_slots = 0;
+    for (auto* state : states) total_slots += state->num_players;
+    std::vector<int> sequence;
+    sequence.reserve(total_slots);
+    while ((int)sequence.size() < total_slots) {
+        std::shuffle(ids.begin(), ids.end(), rng);
+        sequence.insert(sequence.end(), ids.begin(), ids.end());
     }
+
+    int cursor = 0;
+    for (auto* state : states)
+        for (int p = 0; p < state->num_players; p++) state->player_model_id[p] = sequence[cursor++];
 }
 
 // Runs `num_games` tournament games (batched `gamegen_batch_size` at a time) among `participants`,
@@ -426,16 +493,27 @@ static void run_tournament_games(
     int num_simulations, float c_puct, int verbosity, std::mt19937& rng,
     std::unordered_map<int,float>& reward_sum, std::unordered_map<int,int>& game_count)
 {
+    // Every game the tournament will run, pre-created and assigned up front (see
+    // assign_by_sequence()) - the active batch below draws from this list (moved, not re-created)
+    // both for its initial fill and every replenishment.
+    std::vector<BoardState> all_games;
+    all_games.reserve(num_games);
+    for (int i = 0; i < num_games; i++) all_games.push_back(new_state(game_cfg, bc));
+
+    std::vector<BoardState*> all_ptrs;
+    all_ptrs.reserve(num_games);
+    for (auto& s : all_games) all_ptrs.push_back(&s);
+    assign_by_sequence(all_ptrs, participants, rng);
+
+    // Active batch, capped at gamegen_batch_size for compute reasons.
     int batch_n = std::min(gamegen_batch_size, num_games);
     std::vector<BoardState> tpool;
     tpool.reserve(batch_n);
-    for (int i = 0; i < batch_n; i++) {
-        tpool.push_back(new_state(game_cfg, bc));
-        assign_tournament_models(tpool.back(), participants, rng);
-    }
+    int next_game = 0;
+    for (int i = 0; i < batch_n; i++) tpool.push_back(std::move(all_games[next_game++]));
     int temperature_threshold = static_cast<int>(2 * std::sqrt(bc.N)) + 3;
 
-    int games_started = batch_n, games_done = 0, tournament_ply_iter = 0;
+    int games_done = 0, tournament_ply_iter = 0;
     while (games_done < num_games) {
         std::vector<BoardState*> ptrs;
         ptrs.reserve(tpool.size());
@@ -503,10 +581,8 @@ static void run_tournament_games(
 
             games_done++;
 
-            if (games_started < num_games) {
-                tpool[slot] = new_state(game_cfg, bc);
-                assign_tournament_models(tpool[slot], participants, rng);
-                games_started++;
+            if (next_game < num_games) {
+                tpool[slot] = std::move(all_games[next_game++]);
             } else {
                 tpool[slot] = std::move(tpool.back());
                 tpool.pop_back();
@@ -891,7 +967,7 @@ static void save_config_json(const fs::path& ckpt_dir, const std::string& arch,
 
 // Writes <arch>_XXXXXX.pt (weights) into ckpt_dir, tagged with `id` - the live self-play loop
 // passes a tournament winner's own capture iteration (may be well before the current training
-// iteration - see main()'s tournament block); --retrain's replay phase passes model_var's own
+// iteration - see main()'s tournament block); --retrain's replay phase passes seed_model's own
 // current iteration directly (that phase has no tournament concept). Either way,
 // iteration_from_model_path()/latest_checkpoint() read `id` back the same way regardless of which
 // case produced it.
@@ -998,8 +1074,13 @@ int main(int argc, char* argv[]) {
     else if (arch == "unet") model_cfg = std::make_unique<UNetConfig>(in_dim, hidden_dim, input_descr);
     else if (arch == "transformer") model_cfg = std::make_unique<TransformerConfig>(in_dim, hidden_dim, args.num_attn_layers, input_descr, history_descr);
     else                     model_cfg = std::make_unique<GNNConfig>(in_dim, hidden_dim, args.num_layers, input_descr);
-    auto model_var = build_model(bc, *model_cfg, game_cfg);
-    std::visit([&](auto& m) { m->to(device); }, model_var);
+    // Only ever directly trained by --retrain's replay phase, below (its own persistent
+    // retrain_optimizer) - once past that phase (or immediately, for a plain fresh/--resume run
+    // with no --retrain), this seeds active_models/challengers and is never referenced again. The
+    // live loop trains individual challenger clones instead (see ChallengerPool, above, and the
+    // live loop's per-iteration training step) - there is no single continuously-trained model.
+    auto seed_model = build_model(bc, *model_cfg, game_cfg);
+    std::visit([&](auto& m) { m->to(device); }, seed_model);
 
     // Resume from checkpoint (weights + replay buffer state), or set up
     // --retrain's source (read-only, existing) + destination (fresh) split.
@@ -1019,7 +1100,7 @@ int main(int argc, char* argv[]) {
         ckpt_dir = fresh_checkpoint_dir(args, game_cfg, *model_cfg);
     } else {
         ckpt_dir = handle_checkpoint_dir(args, game_cfg, *model_cfg);
-        start_iter = resume(ckpt_dir, *model_cfg, model_var, game_cfg, bc,
+        start_iter = resume(ckpt_dir, *model_cfg, seed_model, game_cfg, bc,
                              args.buffer_size, buffer);
     }
     // Written unconditionally/early (rather than tied to any particular checkpoint event) so it's
@@ -1027,8 +1108,11 @@ int main(int argc, char* argv[]) {
     // or --save-every trajectory dump - see save_config_json()'s doc comment.
     save_config_json(ckpt_dir, arch, game_cfg, *model_cfg);
 
-    auto optimizer = torch::optim::Adam(
-        std::visit([](auto& m) { return m->parameters(); }, model_var),
+    // Only used by --retrain's replay phase, below - the live loop constructs a fresh optimizer
+    // per training step instead (see ChallengerPool's per-iteration training step), since each
+    // challenger is only ever trained once in its lifetime.
+    auto retrain_optimizer = torch::optim::Adam(
+        std::visit([](auto& m) { return m->parameters(); }, seed_model),
         torch::optim::AdamOptions(args.lr).weight_decay(args.l2));
 
     std::mt19937 rng(42);
@@ -1037,9 +1121,9 @@ int main(int argc, char* argv[]) {
 
     // Active self-play model set, grown directly (see the live loop below) until it reaches
     // num_selfplay_models capacity, then only ever changed wholesale via tournament promotion -
-    // seeded with a single snapshot of the current model_var, which uniformly covers a fresh run,
-    // a --resume'd run, and the post---retrain fall-through (none of those paths need
-    // special-casing here, since this only ever looks at whatever model_var currently holds).
+    // seeded with a single snapshot of seed_model, which uniformly covers a fresh run, a
+    // --resume'd run, and the post---retrain fall-through (none of those paths need special-casing
+    // here, since this only ever looks at whatever seed_model currently holds).
     // Tagged start_iter - 1 (matching the id of the checkpoint it was just loaded from, on
     // --resume - see resume()'s "start_iter = id + 1"; -1 for a fresh run, a sentinel that never
     // collides with any real iteration) rather than start_iter itself - the live loop's first pass
@@ -1047,12 +1131,14 @@ int main(int argc, char* argv[]) {
     // reusing that same id for the seed would collide in the evaluators map (std::map silently
     // drops the second insert for a repeated key), silently losing one of two distinct models.
     ModelSnapshots active_models;
-    active_models.push_back({start_iter - 1, clone_model(model_var, bc, *model_cfg, game_cfg, device)});
+    active_models.push_back({start_iter - 1, clone_model(seed_model, bc, *model_cfg, game_cfg, device)});
     auto evaluators = build_evaluators(active_models, adj_norms);
 
-    // Fresh model_var snapshots captured since the last tournament (once active_models is at
-    // capacity - see the live loop) - candidates for promotion. Cleared after every tournament.
-    ModelSnapshots challengers;
+    // Not-yet-promoted challenger snapshots, seeded with the same single model as active_models -
+    // see ChallengerPool's doc comment (above) for how trained/untrained status is tracked, and the
+    // live loop for how this grows/gets consumed and how a tournament reseeds it.
+    ChallengerPool challengers;
+    challengers.reset(active_models);
 
     // ── Game pool ─────────────────────────────────────────────────────────────
     // Pool of gamegen_batch_size in-progress games. Slots are replenished
@@ -1077,7 +1163,7 @@ int main(int argc, char* argv[]) {
 
     // ── --retrain replay phase ───────────────────────────────────────────────
     // Replays retrain_source_dir's existing _traj.json files, in ascending
-    // (chronological) order, into the freshly-initialized model_var/buffer -
+    // (chronological) order, into the freshly-initialized seed_model/buffer -
     // no self-play here, just the games that were already recorded. Each
     // file's games are added to the buffer, then exactly as many training
     // iterations run as the source file originally spanned (its own iteration
@@ -1116,15 +1202,15 @@ int main(int argc, char* argv[]) {
             for (int j = 0; j < k; j++) {
                 if (iter >= args.iterations) { hit_iteration_cap = true; break; }
                 auto t0 = std::chrono::high_resolution_clock::now();
-                did_train = run_training_iteration(iter, model_var, optimizer, buffer, rng,
+                did_train = run_training_iteration(iter, seed_model, retrain_optimizer, buffer, rng,
                                                     game_cfg, bc, adj_norms, device,
                                                     args.train_fraction, args.batch_size, t0);
                 iter++;
             }
             if (!hit_iteration_cap && did_train) {
-                // No tournament concept here (this phase never runs self-play/MCTS) - model_var
+                // No tournament concept here (this phase never runs self-play/MCTS) - seed_model
                 // itself is the only thing to save, tagged by its own current iteration.
-                save_model_weights(ckpt_dir, arch, iter - 1, model_var, game_cfg, *model_cfg);
+                save_model_weights(ckpt_dir, arch, iter - 1, seed_model, game_cfg, *model_cfg);
                 save_trajectories(ckpt_dir, arch, iter - 1, span_games);
             }
 
@@ -1135,7 +1221,9 @@ int main(int argc, char* argv[]) {
     int ply_iter = 0;
     for (; iter < args.iterations; iter++) {
         auto t0 = std::chrono::high_resolution_clock::now();
-        std::visit([](auto& m) { m->eval(); }, model_var);
+        // No top-of-iteration eval-mode toggle needed here (unlike the old single-model_var
+        // design) - every active_models/challengers entry is already in eval mode from the moment
+        // it's stored, via clone_model()'s own convention.
 
         // ── Self-play ────────────────────────────────────────────────────────
         if (args.verbosity >= 1)
@@ -1215,44 +1303,60 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        bool did_train = run_training_iteration(iter, model_var, optimizer, buffer, rng,
+        // ── Training ─────────────────────────────────────────────────────────
+        auto* picked = challengers.pick_untrained_challenger();
+        if (!picked) {
+            std::cout << "[iter " << iter << "] no untrained challenger available, skipping train step" << std::endl;
+            continue;
+        }
+        AnyModel trainee = clone_model(picked->second, bc, *model_cfg, game_cfg, device);
+        auto trainee_optimizer = torch::optim::Adam(
+            std::visit([](auto& m) { return m->parameters(); }, trainee),
+            torch::optim::AdamOptions(args.lr).weight_decay(args.l2));
+
+        bool did_train = run_training_iteration(iter, trainee, trainee_optimizer, buffer, rng,
                                                  game_cfg, bc, adj_norms, device,
                                                  args.train_fraction, args.batch_size, t0);
         if (!did_train) continue;
 
-        // A fresh snapshot of the just-updated model_var either grows active_models directly (still
-        // below capacity - nothing to displace yet, so no reason to gate it behind a tournament) or,
-        // once active_models is full, joins challengers to await the next tournament.
-        auto snapshot = clone_model(model_var, bc, *model_cfg, game_cfg, device);
+        // The picked entry is retired (never trained again - see ChallengerPool's doc comment);
+        // trainee is its trained child, appended fresh at the tail. While active_models hasn't yet
+        // reached capacity, the child is ALSO promoted directly (nothing to displace yet, so no
+        // reason to gate it behind a tournament) - keeps the untrained-challenger pool from running
+        // dry during growth (it would start with only the single seed entry otherwise).
+        challengers.mark_picked_trained();
+        std::visit([](auto& m) { m->eval(); }, trainee);  // run_training_iteration leaves .train() mode set
+
         if ((int)active_models.size() < args.num_selfplay_models) {
-            active_models.push_back({iter, std::move(snapshot)});
+            active_models.push_back({iter, trainee});  // shallow copy - safe, see ModelSnapshots
+            challengers.push_back(iter, std::move(trainee));
             evaluators = build_evaluators(active_models, adj_norms);
         } else {
-            challengers.push_back({iter, std::move(snapshot)});
+            challengers.push_back(iter, std::move(trainee));
         }
 
         // ── Tournament ───────────────────────────────────────────────────────
         // iter == args.iterations - 1 mirrors --save-every's own end-of-run flush below, so
         // whatever's accumulated in challengers always gets one last shot before the run ends.
         if ((iter + 1) % args.tournament_every == 0 || iter == args.iterations - 1) {
+            std::vector<int> eligible = challengers.eligible_wildcard_indices(active_models);
             int wildcards_needed = args.num_tournament_models - (int)active_models.size();
-            if ((int)challengers.size() < wildcards_needed) {
-                // Not enough challengers yet to fill a full num_tournament_models tournament with
-                // all-distinct participants - skip this round entirely (challengers keeps
+            if ((int)eligible.size() < wildcards_needed) {
+                // Not enough eligible wildcards yet to fill a full num_tournament_models tournament
+                // with all-distinct participants - skip this round entirely (challengers keeps
                 // accumulating untouched) rather than running an under-sized tournament.
                 if (args.verbosity >= 1)
                     std::cout << "[iter " << std::setw(4) << iter << "] tournament: only "
-                              << challengers.size() << " challengers available (" << wildcards_needed
+                              << eligible.size() << " eligible challengers available (" << wildcards_needed
                               << " needed) - skipping this tournament" << std::endl;
             } else {
-                // Distinct wildcard challengers: shuffle indices and take the first
-                // wildcards_needed - each index used at most once, so participants never
-                // contains the same challenger twice.
-                std::vector<int> idx(challengers.size());
-                std::iota(idx.begin(), idx.end(), 0);
-                std::shuffle(idx.begin(), idx.end(), rng);
+                // Distinct wildcard challengers: shuffle the eligible indices and take the first
+                // wildcards_needed - each used at most once, so participants never contains the
+                // same challenger twice.
+                std::shuffle(eligible.begin(), eligible.end(), rng);
                 ModelSnapshots participants = active_models;
-                for (int k = 0; k < wildcards_needed; k++) participants.push_back(challengers[idx[k]]);
+                for (int k = 0; k < wildcards_needed; k++)
+                    participants.push_back(challengers.entries()[eligible[k]]);
 
                 auto tournament_evaluators = build_evaluators(participants, adj_norms);
 
@@ -1294,14 +1398,19 @@ int main(int argc, char* argv[]) {
                 };
                 // A winner is either a genuinely new challenger being promoted for the first time,
                 // or an incumbent active model that simply prevailed again - distinguished for both
-                // the standings print and the save-gating below, since only the former needs saving.
-                auto was_challenger = [&](int id) {
-                    return std::any_of(challengers.begin(), challengers.end(),
-                                        [&](auto& e) { return e.first == id; });
+                // the standings print and the save-gating below, since only the former needs
+                // saving. old_active_ids (active_models' ids immediately before this tournament's
+                // promotion) is the right test here, not challengers membership - a reseed
+                // duplicates active_models into challengers, so a prevailing incumbent can
+                // legitimately appear there too.
+                std::vector<int> old_active_ids;
+                for (auto& [id, m] : active_models) old_active_ids.push_back(id);
+                auto is_new = [&](int id) {
+                    return std::find(old_active_ids.begin(), old_active_ids.end(), id) == old_active_ids.end();
                 };
                 auto winner_tag = [&](int id) {
                     if (!is_winner(id)) return "";
-                    return was_challenger(id) ? "  [promoted]" : "  [prevailed]";
+                    return is_new(id) ? "  [promoted]" : "  [prevailed]";
                 };
 
                 if (args.verbosity >= 1) {
@@ -1320,22 +1429,24 @@ int main(int argc, char* argv[]) {
                 }
 
                 // Promote: winner_ids become the new active_models. Only save the ones genuinely
-                // new (were challengers) - an incumbent that simply prevailed again was already
-                // saved the tournament it was first promoted, so re-saving it here would just
-                // duplicate that file.
+                // new (is_new) - an incumbent that simply prevailed again was already saved the
+                // tournament it was first promoted, so re-saving it here would just duplicate that
+                // file.
                 ModelSnapshots new_active;
                 new_active.reserve(winner_ids.size());
                 for (int id : winner_ids) {
                     auto pit = std::find_if(participants.begin(), participants.end(),
                                              [&](auto& e) { return e.first == id; });
-                    if (was_challenger(id)) save_model_weights(ckpt_dir, arch, id, pit->second, game_cfg, *model_cfg);
+                    if (is_new(id)) save_model_weights(ckpt_dir, arch, id, pit->second, game_cfg, *model_cfg);
                     new_active.push_back(*pit);
                 }
                 active_models = std::move(new_active);
 
                 for (auto& state : pool) refresh_player(state, active_models, rng);
                 evaluators = build_evaluators(active_models, adj_norms);
-                challengers.clear();
+                // Reseed (not clear): challengers becomes the new active_models, all untrained -
+                // see ChallengerPool's doc comment and Readme's "Tournament-Based Model Selection".
+                challengers.reset(active_models);
             }
         }
 
