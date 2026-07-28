@@ -61,8 +61,6 @@ TransformerImpl::TransformerImpl(const BoardConfig& bc, const TransformerConfig&
     hist_encoder_out = register_module("hist_encoder_out", torch::nn::Linear(D, D));
 
     for (int i = 0; i < cfg_.num_attn_layers; i++)
-        self_attn_layers_.push_back(register_module("self_attn_" + std::to_string(i), TransformerBlock(D, kNumHeads)));
-    for (int i = 0; i < cfg_.num_attn_layers; i++)
         cross_attn_layers_.push_back(register_module("cross_attn_" + std::to_string(i), TransformerBlock(D, kNumHeads)));
 
     history_sentinel_ = register_parameter("history_sentinel", torch::randn({1, 1, D}));
@@ -120,14 +118,13 @@ std::pair<torch::Tensor, torch::Tensor> TransformerImpl::forward(
     auto sentinel_mask = torch::zeros({B, 1}, hist_mask.options());
     auto full_mask = torch::cat({sentinel_mask, hist_mask}, 1);            // (B, T+1) True=pad
 
-    // History self-attention - permutation-EQUIVARIANT (no positional/recency signal is ever
-    // added to seq), so the history set stays order-symmetric by construction.
+    // seq is permutation-EQUIVARIANT (no positional/recency signal is ever added), so the history
+    // set stays order-symmetric by construction - used as-is below, no self-attention refinement.
     auto seq_lbd = seq.transpose(0, 1);  // (T+1, B, D) - MultiheadAttention needs seq-first layout
-    for (auto& blk : self_attn_layers_)
-        seq_lbd = blk->forward(seq_lbd, seq_lbd, full_mask);
 
     // Cross-attention: the current state's embedding is the query, never joining the history set
-    // itself - a structurally different role, not just a learned tag.
+    // itself - a structurally different role, not just a learned tag. The key/value set (seq_lbd)
+    // stays fixed across layers; only the query evolves.
     auto q = cur_emb.unsqueeze(0);  // (1, B, D)
     for (auto& blk : cross_attn_layers_)
         q = blk->forward(q, seq_lbd, full_mask);

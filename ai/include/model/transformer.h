@@ -59,14 +59,16 @@ TORCH_MODULE(TransformerBlock);
 //          adjacency/shape assumption - works for any board type identically), though N-specific
 //          like every other architecture already is per checkpoint.
 // History set: every PAST state's (D,) embedding (from hist_encoder_in/hist_encoder_out) forms an
-//          unordered set, refined by self_attn_layers_ (num_attn_layers deep) - permutation-
-//          EQUIVARIANT (no positional/recency signal ever added), so the set stays order-symmetric
-//          by construction. A learned, never-masked history_sentinel_ token is always prepended so
+//          unordered set, used as-is (no self-attention refinement pass) - permutation-EQUIVARIANT
+//          (no positional/recency signal ever added), so the set stays order-symmetric by
+//          construction. A learned, never-masked history_sentinel_ token is always prepended so
 //          attention never faces an all-masked row (avoids softmax(-inf,...) -> NaN) even for a
 //          genesis state with zero past plies.
 // Cross-attention: the CURRENT state's single (D,) embedding (from encoder_in/encoder_out) is the
 //          query - it never joins the history set, playing a structurally different role instead
-//          (cross_attn_layers_, same depth as the history stack), producing an enriched h*.
+//          (cross_attn_layers_, num_attn_layers deep - the only attention stack in this
+//          architecture; only the query evolves layer-to-layer, the key/value set stays the same
+//          raw history embeddings throughout), producing an enriched h*.
 // Decoder: h* -> one monolithic MLP (decoder_in -> ReLU -> decoder_out) -> reshape (N, hidden_dim)
 //          - the literal inverse of the encoder's flatten, no per-node operation anywhere in this
 //          path (unlike the other three architectures' topology-aware bodies).
@@ -86,7 +88,6 @@ struct TransformerImpl : torch::nn::Module {
     torch::nn::Linear hist_encoder_in{nullptr};   // N*history_feature_dim -> hidden_dim (past plies only)
     torch::nn::Linear hist_encoder_out{nullptr};  // hidden_dim -> hidden_dim (past plies only)
 
-    std::vector<TransformerBlock> self_attn_layers_;   // cfg.num_attn_layers, history set only
     std::vector<TransformerBlock> cross_attn_layers_;  // cfg.num_attn_layers, query = current-state token
 
     torch::Tensor history_sentinel_;  // (1,1,hidden_dim) learned parameter, never masked

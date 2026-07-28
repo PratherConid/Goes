@@ -84,11 +84,10 @@ struct GNNConfig : ModelConfig {
 
 // Transformer-specific model config.
 struct TransformerConfig : ModelConfig {
-    // Cross-attention stack depth AND history self-attention stack depth (same count for both -
-    // see TransformerImpl's ctor doc comment for why one CLI-configurable count serves both
-    // stacks). Deliberately NOT GNNConfig::num_layers/--num-layers (GNN's own message-passing
-    // depth flag, default 9) - kept as its own flag/field, per an explicit decision not to
-    // complicate the shared --num-layers default or its meaning.
+    // Cross-attention stack depth - the only attention stack in this architecture (see
+    // TransformerImpl's ctor doc comment). Deliberately NOT GNNConfig::num_layers/--num-layers
+    // (GNN's own message-passing depth flag, default 9) - kept as its own flag/field, per an
+    // explicit decision not to complicate the shared --num-layers default or its meaning.
     int num_attn_layers;
     // Minimal per-ply feature descriptor for PAST plies only (plyMod + stoneOccupancy) - built
     // directly in train.cpp from the GameConfig, independent of compute_input_descr(). The
