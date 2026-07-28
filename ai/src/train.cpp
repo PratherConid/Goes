@@ -66,11 +66,11 @@ struct Args {
     // when their game is created. Grows directly (each iteration's freshly-trained challenger is
     // promoted straight in - see ChallengerPool/main()'s per-iteration training step) until it
     // reaches this size, then only changes via tournament promotion (see tournament_every et al.).
-    int num_selfplay_models = 3;
+    int num_selfplay_models = 1;
     // Number of participants in each tournament: the current active_models set plus randomly
     // sampled challengers, filling up to this many total - must be > num_selfplay_models (validated
     // after parsing) so every tournament has at least one wildcard slot.
-    int num_tournament_models = 8;
+    int num_tournament_models = 6;
     // Training iterations between tournaments - see main()'s tournament block. Fresh model
     // snapshots captured in between accumulate as challengers until the next tournament (or until
     // active_models is still growing towards num_selfplay_models capacity, in which case they join
@@ -133,10 +133,10 @@ static void print_usage(const char* prog) {
               << "                            --num-tournament-models (default: 10)\n"
               << "  --num-selfplay-models N   Target size of the active self-play model set - each\n"
               << "                            player is independently randomly assigned one active\n"
-              << "                            snapshot per game (default: 3)\n"
+              << "                            snapshot per game (default: 1)\n"
               << "  --num-tournament-models N Participants per tournament (active models + random\n"
               << "                            challengers) - must be > --num-selfplay-models\n"
-              << "                            (default: 8)\n"
+              << "                            (default: 6)\n"
               << "  --tournament-every N      Training iterations between tournaments (default: 16)\n"
               << "  --num-tournament-games N  Games played per tournament (default: 512)\n"
               << "  --tournament-num-simulations N  MCTS simulations per ply during tournament\n"
