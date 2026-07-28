@@ -582,10 +582,14 @@ static void run_tournament_games(
 
             if (next_game < num_games) {
                 tpool[slot] = std::move(all_games[next_game++]);
-            } else {
+            } else if (slot != (int)tpool.size() - 1) {
                 tpool[slot] = std::move(tpool.back());
                 tpool.pop_back();
                 slot--;  // re-visit the swapped-in state at this index
+            } else {
+                // slot is already the last index - swapping it with itself would be a
+                // self-move-assignment, so just drop it instead.
+                tpool.pop_back();
             }
         }
     }
