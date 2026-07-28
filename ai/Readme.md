@@ -63,8 +63,6 @@ ai/
 
 ## Build
 
-**Note:** Make sure that the absolute paths do not contain any unicode characters
-
 **Linux:**
 
 Install CUDA runtime libraries required by LibTorch (Ubuntu 22.04):
@@ -93,8 +91,10 @@ cmake --build ai\build --config Release
 ```
 
 **Note:**
-1. The build adds `-Wl,--disable-new-dtags` on Linux so that `RPATH` (rather than `RUNPATH`) is embedded in the binaries. This is necessary because `libcupti` is a transitive dependency and `RUNPATH` is not searched transitively by the dynamic linker.
-2. On Windows with Visual Studio generator, DLLs are automatically copied next to the binaries by the CMakeLists.
+1. Make sure that the absolute paths do not contain any unicode characters.
+2. The build adds `-Wl,--disable-new-dtags` on Linux so that `RPATH` (rather than `RUNPATH`) is embedded in the binaries. This is necessary because `libcupti` is a transitive dependency and `RUNPATH` is not searched transitively by the dynamic linker.
+3. On Windows with Visual Studio generator, DLLs are automatically copied next to the binaries by the CMakeLists.
+4. Pass `-DSANITIZE=ON` (Linux only) to enable AddressSanitizer/UndefinedBehaviorSanitizer (`-fsanitize=address,undefined`) - catches memory errors (use-after-free, out-of-bounds access, etc.) at the exact point they occur, with a full stack trace, rather than however much later they might otherwise surface as a crash. Useful when chasing a segfault; adds meaningful runtime overhead, so leave it off for normal training runs.
 
 ## Training
 
