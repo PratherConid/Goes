@@ -335,45 +335,29 @@ static const nlohmann::json* history_descr_ptr(const ModelConfig& cfg) {
 
 // id -> frozen model snapshot; id is the training iteration whose training step produced it (or,
 // for the very first seed, start_iter - 1 - see main()). Entries are never mutated in place - each
-// training step operates on a fresh clone (see ChallengerPool, below, and main()'s per-iteration
-// training step), so every stored entry stays a valid, freely shallow-copyable snapshot for as
-// long as it's kept around. Used both for the active self-play model set (active_models, a plain
-// ModelSnapshots) and, wrapped in ChallengerPool below, the pool of not-yet-promoted challengers.
+// is a frozen clone of model_var's weights at the moment it was captured (see ChallengerPool, below,
+// and main()'s per-iteration training step), so every stored entry stays a valid, freely
+// shallow-copyable snapshot for as long as it's kept around. Used both for the active self-play
+// model set (active_models, a plain ModelSnapshots) and, wrapped in ChallengerPool below, the pool
+// of not-yet-promoted challengers.
 using ModelSnapshots = std::vector<std::pair<int, AnyModel>>;
 
-// Ordered list of challenger model snapshots awaiting either further training or tournament
-// promotion. Entries at index < trained_boundary_ have already been used once as a training base
-// (see pick_untrained_challenger()/mark_picked_trained()) - a challenger is only ever trained once
-// in its lifetime, producing a child that's appended at the tail (push_back()) and is itself
-// untrained. Because every mutation either appends at the tail or advances the boundary by exactly
-// one, "trained = prefix, untrained = suffix" holds at all times, so a single index fully captures
-// trained/untrained status - no per-id set needed.
+// Pool of challenger model snapshots awaiting tournament promotion - purely a growing list of
+// periodic frozen captures of model_var (see main()'s per-iteration training step); there is no
+// trained/untrained distinction to track, since a snapshot is never itself trained further (only
+// model_var is).
 class ChallengerPool {
 public:
-    // Resets to `models` (each considered untrained) - used at run startup and after every
-    // tournament ("initialize challengers with active models").
-    void reset(ModelSnapshots models) { entries_ = std::move(models); trained_boundary_ = 0; }
+    // Resets to `models` - used at run startup and after every tournament ("reseed the pool with
+    // active_models").
+    void reset(ModelSnapshots models) { entries_ = std::move(models); }
 
-    // The oldest not-yet-trained entry, or nullptr if every current entry has already been used as
-    // a training base (shouldn't happen given the replenishment invariant in main()'s per-iteration
-    // training step, but guarded defensively rather than assumed). The returned pointer is only
-    // valid until the next push_back() (which may reallocate) - callers must extract what they
-    // need (clone the model, note the id) before calling push_back().
-    std::pair<int, AnyModel>* pick_untrained_challenger() {
-        return trained_boundary_ < (int)entries_.size() ? &entries_[trained_boundary_] : nullptr;
-    }
-
-    // Marks the current pick_untrained_challenger() entry trained (advances the boundary by one) -
-    // call only after successfully training a clone of it.
-    void mark_picked_trained() { trained_boundary_++; }
-
-    // Appends a fresh, untrained entry at the tail - preserves the prefix/suffix invariant above.
+    // Appends a fresh snapshot at the tail.
     void push_back(int id, AnyModel model) { entries_.push_back({id, std::move(model)}); }
 
     // Indices of wildcard-eligible entries for a tournament: every entry whose id isn't currently
-    // in active_models - excludes exactly the entries reset() just copied in from active_models
-    // and that haven't been trained since, which would otherwise be redundant, bit-identical
-    // tournament participants.
+    // in active_models - excludes exactly the entries reset() just copied in from active_models,
+    // which would otherwise be redundant, bit-identical tournament participants.
     std::vector<int> eligible_wildcard_indices(const ModelSnapshots& active_models) const {
         std::vector<int> idx;
         for (int i = 0; i < (int)entries_.size(); i++) {
@@ -389,13 +373,12 @@ public:
 
 private:
     ModelSnapshots entries_;
-    int trained_boundary_ = 0;
 };
 
 // Produces an independent, frozen copy of src - not just another reference to the same
 // shared_ptr-backed torch module (which a plain AnyModel copy would be), since a snapshot must
-// stay unaffected by further training on src (seed_model during setup, or a picked challenger
-// still undergoing its one training step - see main()'s per-iteration training step). Goes through
+// stay unaffected by further training on src (model_var keeps training every iteration - see
+// main()'s per-iteration training step). Goes through
 // the exact same torch::save/torch::load (via std::visit) already used for checkpoints, just
 // round-tripped through an in-memory stream instead of a file - build_model() constructs the fresh
 // AnyModel of the right architecture to load into. Only needed when independently cloning
@@ -970,7 +953,7 @@ static void save_config_json(const fs::path& ckpt_dir, const std::string& arch,
 
 // Writes <arch>_XXXXXX.pt (weights) into ckpt_dir, tagged with `id` - the live self-play loop
 // passes a tournament winner's own capture iteration (may be well before the current training
-// iteration - see main()'s tournament block); --retrain's replay phase passes seed_model's own
+// iteration - see main()'s tournament block); --retrain's replay phase passes model_var's own
 // current iteration directly (that phase has no tournament concept). Either way,
 // iteration_from_model_path()/latest_checkpoint() read `id` back the same way regardless of which
 // case produced it.
@@ -1077,13 +1060,14 @@ int main(int argc, char* argv[]) {
     else if (arch == "unet") model_cfg = std::make_unique<UNetConfig>(in_dim, hidden_dim, input_descr);
     else if (arch == "transformer") model_cfg = std::make_unique<TransformerConfig>(in_dim, hidden_dim, args.num_attn_layers, input_descr, history_descr);
     else                     model_cfg = std::make_unique<GNNConfig>(in_dim, hidden_dim, args.num_layers, input_descr);
-    // Only ever directly trained by --retrain's replay phase, below (its own persistent
-    // retrain_optimizer) - once past that phase (or immediately, for a plain fresh/--resume run
-    // with no --retrain), this seeds active_models/challengers and is never referenced again. The
-    // live loop trains individual challenger clones instead (see ChallengerPool, above, and the
-    // live loop's per-iteration training step) - there is no single continuously-trained model.
-    auto seed_model = build_model(bc, *model_cfg, game_cfg);
-    std::visit([&](auto& m) { m->to(device); }, seed_model);
+    // The one continuously-trained model for the entire run: --retrain's replay phase (if any)
+    // trains it first with model_optimizer below, then the live loop keeps training the very same
+    // model+optimizer pair every iteration afterward (see the live loop's per-iteration training
+    // step) - no reset in between. active_models/ChallengerPool only ever hold frozen snapshots of
+    // its weights at various points in time (see ModelSnapshots' doc comment, above), never model_var
+    // itself.
+    auto model_var = build_model(bc, *model_cfg, game_cfg);
+    std::visit([&](auto& m) { m->to(device); }, model_var);
 
     // Resume from checkpoint (weights + replay buffer state), or set up
     // --retrain's source (read-only, existing) + destination (fresh) split.
@@ -1103,7 +1087,7 @@ int main(int argc, char* argv[]) {
         ckpt_dir = fresh_checkpoint_dir(args, game_cfg, *model_cfg);
     } else {
         ckpt_dir = handle_checkpoint_dir(args, game_cfg, *model_cfg);
-        start_iter = resume(ckpt_dir, *model_cfg, seed_model, game_cfg, bc,
+        start_iter = resume(ckpt_dir, *model_cfg, model_var, game_cfg, bc,
                              args.buffer_size, buffer);
     }
     // Written unconditionally/early (rather than tied to any particular checkpoint event) so it's
@@ -1111,11 +1095,11 @@ int main(int argc, char* argv[]) {
     // or --save-every trajectory dump - see save_config_json()'s doc comment.
     save_config_json(ckpt_dir, arch, game_cfg, *model_cfg);
 
-    // Only used by --retrain's replay phase, below - the live loop constructs a fresh optimizer
-    // per training step instead (see ChallengerPool's per-iteration training step), since each
-    // challenger is only ever trained once in its lifetime.
-    auto retrain_optimizer = torch::optim::Adam(
-        std::visit([](auto& m) { return m->parameters(); }, seed_model),
+    // Persistent optimizer for model_var, spanning both --retrain's replay phase (if any) and the
+    // entire live loop afterward - constructed exactly once, so Adam's momentum/variance state
+    // carries across every training step model_var ever takes.
+    auto model_optimizer = torch::optim::Adam(
+        std::visit([](auto& m) { return m->parameters(); }, model_var),
         torch::optim::AdamOptions(args.lr).weight_decay(args.l2));
 
     std::mt19937 rng(42);
@@ -1124,9 +1108,9 @@ int main(int argc, char* argv[]) {
 
     // Active self-play model set, grown directly (see the live loop below) until it reaches
     // num_selfplay_models capacity, then only ever changed wholesale via tournament promotion -
-    // seeded with a single snapshot of seed_model, which uniformly covers a fresh run, a
+    // seeded with a single snapshot of model_var, which uniformly covers a fresh run, a
     // --resume'd run, and the post---retrain fall-through (none of those paths need special-casing
-    // here, since this only ever looks at whatever seed_model currently holds).
+    // here, since this only ever looks at whatever model_var currently holds).
     // Tagged start_iter - 1 (matching the id of the checkpoint it was just loaded from, on
     // --resume - see resume()'s "start_iter = id + 1"; -1 for a fresh run, a sentinel that never
     // collides with any real iteration) rather than start_iter itself - the live loop's first pass
@@ -1134,12 +1118,12 @@ int main(int argc, char* argv[]) {
     // reusing that same id for the seed would collide in the evaluators map (std::map silently
     // drops the second insert for a repeated key), silently losing one of two distinct models.
     ModelSnapshots active_models;
-    active_models.push_back({start_iter - 1, clone_model(seed_model, bc, *model_cfg, game_cfg, device)});
+    active_models.push_back({start_iter - 1, clone_model(model_var, bc, *model_cfg, game_cfg, device)});
     auto evaluators = build_evaluators(active_models, adj_norms);
 
     // Not-yet-promoted challenger snapshots, seeded with the same single model as active_models -
-    // see ChallengerPool's doc comment (above) for how trained/untrained status is tracked, and the
-    // live loop for how this grows/gets consumed and how a tournament reseeds it.
+    // see ChallengerPool's doc comment (above) for how this grows/gets consumed and how a
+    // tournament reseeds it.
     ChallengerPool challengers;
     challengers.reset(active_models);
 
@@ -1166,7 +1150,7 @@ int main(int argc, char* argv[]) {
 
     // ── --retrain replay phase ───────────────────────────────────────────────
     // Replays retrain_source_dir's existing _traj.json files, in ascending
-    // (chronological) order, into the freshly-initialized seed_model/buffer -
+    // (chronological) order, into the freshly-initialized model_var/buffer -
     // no self-play here, just the games that were already recorded. Each
     // file's games are added to the buffer, then exactly as many training
     // iterations run as the source file originally spanned (its own iteration
@@ -1205,15 +1189,15 @@ int main(int argc, char* argv[]) {
             for (int j = 0; j < k; j++) {
                 if (iter >= args.iterations) { hit_iteration_cap = true; break; }
                 auto t0 = std::chrono::high_resolution_clock::now();
-                did_train = run_training_iteration(iter, seed_model, retrain_optimizer, buffer, rng,
+                did_train = run_training_iteration(iter, model_var, model_optimizer, buffer, rng,
                                                     game_cfg, bc, adj_norms, device,
                                                     args.train_fraction, args.batch_size, t0);
                 iter++;
             }
             if (!hit_iteration_cap && did_train) {
-                // No tournament concept here (this phase never runs self-play/MCTS) - seed_model
+                // No tournament concept here (this phase never runs self-play/MCTS) - model_var
                 // itself is the only thing to save, tagged by its own current iteration.
-                save_model_weights(ckpt_dir, arch, iter - 1, seed_model, game_cfg, *model_cfg);
+                save_model_weights(ckpt_dir, arch, iter - 1, model_var, game_cfg, *model_cfg);
                 save_trajectories(ckpt_dir, arch, iter - 1, span_games);
             }
 
@@ -1307,35 +1291,25 @@ int main(int argc, char* argv[]) {
         }
 
         // ── Training ─────────────────────────────────────────────────────────
-        auto* picked = challengers.pick_untrained_challenger();
-        if (!picked) {
-            std::cout << "[iter " << iter << "] no untrained challenger available, skipping train step" << std::endl;
-            continue;
-        }
-        AnyModel trainee = clone_model(picked->second, bc, *model_cfg, game_cfg, device);
-        auto trainee_optimizer = torch::optim::Adam(
-            std::visit([](auto& m) { return m->parameters(); }, trainee),
-            torch::optim::AdamOptions(args.lr).weight_decay(args.l2));
-
-        bool did_train = run_training_iteration(iter, trainee, trainee_optimizer, buffer, rng,
+        bool did_train = run_training_iteration(iter, model_var, model_optimizer, buffer, rng,
                                                  game_cfg, bc, adj_norms, device,
                                                  args.train_fraction, args.batch_size, t0);
         if (!did_train) continue;
 
-        // The picked entry is retired (never trained again - see ChallengerPool's doc comment);
-        // trainee is its trained child, appended fresh at the tail. While active_models hasn't yet
-        // reached capacity, the child is ALSO promoted directly (nothing to displace yet, so no
-        // reason to gate it behind a tournament) - keeps the untrained-challenger pool from running
-        // dry during growth (it would start with only the single seed entry otherwise).
-        challengers.mark_picked_trained();
-        std::visit([](auto& m) { m->eval(); }, trainee);  // run_training_iteration leaves .train() mode set
+        // Frozen eval-mode snapshot of model_var's current weights (clone_model() already puts it
+        // in eval() mode) - model_var itself keeps training every iteration; only snapshots are
+        // ever shared out to active_models/challengers. While active_models hasn't yet reached
+        // capacity, the snapshot is ALSO promoted directly (nothing to displace yet, so no reason to
+        // gate it behind a tournament) - keeps the challenger pool from running dry during growth
+        // (it would start with only the single seed entry otherwise).
+        AnyModel snapshot = clone_model(model_var, bc, *model_cfg, game_cfg, device);
 
         if ((int)active_models.size() < args.num_selfplay_models) {
-            active_models.push_back({iter, trainee});  // shallow copy - safe, see ModelSnapshots
-            challengers.push_back(iter, std::move(trainee));
+            active_models.push_back({iter, snapshot});  // shallow copy - safe, see ModelSnapshots
+            challengers.push_back(iter, std::move(snapshot));
             evaluators = build_evaluators(active_models, adj_norms);
         } else {
-            challengers.push_back(iter, std::move(trainee));
+            challengers.push_back(iter, std::move(snapshot));
         }
 
         // ── Tournament ───────────────────────────────────────────────────────
