@@ -1398,6 +1398,7 @@ int main(int argc, char* argv[]) {
                 if (args.verbosity >= 1) {
                     std::cout << "[iter " << std::setw(4) << iter << "] undefeated=[";
                     for (auto& [id, m] : undefeated) std::cout << id << ",";
+                    if (has_undefeated) std::cout << undefeated_top << ",";
                     std::cout << "]";
                     if (has_undefeated) std::cout << "  participating=" << undefeated_top;
                     std::cout << std::endl;

@@ -104,7 +104,7 @@ Run from the project root:
 
 ```bash
 export OMP_NUM_THREADS=8
-ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 1 --linear-move-bound 1.5 2.5
+ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --initialization-iters 8
 ```
 
 For higher-end training devices,
@@ -112,11 +112,11 @@ For higher-end training devices,
 ```bash
 export OMP_NUM_THREADS=8
 
-ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192 --cnn-hidden-dim 128
+ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192 --cnn-hidden-dim 128 --initialization-iters 8
 
-ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192 --net-arch gnn --gnn-hidden-dim 256
+ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192 --net-arch gnn --gnn-hidden-dim 256 --initialization-iters 8
 
-ai/build/goes_train --game-config public/game_presets/7x7x2_twsq_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192 --cnn-hidden-dim 128
+ai/build/goes_train --game-config public/game_presets/7x7x2_twsq_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192 --cnn-hidden-dim 128 --initialization-iters 8
 
 ai/build/goes_train --game-config public/game_presets/3x3_go_fpo.json --verbosity 1 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192 --net-arch transformer --transformer-hidden-dim 128
 
