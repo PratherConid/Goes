@@ -362,20 +362,19 @@ trains anything itself, it just accumulates periodic captures of `model_var`'s p
 tournaments to draw on.
 
 `active_models` starts as a single snapshot of the initial model and grows directly - each
-iteration's fresh snapshot of `model_var` is *also* promoted straight into `active_models` (in
-addition to joining the challenger pool) - until it reaches `--num-selfplay-models` capacity. From
-then on, snapshots only join the challenger pool; `active_models` itself only changes wholesale, via
-tournament promotion.
+iteration's fresh snapshot of `model_var` is promoted straight into `active_models` instead of
+joining the challenger pool - until it reaches `--num-selfplay-models` capacity. From then on,
+snapshots only join the challenger pool; `active_models` itself only changes wholesale, via
+tournament promotion. A snapshot is always routed to exactly one of the two, never both, so the
+challenger pool and `active_models` are disjoint by construction - every challenger-pool entry is
+always a valid tournament wildcard, with no eligibility filtering needed (see below).
 
 **Tournaments** are attempted every `--tournament-every` iterations (immediately after that
-iteration's training step): the current `active_models` plus a random sample of *distinct* eligible
+iteration's training step): the current `active_models` plus a random sample of *distinct*
 challenger-pool entries (filling up to `--num-tournament-models` participants total - always more
 than `--num-selfplay-models`, so there's always at least one wildcard slot wanted) play
 `--num-tournament-games` games against each other, using `--tournament-num-simulations` MCTS
-simulations per move. A challenger-pool entry is wildcard-eligible iff its id isn't already present
-in `active_models` - a tournament's conclusion reseeds the pool from `active_models` (see below), so
-a reseeded entry would otherwise be a redundant, bit-identical duplicate of an existing participant.
-Unlike self-play games, tournament games are **not** trajectory-recorded or trained on - only each
+simulations per move. Unlike self-play games, tournament games are **not** trajectory-recorded or trained on - only each
 participant's final per-game reward (the same terminal reward formula MCTS itself backs up,
 `compute_player_rewards()`) is tallied, then averaged per model across however many games it played.
 Which player slot each game hands to which participant is decided once, up front, for every game
@@ -385,7 +384,7 @@ whole tournament, then hands out consecutive chunks of that single sequence, one
 so consumption order alone balances how often each participant plays across the *entire*
 tournament, not just within one game at a time.
 
-If there aren't yet enough eligible wildcards to fill every wanted slot, the tournament is skipped
+If there aren't yet enough challengers to fill every wanted wildcard slot, the tournament is skipped
 entirely for this check (the challenger pool is left untouched, to keep accumulating towards the
 next `--tournament-every` boundary) rather than running an under-sized one.
 
@@ -397,8 +396,9 @@ or `[prevailed]` (was already active and simply won again) - either way, those b
 (tagged with their own capture iteration rather than the iteration the tournament ran at) - a
 `[prevailed]` incumbent was already saved the tournament it was first promoted, so re-saving it
 would just duplicate that file. Whenever a tournament actually runs, the challenger pool is then
-**reseeded** from the new `active_models` (not cleared to empty) - every current active model
-becomes a challenger-pool entry again, eligible for wildcard selection in future tournaments.
+**cleared** - entries that didn't get promoted are dropped rather than kept for future tournaments,
+which both bounds the pool's size (at most `--tournament-every` entries between tournaments) and
+preserves the disjoint-from-`active_models` invariant above.
 
 A self-play game can easily outlive one tournament (self-play games aren't bounded to finish within
 a single training iteration). To keep this safe, once `active_models` is replaced, any in-progress
@@ -408,9 +408,10 @@ player-to-model assignments are always a subset of the current active set, and t
 evaluator map (`build_evaluators()`) only ever needs to mirror that set exactly.
 
 `active_models`/`ChallengerPool` are purely an in-memory, self-play-time concept layered on top of
-`model_var` - `--resume` always restarts both from a single snapshot of the resumed weights (see
-`--resume`'s note in **Key Flags**: this can replay up to `tournament_every - 1` iterations' worth of
-gradient progress that was never captured as a tournament-proven winner), and `--retrain`'s
+`model_var` - `--resume` always restarts `active_models` from a single snapshot of the resumed
+weights and the challenger pool empty (see `--resume`'s note in **Key Flags**: this can replay up to
+`tournament_every - 1` iterations' worth of gradient progress that was never captured as a
+tournament-proven winner), and `--retrain`'s
 trajectory-replay phase never touches either (that phase doesn't run self-play or tournaments at all
 - see `--retrain` in **Key Flags**, above), though it trains the very same `model_var`/
 `model_optimizer` pair the live loop below it continues with, on the same span boundaries it always

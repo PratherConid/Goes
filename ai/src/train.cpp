@@ -17,6 +17,7 @@
 #include <map>
 #include <filesystem>
 #include <algorithm>
+#include <numeric>
 #include <chrono>
 #include <random>
 #include <sstream>
@@ -345,29 +346,19 @@ using ModelSnapshots = std::vector<std::pair<int, AnyModel>>;
 // Pool of challenger model snapshots awaiting tournament promotion - purely a growing list of
 // periodic frozen captures of model_var (see main()'s per-iteration training step); there is no
 // trained/untrained distinction to track, since a snapshot is never itself trained further (only
-// model_var is).
+// model_var is). Always disjoint from active_models by construction: a snapshot produced while
+// active_models is still growing goes there directly instead of here (see main()'s per-iteration
+// training step), and every entry here is dropped once a tournament runs (see clear()) - so every
+// entry is always a valid tournament wildcard, with no filtering needed.
 class ChallengerPool {
 public:
-    // Resets to `models` - used at run startup and after every tournament ("reseed the pool with
-    // active_models").
-    void reset(ModelSnapshots models) { entries_ = std::move(models); }
+    // Empties the pool - called after every tournament to bound its size (entries that didn't get
+    // promoted are dropped rather than kept for future tournaments) and to preserve the
+    // always-disjoint-from-active_models invariant above.
+    void clear() { entries_.clear(); }
 
     // Appends a fresh snapshot at the tail.
     void push_back(int id, AnyModel model) { entries_.push_back({id, std::move(model)}); }
-
-    // Indices of wildcard-eligible entries for a tournament: every entry whose id isn't currently
-    // in active_models - excludes exactly the entries reset() just copied in from active_models,
-    // which would otherwise be redundant, bit-identical tournament participants.
-    std::vector<int> eligible_wildcard_indices(const ModelSnapshots& active_models) const {
-        std::vector<int> idx;
-        for (int i = 0; i < (int)entries_.size(); i++) {
-            int id = entries_[i].first;
-            bool is_active = std::any_of(active_models.begin(), active_models.end(),
-                                          [&](auto& e) { return e.first == id; });
-            if (!is_active) idx.push_back(i);
-        }
-        return idx;
-    }
 
     ModelSnapshots& entries() { return entries_; }
 
@@ -462,6 +453,41 @@ static void assign_by_sequence(const std::vector<BoardState*>& states, const Mod
         for (int p = 0; p < state->num_players; p++) state->player_model_id[p] = sequence[cursor++];
 }
 
+// Prints one finished game's result line - shared by both self-play and tournament output (the
+// two previously had near-identical, separately-maintained copies of this print). `label` is the
+// full leading text before "game" (including indentation) - "  " for self-play, "  tournament "
+// for tournament games - so the caller controls both the indentation and the distinguishing prefix.
+// Always includes players=[...] (which model evaluated each player) - self-play games can mix
+// models across player slots just like tournament games can (see
+// assign_random_models()/refresh_player()).
+static void print_game_result(const std::string& label, int game_num, int total_games,
+                               const BoardState& state)
+{
+    auto& score = state.score();
+    // stone_count/territory are stone-indexed maps (ScoreData) that omit a stone type entirely if
+    // it never appears on the board - .count()/.at() below default those absent entries to 0.
+    auto stone_at = [](const std::unordered_map<int,int>& m, int s) {
+        auto it = m.find(s);
+        return it != m.end() ? it->second : 0;
+    };
+    std::cout << label << "game " << game_num << "/" << total_games
+              << "  players=[";
+    for (int id : state.player_model_id) std::cout << id << ",";
+    std::cout << "]  plies=" << state.ply_count()
+              << "  stones=[";
+    for (int s = 1; s <= state.num_stones; s++) std::cout << stone_at(score.stone_count, s) << ",";
+    std::cout << "]  territories=[";
+    for (int s = 1; s <= state.num_stones; s++) std::cout << stone_at(score.territory, s) << ",";
+    std::cout << "]  winners=[";
+    // Reaching this print always implies game_over(), so winners should always be set - the
+    // "error" fallback exists only as a defensive guard, never expected to fire.
+    if (state.winners.has_value())
+        for (int w : state.winners.value()) std::cout << w << ",";
+    else
+        std::cout << "error, winner has not been computed";
+    std::cout << "]" << std::endl;
+}
+
 // Runs `num_games` tournament games (batched `gamegen_batch_size` at a time) among `participants`,
 // discarding trajectories (tournament games are for ranking models only, never trained on) and
 // accumulating each participant's total reward + games played into reward_sum/game_count (both
@@ -536,30 +562,8 @@ static void run_tournament_games(
                 game_count[model_id] += 1;
             }
 
-            if (verbosity >= 1) {
-                // Mirrors the live loop's own per-self-play-game print (train.cpp's main()),
-                // "Tournament"-prefixed to distinguish it in the log.
-                auto& score = tpool[slot].score();
-                auto stone_at = [](const std::unordered_map<int,int>& m, int s) {
-                    auto it = m.find(s);
-                    return it != m.end() ? it->second : 0;
-                };
-                std::cout << "  Tournament game " << (games_done + 1)
-                          << "/" << num_games
-                          << "  players=[";
-                for (int id : tpool[slot].player_model_id) std::cout << id << ",";
-                std::cout << "]  plies=" << tpool[slot].ply_count()
-                          << "  stones=[";
-                for (int s = 1; s <= tpool[slot].num_stones; s++) std::cout << stone_at(score.stone_count, s) << ",";
-                std::cout << "]  territories=[";
-                for (int s = 1; s <= tpool[slot].num_stones; s++) std::cout << stone_at(score.territory, s) << ",";
-                std::cout << "]  winners=[";
-                if (tpool[slot].winners.has_value())
-                    for (int w : tpool[slot].winners.value()) std::cout << w << ",";
-                else
-                    std::cout << "error, winner has not been computed";
-                std::cout << "]" << std::endl;
-            }
+            if (verbosity >= 1)
+                print_game_result("  tournament ", games_done + 1, num_games, tpool[slot]);
 
             games_done++;
 
@@ -1119,13 +1123,14 @@ int main(int argc, char* argv[]) {
     // drops the second insert for a repeated key), silently losing one of two distinct models.
     ModelSnapshots active_models;
     active_models.push_back({start_iter - 1, clone_model(model_var, bc, *model_cfg, game_cfg, device)});
+    save_model_weights(ckpt_dir, arch, start_iter - 1, active_models.back().second, game_cfg, *model_cfg);
     auto evaluators = build_evaluators(active_models, adj_norms);
 
-    // Not-yet-promoted challenger snapshots, seeded with the same single model as active_models -
-    // see ChallengerPool's doc comment (above) for how this grows/gets consumed and how a
-    // tournament reseeds it.
+    // Not-yet-promoted challenger snapshots - starts empty (the genesis model above is never a
+    // wildcard candidate; every subsequent snapshot enters via push_back() when its training step
+    // completes) - see ChallengerPool's doc comment (above) for how this grows/gets consumed and
+    // how a tournament clears it.
     ChallengerPool challengers;
-    challengers.reset(active_models);
 
     // ── Game pool ─────────────────────────────────────────────────────────────
     // Pool of gamegen_batch_size in-progress games. Slots are replenished
@@ -1251,31 +1256,8 @@ int main(int argc, char* argv[]) {
                 auto record = trajectory_and_result_to_record(
                     trajectories[slot], pool[slot].board, pool[slot].score().territory_owner);
 
-                if (args.verbosity >= 1) {
-                    auto& score = pool[slot].score();
-                    // stone_count/territory are stone-indexed maps (ScoreData) that
-                    // omit a stone type entirely if it never appears on the board -
-                    // .count()/.at() below default those absent entries to 0.
-                    auto stone_at = [](const std::unordered_map<int,int>& m, int s) {
-                        auto it = m.find(s);
-                        return it != m.end() ? it->second : 0;
-                    };
-
-                    std::cout << "  game " << (games_this_iter + 1)
-                              << "/" << args.self_play_games
-                              << "  plies=" << trajectories[slot].size()
-                              << "  stones=[";
-                    for (int s = 1; s <= pool[slot].num_stones; s++) std::cout << stone_at(score.stone_count, s) << ",";
-                    std::cout << "]  territories=[";
-                    for (int s = 1; s <= pool[slot].num_stones; s++) std::cout << stone_at(score.territory, s) << ",";
-                    std::cout << "]  winners=[";
-                    // done implies game_over(), so winners should always be set here.
-                    if (pool[slot].winners.has_value())
-                        for (int w : pool[slot].winners.value()) std::cout << w << ",";
-                    else
-                        std::cout << "error, winner has not been computed";
-                    std::cout << "]" << std::endl;
-                }
+                if (args.verbosity >= 1)
+                    print_game_result("  ", games_this_iter + 1, args.self_play_games, pool[slot]);
 
                 traj_store.push_back(trajectories[slot]);
 
@@ -1299,48 +1281,51 @@ int main(int argc, char* argv[]) {
         // Frozen eval-mode snapshot of model_var's current weights (clone_model() already puts it
         // in eval() mode) - model_var itself keeps training every iteration; only snapshots are
         // ever shared out to active_models/challengers. While active_models hasn't yet reached
-        // capacity, the snapshot is ALSO promoted directly (nothing to displace yet, so no reason to
-        // gate it behind a tournament) - keeps the challenger pool from running dry during growth
-        // (it would start with only the single seed entry otherwise).
+        // capacity, the snapshot is promoted directly instead (nothing to displace yet, so no reason
+        // to gate it behind a tournament) - never both, so challengers and active_models stay
+        // disjoint by construction (see ChallengerPool's doc comment).
         AnyModel snapshot = clone_model(model_var, bc, *model_cfg, game_cfg, device);
 
         if ((int)active_models.size() < args.num_selfplay_models) {
-            active_models.push_back({iter, snapshot});  // shallow copy - safe, see ModelSnapshots
-            challengers.push_back(iter, std::move(snapshot));
+            active_models.push_back({iter, std::move(snapshot)});
+            save_model_weights(ckpt_dir, arch, iter, active_models.back().second, game_cfg, *model_cfg);
             evaluators = build_evaluators(active_models, adj_norms);
         } else {
             challengers.push_back(iter, std::move(snapshot));
         }
 
         // ── Tournament ───────────────────────────────────────────────────────
-        // iter == args.iterations - 1 mirrors --save-every's own end-of-run flush below, so
-        // whatever's accumulated in challengers always gets one last shot before the run ends.
-        if ((iter + 1) % args.tournament_every == 0 || iter == args.iterations - 1) {
-            std::vector<int> eligible = challengers.eligible_wildcard_indices(active_models);
+        if ((iter + 1) % args.tournament_every == 0) {
             int wildcards_needed = args.num_tournament_models - (int)active_models.size();
-            if ((int)eligible.size() < wildcards_needed) {
-                // Not enough eligible wildcards yet to fill a full num_tournament_models tournament
-                // with all-distinct participants - skip this round entirely (challengers keeps
+            if ((int)challengers.entries().size() < wildcards_needed) {
+                // Not enough challengers yet to fill a full num_tournament_models tournament with
+                // all-distinct participants - skip this round entirely (challengers keeps
                 // accumulating untouched) rather than running an under-sized tournament.
                 if (args.verbosity >= 1)
                     std::cout << "[iter " << std::setw(4) << iter << "] tournament: only "
-                              << eligible.size() << " eligible challengers available (" << wildcards_needed
+                              << challengers.entries().size() << " challengers available (" << wildcards_needed
                               << " needed) - skipping this tournament" << std::endl;
             } else {
-                // Distinct wildcard challengers: shuffle the eligible indices and take the first
-                // wildcards_needed - each used at most once, so participants never contains the
-                // same challenger twice.
-                std::shuffle(eligible.begin(), eligible.end(), rng);
+                // Distinct wildcard challengers: shuffle indices into challengers.entries() and take
+                // the first wildcards_needed - each used at most once, so participants never
+                // contains the same challenger twice. (challengers is always disjoint from
+                // active_models by construction, so every entry is a valid wildcard - no filtering
+                // needed.)
+                std::vector<int> idx(challengers.entries().size());
+                std::iota(idx.begin(), idx.end(), 0);
+                std::shuffle(idx.begin(), idx.end(), rng);
                 ModelSnapshots participants = active_models;
                 for (int k = 0; k < wildcards_needed; k++)
-                    participants.push_back(challengers.entries()[eligible[k]]);
+                    participants.push_back(challengers.entries()[idx[k]]);
 
                 auto tournament_evaluators = build_evaluators(participants, adj_norms);
 
-                if (args.verbosity >= 1)
-                    std::cout << "[iter " << std::setw(4) << iter << "] tournament (" << participants.size()
-                              << " models, " << args.num_tournament_games << " games, batch="
-                              << args.gamegen_batch_size << ") ..." << std::endl;
+                if (args.verbosity >= 1) {
+                    std::cout << "[iter " << std::setw(4) << iter << "] tournament models=[";
+                    for (auto& [id, m] : participants) std::cout << id << ",";
+                    std::cout << "], games=" << args.num_tournament_games
+                              << ", batch=" << args.gamegen_batch_size << std::endl;
+                }
 
                 std::unordered_map<int,float> reward_sum;
                 std::unordered_map<int,int> game_count;
@@ -1421,9 +1406,10 @@ int main(int argc, char* argv[]) {
 
                 for (auto& state : pool) refresh_player(state, active_models, rng);
                 evaluators = build_evaluators(active_models, adj_norms);
-                // Reseed (not clear): challengers becomes the new active_models, all untrained -
-                // see ChallengerPool's doc comment and Readme's "Tournament-Based Model Selection".
-                challengers.reset(active_models);
+                // Bounds challengers' size (at most tournament_every entries between tournaments,
+                // instead of accumulating every snapshot for the entire run) and preserves
+                // ChallengerPool's disjoint-from-active_models invariant.
+                challengers.clear();
             }
         }
 
