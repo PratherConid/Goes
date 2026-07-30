@@ -786,14 +786,15 @@ static std::vector<int> trajectory_iterations_desc(const fs::path& dir, const st
 // reconstructs up to target_buffer_size games of ReplayBuffer state from
 // historical <arch>_XXXXXX_traj.json dumps (most recent games first) so a
 // resumed run doesn't start training against an empty buffer. Returns the
-// iteration to resume from (0 if no checkpoint exists, in which case
-// `buffer` is left untouched/empty).
+// iteration to resume from (1, matching a fresh run's own start_iter default, if no checkpoint
+// exists yet - in which case `buffer` is left untouched/empty and model_var stays the fresh/random
+// model main() already built).
 static int resume(const fs::path& ckpt_dir, const ModelConfig& model_cfg, AnyModel& model_var,
                    const GameConfig& game_cfg, const BoardConfig& bc,
                    int target_buffer_size, ReplayBuffer& buffer)
 {
     auto latest = latest_checkpoint(ckpt_dir, model_cfg.model_type);
-    if (!latest.has_value()) return 0;
+    if (!latest.has_value()) return 1;
 
     std::cout << "Resuming from " << latest.value() << std::endl;
     std::visit([&](auto& m) { torch::load(m, latest.value().string()); }, model_var);
@@ -1111,7 +1112,7 @@ int main(int argc, char* argv[]) {
     fs::path ckpt_dir;
     fs::path retrain_source_dir;
     ReplayBuffer buffer(args.buffer_size);
-    int start_iter = 0;
+    int start_iter = 1;
     if (!args.retrain_tag.empty()) {
         retrain_source_dir = fs::path(args.checkpoint_dir) / args.retrain_tag;
         if (!fs::exists(retrain_source_dir)) {
@@ -1145,18 +1146,25 @@ int main(int argc, char* argv[]) {
 
     // Active self-play model set, grown directly (see the live loop below) until it reaches
     // num_selfplay_models capacity, then only ever changed wholesale via tournament promotion -
-    // seeded with a single snapshot of model_var, which uniformly covers a fresh run, a
-    // --resume'd run, and the post---retrain fall-through (none of those paths need special-casing
-    // here, since this only ever looks at whatever model_var currently holds).
-    // Tagged start_iter - 1 (matching the id of the checkpoint it was just loaded from, on
-    // --resume - see resume()'s "start_iter = id + 1"; -1 for a fresh run, a sentinel that never
-    // collides with any real iteration) rather than start_iter itself - the live loop's first pass
-    // (iter == start_iter) captures its own post-backprop snapshot tagged `iter`, i.e. start_iter;
-    // reusing that same id for the seed would collide in the evaluators map (std::map silently
-    // drops the second insert for a repeated key), silently losing one of two distinct models.
+    // seeded with a single snapshot of model_var. Two distinct cases, since model_var's origin
+    // differs:
+    //   - Fresh run or --retrain: model_var is genuinely fresh/random (never loaded from an existing
+    //     checkpoint - see model_var's construction, above). This is its one true genesis snapshot,
+    //     hard-wired to id 0 and saved - --retrain's own replay-phase saves are always tagged >= 1
+    //     (they span at least one full original iteration - see prev_it's -1 sentinel, below), and
+    //     the live loop's first real training iteration is tagged start_iter = 1, so 0 never
+    //     collides with anything.
+    //   - --resume: model_var was just loaded from ckpt_dir's own latest checkpoint, tagged
+    //     start_iter - 1 (see resume()'s "start_iter = id + 1"). Seeded with that exact id, but not
+    //     saved again - it's already on disk, byte-identical to what was just loaded, so re-saving
+    //     would just be a redundant write with a misleading "Saved ..." log line.
     ModelSnapshots active_models;
-    active_models.push_back({start_iter - 1, clone_model(model_var, bc, *model_cfg, game_cfg, device)});
-    save_model_weights(ckpt_dir, arch, start_iter - 1, active_models.back().second, game_cfg, *model_cfg);
+    if (args.resume_tag.empty()) {
+        active_models.push_back({0, clone_model(model_var, bc, *model_cfg, game_cfg, device)});
+        save_model_weights(ckpt_dir, arch, 0, active_models.back().second, game_cfg, *model_cfg);
+    } else {
+        active_models.push_back({start_iter - 1, clone_model(model_var, bc, *model_cfg, game_cfg, device)});
+    }
     auto evaluators = build_evaluators(active_models, adj_norms);
 
     // Not-yet-promoted challenger snapshots - starts empty (the genesis model above is never a
