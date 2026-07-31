@@ -6,12 +6,18 @@ import re
 from pathlib import Path
 
 # Matches goes_train's per-game self-play log line, e.g.:
-#   "  game 40/64  plies=354  stones=[21,109,]  territories=[0,0,]  winners=[2,]"
-# (see train.cpp's self-play loop) - stones/territories are stone-type-indexed lists with a
+#   "  game 40/64  players=[0,0,]  plies=354  stones=[21,109,]  territories=[0,0,]  winners=[2,]"
+# (see train.cpp's print_game_result()) - stones/territories are stone-type-indexed lists with a
 # trailing comma after every element (including the last), so the captured groups are stripped of
-# empty entries by _parse_int_list below rather than split naively.
+# empty entries by _parse_int_list below rather than split naively. Anchored at the start of the
+# (already per-line) string so it only matches self-play lines - print_game_result() also produces
+# tournament-game lines with a "tournament " prefix before "game" ("  tournament game 1/512  ..."),
+# which this deliberately excludes: tournament games are played by whatever's in that round's
+# tournament pool, not the run's actual self-play models, so mixing them into a self-play trend
+# would be misleading. players=[...] (which model evaluated each player) is matched but not
+# captured - not needed for the stats this module computes.
 _GAME_LINE_RE = re.compile(
-    r"game\s+\d+/\d+\s+plies=(\d+)\s+stones=\[([\d,]*)\]\s+territories=\[([\d,]*)\]\s+winners=\[([\d,]*)\]"
+    r"^\s*game\s+\d+/\d+\s+players=\[[\d,]*\]\s+plies=(\d+)\s+stones=\[([\d,]*)\]\s+territories=\[([\d,]*)\]\s+winners=\[([\d,]*)\]"
 )
 
 def _parse_int_list(s):
@@ -25,7 +31,7 @@ def parse_game_lines(text):
     lines = text.splitlines() if isinstance(text, str) else text
     games = []
     for line in lines:
-        m = _GAME_LINE_RE.search(line)
+        m = _GAME_LINE_RE.match(line)
         if not m:
             continue
         games.append({
