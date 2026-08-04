@@ -316,6 +316,51 @@ export function hexBoard(d: number): BoardConfig {
     return make(pos, adj);
 }
 
+/**
+ * A trihexagonal ("hexdel") tiling: hexagons and triangles alternate, 2 of each around every
+ * vertex (degree 4 in the interior) - `d` layers of hexagons, connected by triangles, surrounding
+ * a central hexagon. Built the same way as `hexBoard` - as the triangular lattice with certain
+ * nodes removed - but with a coarser removed sublattice: instead of `hexBoard`'s 1-of-3 coloring
+ * (which erases every triangular face along with 2/3 of the nodes, leaving pure honeycomb), this
+ * removes the 1-of-4 sublattice where both axial coordinates are even (`centers`, spanned by
+ * (2, 0)/(0, 2) - double the original lattice spacing - restricted to hex-distance <= d in its own
+ * halved (a, b) = (q/2, r/2) coordinates). Erasing only 1/4 of the nodes leaves each surviving node
+ * with 4 of its 6 original neighbors (2 got erased), which works out to exactly 2 hexagon-bordering
+ * and 2 triangle-bordering edges per node - so, just like `hexBoard`, simply connecting
+ * triangular-lattice-adjacent survivors reproduces both the hexagons (surrounding each erased node)
+ * and the triangles (the untouched elementary triangles of the original lattice) with no separate
+ * pass needed for either.
+ */
+export function trihexBoard(d: number): BoardConfig {
+    assert(d >= 0, `d must be non-negative, got d=${d}`);
+    const rowDist = Math.sqrt(3) / 2;
+    const dirs: [number, number][] = [[1,0],[1,-1],[0,-1],[-1,0],[-1,1],[0,1]];
+
+    const centers: [number, number][] = [];
+    for (let a = -d; a <= d; a++)
+        for (let b = Math.max(-d, -d - a); b <= Math.min(d, d - a); b++)
+            centers.push([2 * a, 2 * b]);
+
+    const vertices = new Map<string, [number, number]>();
+    for (const [q, r] of centers)
+        for (const [dq, dr] of dirs)
+            vertices.set(`${q+dq},${r+dr}`, [q + dq, r + dr]);
+    const coords = [...vertices.values()];
+    const N = coords.length;
+    const idx = new Map<string, number>();
+    coords.forEach(([q, r], i) => idx.set(`${q},${r}`, i));
+    const pos = coords.map(([q, r]) => [q + r / 2, rowDist * r]);
+    const adj = zeroAdj(N);
+    for (let i = 0; i < N; i++) {
+        const [q, r] = coords[i];
+        for (const [dq, dr] of dirs) {
+            const ni = idx.get(`${q+dq},${r+dr}`);
+            if (ni !== undefined) adj[i][ni] = 1;
+        }
+    }
+    return make(pos, adj);
+}
+
 /** Auxiliary function for `twistedSquareBoard` and `glueTwistedSquareBoard`. Not used by the renderer directly. */
 function tiltedDisconnectedSquareBoard(w: number, h: number, g: number, gap: number) {
     const rm = Math.SQRT2 / 2;
@@ -394,6 +439,7 @@ export enum PrescribedBoard {
     triangularBoard,
     triangularHexBoard,
     hexBoard,
+    trihexBoard,
     twistedSquareBoard,
     glueTwistedSquareBoard
 }
@@ -406,6 +452,7 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string
     [PrescribedBoard.triangularBoard]:          [1, "tri",   "&lt;w&gt;",                                    "Triangular board of side w"],
     [PrescribedBoard.triangularHexBoard]:       [1, "trihex", "&lt;d&gt;",                                   "Triangular-lattice board in a hexagon shape, with d layers of triangles around the center"],
     [PrescribedBoard.hexBoard]:                 [1, "hex",   "&lt;d&gt;",                                    "Hexagon-tiled board with d layers of hexagons around a center hexagon"],
+    [PrescribedBoard.trihexBoard]:               [1, "hexdel", "&lt;d&gt;",                                   "Trihexagonal (hexdel) board, d layers of hexagons connected by triangles around a center hexagon"],
     [PrescribedBoard.twistedSquareBoard]:       [3, "twsq",  "&lt;w&gt; &lt;h&gt; &lt;g&gt;",               "Twisted-square board (g\xD7g squares)"],
     [PrescribedBoard.glueTwistedSquareBoard]:   [3, "gtsq",  "&lt;w&gt; &lt;h&gt; &lt;g&gt;",               "Glued-twisted-square board (g\xD7g squares)"],
 };
@@ -418,6 +465,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.triangularBoard]:          (...a) => triangularBoard(a[0]),
     [PrescribedBoard.triangularHexBoard]:       (...a) => triangularHexBoard(a[0]),
     [PrescribedBoard.hexBoard]:                 (...a) => hexBoard(a[0]),
+    [PrescribedBoard.trihexBoard]:               (...a) => trihexBoard(a[0]),
     [PrescribedBoard.twistedSquareBoard]:       (...a) => twistedSquareBoard(a[0], a[1], a[2]),
     [PrescribedBoard.glueTwistedSquareBoard]:   (...a) => glueTwistedSquareBoard(a[0], a[1], a[2]),
 };

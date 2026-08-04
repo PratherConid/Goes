@@ -263,6 +263,51 @@ BoardConfig hex_board(int d) {
     return make_bc(std::move(adj), 2u, std::move(pos));
 }
 
+BoardConfig trihex_board(int d) {
+    assert(d >= 0 && "d must be non-negative");
+    const int dirs[6][2] = {{1,0},{1,-1},{0,-1},{-1,0},{-1,1},{0,1}};
+
+    // Hexagon centers: the (q, r) = (2a, 2b) sublattice (both axial coordinates even), restricted
+    // to hex-distance <= d in its own halved (a, b) coordinates - mirrors
+    // shared/boardConfig.ts's trihexBoard().
+    std::vector<std::pair<int,int>> centers;
+    for (int a = -d; a <= d; a++) {
+        int b_lo = std::max(-d, -d - a);
+        int b_hi = std::min(d, d - a);
+        for (int b = b_lo; b <= b_hi; b++)
+            centers.push_back({2*a, 2*b});
+    }
+
+    std::map<std::pair<int,int>, int> idx;
+    std::vector<std::pair<int,int>> coords;
+    auto add_vertex = [&](int q, int r) {
+        auto key = std::make_pair(q, r);
+        if (idx.count(key)) return;
+        idx[key] = static_cast<int>(coords.size());
+        coords.push_back(key);
+    };
+    for (auto& [q, r] : centers)
+        for (auto& dv : dirs)
+            add_vertex(q + dv[0], r + dv[1]);
+
+    int N = static_cast<int>(coords.size());
+    int offset = 2*d + 1;
+    std::vector<std::vector<unsigned>> pos(N);
+    for (int i = 0; i < N; i++) {
+        auto [q, r] = coords[i];
+        pos[i] = {static_cast<unsigned>(q + offset), static_cast<unsigned>(r + offset)};
+    }
+    auto adj = zero_adj(N);
+    for (int i = 0; i < N; i++) {
+        auto [q, r] = coords[i];
+        for (auto& dv : dirs) {
+            auto it = idx.find({q + dv[0], r + dv[1]});
+            if (it != idx.end()) adj[i][it->second] = 1;
+        }
+    }
+    return make_bc(std::move(adj), 2u, std::move(pos));
+}
+
 // gap=0.0 → glue_twisted_square_board, gap=1.0 → twisted_square_board
 static std::tuple<std::vector<std::vector<unsigned>>,
                   std::vector<std::vector<int>>,
@@ -339,6 +384,7 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<int>& 
     if (kind == "tri")   return triangular_board(v[0]);
     if (kind == "trihex") return triangular_hex_board(v[0]);
     if (kind == "hex")   return hex_board(v[0]);
+    if (kind == "hexdel") return trihex_board(v[0]);
     if (kind == "twsq")  return twisted_square_board(v[0], v[1], v[2]);
     if (kind == "gtsq")  return glue_twisted_square_board(v[0], v[1], v[2]);
     throw std::runtime_error("Unknown board type: " + kind);

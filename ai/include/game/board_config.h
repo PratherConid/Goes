@@ -50,6 +50,15 @@ BoardConfig triangular_hex_board(int d);
 // the origin, one hex-lattice step past the d-ringed centers' own [-2d, 2d] range.
 BoardConfig hex_board(int d);
 
+// A trihexagonal ("hexdel") tiling: hexagons and triangles alternate, 2 of each around every
+// vertex (degree 4 in the interior) - d layers of hexagons, connected by triangles, surrounding a
+// central hexagon. Mirrors shared/boardConfig.ts's trihexBoard() - see that function's doc comment
+// for the full construction (same erase-a-sublattice technique as hex_board, but erasing only the
+// coarser 1-of-4 "both axial coordinates even" sublattice, which leaves triangular faces intact
+// alongside the hexagonal ones). Embedded (shifted to non-negative) as (q+2d+1, r+2d+1), same bound
+// as hex_board's own embedding.
+BoardConfig trihex_board(int d);
+
 // A board of w x h squares each rotated 45 degrees, arranged in a rectangle.
 // The squares have the usual square topology. The closest nodes of two adjacent
 // squares are glued together (merged into one node).
@@ -61,7 +70,7 @@ BoardConfig glue_twisted_square_board(int w, int h, int g);
 BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("rect" | "rectd" |
-// "cub" | "hcub" | "tri" | "trihex" | "hex" | "twsq" | "gtsq" - matches shared/types.ts's
+// "cub" | "hcub" | "tri" | "trihex" | "hex" | "hexdel" | "twsq" | "gtsq" - matches shared/types.ts's
 // GameConfig.boardType strings), passing `args` as that builder's positional
 // parameters. Throws std::runtime_error for an unknown kind. Shared by
 // train.cpp (via GameConfig::board_type/board_args, loaded from
