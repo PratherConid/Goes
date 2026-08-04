@@ -112,20 +112,23 @@ export function computeStarPoints(config: GameConfig): number[][] {
     const [w, h] = config.boardArgs;
     const toBoard = (c: number, r: number): number[] => [c - (w - 1) / 2, r - (h - 1) / 2];
     const points: number[][] = [];
+    // Same inset (distance from an edge) for every star point, corner or edge-midpoint alike -
+    // keeps e.g. a 19x9 board's edge-midpoint points on the same row as its corner points instead
+    // of assuming the 19x19 board's 4-4 line regardless of h.
+    const inset = Math.min(w, h) <= 11 ? 3 : 4;
 
     if (w >= 9 && h >= 9) {
-        const inset = Math.min(w, h) <= 11 ? 3 : 4;
         for (const c of [inset - 1, w - inset])
             for (const r of [inset - 1, h - inset])
                 points.push(toBoard(c, r));
     }
     if (w % 2 === 1 && w >= 19 && h >= 9) {
         const c = (w - 1) / 2;
-        points.push(toBoard(c, 3), toBoard(c, h - 1 - 3));
+        points.push(toBoard(c, inset - 1), toBoard(c, h - inset));
     }
     if (h % 2 === 1 && h >= 19 && w >= 9) {
         const r = (h - 1) / 2;
-        points.push(toBoard(3, r), toBoard(w - 1 - 3, r));
+        points.push(toBoard(inset - 1, r), toBoard(w - inset, r));
     }
     if (w % 2 === 1 && h % 2 === 1 && w >= 5 && h >= 5)
         points.push(toBoard((w - 1) / 2, (h - 1) / 2));
