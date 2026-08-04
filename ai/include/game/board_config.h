@@ -59,6 +59,16 @@ BoardConfig hex_board(int d);
 // as hex_board's own embedding.
 BoardConfig trihex_board(int d);
 
+// A w x h grid of g x g squares, each rotated +-30 degrees in a checkerboard pattern, arranged as
+// a snub square tiling. Mirrors shared/boardConfig.ts's snubSquareBoard() for the connectivity
+// (each pair of horizontally/vertically adjacent squares shares one glued corner plus one
+// triangle-connecting edge between two of their other corners - see that function's CONN table),
+// but embeds nodes the same integer way as tilted_disconnected_square_board/
+// glue_twisted_square_board (each g x g square rotated 45 degrees via integer arithmetic) rather
+// than the TypeScript side's literal +-30-degree floating-point layout, since embed coordinates
+// must be integers here.
+BoardConfig snub_square_board(int w, int h, int g);
+
 // A board of w x h squares each rotated 45 degrees, arranged in a rectangle.
 // The squares have the usual square topology. The closest nodes of two adjacent
 // squares are glued together (merged into one node).
@@ -70,7 +80,7 @@ BoardConfig glue_twisted_square_board(int w, int h, int g);
 BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("rect" | "rectd" |
-// "cub" | "hcub" | "tri" | "trihex" | "hex" | "hexdel" | "twsq" | "gtsq" - matches shared/types.ts's
+// "cub" | "hcub" | "tri" | "trihex" | "hex" | "hexdel" | "snub" | "twsq" | "gtsq" - matches shared/types.ts's
 // GameConfig.boardType strings), passing `args` as that builder's positional
 // parameters. Throws std::runtime_error for an unknown kind. Shared by
 // train.cpp (via GameConfig::board_type/board_args, loaded from

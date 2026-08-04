@@ -430,6 +430,89 @@ export function twistedSquareBoard(w: number, h: number, g: number): BoardConfig
     return make(pos, adj);
 }
 
+/**
+ * A `w × h` grid of `g × g` squares, each rotated ±30° in a checkerboard pattern, arranged as a
+ * snub square tiling. Adjacent squares are glued or triangle-connected at their nearest corners.
+ */
+export function snubSquareBoard(w: number, h: number, g: number): BoardConfig {
+    assert(w > 0 && h > 0, `w and h must be positive, got w=${w} h=${h}`);
+    assert(g >= 2, `g must be at least 2 (g=1 collapses all 4 corners of a big cell to a single point), got g=${g}`);
+
+    const spacing = (g - 1) * (0.5 + Math.sqrt(3) / 2);
+    const pos: number[][] = [];
+    for (let rb = 0; rb < h; rb++)
+        for (let cb = 0; cb < w; cb++) {
+            const bx = (cb - (w-1)/2) * spacing;
+            const by = (rb - (h-1)/2) * spacing;
+            const angle = ((rb + cb) % 2 === 0 ? -1 : 1) * Math.PI / 6;
+            const ca = Math.cos(angle), sa = Math.sin(angle);
+            for (let r = 0; r < g; r++)
+                for (let c = 0; c < g; c++) {
+                    const lx = c - (g-1)/2, ly = r - (g-1)/2;
+                    pos.push([bx + ca*lx - sa*ly, by + sa*lx + ca*ly]);
+                }
+        }
+    const N = w * h * g * g;
+    const adj = zeroAdj(N);
+    const bIdx = (rb: number, cb: number) => (rb * w + cb) * g * g;
+    const cornerRC: Record<'NW'|'NE'|'SW'|'SE', [number, number]> =
+        { NW: [0,0], NE: [0,g-1], SW: [g-1,0], SE: [g-1,g-1] };
+    const corner = (name: 'NW'|'NE'|'SW'|'SE'): [number, number] => cornerRC[name];
+
+    // Edges within each big cell (ordinary rectangular grid)
+    for (let rb = 0; rb < h; rb++)
+        for (let cb = 0; cb < w; cb++) {
+            const b = bIdx(rb, cb);
+            for (let r = 0; r < g; r++)
+                for (let c = 0; c < g; c++)
+                    for (const [dr, dc] of [[0,1],[1,0],[0,-1],[-1,0]]) {
+                        const nr = r+dr, nc = c+dc;
+                        if (nr<0||nr>=g||nc<0||nc>=g) continue;
+                        adj[b+r*g+c][b+nr*g+nc] = 1;
+                    }
+        }
+
+    // Inter-cell connections, keyed by self cell's checkerboard parity then by "dr,dc" (only
+    // forward directions, so each neighboring pair of big cells is handled once): glue is a single
+    // coincident corner pair (merged via quotientBoard below); tri is three equal-distance pairs
+    // (wired as new edges into adj instead).
+    type Corner = 'NW'|'NE'|'SW'|'SE';
+    const CONN: Record<number, Record<string, { glue?: [Corner,Corner], tri?: [Corner,Corner] }>> = {
+        0: {
+            '0,1':  { glue: ['SE','SW'], tri: ['NE', 'NW'] },
+            '1,0':  { glue: ['SW','NW'], tri: ['SE', 'NE'] },
+        },
+        1: {
+            '0,1':  { glue: ['NE','NW'], tri: ['SE', 'SW'] },
+            '1,0':  { glue: ['SE','NE'], tri: ['SW', 'NW'] },
+        },
+    };
+    const interConn: [number, number][] = [];
+    for (let rb = 0; rb < h; rb++)
+        for (let cb = 0; cb < w; cb++) {
+            const b = bIdx(rb, cb);
+            const entry = CONN[(rb + cb) % 2];
+            for (const [dr, dc] of [[0,1],[1,0]] as [number, number][]) {
+                const nrb = rb+dr, ncb = cb+dc;
+                if (nrb<0||nrb>=h||ncb<0||ncb>=w) continue;
+                const nb = bIdx(nrb, ncb);
+                const conn = entry[`${dr},${dc}`];
+                if (conn.glue) {
+                    const [sr,sc] = corner(conn.glue[0]), [or_,oc] = corner(conn.glue[1]);
+                    interConn.push([b + sr*g + sc, nb + or_*g + oc]);
+                }
+                if (conn.tri) {
+                    const [sr,sc] = corner(conn.tri[0]), [or_,oc] = corner(conn.tri[1]);
+                    const i = b + sr*g + sc, j = nb + or_*g + oc;
+                    adj[i][j] = 1; adj[j][i] = 1;
+                }
+            }
+        }
+
+    const bc = make(pos, adj);
+    return quotientBoard(bc, interConn);
+}
+
 
 export enum PrescribedBoard {
     rectangularBoard,
@@ -440,6 +523,7 @@ export enum PrescribedBoard {
     triangularHexBoard,
     hexBoard,
     trihexBoard,
+    snubSquareBoard,
     twistedSquareBoard,
     glueTwistedSquareBoard
 }
@@ -453,6 +537,7 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string
     [PrescribedBoard.triangularHexBoard]:       [1, "trihex", "&lt;d&gt;",                                   "Triangular-lattice board in a hexagon shape, with d layers of triangles around the center"],
     [PrescribedBoard.hexBoard]:                 [1, "hex",   "&lt;d&gt;",                                    "Hexagon-tiled board with d layers of hexagons around a center hexagon"],
     [PrescribedBoard.trihexBoard]:               [1, "hexdel", "&lt;d&gt;",                                   "Trihexagonal (hexdel) board, d layers of hexagons connected by triangles around a center hexagon"],
+    [PrescribedBoard.snubSquareBoard]:          [3, "snub",  "&lt;w&gt; &lt;h&gt; &lt;g&gt;",               "Snub square board (g\xD7g squares)"],
     [PrescribedBoard.twistedSquareBoard]:       [3, "twsq",  "&lt;w&gt; &lt;h&gt; &lt;g&gt;",               "Twisted-square board (g\xD7g squares)"],
     [PrescribedBoard.glueTwistedSquareBoard]:   [3, "gtsq",  "&lt;w&gt; &lt;h&gt; &lt;g&gt;",               "Glued-twisted-square board (g\xD7g squares)"],
 };
@@ -466,6 +551,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.triangularHexBoard]:       (...a) => triangularHexBoard(a[0]),
     [PrescribedBoard.hexBoard]:                 (...a) => hexBoard(a[0]),
     [PrescribedBoard.trihexBoard]:               (...a) => trihexBoard(a[0]),
+    [PrescribedBoard.snubSquareBoard]:          (...a) => snubSquareBoard(a[0], a[1], a[2]),
     [PrescribedBoard.twistedSquareBoard]:       (...a) => twistedSquareBoard(a[0], a[1], a[2]),
     [PrescribedBoard.glueTwistedSquareBoard]:   (...a) => glueTwistedSquareBoard(a[0], a[1], a[2]),
 };

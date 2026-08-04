@@ -359,6 +359,86 @@ tilted_disconnected_square_board(int w, int h, int g, int gap) {
     return {std::move(pos), std::move(adj), std::move(inter_conn)};
 }
 
+BoardConfig snub_square_board(int w, int h, int g) {
+    assert(w > 0 && h > 0 && "w and h must be positive");
+    assert(g >= 2 && "g must be at least 2");
+    // Same 45deg-integer-rotation embedding as tilted_disconnected_square_board (gap=0, i.e. the
+    // glue_twisted_square_board case) - embed coordinates must be integers, unlike
+    // shared/boardConfig.ts's own literal +-30-degree floating-point layout.
+    const unsigned sq_width = (g - 1) * 2;
+    std::vector<std::vector<unsigned>> pos;
+    for (int rb = 0; rb < h; rb++)
+        for (int cb = 0; cb < w; cb++) {
+            unsigned bx = cb * sq_width;
+            unsigned by = rb * sq_width;
+            for (unsigned r = 0; r < g; r++)
+                for (unsigned c = 0; c < g; c++)
+                    pos.push_back({bx + c + (g - 1 - r), by + c + r});
+        }
+    int N = w * h * g * g;
+    auto adj = zero_adj(N);
+    auto b_idx = [&](int rb, int cb) { return (rb*w + cb)*g*g; };
+    const int dirs[4][2] = {{0,1},{1,0},{0,-1},{-1,0}};
+
+    // Edges within each square (ordinary rectangular grid)
+    for (int rb = 0; rb < h; rb++)
+        for (int cb = 0; cb < w; cb++) {
+            int b = b_idx(rb, cb);
+            for (int r = 0; r < g; r++)
+                for (int c = 0; c < g; c++)
+                    for (auto& d : dirs) {
+                        int nr = r+d[0], nc = c+d[1];
+                        if (nr>=0 && nr<g && nc>=0 && nc<g)
+                            adj[b+r*g+c][b+nr*g+nc] = 1;
+                    }
+        }
+
+    // Corner (r,c) offsets: 0=NW 1=NE 2=SW 3=SE - matches shared/boardConfig.ts's cornerRC.
+    auto corner = [&](int which) -> std::pair<int,int> {
+        switch (which) {
+            case 0: return {0, 0};
+            case 1: return {0, g-1};
+            case 2: return {g-1, 0};
+            default: return {g-1, g-1};
+        }
+    };
+    // glue/tri corner indices per self-cell checkerboard parity and direction (H: dr=0,dc=1;
+    // V: dr=1,dc=0) - mirrors shared/boardConfig.ts's snubSquareBoard CONN table exactly: each
+    // orthogonal neighbor shares one glued corner plus one new triangle-connecting edge between two
+    // of their other corners.
+    struct Conn { int glue_self, glue_other, tri_self, tri_other; };
+    const Conn conn[2][2] = {
+        // parity 0:   H (dc=1)        V (dr=1)
+        {  {3,2, 1,0},   {2,0, 3,1}  },
+        // parity 1:   H (dc=1)        V (dr=1)
+        {  {1,0, 3,2},   {3,1, 2,0}  },
+    };
+
+    std::vector<std::pair<int,int>> inter_conn;
+    for (int rb = 0; rb < h; rb++)
+        for (int cb = 0; cb < w; cb++) {
+            int b = b_idx(rb, cb);
+            int parity = (rb + cb) % 2;
+            for (int dir = 0; dir < 2; dir++) { // 0=H(dr=0,dc=1), 1=V(dr=1,dc=0)
+                int dr = dir==1 ? 1 : 0, dc = dir==0 ? 1 : 0;
+                int nrb = rb+dr, ncb = cb+dc;
+                if (nrb<0||nrb>=h||ncb<0||ncb>=w) continue;
+                int nb = b_idx(nrb, ncb);
+                const Conn& c = conn[parity][dir];
+                auto [sr,sc] = corner(c.glue_self);
+                auto [or_,oc] = corner(c.glue_other);
+                inter_conn.push_back({b + sr*g + sc, nb + or_*g + oc});
+                auto [tsr,tsc] = corner(c.tri_self);
+                auto [tor,toc] = corner(c.tri_other);
+                int i = b + tsr*g + tsc, j = nb + tor*g + toc;
+                adj[i][j] = 1;
+                adj[j][i] = 1;
+            }
+        }
+
+    return quotient_board(make_bc(std::move(adj), 2u, std::move(pos)), inter_conn);
+}
+
 BoardConfig glue_twisted_square_board(int w, int h, int g) {
     assert(w > 0 && h > 0 && g > 0 && "w, h, g must be positive");
     auto [pos, adj, inter_conn] = tilted_disconnected_square_board(w, h, g, 0);
@@ -385,6 +465,7 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<int>& 
     if (kind == "trihex") return triangular_hex_board(v[0]);
     if (kind == "hex")   return hex_board(v[0]);
     if (kind == "hexdel") return trihex_board(v[0]);
+    if (kind == "snub")  return snub_square_board(v[0], v[1], v[2]);
     if (kind == "twsq")  return twisted_square_board(v[0], v[1], v[2]);
     if (kind == "gtsq")  return glue_twisted_square_board(v[0], v[1], v[2]);
     throw std::runtime_error("Unknown board type: " + kind);

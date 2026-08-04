@@ -202,7 +202,7 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
 - `POST /move` — runs MCTS from the given position and returns the chosen move.
   - **Request fields:**
     - `config`: object with the game configuration (matches `shared/types.ts`'s `GameConfig.toJSON()` wire shape):
-      - `boardType`: `"rect"` | `"rectd"` | `"cub"` | `"hcub"` | `"tri"` | `"trihex"` | `"hex"` | `"hexdel"` | `"twsq"` | `"gtsq"`
+      - `boardType`: `"rect"` | `"rectd"` | `"cub"` | `"hcub"` | `"tri"` | `"trihex"` | `"hex"` | `"hexdel"` | `"snub"` | `"twsq"` | `"gtsq"`
       - `boardArgs`: integer dimensions matching the board type (e.g. `[9, 9]` for a 9×9 rect board)
       - `numStones`, `numPlayers`, `forcedPassOnly`
       - `turnList`: array of `{player, stones, protected, friendly}` (see `shared/types.ts`'s `TurnInfo`) — `stones`/`protected`/`friendly` are `numStones`-length 0/1 arrays
