@@ -438,6 +438,135 @@ BoardConfig snub_square_board(int w, int h, int g) {
     return quotient_board(make_bc(std::move(adj), 2u, std::move(pos)), inter_conn);
 }
 
+BoardConfig snub_square_tri_board(int w, int h, int g) {
+    assert(w > 0 && h > 0 && g > 0 && "w, h, and g must be positive");
+
+    const unsigned sq_width = (g - 1) * 2;
+    int n_tri = g * (g + 1) / 2;
+    auto tri_idx = [&](int i, int j) { return i*(i+1)/2 + j; };
+    auto sq_idx = [&](int x, int y) { return (y*w + x)*g*g; };
+    int sq_n = w * h * g * g;
+    int h_count = (w-1) * h;
+    int v_count = w * (h-1);
+    auto h_base = [&](int x, int y) { return sq_n + (y*(w-1) + x)*n_tri; };
+    auto v_base = [&](int x, int y) { return sq_n + h_count*n_tri + (y*w + x)*n_tri; };
+    int N = sq_n + (h_count + v_count) * n_tri;
+
+    // Squares: same 45deg-integer-rotation embedding as snub_square_board. Each triangle's boundary
+    // nodes ((i,0) and (i,i) of its own g-row triangular grid) copy their embed value directly from
+    // the specific square corner they're glued to below (so quotient_board's post-merge integer
+    // average is exact, not rounded); interior nodes (0<j<i) are placed by rounded linear
+    // interpolation between them - reasonable for CNN-grid purposes, doesn't need to be exact since
+    // interior nodes are never merged with anything.
+    std::vector<std::vector<unsigned>> pos(N);
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            unsigned bx = x * sq_width, by = y * sq_width;
+            int b = sq_idx(x, y);
+            for (unsigned r = 0; r < g; r++)
+                for (unsigned c = 0; c < g; c++)
+                    pos[b + r*g + c] = {bx + c + (g - 1 - r), by + c + r};
+        }
+    auto interp = [&](std::vector<unsigned>& out, const std::vector<unsigned>& left,
+                       const std::vector<unsigned>& right, int j, int i) {
+        double t = i == 0 ? 0.0 : (double)j / (double)i;
+        double lx = left[0], ly = left[1], rx = right[0], ry = right[1];
+        out = { (unsigned)std::lround(lx + (rx - lx) * t), (unsigned)std::lround(ly + (ry - ly) * t) };
+    };
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w - 1; x++) {
+            int p = (x + y) % 2;
+            int base = h_base(x, y);
+            for (int i = 0; i < g; i++) {
+                int self_r = p == 0 ? g-1-i : i;
+                const auto& left = pos[sq_idx(x, y) + self_r*g + (g-1)];
+                const auto& right = pos[sq_idx(x+1, y) + self_r*g + 0];
+                for (int j = 0; j <= i; j++)
+                    interp(pos[base + tri_idx(i,j)], left, right, j, i);
+            }
+        }
+    for (int y = 0; y < h - 1; y++)
+        for (int x = 0; x < w; x++) {
+            int p = (x + y) % 2;
+            int base = v_base(x, y);
+            for (int i = 0; i < g; i++) {
+                int self_c = p == 0 ? i : g-1-i;
+                const auto& left = pos[sq_idx(x, y) + (g-1)*g + self_c];
+                const auto& right = pos[sq_idx(x, y+1) + 0*g + self_c];
+                for (int j = 0; j <= i; j++)
+                    interp(pos[base + tri_idx(i,j)], left, right, j, i);
+            }
+        }
+
+    auto adj = zero_adj(N);
+    const int dirs4[4][2] = {{0,1},{1,0},{0,-1},{-1,0}};
+
+    // Intra-square edges (ordinary rectangular grid; no direct square-to-square connections here).
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            int b = sq_idx(x, y);
+            for (int r = 0; r < g; r++)
+                for (int c = 0; c < g; c++)
+                    for (auto& d : dirs4) {
+                        int nr = r+d[0], nc = c+d[1];
+                        if (nr>=0 && nr<g && nc>=0 && nc<g)
+                            adj[b+r*g+c][b+nr*g+nc] = 1;
+                    }
+        }
+
+    // Intra-triangle edges (mirrors triangular_board's own edge loop).
+    const int dirs6[6][2] = {{1,0},{1,1},{0,1},{-1,0},{-1,-1},{0,-1}};
+    auto add_tri_edges = [&](int base) {
+        for (int i = 0; i < g; i++)
+            for (int j = 0; j <= i; j++)
+                for (auto& d : dirs6) {
+                    int ni = i+d[0], nj = j+d[1];
+                    if (ni>=0 && ni<g && nj>=0 && nj<=ni)
+                        adj[base+tri_idx(i,j)][base+tri_idx(ni,nj)] = 1;
+                }
+    };
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w - 1; x++) add_tri_edges(h_base(x, y));
+    for (int y = 0; y < h - 1; y++)
+        for (int x = 0; x < w; x++) add_tri_edges(v_base(x, y));
+
+    // Gluing: every square-triangle and triangle-triangle edge, merged via a single quotient_board
+    // call - mirrors shared/boardConfig.ts's snubSquareTriBoard exactly.
+    std::vector<std::pair<int,int>> inter_conn;
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w - 1; x++) {
+            int p = (x + y) % 2;
+            int base = h_base(x, y);
+            for (int i = 0; i < g; i++) {
+                int self_r = p == 0 ? g-1-i : i;
+                inter_conn.push_back({base + tri_idx(i,0), sq_idx(x, y) + self_r*g + (g-1)});
+                inter_conn.push_back({base + tri_idx(i,i), sq_idx(x+1, y) + self_r*g + 0});
+            }
+            if (p == 1 && y + 1 <= h - 1) {
+                int nbase = h_base(x, y+1);
+                for (int j = 0; j < g; j++)
+                    inter_conn.push_back({base + tri_idx(g-1,j), nbase + tri_idx(g-1,j)});
+            }
+        }
+    for (int y = 0; y < h - 1; y++)
+        for (int x = 0; x < w; x++) {
+            int p = (x + y) % 2;
+            int base = v_base(x, y);
+            for (int i = 0; i < g; i++) {
+                int self_c = p == 0 ? i : g-1-i;
+                inter_conn.push_back({base + tri_idx(i,0), sq_idx(x, y) + (g-1)*g + self_c});
+                inter_conn.push_back({base + tri_idx(i,i), sq_idx(x, y+1) + 0*g + self_c});
+            }
+            if (p == 0 && x + 1 <= w - 1) {
+                int nbase = v_base(x+1, y);
+                for (int j = 0; j < g; j++)
+                    inter_conn.push_back({base + tri_idx(g-1,j), nbase + tri_idx(g-1,j)});
+            }
+        }
+
+    return quotient_board(make_bc(std::move(adj), 2u, std::move(pos)), inter_conn);
+}
+
 BoardConfig glue_twisted_square_board(int w, int h, int g) {
     assert(w > 0 && h > 0 && g > 0 && "w, h, g must be positive");
     auto [pos, adj, inter_conn] = tilted_disconnected_square_board(w, h, g, 0);
@@ -465,6 +594,7 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<int>& 
     if (kind == "hex")   return hex_board(v[0]);
     if (kind == "hexdel") return trihex_board(v[0]);
     if (kind == "snubsq") return snub_square_board(v[0], v[1], v[2]);
+    if (kind == "snubsqtri") return snub_square_tri_board(v[0], v[1], v[2]);
     if (kind == "twsq")  return twisted_square_board(v[0], v[1], v[2]);
     if (kind == "gtsq")  return glue_twisted_square_board(v[0], v[1], v[2]);
     throw std::runtime_error("Unknown board type: " + kind);

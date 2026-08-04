@@ -512,6 +512,144 @@ export function snubSquareBoard(w: number, h: number, g: number): BoardConfig {
     return quotientBoard(bc, interConn);
 }
 
+/**
+ * Triangle-inflated variant of snubSquareBoard: same w×h grid of g×g squares (rotated ±30° in the
+ * same checkerboard pattern), but every square-to-square gap is filled by an actual side-length-g
+ * triangular sub-board (same construction as triangularBoard(g)) instead of a single glued corner
+ * plus a bare edge - squares only ever touch via triangles, and every connection is a whole-edge glue.
+ */
+export function snubSquareTriBoard(w: number, h: number, g: number): BoardConfig {
+    assert(w > 0 && h > 0 && g > 0, `w, h, and g must be positive, got w=${w} h=${h} g=${g}`);
+
+    const spacing = (g - 1) * (0.5 + Math.sqrt(3) / 2);
+    const nTri = g * (g + 1) / 2;
+    const triIdx = (i: number, j: number) => i * (i + 1) / 2 + j;
+
+    const sqIdx = (x: number, y: number) => (y * w + x) * g * g;
+    const sqN = w * h * g * g;
+    const hCount = (w - 1) * h;
+    const vCount = w * (h - 1);
+    const hBase = (x: number, y: number) => sqN + (y * (w - 1) + x) * nTri;
+    const vBase = (x: number, y: number) => sqN + hCount * nTri + (y * w + x) * nTri;
+    const N = sqN + (hCount + vCount) * nTri;
+
+    // Positions: squares laid out exactly as in snubSquareBoard first, then h-triangles, then
+    // v-triangles. Each triangle's (i,0)/(i,i) nodes are placed at the exact real position of the
+    // square corner they glue to (already pushed above, read back via sqIdx - never
+    // recomputed independently), and every other node (i,j), 0<j<i, is placed by linear
+    // interpolation between them at fraction j/i: triangularBoard's own template has row i's nodes
+    // collinear and evenly spaced ((i,0)=[-i/2,Y], (i,j)=[j-i/2,Y], (i,i)=[i/2,Y], same Y), and the
+    // square-to-triangle glue is an exact rigid (distance-preserving) fit - the gap between a
+    // triangle's (i,0)/(i,i) glue targets is exactly i, matching the template's own (i,0)-(i,i)
+    // distance for every i, not just the endpoints - so this interpolation reproduces the triangle's
+    // true real position exactly, unlike a naive unrotated placeholder.
+    const pos: number[][] = [];
+    for (let y = 0; y < h; y++)
+        for (let x = 0; x < w; x++) {
+            const bx = (x - (w-1)/2) * spacing, by = (y - (h-1)/2) * spacing;
+            const angle = ((x + y) % 2 === 0 ? -1 : 1) * Math.PI / 6;
+            const ca = Math.cos(angle), sa = Math.sin(angle);
+            for (let r = 0; r < g; r++)
+                for (let c = 0; c < g; c++) {
+                    const lx = c - (g-1)/2, ly = r - (g-1)/2;
+                    pos.push([bx + ca*lx - sa*ly, by + sa*lx + ca*ly]);
+                }
+        }
+    for (let y = 0; y < h; y++)
+        for (let x = 0; x < w - 1; x++) {
+            const p = (x + y) % 2;
+            for (let i = 0; i < g; i++) {
+                const selfR = p === 0 ? g-1-i : i;
+                const left = pos[sqIdx(x, y) + selfR*g + (g-1)];
+                const right = pos[sqIdx(x+1, y) + selfR*g + 0];
+                for (let j = 0; j <= i; j++) {
+                    const t = i === 0 ? 0 : j / i;
+                    pos.push([left[0] + (right[0]-left[0])*t, left[1] + (right[1]-left[1])*t]);
+                }
+            }
+        }
+    for (let y = 0; y < h - 1; y++)
+        for (let x = 0; x < w; x++) {
+            const p = (x + y) % 2;
+            for (let i = 0; i < g; i++) {
+                const selfC = p === 0 ? i : g-1-i;
+                const left = pos[sqIdx(x, y) + (g-1)*g + selfC];
+                const right = pos[sqIdx(x, y+1) + 0*g + selfC];
+                for (let j = 0; j <= i; j++) {
+                    const t = i === 0 ? 0 : j / i;
+                    pos.push([left[0] + (right[0]-left[0])*t, left[1] + (right[1]-left[1])*t]);
+                }
+            }
+        }
+
+    const adj = zeroAdj(N);
+
+    // Intra-square edges (ordinary rectangular grid; no direct square-to-square connections here).
+    for (let y = 0; y < h; y++)
+        for (let x = 0; x < w; x++) {
+            const b = sqIdx(x, y);
+            for (let r = 0; r < g; r++)
+                for (let c = 0; c < g; c++)
+                    for (const [dr, dc] of [[0,1],[1,0],[0,-1],[-1,0]]) {
+                        const nr = r+dr, nc = c+dc;
+                        if (nr<0||nr>=g||nc<0||nc>=g) continue;
+                        adj[b+r*g+c][b+nr*g+nc] = 1;
+                    }
+        }
+
+    // Intra-triangle edges (mirrors triangularBoard's own edge loop).
+    const triDirs: [number, number][] = [[1,0],[1,1],[0,1],[-1,0],[-1,-1],[0,-1]];
+    const addTriEdges = (base: number) => {
+        for (let i = 0; i < g; i++)
+            for (let j = 0; j <= i; j++)
+                for (const [di, dj] of triDirs) {
+                    const ni = i+di, nj = j+dj;
+                    if (ni < 0 || ni >= g || nj < 0 || nj > ni) continue;
+                    adj[base+triIdx(i,j)][base+triIdx(ni,nj)] = 1;
+                }
+    };
+    for (let y = 0; y < h; y++)
+        for (let x = 0; x < w - 1; x++) addTriEdges(hBase(x, y));
+    for (let y = 0; y < h - 1; y++)
+        for (let x = 0; x < w; x++) addTriEdges(vBase(x, y));
+
+    // Gluing: every square-triangle and triangle-triangle edge, merged via a single quotientBoard call.
+    const interConn: [number, number][] = [];
+    for (let y = 0; y < h; y++)
+        for (let x = 0; x < w - 1; x++) {
+            const p = (x + y) % 2;
+            const base = hBase(x, y);
+            for (let i = 0; i < g; i++) {
+                const selfR = p === 0 ? g-1-i : i;
+                interConn.push([base + triIdx(i,0), sqIdx(x, y) + selfR*g + (g-1)]);
+                interConn.push([base + triIdx(i,i), sqIdx(x+1, y) + selfR*g + 0]);
+            }
+            if (p === 1 && y + 1 <= h - 1) {
+                const nbase = hBase(x, y+1);
+                for (let j = 0; j < g; j++)
+                    interConn.push([base + triIdx(g-1,j), nbase + triIdx(g-1,j)]);
+            }
+        }
+    for (let y = 0; y < h - 1; y++)
+        for (let x = 0; x < w; x++) {
+            const p = (x + y) % 2;
+            const base = vBase(x, y);
+            for (let i = 0; i < g; i++) {
+                const selfC = p === 0 ? i : g-1-i;
+                interConn.push([base + triIdx(i,0), sqIdx(x, y) + (g-1)*g + selfC]);
+                interConn.push([base + triIdx(i,i), sqIdx(x, y+1) + 0*g + selfC]);
+            }
+            if (p === 0 && x + 1 <= w - 1) {
+                const nbase = vBase(x+1, y);
+                for (let j = 0; j < g; j++)
+                    interConn.push([base + triIdx(g-1,j), nbase + triIdx(g-1,j)]);
+            }
+        }
+
+    const bc = make(pos, adj);
+    return quotientBoard(bc, interConn);
+}
+
 
 export enum PrescribedBoard {
     rectangularBoard,
@@ -523,6 +661,7 @@ export enum PrescribedBoard {
     hexBoard,
     trihexBoard,
     snubSquareBoard,
+    snubSquareTriBoard,
     twistedSquareBoard,
     glueTwistedSquareBoard
 }
@@ -537,6 +676,7 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string
     [PrescribedBoard.hexBoard]:                 [1, "hex",   "&lt;d&gt;",                                    "Hexagon-tiled board with d layers of hexagons around a center hexagon"],
     [PrescribedBoard.trihexBoard]:               [1, "hexdel", "&lt;d&gt;",                                   "Trihexagonal (hexdel) board, d layers of hexagons connected by triangles around a center hexagon"],
     [PrescribedBoard.snubSquareBoard]:          [3, "snubsq", "&lt;w&gt; &lt;h&gt; &lt;g&gt;",              "Snub square board (g\xD7g squares)"],
+    [PrescribedBoard.snubSquareTriBoard]:       [3, "snubsqtri", "&lt;w&gt; &lt;h&gt; &lt;g&gt;",           "Snub square board with the connecting triangles as g\xD7g triangular boards too"],
     [PrescribedBoard.twistedSquareBoard]:       [3, "twsq",  "&lt;w&gt; &lt;h&gt; &lt;g&gt;",               "Twisted-square board (g\xD7g squares)"],
     [PrescribedBoard.glueTwistedSquareBoard]:   [3, "gtsq",  "&lt;w&gt; &lt;h&gt; &lt;g&gt;",               "Glued-twisted-square board (g\xD7g squares)"],
 };
@@ -551,6 +691,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.hexBoard]:                 (...a) => hexBoard(a[0]),
     [PrescribedBoard.trihexBoard]:               (...a) => trihexBoard(a[0]),
     [PrescribedBoard.snubSquareBoard]:          (...a) => snubSquareBoard(a[0], a[1], a[2]),
+    [PrescribedBoard.snubSquareTriBoard]:       (...a) => snubSquareTriBoard(a[0], a[1], a[2]),
     [PrescribedBoard.twistedSquareBoard]:       (...a) => twistedSquareBoard(a[0], a[1], a[2]),
     [PrescribedBoard.glueTwistedSquareBoard]:   (...a) => glueTwistedSquareBoard(a[0], a[1], a[2]),
 };

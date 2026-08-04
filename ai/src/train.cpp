@@ -310,11 +310,12 @@ static Args parse_args(int argc, char* argv[]) {
 static std::string effective_arch(const Args& args, const std::string& board_kind) {
     bool grid2d_supported = (board_kind == "rect" || board_kind == "rectd" || board_kind == "tri" ||
                           board_kind == "trihex" || board_kind == "hex" || board_kind == "hexdel" ||
-                          board_kind == "snubsq" || board_kind == "twsq" || board_kind == "gtsq");
+                          board_kind == "snubsq" || board_kind == "snubsqtri" ||
+                          board_kind == "twsq" || board_kind == "gtsq");
     if (args.net_arch == "cnn") {
         if (!grid2d_supported) {
             std::cerr << "Error: --net-arch cnn is not supported for board type '" << board_kind
-                      << "'. CNN requires a 2D grid embedding (rect/rectd/tri/trihex/hex/hexdel/snubsq/twsq/gtsq).\n";
+                      << "'. CNN requires a 2D grid embedding (rect/rectd/tri/trihex/hex/hexdel/snubsq/snubsqtri/twsq/gtsq).\n";
             std::exit(1);
         }
         return "cnn";
@@ -322,7 +323,7 @@ static std::string effective_arch(const Args& args, const std::string& board_kin
     if (args.net_arch == "unet") {
         if (!grid2d_supported) {
             std::cerr << "Error: --net-arch unet is not supported for board type '" << board_kind
-                      << "'. UNet requires a 2D grid embedding (rect/rectd/tri/trihex/hex/hexdel/snubsq/twsq/gtsq).\n";
+                      << "'. UNet requires a 2D grid embedding (rect/rectd/tri/trihex/hex/hexdel/snubsq/snubsqtri/twsq/gtsq).\n";
             std::exit(1);
         }
         return "unet";

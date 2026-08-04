@@ -69,6 +69,16 @@ BoardConfig trihex_board(int d);
 // must be integers here.
 BoardConfig snub_square_board(int w, int h, int g);
 
+// Triangle-inflated variant of snub_square_board: same w x h grid of g x g squares (same
+// 45-degree-integer embedding), but every square-to-square gap is filled by an actual side-length-g
+// triangular sub-board (same construction as triangular_board(g)) instead of a single glued corner
+// plus a bare edge - mirrors shared/boardConfig.ts's snubSquareTriBoard() for the connectivity.
+// Since embed coordinates must be integers, a triangle's boundary nodes (the two glued to a square)
+// copy that square corner's embed value exactly (so quotient_board's post-merge integer average is
+// exact); interior nodes are placed by rounded linear interpolation, which only needs to be
+// reasonable for CNN-grid purposes since they're never merged with anything.
+BoardConfig snub_square_tri_board(int w, int h, int g);
+
 // A board of w x h squares each rotated 45 degrees, arranged in a rectangle.
 // The squares have the usual square topology. The closest nodes of two adjacent
 // squares are glued together (merged into one node).
@@ -80,7 +90,7 @@ BoardConfig glue_twisted_square_board(int w, int h, int g);
 BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("rect" | "rectd" |
-// "cub" | "hcub" | "tri" | "trihex" | "hex" | "hexdel" | "snubsq" | "twsq" | "gtsq" - matches shared/types.ts's
+// "cub" | "hcub" | "tri" | "trihex" | "hex" | "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" - matches shared/types.ts's
 // GameConfig.boardType strings), passing `args` as that builder's positional
 // parameters. Throws std::runtime_error for an unknown kind. Shared by
 // train.cpp (via GameConfig::board_type/board_args, loaded from
