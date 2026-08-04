@@ -76,6 +76,35 @@ export function quotientBoard(bc: BoardConfig, quot: [number, number][]): BoardC
     return make(newPos, newAdj);
 }
 
+/**
+ * Splits every edge of `bc` into `splitN` unit-length sub-edges, inserting `splitN-1` evenly-spaced
+ * new nodes along each original edge. Original node positions are scaled by `splitN` first, so -
+ * same as every board-generating function in this file - every sub-edge ends up exactly unit length.
+ */
+export function edgeSplit(bc: BoardConfig, splitN: number): BoardConfig {
+    assert(splitN >= 1, `splitN must be at least 1, got ${splitN}`);
+    const N = bc.N;
+    const pos: number[][] = bc.pos.map(p => [p[0] * splitN, p[1] * splitN]);
+    const edges: [number, number][] = [];
+    for (let i = 0; i < N; i++)
+        for (let j = i + 1; j < N; j++) {
+            if (!bc.adj[i][j]) continue;
+            let prev = i;
+            for (let k = 1; k < splitN; k++) {
+                const t = k / splitN;
+                const idx = pos.length;
+                pos.push([pos[i][0] + (pos[j][0] - pos[i][0]) * t, pos[i][1] + (pos[j][1] - pos[i][1]) * t]);
+                edges.push([prev, idx]);
+                prev = idx;
+            }
+            edges.push([prev, j]);
+        }
+
+    const adj = zeroAdj(pos.length);
+    for (const [a, b] of edges) { adj[a][b] = 1; adj[b][a] = 1; }
+    return make(pos, adj);
+}
+
 /** A rectangular board with width `w` and height `h`. Each node is identified by (col, row) where 0 ≤ col < w, 0 ≤ row < h. */
 export function rectangularBoard(w: number, h: number): BoardConfig {
     assert(w > 0 && h > 0, `w and h must be positive, got w=${w} h=${h}`);
@@ -184,6 +213,11 @@ export function cubicalBoard(w: number, h: number, d: number): BoardConfig {
                     adj[idx(r,c,s)][idx(nr,nc,ns)] = 1;
                 }
     return make(pos, adj);
+}
+
+/** A `w × h × d` cubical board with every edge split into `s` sub-edges - see `edgeSplit`. */
+export function splitCubicalBoard(w: number, h: number, d: number, s: number): BoardConfig {
+    return edgeSplit(cubicalBoard(w, h, d), s);
 }
 
 /** A hypercubical board with width `w`, height `h`, depth `d` and hyperdepth `t`. Each node is identified by (col, row, slice, hyperslice) where 0 ≤ col < w, 0 ≤ row < h, 0 ≤ slice < d, 0 ≤ hyperslice < t. */
@@ -655,6 +689,7 @@ export enum PrescribedBoard {
     rectangularBoard,
     rectangularDiagonalBoard,
     cubicalBoard,
+    splitCubicalBoard,
     hypercubeBoard,
     triangularBoard,
     triangularHexBoard,
@@ -670,6 +705,7 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string
     [PrescribedBoard.rectangularBoard]:         [2, "rect",  "&lt;w&gt; &lt;h&gt;",                         "Rectangular board"],
     [PrescribedBoard.rectangularDiagonalBoard]: [3, "rectd", "&lt;w&gt; &lt;h&gt; &lt;m&gt;",               "Rectangular + diagonal connections every m squares"],
     [PrescribedBoard.cubicalBoard]:             [3, "cub",   "&lt;w&gt; &lt;h&gt; &lt;d&gt;",               "Cubical board"],
+    [PrescribedBoard.splitCubicalBoard]:        [4, "splitcub", "&lt;w&gt; &lt;h&gt; &lt;d&gt; &lt;s&gt;",  "Cubical board with every edge split into s sub-edges"],
     [PrescribedBoard.hypercubeBoard]:           [4, "hcub",  "&lt;w&gt; &lt;h&gt; &lt;d&gt; &lt;t&gt;",    "Hypercubical board"],
     [PrescribedBoard.triangularBoard]:          [1, "tri",   "&lt;w&gt;",                                    "Triangular board of side w"],
     [PrescribedBoard.triangularHexBoard]:       [1, "trihex", "&lt;d&gt;",                                   "Triangular-lattice board in a hexagon shape, with d layers of triangles around the center"],
@@ -685,6 +721,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.rectangularBoard]:         (...a) => rectangularBoard(a[0], a[1]),
     [PrescribedBoard.rectangularDiagonalBoard]: (...a) => rectangularDiagonalBoard(a[0], a[1], a[2]),
     [PrescribedBoard.cubicalBoard]:             (...a) => cubicalBoard(a[0], a[1], a[2]),
+    [PrescribedBoard.splitCubicalBoard]:        (...a) => splitCubicalBoard(a[0], a[1], a[2], a[3]),
     [PrescribedBoard.hypercubeBoard]:           (...a) => hypercubeBoard(a[0], a[1], a[2], a[3]),
     [PrescribedBoard.triangularBoard]:          (...a) => triangularBoard(a[0]),
     [PrescribedBoard.triangularHexBoard]:       (...a) => triangularHexBoard(a[0]),

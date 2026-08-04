@@ -78,6 +78,37 @@ BoardConfig quotient_board(const BoardConfig& bc,
     return make_bc(std::move(new_adj), bc.emb_dim, std::move(new_embed));
 }
 
+BoardConfig edge_split(const BoardConfig& bc, int split_n) {
+    assert(split_n >= 1 && "split_n must be at least 1");
+    int N = bc.N;
+    std::vector<std::vector<unsigned>> pos(N);
+    for (int i = 0; i < N; i++) {
+        pos[i].resize(bc.emb_dim);
+        for (unsigned k = 0; k < bc.emb_dim; k++)
+            pos[i][k] = bc.embed[i][k] * split_n;
+    }
+    std::vector<std::pair<int,int>> edges;
+    for (int i = 0; i < N; i++)
+        for (int j = i+1; j < N; j++) {
+            if (!bc.adj[i][j]) continue;
+            int prev = i;
+            for (int k = 1; k < split_n; k++) {
+                std::vector<unsigned> np(bc.emb_dim);
+                for (unsigned d = 0; d < bc.emb_dim; d++)
+                    np[d] = (unsigned)((int)pos[i][d] + k * ((int)bc.embed[j][d] - (int)bc.embed[i][d]));
+                int idx = (int)pos.size();
+                pos.push_back(std::move(np));
+                edges.push_back({prev, idx});
+                prev = idx;
+            }
+            edges.push_back({prev, j});
+        }
+    int new_n = (int)pos.size();
+    auto adj = zero_adj(new_n);
+    for (auto& [a, b] : edges) { adj[a][b] = 1; adj[b][a] = 1; }
+    return make_bc(std::move(adj), bc.emb_dim, std::move(pos));
+}
+
 BoardConfig rectangular_board(int w, int h) {
     assert(w > 0 && h > 0 && "w and h must be positive");
     std::vector<std::vector<unsigned>> pos;
@@ -138,6 +169,10 @@ BoardConfig cubical_board(int w, int h, int d) {
                         adj[idx(r,c,s)][idx(nr,nc,ns)] = 1;
                 }
     return make_bc(std::move(adj), 3u, std::move(pos));
+}
+
+BoardConfig split_cubical_board(int w, int h, int d, int s) {
+    return edge_split(cubical_board(w, h, d), s);
 }
 
 BoardConfig hypercube_board(int w, int h, int d, int t) {
@@ -599,6 +634,7 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<int>& 
     if (kind == "rect")  return rectangular_board(v[0], v[1]);
     if (kind == "rectd") return rectangular_diagonal_board(v[0], v[1], v[2]);
     if (kind == "cub")   return cubical_board(v[0], v[1], v[2]);
+    if (kind == "splitcub") return split_cubical_board(v[0], v[1], v[2], v[3]);
     if (kind == "hcub")  return hypercube_board(v[0], v[1], v[2], v[3]);
     if (kind == "tri")   return triangular_board(v[0]);
     if (kind == "trihex") return triangular_hex_board(v[0]);

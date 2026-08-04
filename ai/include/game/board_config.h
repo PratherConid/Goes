@@ -15,6 +15,14 @@ struct BoardConfig {
 BoardConfig quotient_board(const BoardConfig& bc,
                            const std::vector<std::pair<int,int>>& quot);
 
+// Splits every edge of bc into split_n sub-edges, inserting split_n-1 evenly-spaced new nodes
+// along each original edge. Mirrors shared/boardConfig.ts's edgeSplit() exactly, but computed with
+// plain integer arithmetic instead of floats: original embed coordinates are scaled by split_n
+// first, so new node k (1 <= k < split_n) along edge (i, j) is embed[i]*split_n + k*(embed[j] -
+// embed[i]) - always an exact integer, no rounding, since k*(embed[j]-embed[i]) is a multiple of 1
+// by construction (unlike a fractional split_n-th of an arbitrary distance).
+BoardConfig edge_split(const BoardConfig& bc, int split_n);
+
 // A rectangular board with width w and height h. Each node is identified by
 // (col, row) where 0 <= col < w, 0 <= row < h.
 BoardConfig rectangular_board(int w, int h);
@@ -26,6 +34,9 @@ BoardConfig rectangular_diagonal_board(int w, int h, int m);
 // A cubical board with width w, height h and depth d. Each node is identified
 // by (col, row, slice) where 0 <= col < w, 0 <= row < h, 0 <= slice < d.
 BoardConfig cubical_board(int w, int h, int d);
+
+// A w x h x d cubical board with every edge split into s sub-edges - see edge_split.
+BoardConfig split_cubical_board(int w, int h, int d, int s);
 
 // A hypercubical board with width w, height h, depth d and hyperdepth t. Each
 // node is identified by (col, row, slice, hyperslice) where 0 <= col < w,
@@ -91,7 +102,8 @@ BoardConfig glue_twisted_square_board(int w, int h, int g);
 BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("rect" | "rectd" |
-// "cub" | "hcub" | "tri" | "trihex" | "hex" | "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" - matches shared/types.ts's
+// "cub" | "splitcub" | "hcub" | "tri" | "trihex" | "hex" | "hexdel" | "snubsq" | "snubsqtri" |
+// "twsq" | "gtsq" - matches shared/types.ts's
 // GameConfig.boardType strings), passing `args` as that builder's positional
 // parameters. Throws std::runtime_error for an unknown kind. Shared by
 // train.cpp (via GameConfig::board_type/board_args, loaded from

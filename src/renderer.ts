@@ -319,6 +319,7 @@ export class Renderer {
         [PrescribedBoard.rectangularBoard]:         [9, 9],
         [PrescribedBoard.rectangularDiagonalBoard]: [9, 9, 3],
         [PrescribedBoard.cubicalBoard]:             [5, 5, 2],
+        [PrescribedBoard.splitCubicalBoard]:        [5, 5, 2, 2],
         [PrescribedBoard.hypercubeBoard]:           [5, 5, 2, 2],
         [PrescribedBoard.triangularBoard]:          [13],
         [PrescribedBoard.triangularHexBoard]:       [5],
