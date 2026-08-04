@@ -441,7 +441,6 @@ BoardConfig snub_square_board(int w, int h, int g) {
 BoardConfig snub_square_tri_board(int w, int h, int g) {
     assert(w > 0 && h > 0 && g > 0 && "w, h, and g must be positive");
 
-    const unsigned sq_width = (g - 1) * 2;
     int n_tri = g * (g + 1) / 2;
     auto tri_idx = [&](int i, int j) { return i*(i+1)/2 + j; };
     auto sq_idx = [&](int x, int y) { return (y*w + x)*g*g; };
@@ -452,27 +451,29 @@ BoardConfig snub_square_tri_board(int w, int h, int g) {
     auto v_base = [&](int x, int y) { return sq_n + h_count*n_tri + (y*w + x)*n_tri; };
     int N = sq_n + (h_count + v_count) * n_tri;
 
-    // Squares: same 45deg-integer-rotation embedding as snub_square_board. Each triangle's boundary
-    // nodes ((i,0) and (i,i) of its own g-row triangular grid) copy their embed value directly from
-    // the specific square corner they're glued to below (so quotient_board's post-merge integer
-    // average is exact, not rounded); interior nodes (0<j<i) are placed by rounded linear
-    // interpolation between them - reasonable for CNN-grid purposes, doesn't need to be exact since
-    // interior nodes are never merged with anything.
+    // Squares: same per-cell 45deg-integer-rotation shape {c+(g-1-r), c+r} as snub_square_board -
+    // but NOT the same bx=x*sq_width, by=y*sq_width placement. That placement only needs to support
+    // snub_square_board's own single-corner glue (which never derives a *new* position - it just
+    // identifies two already-computed corners via inter_conn, so it works regardless of how the
+    // corners' raw values relate). Here, a triangle's interior nodes are *derived* by interpolating
+    // between the two square corners it glues to, and two vertically-stacked h-triangles (or
+    // horizontally-adjacent v-triangles) must derive IDENTICAL values at their shared third side -
+    // which requires the two squares each one interpolates from to already have matching corners
+    // *before* interpolation, not just after quotient_board's merge. Solving that (square(x,y) and
+    // square(x,y+1)'s relevant H-triangle corners equal; square(x,y) and square(x+1,y)'s relevant
+    // V-triangle corners equal) for a per-cell offset bx(x,y), by(x,y) gives bx = (x-y)*(g-1) (shifted
+    // by +(h-1)*(g-1) to stay non-negative) and by = (x+y)*(g-1) - unlike the simple bx=x*sq_width
+    // used elsewhere, both offsets now depend on both x and y.
     std::vector<std::vector<unsigned>> pos(N);
     for (int y = 0; y < h; y++)
         for (int x = 0; x < w; x++) {
-            unsigned bx = x * sq_width, by = y * sq_width;
+            unsigned bx = (unsigned)(x - y + (h - 1)) * (g - 1);
+            unsigned by = (unsigned)(x + y) * (g - 1);
             int b = sq_idx(x, y);
             for (unsigned r = 0; r < g; r++)
                 for (unsigned c = 0; c < g; c++)
                     pos[b + r*g + c] = {bx + c + (g - 1 - r), by + c + r};
         }
-    auto interp = [&](std::vector<unsigned>& out, const std::vector<unsigned>& left,
-                       const std::vector<unsigned>& right, int j, int i) {
-        double t = i == 0 ? 0.0 : (double)j / (double)i;
-        double lx = left[0], ly = left[1], rx = right[0], ry = right[1];
-        out = { (unsigned)std::lround(lx + (rx - lx) * t), (unsigned)std::lround(ly + (ry - ly) * t) };
-    };
     for (int y = 0; y < h; y++)
         for (int x = 0; x < w - 1; x++) {
             int p = (x + y) % 2;
@@ -481,8 +482,13 @@ BoardConfig snub_square_tri_board(int w, int h, int g) {
                 int self_r = p == 0 ? g-1-i : i;
                 const auto& left = pos[sq_idx(x, y) + self_r*g + (g-1)];
                 const auto& right = pos[sq_idx(x+1, y) + self_r*g + 0];
-                for (int j = 0; j <= i; j++)
-                    interp(pos[base + tri_idx(i,j)], left, right, j, i);
+                for (int j = 0; j <= i; j++) {
+                    double t = i == 0 ? 0.0 : (double)j / (double)i;
+                    pos[base + tri_idx(i,j)] = {
+                        (unsigned)std::lround(left[0] + ((double)right[0] - (double)left[0]) * t),
+                        (unsigned)std::lround(left[1] + ((double)right[1] - (double)left[1]) * t)
+                    };
+                }
             }
         }
     for (int y = 0; y < h - 1; y++)
@@ -493,8 +499,13 @@ BoardConfig snub_square_tri_board(int w, int h, int g) {
                 int self_c = p == 0 ? i : g-1-i;
                 const auto& left = pos[sq_idx(x, y) + (g-1)*g + self_c];
                 const auto& right = pos[sq_idx(x, y+1) + 0*g + self_c];
-                for (int j = 0; j <= i; j++)
-                    interp(pos[base + tri_idx(i,j)], left, right, j, i);
+                for (int j = 0; j <= i; j++) {
+                    double t = i == 0 ? 0.0 : (double)j / (double)i;
+                    pos[base + tri_idx(i,j)] = {
+                        (unsigned)std::lround(left[0] + ((double)right[0] - (double)left[0]) * t),
+                        (unsigned)std::lround(left[1] + ((double)right[1] - (double)left[1]) * t)
+                    };
+                }
             }
         }
 
