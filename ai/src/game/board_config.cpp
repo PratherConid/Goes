@@ -360,8 +360,7 @@ tilted_disconnected_square_board(int w, int h, int g, int gap) {
 }
 
 BoardConfig snub_square_board(int w, int h, int g) {
-    assert(w > 0 && h > 0 && "w and h must be positive");
-    assert(g >= 2 && "g must be at least 2");
+    assert(w > 0 && h > 0 && g > 0 && "w, h, and g must be positive");
     // Same 45deg-integer-rotation embedding as tilted_disconnected_square_board (gap=0, i.e. the
     // glue_twisted_square_board case) - embed coordinates must be integers, unlike
     // shared/boardConfig.ts's own literal +-30-degree floating-point layout.
@@ -465,7 +464,7 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<int>& 
     if (kind == "trihex") return triangular_hex_board(v[0]);
     if (kind == "hex")   return hex_board(v[0]);
     if (kind == "hexdel") return trihex_board(v[0]);
-    if (kind == "snub")  return snub_square_board(v[0], v[1], v[2]);
+    if (kind == "snubsq") return snub_square_board(v[0], v[1], v[2]);
     if (kind == "twsq")  return twisted_square_board(v[0], v[1], v[2]);
     if (kind == "gtsq")  return glue_twisted_square_board(v[0], v[1], v[2]);
     throw std::runtime_error("Unknown board type: " + kind);

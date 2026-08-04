@@ -435,8 +435,7 @@ export function twistedSquareBoard(w: number, h: number, g: number): BoardConfig
  * snub square tiling. Adjacent squares are glued or triangle-connected at their nearest corners.
  */
 export function snubSquareBoard(w: number, h: number, g: number): BoardConfig {
-    assert(w > 0 && h > 0, `w and h must be positive, got w=${w} h=${h}`);
-    assert(g >= 2, `g must be at least 2 (g=1 collapses all 4 corners of a big cell to a single point), got g=${g}`);
+    assert(w > 0 && h > 0 && g > 0, `w, h, and g must be positive, got w=${w} h=${h} g=${g}`);
 
     const spacing = (g - 1) * (0.5 + Math.sqrt(3) / 2);
     const pos: number[][] = [];
@@ -537,7 +536,7 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string
     [PrescribedBoard.triangularHexBoard]:       [1, "trihex", "&lt;d&gt;",                                   "Triangular-lattice board in a hexagon shape, with d layers of triangles around the center"],
     [PrescribedBoard.hexBoard]:                 [1, "hex",   "&lt;d&gt;",                                    "Hexagon-tiled board with d layers of hexagons around a center hexagon"],
     [PrescribedBoard.trihexBoard]:               [1, "hexdel", "&lt;d&gt;",                                   "Trihexagonal (hexdel) board, d layers of hexagons connected by triangles around a center hexagon"],
-    [PrescribedBoard.snubSquareBoard]:          [3, "snub",  "&lt;w&gt; &lt;h&gt; &lt;g&gt;",               "Snub square board (g\xD7g squares)"],
+    [PrescribedBoard.snubSquareBoard]:          [3, "snubsq", "&lt;w&gt; &lt;h&gt; &lt;g&gt;",              "Snub square board (g\xD7g squares)"],
     [PrescribedBoard.twistedSquareBoard]:       [3, "twsq",  "&lt;w&gt; &lt;h&gt; &lt;g&gt;",               "Twisted-square board (g\xD7g squares)"],
     [PrescribedBoard.glueTwistedSquareBoard]:   [3, "gtsq",  "&lt;w&gt; &lt;h&gt; &lt;g&gt;",               "Glued-twisted-square board (g\xD7g squares)"],
 };

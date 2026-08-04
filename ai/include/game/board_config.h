@@ -80,7 +80,7 @@ BoardConfig glue_twisted_square_board(int w, int h, int g);
 BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("rect" | "rectd" |
-// "cub" | "hcub" | "tri" | "trihex" | "hex" | "hexdel" | "snub" | "twsq" | "gtsq" - matches shared/types.ts's
+// "cub" | "hcub" | "tri" | "trihex" | "hex" | "hexdel" | "snubsq" | "twsq" | "gtsq" - matches shared/types.ts's
 // GameConfig.boardType strings), passing `args` as that builder's positional
 // parameters. Throws std::runtime_error for an unknown kind. Shared by
 // train.cpp (via GameConfig::board_type/board_args, loaded from
