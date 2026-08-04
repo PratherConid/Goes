@@ -237,6 +237,85 @@ export function triangularBoard(w: number): BoardConfig {
     return make(pos, adj);
 }
 
+/**
+ * A triangular-lattice board arranged in a hexagon shape, with `d` layers of triangles surrounding
+ * the central point (side length d+1, in hex terms) - the shape used by boards like Havannah/Y.
+ * Not tiled by hexagons - see hexagonalBoard (TODO) for that. Cells are indexed by axial
+ * coordinates (q, r) with max(|q|, |r|, |q+r|) <= d (hex distance from the center), laid out on the
+ * same triangular lattice as `triangularBoard` (unit edge length, rowDist row spacing); each cell
+ * connects to its up to six axial neighbors.
+ */
+export function triangularHexBoard(d: number): BoardConfig {
+    assert(d >= 0, `d must be non-negative, got d=${d}`);
+    const rowDist = Math.sqrt(3) / 2;
+    const coords: [number, number][] = [];
+    for (let q = -d; q <= d; q++)
+        for (let r = Math.max(-d, -d - q); r <= Math.min(d, d - q); r++)
+            coords.push([q, r]);
+    const N = coords.length;
+    const idx = new Map<string, number>();
+    coords.forEach(([q, r], i) => idx.set(`${q},${r}`, i));
+    const pos = coords.map(([q, r]) => [q + r / 2, rowDist * r]);
+    const adj = zeroAdj(N);
+    const dirs: [number, number][] = [[1,0],[1,-1],[0,-1],[-1,0],[-1,1],[0,1]];
+    for (let i = 0; i < N; i++) {
+        const [q, r] = coords[i];
+        for (const [dq, dr] of dirs) {
+            const ni = idx.get(`${q+dq},${r+dr}`);
+            if (ni !== undefined) adj[i][ni] = 1;
+        }
+    }
+    return make(pos, adj);
+}
+
+/**
+ * A board actually tiled by regular hexagons: a central hexagonal cell surrounded by `d` further
+ * layers of hexagonal cells (honeycomb topology - degree 3 in the interior, degree 2 on the
+ * boundary). Built by carving the honeycomb lattice out of the same triangular lattice
+ * `triangularHexBoard` uses, rather than laying out hexagons directly: a triangular lattice is
+ * 3-colorable (color(q, r) = (q - r) mod 3) into three interlocking triangular sublattices, and the
+ * points of any one color class are exactly the *centers* of the hexagonal faces formed by the
+ * other two colors' points - so "erasing" one color class turns the triangular lattice into a
+ * honeycomb lattice, with the erased points marking where each hexagonal face used to be.
+ * `centers` enumerates that color-0 sublattice - itself a triangular lattice, spanned by (q, r) =
+ * a*(1,1) + b*(2,-1) (both color 0, at a 60° angle, so (a, b) is a fresh axial coordinate system
+ * for it) - restricted to hex-distance <= d in (a, b), i.e. the center cell plus d surrounding
+ * rings of cells. Each kept center then contributes its six triangular-lattice neighbors as that
+ * hexagon's six corners; two corners are connected iff they're triangular-lattice-adjacent, which
+ * reproduces exactly the honeycomb edges (every triangular-lattice edge between two non-color-0
+ * points borders exactly two color-0 points, i.e. two hexagonal faces) without needing a separate
+ * erase/dedupe pass over edges.
+ */
+export function hexBoard(d: number): BoardConfig {
+    assert(d >= 0, `d must be non-negative, got d=${d}`);
+    const rowDist = Math.sqrt(3) / 2;
+    const dirs: [number, number][] = [[1,0],[1,-1],[0,-1],[-1,0],[-1,1],[0,1]];
+
+    const centers: [number, number][] = [];
+    for (let a = -d; a <= d; a++)
+        for (let b = Math.max(-d, -d - a); b <= Math.min(d, d - a); b++)
+            centers.push([a + 2 * b, a - b]);
+
+    const vertices = new Map<string, [number, number]>();
+    for (const [q, r] of centers)
+        for (const [dq, dr] of dirs)
+            vertices.set(`${q+dq},${r+dr}`, [q + dq, r + dr]);
+    const coords = [...vertices.values()];
+    const N = coords.length;
+    const idx = new Map<string, number>();
+    coords.forEach(([q, r], i) => idx.set(`${q},${r}`, i));
+    const pos = coords.map(([q, r]) => [q + r / 2, rowDist * r]);
+    const adj = zeroAdj(N);
+    for (let i = 0; i < N; i++) {
+        const [q, r] = coords[i];
+        for (const [dq, dr] of dirs) {
+            const ni = idx.get(`${q+dq},${r+dr}`);
+            if (ni !== undefined) adj[i][ni] = 1;
+        }
+    }
+    return make(pos, adj);
+}
+
 /** Auxiliary function for `twistedSquareBoard` and `glueTwistedSquareBoard`. Not used by the renderer directly. */
 function tiltedDisconnectedSquareBoard(w: number, h: number, g: number, gap: number) {
     const rm = Math.SQRT2 / 2;
@@ -313,6 +392,8 @@ export enum PrescribedBoard {
     cubicalBoard,
     hypercubeBoard,
     triangularBoard,
+    triangularHexBoard,
+    hexBoard,
     twistedSquareBoard,
     glueTwistedSquareBoard
 }
@@ -323,6 +404,8 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string
     [PrescribedBoard.cubicalBoard]:             [3, "cub",   "&lt;w&gt; &lt;h&gt; &lt;d&gt;",               "Cubical board"],
     [PrescribedBoard.hypercubeBoard]:           [4, "hcub",  "&lt;w&gt; &lt;h&gt; &lt;d&gt; &lt;t&gt;",    "Hypercubical board"],
     [PrescribedBoard.triangularBoard]:          [1, "tri",   "&lt;w&gt;",                                    "Triangular board of side w"],
+    [PrescribedBoard.triangularHexBoard]:       [1, "trihex", "&lt;d&gt;",                                   "Triangular-lattice board in a hexagon shape, with d layers of triangles around the center"],
+    [PrescribedBoard.hexBoard]:                 [1, "hex",   "&lt;d&gt;",                                    "Hexagon-tiled board with d layers of hexagons around a center hexagon"],
     [PrescribedBoard.twistedSquareBoard]:       [3, "twsq",  "&lt;w&gt; &lt;h&gt; &lt;g&gt;",               "Twisted-square board (g\xD7g squares)"],
     [PrescribedBoard.glueTwistedSquareBoard]:   [3, "gtsq",  "&lt;w&gt; &lt;h&gt; &lt;g&gt;",               "Glued-twisted-square board (g\xD7g squares)"],
 };
@@ -333,6 +416,8 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.cubicalBoard]:             (...a) => cubicalBoard(a[0], a[1], a[2]),
     [PrescribedBoard.hypercubeBoard]:           (...a) => hypercubeBoard(a[0], a[1], a[2], a[3]),
     [PrescribedBoard.triangularBoard]:          (...a) => triangularBoard(a[0]),
+    [PrescribedBoard.triangularHexBoard]:       (...a) => triangularHexBoard(a[0]),
+    [PrescribedBoard.hexBoard]:                 (...a) => hexBoard(a[0]),
     [PrescribedBoard.twistedSquareBoard]:       (...a) => twistedSquareBoard(a[0], a[1], a[2]),
     [PrescribedBoard.glueTwistedSquareBoard]:   (...a) => glueTwistedSquareBoard(a[0], a[1], a[2]),
 };

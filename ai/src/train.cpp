@@ -309,11 +309,12 @@ static Args parse_args(int argc, char* argv[]) {
 // Returns "cnn", "unet", "gnn", or "transformer" — the architecture that will actually be used.
 static std::string effective_arch(const Args& args, const std::string& board_kind) {
     bool grid2d_supported = (board_kind == "rect" || board_kind == "rectd" || board_kind == "tri" ||
-                          board_kind == "twsq" || board_kind == "gtsq");
+                          board_kind == "trihex" || board_kind == "hex" || board_kind == "twsq" ||
+                          board_kind == "gtsq");
     if (args.net_arch == "cnn") {
         if (!grid2d_supported) {
             std::cerr << "Error: --net-arch cnn is not supported for board type '" << board_kind
-                      << "'. CNN requires a 2D grid embedding (rect/rectd/tri/twsq/gtsq).\n";
+                      << "'. CNN requires a 2D grid embedding (rect/rectd/tri/trihex/hex/twsq/gtsq).\n";
             std::exit(1);
         }
         return "cnn";
@@ -321,7 +322,7 @@ static std::string effective_arch(const Args& args, const std::string& board_kin
     if (args.net_arch == "unet") {
         if (!grid2d_supported) {
             std::cerr << "Error: --net-arch unet is not supported for board type '" << board_kind
-                      << "'. UNet requires a 2D grid embedding (rect/rectd/tri/twsq/gtsq).\n";
+                      << "'. UNet requires a 2D grid embedding (rect/rectd/tri/trihex/hex/twsq/gtsq).\n";
             std::exit(1);
         }
         return "unet";

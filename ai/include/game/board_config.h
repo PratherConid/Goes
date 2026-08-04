@@ -35,6 +35,21 @@ BoardConfig hypercube_board(int w, int h, int d, int t);
 // A triangular board with side length w.
 BoardConfig triangular_board(int w);
 
+// A triangular-lattice board arranged in a hexagon shape, with d layers of triangles surrounding
+// the central point. Not tiled by hexagons - see hex_board below for that. Cells are
+// identified by axial coordinates (q, r) with max(|q|, |r|, |q+r|) <= d, embedded (shifted to
+// non-negative) as (q+d, r+d); each cell connects to its up to six axial neighbors.
+BoardConfig triangular_hex_board(int d);
+
+// A board actually tiled by regular hexagons: a central hexagonal cell surrounded by d further
+// layers of hexagonal cells (honeycomb topology - degree 3 in the interior, degree 2 on the
+// boundary). Mirrors shared/boardConfig.ts's hexBoard() - see that function's doc comment for the
+// full construction (carving the honeycomb out of triangular_hex_board's own triangular lattice by
+// erasing one 3-coloring class, whose points mark the hexagonal faces' centers). Embedded (shifted
+// to non-negative) as (q+2d+1, r+2d+1) - a vertex's axial (q, r) never strays more than 2d+1 from
+// the origin, one hex-lattice step past the d-ringed centers' own [-2d, 2d] range.
+BoardConfig hex_board(int d);
+
 // A board of w x h squares each rotated 45 degrees, arranged in a rectangle.
 // The squares have the usual square topology. The closest nodes of two adjacent
 // squares are glued together (merged into one node).
@@ -46,7 +61,7 @@ BoardConfig glue_twisted_square_board(int w, int h, int g);
 BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("rect" | "rectd" |
-// "cub" | "hcub" | "tri" | "twsq" | "gtsq" - matches shared/types.ts's
+// "cub" | "hcub" | "tri" | "trihex" | "hex" | "twsq" | "gtsq" - matches shared/types.ts's
 // GameConfig.boardType strings), passing `args` as that builder's positional
 // parameters. Throws std::runtime_error for an unknown kind. Shared by
 // train.cpp (via GameConfig::board_type/board_args, loaded from

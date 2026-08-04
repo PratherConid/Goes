@@ -321,6 +321,8 @@ export class Renderer {
         [PrescribedBoard.cubicalBoard]:             [5, 5, 2],
         [PrescribedBoard.hypercubeBoard]:           [5, 5, 2, 2],
         [PrescribedBoard.triangularBoard]:          [13],
+        [PrescribedBoard.triangularHexBoard]:       [5],
+        [PrescribedBoard.hexBoard]:                 [4],
         [PrescribedBoard.twistedSquareBoard]:       [4, 4, 3],
         [PrescribedBoard.glueTwistedSquareBoard]:   [4, 4, 3],
     };

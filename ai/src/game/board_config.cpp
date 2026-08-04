@@ -5,6 +5,7 @@
 #include <numeric>
 #include <cmath>
 #include <stdexcept>
+#include <map>
 
 static BoardConfig make_bc(std::vector<std::vector<int>> adj,
                             unsigned emb_dim,
@@ -188,6 +189,80 @@ BoardConfig triangular_board(int w) {
     return make_bc(std::move(adj), 2u, std::move(pos));
 }
 
+BoardConfig triangular_hex_board(int d) {
+    assert(d >= 0 && "d must be non-negative");
+    std::vector<std::pair<int,int>> coords;
+    for (int q = -d; q <= d; q++) {
+        int r_lo = std::max(-d, -d - q);
+        int r_hi = std::min(d, d - q);
+        for (int r = r_lo; r <= r_hi; r++)
+            coords.push_back({q, r});
+    }
+    int N = static_cast<int>(coords.size());
+    std::vector<std::vector<unsigned>> pos(N);
+    std::map<std::pair<int,int>, int> idx;
+    for (int i = 0; i < N; i++) {
+        auto [q, r] = coords[i];
+        pos[i] = {static_cast<unsigned>(q + d), static_cast<unsigned>(r + d)};
+        idx[{q, r}] = i;
+    }
+    auto adj = zero_adj(N);
+    const int dirs[6][2] = {{1,0},{1,-1},{0,-1},{-1,0},{-1,1},{0,1}};
+    for (int i = 0; i < N; i++) {
+        auto [q, r] = coords[i];
+        for (auto& dv : dirs) {
+            auto it = idx.find({q + dv[0], r + dv[1]});
+            if (it != idx.end()) adj[i][it->second] = 1;
+        }
+    }
+    return make_bc(std::move(adj), 2u, std::move(pos));
+}
+
+BoardConfig hex_board(int d) {
+    assert(d >= 0 && "d must be non-negative");
+    const int dirs[6][2] = {{1,0},{1,-1},{0,-1},{-1,0},{-1,1},{0,1}};
+
+    // Hexagon centers: the (q, r) = (a+2b, a-b) sublattice (color (q-r) mod 3 == 0, since
+    // q-r = (a+2b)-(a-b) = 3b), restricted to hex-distance <= d in its own (a, b) coordinates -
+    // mirrors shared/boardConfig.ts's hexBoard().
+    std::vector<std::pair<int,int>> centers;
+    for (int a = -d; a <= d; a++) {
+        int b_lo = std::max(-d, -d - a);
+        int b_hi = std::min(d, d - a);
+        for (int b = b_lo; b <= b_hi; b++)
+            centers.push_back({a + 2*b, a - b});
+    }
+
+    std::map<std::pair<int,int>, int> idx;
+    std::vector<std::pair<int,int>> coords;
+    auto add_vertex = [&](int q, int r) {
+        auto key = std::make_pair(q, r);
+        if (idx.count(key)) return;
+        idx[key] = static_cast<int>(coords.size());
+        coords.push_back(key);
+    };
+    for (auto& [q, r] : centers)
+        for (auto& dv : dirs)
+            add_vertex(q + dv[0], r + dv[1]);
+
+    int N = static_cast<int>(coords.size());
+    int offset = 2*d + 1;
+    std::vector<std::vector<unsigned>> pos(N);
+    for (int i = 0; i < N; i++) {
+        auto [q, r] = coords[i];
+        pos[i] = {static_cast<unsigned>(q + offset), static_cast<unsigned>(r + offset)};
+    }
+    auto adj = zero_adj(N);
+    for (int i = 0; i < N; i++) {
+        auto [q, r] = coords[i];
+        for (auto& dv : dirs) {
+            auto it = idx.find({q + dv[0], r + dv[1]});
+            if (it != idx.end()) adj[i][it->second] = 1;
+        }
+    }
+    return make_bc(std::move(adj), 2u, std::move(pos));
+}
+
 // gap=0.0 → glue_twisted_square_board, gap=1.0 → twisted_square_board
 static std::tuple<std::vector<std::vector<unsigned>>,
                   std::vector<std::vector<int>>,
@@ -262,6 +337,8 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<int>& 
     if (kind == "cub")   return cubical_board(v[0], v[1], v[2]);
     if (kind == "hcub")  return hypercube_board(v[0], v[1], v[2], v[3]);
     if (kind == "tri")   return triangular_board(v[0]);
+    if (kind == "trihex") return triangular_hex_board(v[0]);
+    if (kind == "hex")   return hex_board(v[0]);
     if (kind == "twsq")  return twisted_square_board(v[0], v[1], v[2]);
     if (kind == "gtsq")  return glue_twisted_square_board(v[0], v[1], v[2]);
     throw std::runtime_error("Unknown board type: " + kind);

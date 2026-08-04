@@ -6,7 +6,7 @@
 //
 // POST /move - JSON body fields:
 //   config            object with game configuration:
-//     boardType         "rect"|"rectd"|"cub"|"hcub"|"tri"|"twsq"|"gtsq"
+//     boardType         "rect"|"rectd"|"cub"|"hcub"|"tri"|"trihex"|"hex"|"twsq"|"gtsq"
 //     boardArgs         integer dimensions matching the board type
 //     numStones         int
 //     numPlayers        int
