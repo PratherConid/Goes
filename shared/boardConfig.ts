@@ -211,50 +211,53 @@ export function mergeClose(bc: BoardConfig, dist: number): BoardConfig {
     return quotientBoard(bc, quot);
 }
 
-export type BoardModifier =
-    | { kind: 'Rectify' }
-    | { kind: 'EdgeSplit'; splitN: number }
-    | { kind: 'MergeClose'; dist: number };
-
-/** mc's default `dist` when called with no argument - see parseModifier and renderer.ts's command reference panel. */
-export const MC_DEFAULT_DIST = 0.01;
+/**
+ * The default projMat assigned to a freshly-`product()`-ed board (see below), as a function of the
+ * product's own embDim: dims 0 and 1 map straight to x/y (identity) - the whole matrix is exactly
+ * IDENTITY_2X2 when embDim <= 2 - and every dim beyond that additionally contributes `1/d` to BOTH x
+ * and y, `d` being that dim's own (0-based) index, e.g. embDim=5 gives
+ * `[[1, 0, 1/2, 1/3, 1/4], [0, 1, 1/2, 1/3, 1/4]]`.
+ */
+function defaultProductProjMat(embDim: number): number[][] {
+    const row0 = new Array<number>(embDim).fill(0);
+    const row1 = new Array<number>(embDim).fill(0);
+    if (embDim >= 1) row0[0] = 1;
+    if (embDim >= 2) row1[1] = 1;
+    for (let d = 2; d < embDim; d++) row0[d] = row1[d] = 1 / d;
+    return [row0, row1];
+}
 
 /**
- * Parses a BoardModifier from its command name ('rect', 'es', 'mc') and string args - see
- * applyModifier. mc's arg is optional: with none, `dist` defaults to MC_DEFAULT_DIST.
+ * The Cartesian (box) product of two board configs: N = `bc1.N * bc2.N`, one new node per pair
+ * `(i, j)` (`i` from `bc1`, `j` from `bc2`), at the concatenated natural position
+ * `[...bc1.emb.pos[i], ...bc2.emb.pos[j]]` (embDim = `bc1.emb.embDim + bc2.emb.embDim`). `(i, j)` is
+ * adjacent to `(i2, j2)` iff exactly one of:
+ *   - `i === i2` and `j` is adjacent to `j2` in `bc2`
+ *   - `j === j2` and `i` is adjacent to `i2` in `bc1`
+ * (the standard graph Cartesian product - e.g. `cubicalBoard(w, h, d)` is, up to embedding, the
+ * product of three path graphs). Uses a fresh default projMat (see defaultProductProjMat) rather than
+ * either factor's own projMat, since neither one alone is meaningful at the combined dimension.
  */
-export function parseModifier(name: string, args: string[]): BoardModifier {
-    if (name === 'rect') {
-        assert(args.length === 0, `rect takes no arguments, got ${args.length}`);
-        return { kind: 'Rectify' };
-    }
-    if (name === 'es') {
-        assert(args.length === 1, `es takes exactly 1 argument (splitN), got ${args.length}`);
-        const splitN = Number(args[0]);
-        assert(Number.isInteger(splitN) && splitN >= 1, `es: splitN must be a positive integer, got "${args[0]}"`);
-        return { kind: 'EdgeSplit', splitN };
-    }
-    if (name === 'mc') {
-        assert(args.length <= 1, `mc takes at most 1 argument (dist), got ${args.length}`);
-        const dist = args.length === 0 ? MC_DEFAULT_DIST : Number(args[0]);
-        assert(Number.isFinite(dist) && dist > 0, `mc: dist must be a positive number, got "${args[0]}"`);
-        return { kind: 'MergeClose', dist };
-    }
-    throw new Error(`Unknown board modifier: ${name}`);
-}
+export function product(bc1: BoardConfig, bc2: BoardConfig): BoardConfig {
+    const N1 = bc1.N, N2 = bc2.N;
+    const embDim = bc1.emb.embDim + bc2.emb.embDim;
+    const idx = (i: number, j: number) => i * N2 + j;
 
-/** Applies `modifier` to `bc`, dispatching to `rectify` / `edgeSplit` / `mergeClose`. */
-export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardConfig {
-    switch (modifier.kind) {
-        case 'Rectify': return rectify(bc);
-        case 'EdgeSplit': return edgeSplit(bc, modifier.splitN);
-        case 'MergeClose': return mergeClose(bc, modifier.dist);
-    }
-}
+    const pos: number[][] = [];
+    for (let i = 0; i < N1; i++)
+        for (let j = 0; j < N2; j++)
+            pos.push([...bc1.emb.pos[i], ...bc2.emb.pos[j]]);
 
-/** Applies every modifier in `modifiers`, in order, to `bc` - see applyModifier. */
-export function applyModifiers(bc: BoardConfig, modifiers: BoardModifier[]): BoardConfig {
-    return modifiers.reduce((acc, m) => applyModifier(acc, m), bc);
+    const adj = zeroAdj(N1 * N2);
+    for (let i = 0; i < N1; i++)
+        for (let j = 0; j < N2; j++) {
+            for (let i2 = 0; i2 < N1; i2++)
+                if (bc1.adj[i][i2]) adj[idx(i, j)][idx(i2, j)] = 1;
+            for (let j2 = 0; j2 < N2; j2++)
+                if (bc2.adj[j][j2]) adj[idx(i, j)][idx(i, j2)] = 1;
+        }
+
+    return make(new Embedding(embDim, pos, defaultProductProjMat(embDim)), adj);
 }
 
 /** A rectangular board with width `w` and height `h`. Each node is identified by (col, row) where 0 ≤ col < w, 0 ≤ row < h. */
@@ -906,3 +909,131 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.twistedSquareBoard]:       (...a) => twistedSquareBoard(a[0], a[1], a[2]),
     [PrescribedBoard.glueTwistedSquareBoard]:   (...a) => glueTwistedSquareBoard(a[0], a[1], a[2]),
 };
+
+/**
+ * Command name (PrescribedBoardMap[pb][1], e.g. 'rect', 'cub') -> PrescribedBoard enum value -
+ * shared by buildPrescribedBoard below and parseModifier's beginprod validation.
+ */
+const PRESCRIBED_BOARD_BY_NAME = new Map<string, PrescribedBoard>(
+    (Object.entries(PrescribedBoardMap) as [string, [number, string, string, string]][])
+        .map(([k, [, cmd]]) => [cmd, Number(k) as PrescribedBoard]),
+);
+
+/**
+ * Builds a board from its command-name kind (e.g. 'rect', 'cub' - see PrescribedBoardMap) and
+ * positional args - the same string-keyed dispatch renderer.ts's `_cmdToBoard` builds from the same
+ * PrescribedBoardMap/PrescribedBoardFns pairing. Used by applyModifiers's BeginProd handling below.
+ * Throws for an unrecognized kind.
+ */
+function buildPrescribedBoard(kind: string, args: number[]): BoardConfig {
+    const pb = PRESCRIBED_BOARD_BY_NAME.get(kind);
+    if (pb === undefined) throw new Error(`Unknown board type: ${kind}`);
+    return PrescribedBoardFns[pb](...args);
+}
+
+export type BoardModifier =
+    | { kind: 'Rectify' }
+    | { kind: 'EdgeSplit'; splitN: number }
+    | { kind: 'MergeClose'; dist: number }
+    | { kind: 'BeginProd'; boardType: string; boardArgs: number[] }
+    | { kind: 'EndProd' };
+
+/** mc's default `dist` when called with no argument - see parseModifier and renderer.ts's command reference panel. */
+export const MC_DEFAULT_DIST = 0.01;
+
+/**
+ * Parses a BoardModifier from its command name ('rect', 'es', 'mc', 'beginprod', 'endprod') and
+ * string args - see applyModifier/applyModifiers. mc's arg is optional: with none, `dist` defaults to
+ * MC_DEFAULT_DIST. beginprod's first arg is a board-type command name (e.g. 'rect', 'cub' - same
+ * names as PrescribedBoardMap/the `bt` renderer command, validated eagerly here via
+ * findPrescribedBoard), and its remaining args are that board type's own positional dimension args:
+ * at least PrescribedBoardMap's required count or this throws; extras beyond that count are silently
+ * truncated (so e.g. a leftover product-context arg doesn't need to be stripped by the caller).
+ */
+export function parseModifier(name: string, args: string[]): BoardModifier {
+    if (name === 'rect') {
+        assert(args.length === 0, `rect takes no arguments, got ${args.length}`);
+        return { kind: 'Rectify' };
+    }
+    if (name === 'es') {
+        assert(args.length === 1, `es takes exactly 1 argument (splitN), got ${args.length}`);
+        const splitN = Number(args[0]);
+        assert(Number.isInteger(splitN) && splitN >= 1, `es: splitN must be a positive integer, got "${args[0]}"`);
+        return { kind: 'EdgeSplit', splitN };
+    }
+    if (name === 'mc') {
+        assert(args.length <= 1, `mc takes at most 1 argument (dist), got ${args.length}`);
+        const dist = args.length === 0 ? MC_DEFAULT_DIST : Number(args[0]);
+        assert(Number.isFinite(dist) && dist > 0, `mc: dist must be a positive number, got "${args[0]}"`);
+        return { kind: 'MergeClose', dist };
+    }
+    if (name === 'beginprod') {
+        assert(args.length >= 1, `beginprod takes at least 1 argument (board type), got ${args.length}`);
+        const [boardType, ...argStrs] = args;
+        const pb = PRESCRIBED_BOARD_BY_NAME.get(boardType);
+        if (pb === undefined) throw new Error(`beginprod: unknown board type "${boardType}"`);
+        const requiredArgs = PrescribedBoardMap[pb][0];
+        assert(argStrs.length >= requiredArgs,
+            `beginprod: board type "${boardType}" requires ${requiredArgs} argument(s), got ${argStrs.length}`);
+        const boardArgs = argStrs.slice(0, requiredArgs).map(Number);
+        assert(boardArgs.every(n => Number.isInteger(n)),
+            `beginprod: board args must be integers, got "${argStrs.join(' ')}"`);
+        return { kind: 'BeginProd', boardType, boardArgs };
+    }
+    if (name === 'endprod') {
+        assert(args.length === 0, `endprod takes no arguments, got ${args.length}`);
+        return { kind: 'EndProd' };
+    }
+    throw new Error(`Unknown board modifier: ${name}`);
+}
+
+/**
+ * Applies `modifier` to `bc`, dispatching to `rectify` / `edgeSplit` / `mergeClose`. Does NOT accept
+ * BeginProd/EndProd - those have no meaning applied to a single board in isolation (BeginProd starts
+ * a whole new board for applyModifiers to build up separately, and EndProd's `product()` needs that
+ * suspended outer board back too) - see applyModifiers, which handles both specially and is the only
+ * valid way to apply a modifier list containing them.
+ */
+export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardConfig {
+    switch (modifier.kind) {
+        case 'Rectify': return rectify(bc);
+        case 'EdgeSplit': return edgeSplit(bc, modifier.splitN);
+        case 'MergeClose': return mergeClose(bc, modifier.dist);
+        case 'BeginProd':
+        case 'EndProd':
+            throw new Error(`applyModifier: ${modifier.kind} must be applied via applyModifiers, not directly`);
+    }
+}
+
+/**
+ * Applies every modifier in `modifiers`, in order, to `bc`. Most modifiers just transform the
+ * "current" board via applyModifier, but BeginProd/EndProd (rejected by applyModifier itself - see
+ * its doc comment) are handled specially here, via a stack of boards suspended to be multiplied back
+ * in later:
+ *   - BeginProd pushes the current board onto the stack and starts a fresh "current" board (built via
+ *     buildPrescribedBoard from its boardType/boardArgs), so that modifiers up to the matching EndProd
+ *     transform this new board instead of the outer one.
+ *   - EndProd pops the suspended outer board and replaces "current" with `product(outer, current)` -
+ *     the two multiplied together.
+ * BeginProd/EndProd pairs may nest (a BeginProd inside another BeginProd...EndProd span just pushes a
+ * second stack entry). Throws on an EndProd with no matching BeginProd (empty stack), or if the
+ * modifier list ends with an unmatched BeginProd (non-empty stack).
+ */
+export function applyModifiers(bc: BoardConfig, modifiers: BoardModifier[]): BoardConfig {
+    let current = bc;
+    const stack: BoardConfig[] = [];
+    for (const m of modifiers) {
+        if (m.kind === 'BeginProd') {
+            stack.push(current);
+            current = buildPrescribedBoard(m.boardType, m.boardArgs);
+        } else if (m.kind === 'EndProd') {
+            assert(stack.length > 0, 'applyModifiers: endprod with no matching beginprod');
+            const outer = stack.pop()!;
+            current = product(outer, current);
+        } else {
+            current = applyModifier(current, m);
+        }
+    }
+    assert(stack.length === 0, `applyModifiers: ${stack.length} unmatched beginprod(s)`);
+    return current;
+}

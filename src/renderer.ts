@@ -1186,6 +1186,12 @@ export class Renderer {
             ${row('mc [dist]',
                 `MergeClose: merge every pair of nodes closer than dist into one node `
                 + `(default ${MC_DEFAULT_DIST})`)}
+            ${row('beginprod &lt;board-type&gt; &lt;args…&gt;',
+                'Starts building a second board (of the given type/args) to multiply into the current '
+                + 'one - modifiers up to the matching endprod apply to this new board, not the outer one')}
+            ${row('endprod',
+                'Ends the innermost beginprod: multiplies its finished board into the board that was '
+                + 'active before that beginprod (Cartesian product), and resumes modifying the result')}
         </table>`;
     }
 
