@@ -461,6 +461,125 @@ export function regularPolygonBoard(n: number): BoardConfig {
 }
 
 /**
+ * A regular dodecahedron: 20 vertices, 12 pentagonal faces, 30 unit-length edges, centered at the
+ * origin. Vertices form 4 groups of the classic "three mutually orthogonal golden rectangles"
+ * construction (`phi` = golden ratio): 8 cube corners `(sa, sb, sc)`, plus 4+4+4 more at
+ * `(0, sb/phi, sc*phi)`, `(sa/phi, sb*phi, 0)`, `(sa*phi, 0, sc/phi)` - each coordinate
+ * independently `+-1`. At that raw scale, edge length is `2/phi`; every coordinate below is
+ * pre-multiplied by `phi/2` so edges come out exactly 1.
+ *
+ * Connectivity (worked out by checking which vertex pairs land exactly 1 apart, then cross-checked
+ * against the dodecahedron's known 30-edge, degree-3-per-vertex structure): each cube vertex
+ * `(sa, sb, sc)` connects to exactly one vertex in each of the other 3 groups - `(0, sb/phi,
+ * sc*phi)`, `(sa/phi, sb*phi, 0)`, `(sa*phi, 0, sc/phi)` - and each of those 12 non-cube vertices'
+ * third edge (beyond its 2 cube-vertex edges) goes to its own sign-flipped partner within the same
+ * group, e.g. `(0, sb/phi, sc*phi)` - `(0, -sb/phi, sc*phi)`.
+ */
+export function dodecahedronBoard(): BoardConfig {
+    const phi = (1 + Math.sqrt(5)) / 2;
+    const scale = phi / 2; // normalizes edge length (2/phi at the raw scale above) to exactly 1
+    const s = (bit: number) => (bit === 0 ? 1 : -1); // 0/1 sign-bit -> +-1
+
+    const xIdx = (sa: number, sb: number, sc: number) => sa * 4 + sb * 2 + sc;
+    const yIdx = (sb: number, sc: number) => 8 + sb * 2 + sc;
+    const zIdx = (sa: number, sb: number) => 12 + sa * 2 + sb;
+    const wIdx = (sa: number, sc: number) => 16 + sa * 2 + sc;
+
+    const pos: number[][] = new Array(20);
+    for (let sa = 0; sa < 2; sa++)
+        for (let sb = 0; sb < 2; sb++)
+            for (let sc = 0; sc < 2; sc++)
+                pos[xIdx(sa, sb, sc)] = [s(sa) * scale, s(sb) * scale, s(sc) * scale];
+    for (let sb = 0; sb < 2; sb++)
+        for (let sc = 0; sc < 2; sc++)
+            pos[yIdx(sb, sc)] = [0, (s(sb) / phi) * scale, s(sc) * phi * scale];
+    for (let sa = 0; sa < 2; sa++)
+        for (let sb = 0; sb < 2; sb++)
+            pos[zIdx(sa, sb)] = [(s(sa) / phi) * scale, s(sb) * phi * scale, 0];
+    for (let sa = 0; sa < 2; sa++)
+        for (let sc = 0; sc < 2; sc++)
+            pos[wIdx(sa, sc)] = [s(sa) * phi * scale, 0, (s(sc) / phi) * scale];
+
+    const adj = zeroAdj(20);
+    const connect = (i: number, j: number) => { adj[i][j] = 1; adj[j][i] = 1; };
+    for (let sa = 0; sa < 2; sa++)
+        for (let sb = 0; sb < 2; sb++)
+            for (let sc = 0; sc < 2; sc++) {
+                const x = xIdx(sa, sb, sc);
+                connect(x, yIdx(sb, sc));
+                connect(x, zIdx(sa, sb));
+                connect(x, wIdx(sa, sc));
+            }
+    for (let sc = 0; sc < 2; sc++) connect(yIdx(0, sc), yIdx(1, sc));
+    for (let sb = 0; sb < 2; sb++) connect(zIdx(0, sb), zIdx(1, sb));
+    for (let sa = 0; sa < 2; sa++) connect(wIdx(sa, 0), wIdx(sa, 1));
+
+    // Simple axonometric-style projection (matches cubicalBoard's own hand-tuned approach for a
+    // 3D shape): x/y project straight through, z nudges diagonally so depth stays visible.
+    const projMat = [[1, 0, 0.4], [0, 1, 0.4]];
+    return make(new Embedding(3, pos, projMat), adj);
+}
+
+/**
+ * A regular icosahedron: 12 vertices, 20 triangular faces, 30 unit-length edges, centered at the
+ * origin. Vertices form 3 groups of 4, each the set of cyclic-coordinate permutations of
+ * `(0, +-1, +-phi)` (`phi` = golden ratio) sharing one fixed-zero axis: `A(sp, sq) = (0, sp,
+ * sq*phi)`, `B(sp, sq) = (sp, sq*phi, 0)`, `C(sp, sq) = (sq*phi, 0, sp)`, each coordinate
+ * independently `+-1`. At that raw scale, edge length is 2; every coordinate below is
+ * pre-multiplied by 1/2 so edges come out exactly 1.
+ *
+ * Connectivity (worked out the same way as dodecahedronBoard: checking which vertex pairs land
+ * exactly the minimum distance apart, then cross-checked against the icosahedron's known 30-edge,
+ * degree-5-per-vertex structure - this one is easy to get backwards by hand, so every relation
+ * below was independently re-derived algebraically, not just pattern-matched from a couple of
+ * examples): within each group, `(sp, sq)` connects to its own sign-flipped-`sp` partner
+ * `(-sp, sq)`. Across groups, the three relations cycle A -> B -> C -> A, each keyed off the
+ * *sending* group's own `sp`: `A(sp, sq)` connects to both `B(+-1, sp)`; `B(sp, sq)` connects to
+ * both `C(+-1, sp)`; `C(sp, sq)` connects to both `A(+-1, sp)`.
+ */
+export function icosahedronBoard(): BoardConfig {
+    const phi = (1 + Math.sqrt(5)) / 2;
+    const scale = 0.5; // normalizes edge length (2 at the raw scale above) to exactly 1
+    const s = (bit: number) => (bit === 0 ? 1 : -1); // 0/1 sign-bit -> +-1
+
+    const aIdx = (sp: number, sq: number) => sp * 2 + sq;
+    const bIdx = (sp: number, sq: number) => 4 + sp * 2 + sq;
+    const cIdx = (sp: number, sq: number) => 8 + sp * 2 + sq;
+
+    const pos: number[][] = new Array(12);
+    for (let sp = 0; sp < 2; sp++)
+        for (let sq = 0; sq < 2; sq++) {
+            pos[aIdx(sp, sq)] = [0, s(sp) * scale, s(sq) * phi * scale];
+            pos[bIdx(sp, sq)] = [s(sp) * scale, s(sq) * phi * scale, 0];
+            pos[cIdx(sp, sq)] = [s(sq) * phi * scale, 0, s(sp) * scale];
+        }
+
+    const adj = zeroAdj(12);
+    const connect = (i: number, j: number) => { adj[i][j] = 1; adj[j][i] = 1; };
+
+    // Same-group edges: flip sp, keep sq.
+    for (let sq = 0; sq < 2; sq++) {
+        connect(aIdx(0, sq), aIdx(1, sq));
+        connect(bIdx(0, sq), bIdx(1, sq));
+        connect(cIdx(0, sq), cIdx(1, sq));
+    }
+    // Cross-group edges: A(sp,sq) ~ B(*,sp); B(sp,sq) ~ C(*,sp); C(sp,sq) ~ A(*,sp).
+    for (let sp = 0; sp < 2; sp++)
+        for (let sq = 0; sq < 2; sq++)
+            for (let free = 0; free < 2; free++) {
+                connect(aIdx(sp, sq), bIdx(free, sp));
+                connect(bIdx(sp, sq), cIdx(free, sp));
+                connect(cIdx(sp, sq), aIdx(free, sp));
+            }
+
+    // Simple axonometric-style projection (matches cubicalBoard/dodecahedronBoard's own hand-tuned
+    // approach for a 3D shape): x/y project straight through, z nudges diagonally so depth stays
+    // visible.
+    const projMat = [[1, 0, 0.4], [0, 1, 0.4]];
+    return make(new Embedding(3, pos, projMat), adj);
+}
+
+/**
  * A triangular-lattice board arranged in a hexagon shape, with `d` layers of triangles surrounding
  * the central point (side length d+1, in hex terms) - the shape used by boards like Havannah/Y.
  * Not tiled by hexagons - see hexagonalBoard (TODO) for that. Cells are indexed by axial
@@ -881,6 +1000,8 @@ export enum PrescribedBoard {
     hypercubeBoard,
     triangularBoard,
     regularPolygonBoard,
+    dodecahedronBoard,
+    icosahedronBoard,
     triangularHexBoard,
     hexBoard,
     trihexBoard,
@@ -902,6 +1023,10 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string
         [1, "tri", "&lt;w&gt;", "Triangular board of side w"],
     [PrescribedBoard.regularPolygonBoard]:
         [1, "regpoly", "&lt;n&gt;", "Regular polygon with n unit-length edges"],
+    [PrescribedBoard.dodecahedronBoard]:
+        [0, "dodeca", "", "Regular dodecahedron (20 vertices, 12 pentagonal faces, unit-length edges)"],
+    [PrescribedBoard.icosahedronBoard]:
+        [0, "icosa", "", "Regular icosahedron (12 vertices, 20 triangular faces, unit-length edges)"],
     [PrescribedBoard.triangularHexBoard]:
         [1, "trihex", "&lt;d&gt;",
             "Triangular-lattice board in a hexagon shape, with d layers of triangles around the center"],
@@ -928,6 +1053,8 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.hypercubeBoard]:           (...a) => hypercubeBoard(a[0], a[1], a[2], a[3]),
     [PrescribedBoard.triangularBoard]:          (...a) => triangularBoard(a[0]),
     [PrescribedBoard.regularPolygonBoard]:      (...a) => regularPolygonBoard(a[0]),
+    [PrescribedBoard.dodecahedronBoard]:        () => dodecahedronBoard(),
+    [PrescribedBoard.icosahedronBoard]:         () => icosahedronBoard(),
     [PrescribedBoard.triangularHexBoard]:       (...a) => triangularHexBoard(a[0]),
     [PrescribedBoard.hexBoard]:                 (...a) => hexBoard(a[0]),
     [PrescribedBoard.trihexBoard]:               (...a) => trihexBoard(a[0]),

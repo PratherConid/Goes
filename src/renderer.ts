@@ -342,6 +342,8 @@ export class Renderer {
         [PrescribedBoard.hypercubeBoard]:           [5, 5, 2, 2],
         [PrescribedBoard.triangularBoard]:          [13],
         [PrescribedBoard.regularPolygonBoard]:      [6],
+        [PrescribedBoard.dodecahedronBoard]:        [],
+        [PrescribedBoard.icosahedronBoard]:         [],
         [PrescribedBoard.triangularHexBoard]:       [5],
         [PrescribedBoard.hexBoard]:                 [4],
         [PrescribedBoard.trihexBoard]:               [3],
