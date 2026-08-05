@@ -438,6 +438,29 @@ export function triangularBoard(w: number): BoardConfig {
 }
 
 /**
+ * A regular polygon with `n` edges, each of length 1: `n` nodes on a circle of radius
+ * `1 / (2*sin(pi/n))` (the standard circumradius of a unit-side regular n-gon), at angle
+ * `2*pi*k/n` for node `k`, connected in a cycle (node `k` to node `(k+1) mod n`) - same
+ * floating-point-coordinate convention already used by triangularBoard's rowDist above.
+ */
+export function regularPolygonBoard(n: number): BoardConfig {
+    assert(n >= 3, `n must be at least 3, got ${n}`);
+    const r = 1 / (2 * Math.sin(Math.PI / n));
+    const pos: number[][] = [];
+    for (let k = 0; k < n; k++) {
+        const theta = (2 * Math.PI * k) / n;
+        pos.push([r * Math.cos(theta), r * Math.sin(theta)]);
+    }
+    const adj = zeroAdj(n);
+    for (let k = 0; k < n; k++) {
+        const next = (k + 1) % n;
+        adj[k][next] = 1;
+        adj[next][k] = 1;
+    }
+    return make(pos, adj);
+}
+
+/**
  * A triangular-lattice board arranged in a hexagon shape, with `d` layers of triangles surrounding
  * the central point (side length d+1, in hex terms) - the shape used by boards like Havannah/Y.
  * Not tiled by hexagons - see hexagonalBoard (TODO) for that. Cells are indexed by axial
@@ -857,6 +880,7 @@ export enum PrescribedBoard {
     cubicalBoard,
     hypercubeBoard,
     triangularBoard,
+    regularPolygonBoard,
     triangularHexBoard,
     hexBoard,
     trihexBoard,
@@ -876,6 +900,8 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string
         [4, "hcub", "&lt;w&gt; &lt;h&gt; &lt;d&gt; &lt;t&gt;", "Hypercubical board"],
     [PrescribedBoard.triangularBoard]:
         [1, "tri", "&lt;w&gt;", "Triangular board of side w"],
+    [PrescribedBoard.regularPolygonBoard]:
+        [1, "regpoly", "&lt;n&gt;", "Regular polygon with n unit-length edges"],
     [PrescribedBoard.triangularHexBoard]:
         [1, "trihex", "&lt;d&gt;",
             "Triangular-lattice board in a hexagon shape, with d layers of triangles around the center"],
@@ -901,6 +927,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.cubicalBoard]:             (...a) => cubicalBoard(a[0], a[1], a[2]),
     [PrescribedBoard.hypercubeBoard]:           (...a) => hypercubeBoard(a[0], a[1], a[2], a[3]),
     [PrescribedBoard.triangularBoard]:          (...a) => triangularBoard(a[0]),
+    [PrescribedBoard.regularPolygonBoard]:      (...a) => regularPolygonBoard(a[0]),
     [PrescribedBoard.triangularHexBoard]:       (...a) => triangularHexBoard(a[0]),
     [PrescribedBoard.hexBoard]:                 (...a) => hexBoard(a[0]),
     [PrescribedBoard.trihexBoard]:               (...a) => trihexBoard(a[0]),

@@ -341,6 +341,7 @@ export class Renderer {
         [PrescribedBoard.cubicalBoard]:             [5, 5, 2],
         [PrescribedBoard.hypercubeBoard]:           [5, 5, 2, 2],
         [PrescribedBoard.triangularBoard]:          [13],
+        [PrescribedBoard.regularPolygonBoard]:      [6],
         [PrescribedBoard.triangularHexBoard]:       [5],
         [PrescribedBoard.hexBoard]:                 [4],
         [PrescribedBoard.trihexBoard]:               [3],
@@ -1811,7 +1812,14 @@ export class Renderer {
     // see _createLocalGame()'s own doc comment.
     private _startNewGame(onStarted?: () => void) {
         const entry = _cmdToBoard.get(this.newCfg.boardType)!;
-        this._createLocalGame(applyModifiers(entry.fn(...this.newCfg.boardArgs), this.newCfg.boardModifiers), onStarted);
+        let bc: BoardConfig;
+        try {
+            bc = applyModifiers(entry.fn(...this.newCfg.boardArgs), this.newCfg.boardModifiers);
+        } catch (e) {
+            this._setCmdOutput(e instanceof Error ? e.message : String(e));
+            return;
+        }
+        this._createLocalGame(bc, onStarted);
     }
 
     // Called by a Select-Game-Preset button click (see renderGamePresetSelection,

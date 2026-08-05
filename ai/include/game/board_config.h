@@ -45,28 +45,54 @@ BoardConfig rectify(const BoardConfig& bc);
 // rectify()'s direction normalization - see geometry.h's doc comment).
 BoardConfig merge_close(const BoardConfig& bc, double dist);
 
+// The Cartesian (box) product of two board configs: N = bc1.N * bc2.N, one new node per pair (i, j)
+// (i from bc1, j from bc2), at the concatenated position embed[i] followed by embed[j] (emb_dim =
+// bc1.emb_dim + bc2.emb_dim - both stay exact integers here, unlike merge_close/rectify, since
+// concatenation needs no arithmetic at all). (i, j) is adjacent to (i2, j2) iff exactly one of:
+// i == i2 and j is adjacent to j2 in bc2, or j == j2 and i is adjacent to i2 in bc1 (the standard
+// graph Cartesian product - e.g. cubical_board(w, h, d) is, up to embedding, the product of three
+// path graphs). Mirrors shared/boardConfig.ts's product() for N/adj/embed exactly; unlike the TS
+// side, there's no projMat to construct here - see BoardConfig's own fields above, C++ never renders.
+BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2);
+
 // A BoardConfig-transforming operation - see apply_modifier/apply_modifiers. Mirrors
 // shared/boardConfig.ts's BoardModifier, minus a C++ port of parseModifier(name, args): that parses
 // interactive command text, which has no analog here - train.cpp/server.cpp get their whole
 // GameConfig (including board_modifiers) from a JSON file/HTTP body via parse_game_cfg
 // (training/self_play.cpp) instead.
-enum class ModifierKind { Rectify, EdgeSplit, MergeClose };
+enum class ModifierKind { Rectify, EdgeSplit, MergeClose, BeginProd, EndProd };
 struct BoardModifier {
     ModifierKind kind;
-    int split_n = 0;   // only meaningful when kind == ModifierKind::EdgeSplit
-    double dist = 0.0; // only meaningful when kind == ModifierKind::MergeClose
+    int split_n = 0;              // only meaningful when kind == ModifierKind::EdgeSplit
+    double dist = 0.0;             // only meaningful when kind == ModifierKind::MergeClose
+    std::string board_type;        // only meaningful when kind == ModifierKind::BeginProd
+    std::vector<int> board_args;   // only meaningful when kind == ModifierKind::BeginProd
 
     // Needed for std::vector<BoardModifier>::operator== (used by weak_equal, training/self_play.cpp)
     // - C++17 has no defaulted struct equality (that's a C++20 feature), so this is spelled out.
     bool operator==(const BoardModifier& other) const {
-        return kind == other.kind && split_n == other.split_n && dist == other.dist;
+        return kind == other.kind && split_n == other.split_n && dist == other.dist &&
+               board_type == other.board_type && board_args == other.board_args;
     }
 };
 
-// Applies modifier to bc, dispatching to rectify / edge_split / merge_close.
+// Applies modifier to bc, dispatching to rectify / edge_split / merge_close. Does NOT accept
+// BeginProd/EndProd - those have no meaning applied to a single board in isolation (BeginProd starts
+// a whole new board for apply_modifiers to build up separately, and EndProd's product() needs that
+// suspended outer board back too) - see apply_modifiers, the only valid way to apply a modifier list
+// containing them. Mirrors shared/boardConfig.ts's applyModifier() exactly, including this same
+// rejection.
 BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier);
 
-// Applies every modifier in modifiers, in order, to bc - see apply_modifier.
+// Applies every modifier in modifiers, in order, to bc. Most modifiers just transform the "current"
+// board via apply_modifier, but BeginProd/EndProd (rejected by apply_modifier itself - see its own
+// comment) are handled specially here, via a stack of boards suspended to be multiplied back in
+// later: BeginProd pushes the current board onto the stack and starts a fresh "current" board (via
+// build_board_config, from its board_type/board_args), so modifiers up to the matching EndProd
+// transform this new board instead of the outer one; EndProd pops the suspended outer board and
+// replaces "current" with product(outer, current). BeginProd/EndProd pairs may nest. Throws on an
+// EndProd with no matching BeginProd, or if modifiers ends with an unmatched BeginProd. Mirrors
+// shared/boardConfig.ts's applyModifiers() exactly.
 BoardConfig apply_modifiers(const BoardConfig& bc, const std::vector<BoardModifier>& modifiers);
 
 // A rectangular board with width w and height h. Each node is identified by

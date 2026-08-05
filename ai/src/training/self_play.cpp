@@ -59,6 +59,12 @@ nlohmann::json GameConfig::to_json() const {
             case ModifierKind::Rectify:    mj["kind"] = "Rectify"; break;
             case ModifierKind::EdgeSplit:  mj["kind"] = "EdgeSplit"; mj["splitN"] = m.split_n; break;
             case ModifierKind::MergeClose: mj["kind"] = "MergeClose"; mj["dist"] = m.dist; break;
+            case ModifierKind::BeginProd:
+                mj["kind"] = "BeginProd";
+                mj["boardType"] = m.board_type;
+                mj["boardArgs"] = m.board_args;
+                break;
+            case ModifierKind::EndProd:    mj["kind"] = "EndProd"; break;
         }
         bm.push_back(std::move(mj));
     }
@@ -157,6 +163,14 @@ static std::vector<BoardModifier> parse_board_modifiers(const json& j) {
         else if (kind == "EdgeSplit") out.push_back({ModifierKind::EdgeSplit, m["splitN"].get<int>()});
         else if (kind == "MergeClose")
             out.push_back({ModifierKind::MergeClose, 0, m["dist"].get<double>()});
+        else if (kind == "BeginProd") {
+            BoardModifier bm;
+            bm.kind = ModifierKind::BeginProd;
+            bm.board_type = m["boardType"].get<std::string>();
+            bm.board_args = m["boardArgs"].get<std::vector<int>>();
+            out.push_back(std::move(bm));
+        }
+        else if (kind == "EndProd") out.push_back({ModifierKind::EndProd});
         else throw std::runtime_error("Unknown board modifier kind: " + kind);
     }
     return out;

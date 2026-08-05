@@ -63,6 +63,21 @@ test('command input drives newCfg and the New Game panel via the real keydown li
     assert.match(newGameDetails.innerHTML, /Number of players:<\/b> 3/);
 });
 
+test('_startNewGame catches an applyModifiers error and shows it in the command output bar', () => {
+    createRenderer();
+    const plyNum = document.getElementById('ply-num') as HTMLSpanElement;
+    const before = plyNum.textContent;
+
+    // An unmatched 'endprod' makes applyModifiers throw (see boardConfig.ts) - 'new' must catch it
+    // rather than letting it propagate uncaught, and report it via the command output bar.
+    runCommand('mod endprod');
+    runCommand('new');
+
+    const cmdOutput = document.getElementById('cmd-output') as HTMLDivElement;
+    assert.match(cmdOutput.textContent ?? '', /endprod/);
+    assert.equal(plyNum.textContent, before, 'no new game should have been started');
+});
+
 test('clicking the board places a stone at the clicked node', () => {
     createRenderer();
     const mainSvg = document.getElementById('main-canvas') as unknown as SVGSVGElement;

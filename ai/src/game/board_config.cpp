@@ -177,19 +177,65 @@ BoardConfig merge_close(const BoardConfig& bc, double dist) {
     return quotient_board(bc, quot);
 }
 
+BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2) {
+    int N1 = bc1.N, N2 = bc2.N;
+    unsigned emb_dim = bc1.emb_dim + bc2.emb_dim;
+    auto idx = [&](int i, int j) { return i * N2 + j; };
+
+    std::vector<std::vector<unsigned>> embed(N1 * N2);
+    for (int i = 0; i < N1; i++)
+        for (int j = 0; j < N2; j++) {
+            auto& e = embed[idx(i, j)];
+            e.reserve(emb_dim);
+            e.insert(e.end(), bc1.embed[i].begin(), bc1.embed[i].end());
+            e.insert(e.end(), bc2.embed[j].begin(), bc2.embed[j].end());
+        }
+
+    auto adj = zero_adj(N1 * N2);
+    for (int i = 0; i < N1; i++)
+        for (int j = 0; j < N2; j++) {
+            for (int i2 = 0; i2 < N1; i2++)
+                if (bc1.adj[i][i2]) adj[idx(i, j)][idx(i2, j)] = 1;
+            for (int j2 = 0; j2 < N2; j2++)
+                if (bc2.adj[j][j2]) adj[idx(i, j)][idx(i, j2)] = 1;
+        }
+
+    return make_bc(std::move(adj), emb_dim, std::move(embed));
+}
+
 BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier) {
     switch (modifier.kind) {
         case ModifierKind::Rectify:    return rectify(bc);
         case ModifierKind::EdgeSplit:  return edge_split(bc, modifier.split_n);
         case ModifierKind::MergeClose: return merge_close(bc, modifier.dist);
+        case ModifierKind::BeginProd:
+        case ModifierKind::EndProd:
+            throw std::runtime_error(
+                "apply_modifier: BeginProd/EndProd must be applied via apply_modifiers, not directly");
     }
     throw std::runtime_error("apply_modifier: unknown ModifierKind");
 }
 
 BoardConfig apply_modifiers(const BoardConfig& bc, const std::vector<BoardModifier>& modifiers) {
-    BoardConfig result = bc;
-    for (auto& m : modifiers) result = apply_modifier(result, m);
-    return result;
+    BoardConfig current = bc;
+    std::vector<BoardConfig> stack;
+    for (auto& m : modifiers) {
+        if (m.kind == ModifierKind::BeginProd) {
+            stack.push_back(std::move(current));
+            current = build_board_config(m.board_type, m.board_args);
+        } else if (m.kind == ModifierKind::EndProd) {
+            if (stack.empty())
+                throw std::runtime_error("apply_modifiers: endprod with no matching beginprod");
+            BoardConfig outer = std::move(stack.back());
+            stack.pop_back();
+            current = product(outer, current);
+        } else {
+            current = apply_modifier(current, m);
+        }
+    }
+    if (!stack.empty())
+        throw std::runtime_error("apply_modifiers: unmatched beginprod(s)");
+    return current;
 }
 
 BoardConfig rectangular_board(int w, int h) {
