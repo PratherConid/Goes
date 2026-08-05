@@ -4,7 +4,7 @@ import type { BoardView, OnlineStateResponse, PendingGame, ScoreRule, KoRule, Tu
 import type { BoardConfig } from '@shared/boardConfig.js';
 import {
     PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, computeStarPoints, parseModifier, applyModifiers,
-    projectPoint,
+    projectPoint, MC_DEFAULT_DIST,
 } from '@shared/boardConfig.js';
 import { ServerConnection, type RequestHandle } from './serverConnection.js';
 import {
@@ -1180,8 +1180,12 @@ export class Renderer {
             ${row('rect',
                 'Rectify: place a node at each edge midpoint, connected via the convex-hull vertex figure '
                 + 'around each original node')}
-            ${row('es &lt;splitN&gt;', 'EdgeSplit: split every edge into splitN sub-edges')}
-            ${row('mc &lt;dist&gt;', 'MergeClose: merge every pair of nodes closer than dist into one node')}
+            ${row('es &lt;splitN&gt;',
+                'EdgeSplit: split every edge into splitN sub-edges '
+                + '(e.g. "es 2; rect" gives an effect similar to truncation)')}
+            ${row('mc [dist]',
+                `MergeClose: merge every pair of nodes closer than dist into one node `
+                + `(default ${MC_DEFAULT_DIST})`)}
         </table>`;
     }
 

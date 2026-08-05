@@ -216,7 +216,13 @@ export type BoardModifier =
     | { kind: 'EdgeSplit'; splitN: number }
     | { kind: 'MergeClose'; dist: number };
 
-/** Parses a BoardModifier from its command name ('rect', 'es', 'mc') and string args - see applyModifier. */
+/** mc's default `dist` when called with no argument - see parseModifier and renderer.ts's command reference panel. */
+export const MC_DEFAULT_DIST = 0.01;
+
+/**
+ * Parses a BoardModifier from its command name ('rect', 'es', 'mc') and string args - see
+ * applyModifier. mc's arg is optional: with none, `dist` defaults to MC_DEFAULT_DIST.
+ */
 export function parseModifier(name: string, args: string[]): BoardModifier {
     if (name === 'rect') {
         assert(args.length === 0, `rect takes no arguments, got ${args.length}`);
@@ -229,8 +235,8 @@ export function parseModifier(name: string, args: string[]): BoardModifier {
         return { kind: 'EdgeSplit', splitN };
     }
     if (name === 'mc') {
-        assert(args.length === 1, `mc takes exactly 1 argument (dist), got ${args.length}`);
-        const dist = Number(args[0]);
+        assert(args.length <= 1, `mc takes at most 1 argument (dist), got ${args.length}`);
+        const dist = args.length === 0 ? MC_DEFAULT_DIST : Number(args[0]);
         assert(Number.isFinite(dist) && dist > 0, `mc: dist must be a positive number, got "${args[0]}"`);
         return { kind: 'MergeClose', dist };
     }

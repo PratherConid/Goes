@@ -3,7 +3,9 @@
 // collapse into a single node, not just each individual close pair).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rectangularBoard, mergeClose, parseModifier, applyModifier } from '../shared/boardConfig.ts';
+import {
+    rectangularBoard, mergeClose, parseModifier, applyModifier, MC_DEFAULT_DIST,
+} from '../shared/boardConfig.ts';
 
 test('a chain of collinear nodes each 1 apart all merge into one node when dist > 1', () => {
     const bc = rectangularBoard(3, 1); // nodes at x=-1, 0, 1 - each adjacent pair 1 apart
@@ -39,10 +41,13 @@ test('parseModifier("mc", ...) round-trips through applyModifier the same as cal
     assert.deepEqual(applyModifier(bc, modifier), mergeClose(bc, 1.1));
 });
 
-test('parseModifier("mc", ...) rejects a non-positive or malformed dist', () => {
+test('parseModifier("mc", ...) with no argument defaults dist to MC_DEFAULT_DIST', () => {
+    assert.deepEqual(parseModifier('mc', []), { kind: 'MergeClose', dist: MC_DEFAULT_DIST });
+});
+
+test('parseModifier("mc", ...) rejects a non-positive or malformed dist, or too many arguments', () => {
     assert.throws(() => parseModifier('mc', ['0']));
     assert.throws(() => parseModifier('mc', ['-1']));
     assert.throws(() => parseModifier('mc', ['abc']));
-    assert.throws(() => parseModifier('mc', []));
     assert.throws(() => parseModifier('mc', ['1', '2']));
 });
