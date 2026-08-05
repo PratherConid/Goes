@@ -50,7 +50,7 @@ BoardConfig merge_close(const BoardConfig& bc, double dist);
 // bc1.emb_dim + bc2.emb_dim - both stay exact integers here, unlike merge_close/rectify, since
 // concatenation needs no arithmetic at all). (i, j) is adjacent to (i2, j2) iff exactly one of:
 // i == i2 and j is adjacent to j2 in bc2, or j == j2 and i is adjacent to i2 in bc1 (the standard
-// graph Cartesian product - e.g. cubical_board(w, h, d) is, up to embedding, the product of three
+// graph Cartesian product - e.g. cube_lattice_board(w, h, d) is, up to embedding, the product of three
 // path graphs). Mirrors shared/boardConfig.ts's product() for N/adj/embed exactly; unlike the TS
 // side, there's no projMat to construct here - see BoardConfig's own fields above, C++ never renders.
 BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2);
@@ -60,13 +60,13 @@ BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2);
 // interactive command text, which has no analog here - train.cpp/server.cpp get their whole
 // GameConfig (including board_modifiers) from a JSON file/HTTP body via parse_game_cfg
 // (training/self_play.cpp) instead.
-enum class ModifierKind { Rectify, EdgeSplit, MergeClose, BeginProd, EndProd };
+enum class ModifierKind { Rectify, EdgeSplit, MergeClose, Prod, BeginProd, EndProd };
 struct BoardModifier {
     ModifierKind kind;
     int split_n = 0;              // only meaningful when kind == ModifierKind::EdgeSplit
     double dist = 0.0;             // only meaningful when kind == ModifierKind::MergeClose
-    std::string board_type;        // only meaningful when kind == ModifierKind::BeginProd
-    std::vector<int> board_args;   // only meaningful when kind == ModifierKind::BeginProd
+    std::string board_type;        // only meaningful when kind == ModifierKind::Prod / BeginProd
+    std::vector<int> board_args;   // only meaningful when kind == ModifierKind::Prod / BeginProd
 
     // Needed for std::vector<BoardModifier>::operator== (used by weak_equal, training/self_play.cpp)
     // - C++17 has no defaulted struct equality (that's a C++20 feature), so this is spelled out.
@@ -76,12 +76,14 @@ struct BoardModifier {
     }
 };
 
-// Applies modifier to bc, dispatching to rectify / edge_split / merge_close. Does NOT accept
+// Applies modifier to bc, dispatching to rectify / edge_split / merge_close / product (Prod builds
+// a fresh board from its own board_type/board_args via build_board_config, then multiplies it into
+// bc - a one-shot immediate product, unlike BeginProd/EndProd below). Does NOT accept
 // BeginProd/EndProd - those have no meaning applied to a single board in isolation (BeginProd starts
-// a whole new board for apply_modifiers to build up separately, and EndProd's product() needs that
-// suspended outer board back too) - see apply_modifiers, the only valid way to apply a modifier list
-// containing them. Mirrors shared/boardConfig.ts's applyModifier() exactly, including this same
-// rejection.
+// a whole new board for apply_modifiers to build up separately - potentially with further modifiers
+// of its own before the product happens - and EndProd's product() needs that suspended outer board
+// back too) - see apply_modifiers, the only valid way to apply a modifier list containing them.
+// Mirrors shared/boardConfig.ts's applyModifier() exactly, including this same rejection.
 BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier);
 
 // Applies every modifier in modifiers, in order, to bc. Most modifiers just transform the "current"
@@ -105,7 +107,7 @@ BoardConfig rectangular_diagonal_board(int w, int h, int m);
 
 // A cubical board with width w, height h and depth d. Each node is identified
 // by (col, row, slice) where 0 <= col < w, 0 <= row < h, 0 <= slice < d.
-BoardConfig cubical_board(int w, int h, int d);
+BoardConfig cube_lattice_board(int w, int h, int d);
 
 // A hypercubical board with width w, height h, depth d and hyperdepth t. Each
 // node is identified by (col, row, slice, hyperslice) where 0 <= col < w,
@@ -124,6 +126,12 @@ BoardConfig triangular_board(int w);
 // complete on its own, and only CNN/UNet actually need real 2D coordinates (see their own guards
 // against emb_dim != 2 in cnn.cpp/unet.cpp) - neither is grid-shaped anyway, so nothing is lost.
 BoardConfig regular_polygon_board(int n);
+
+// A tetrahedron whose 4 faces each have a triangular_board(w) topology (side length w), glued
+// together along shared edges. Same emb_dim = 0 / empty embed[] approach as
+// regular_polygon_board, for the same reason - see shared/boardConfig.ts's tetrahedronBoard() for
+// the coordinates/connectivity derivation this mirrors, adjacency only.
+BoardConfig tetrahedron_board(int w);
 
 // A regular dodecahedron: 20 vertices, 12 pentagonal faces, 30 edges (every vertex degree 3).
 // Same emb_dim = 0 / empty embed[] approach as regular_polygon_board, for the same reason
@@ -192,10 +200,11 @@ BoardConfig glue_twisted_square_board(int w, int h, int g);
 BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("rect" | "rectd" |
-// "cub" | "hcub" | "tri" | "regpoly" | "dodeca" | "icosa" | "trihex" | "hex" |
-// "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" - matches shared/types.ts's
-// GameConfig.boardType strings), passing `args` as that builder's positional
-// parameters. Throws std::runtime_error for an unknown kind. Shared by
+// "cublat" | "hcub" | "tri" | "regpoly" | "tetra" | "dodeca" | "icosa" | "trihex" |
+// "hex" | "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" - matches
+// shared/types.ts's GameConfig.boardType strings), passing `args` as that
+// builder's positional parameters. Throws std::runtime_error for an unknown
+// kind. Shared by
 // train.cpp (via GameConfig::board_type/board_args, loaded from
 // --game-config) and server.cpp (via the /move request's boardType/boardArgs)
 // so there's one board-kind switch instead of two near-identical copies.

@@ -25,11 +25,22 @@ test('positions concatenate the two factors\' own natural-dimension positions', 
     ]);
 });
 
-test('the default projMat maps dims 0/1 straight to x/y and fans out dim d>=2 as 1/d on both axes', () => {
+test('the default projMat maps dims 0/1 straight to x/y, then alternates a halving magnitude', () => {
     const merged = product(rectangularBoard(2, 1), rectangularBoard(2, 1)); // embDim = 2+2 = 4
     assert.deepEqual(merged.emb.projMat, [
-        [1, 0, 1 / 2, 1 / 3],
-        [0, 1, 1 / 2, 1 / 3],
+        [1, 0, 1 / 2, 0],
+        [0, 1, 0, 1 / 2],
+    ]);
+});
+
+test('the alternating magnitude keeps halving every 2 dims (embDim=8)', () => {
+    const merged = product(
+        product(rectangularBoard(2, 1), rectangularBoard(2, 1)),
+        product(rectangularBoard(2, 1), rectangularBoard(2, 1)),
+    ); // embDim = 4+4 = 8
+    assert.deepEqual(merged.emb.projMat, [
+        [1, 0, 1 / 2, 0, 1 / 4, 0, 1 / 8, 0],
+        [0, 1, 0, 1 / 2, 0, 1 / 4, 0, 1 / 8],
     ]);
 });
 

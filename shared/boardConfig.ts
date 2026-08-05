@@ -3,7 +3,7 @@ import { convexHullEdges } from './geometry.js';
 
 /**
  * A board's node positions in their natural embedding dimension (embDim - 2 for most boards, 3 for
- * cubicalBoard, 4 for hypercubeBoard), plus the linear map (projMat, 2 x embDim) that projects them
+ * cubeLatticeBoard, 4 for hypercubeBoard), plus the linear map (projMat, 2 x embDim) that projects them
  * down to a 2D render position. Kept separate from the 2D render position so that geometric
  * operations that care about real dimensionality (e.g. a convex-hull-based rectify()) can operate on
  * `pos` directly instead of an already-flattened 2D approximation.
@@ -212,18 +212,21 @@ export function mergeClose(bc: BoardConfig, dist: number): BoardConfig {
 }
 
 /**
- * The default projMat assigned to a freshly-`product()`-ed board (see below), as a function of the
- * product's own embDim: dims 0 and 1 map straight to x/y (identity) - the whole matrix is exactly
- * IDENTITY_2X2 when embDim <= 2 - and every dim beyond that additionally contributes `1/d` to BOTH x
- * and y, `d` being that dim's own (0-based) index, e.g. embDim=5 gives
- * `[[1, 0, 1/2, 1/3, 1/4], [0, 1, 1/2, 1/3, 1/4]]`.
+ * The default projMat assigned to a freshly-`product()`-ed board (see below): dims 0 and 1 map
+ * straight to x/y (identity - the whole matrix is exactly IDENTITY_2X2 when embDim <= 2), and every
+ * pair of dims beyond that alternates contributing a halved-again magnitude to x then y, e.g.
+ * embDim=8 gives `[[1, 0, 1/2, 0, 1/4, 0, 1/8, 0], [0, 1, 0, 1/2, 0, 1/4, 0, 1/8]]`. Dim `d`
+ * contributes magnitude `2^-floor(d/2)` to x if `d` is even, to y if `d` is odd (which also
+ * reproduces the d=0/d=1 identity part with no separate case needed, since `2^-floor(0/2)` and
+ * `2^-floor(1/2)` both equal 1).
  */
 function defaultProductProjMat(embDim: number): number[][] {
     const row0 = new Array<number>(embDim).fill(0);
     const row1 = new Array<number>(embDim).fill(0);
-    if (embDim >= 1) row0[0] = 1;
-    if (embDim >= 2) row1[1] = 1;
-    for (let d = 2; d < embDim; d++) row0[d] = row1[d] = 1 / d;
+    for (let d = 0; d < embDim; d++) {
+        const mag = 2 ** -Math.floor(d / 2);
+        if (d % 2 === 0) row0[d] = mag; else row1[d] = mag;
+    }
     return [row0, row1];
 }
 
@@ -234,7 +237,7 @@ function defaultProductProjMat(embDim: number): number[][] {
  * adjacent to `(i2, j2)` iff exactly one of:
  *   - `i === i2` and `j` is adjacent to `j2` in `bc2`
  *   - `j === j2` and `i` is adjacent to `i2` in `bc1`
- * (the standard graph Cartesian product - e.g. `cubicalBoard(w, h, d)` is, up to embedding, the
+ * (the standard graph Cartesian product - e.g. `cubeLatticeBoard(w, h, d)` is, up to embedding, the
  * product of three path graphs). Uses a fresh default projMat (see defaultProductProjMat) rather than
  * either factor's own projMat, since neither one alone is meaningful at the combined dimension.
  */
@@ -352,7 +355,7 @@ export function rectangularDiagonalBoard(w: number, h: number, m: number): Board
  * A cubical board with width `w`, height `h` and depth `d`. Each node is identified by
  * (col, row, slice) where 0 ≤ col < w, 0 ≤ row < h, 0 ≤ slice < d.
  */
-export function cubicalBoard(w: number, h: number, d: number): BoardConfig {
+export function cubeLatticeBoard(w: number, h: number, d: number): BoardConfig {
     assert(w > 0 && h > 0 && d > 0, `w, h, and d must be positive, got w=${w} h=${h} d=${d}`);
     // Natural 3D coords (col, row, slice), centered. Rendered via projMat below - chosen so that
     // projMat . [c', r', s] == the old direct 2D formula [(d*c'+0.8*s)*scale, (d*r'+0.8*s)*scale]
@@ -461,6 +464,75 @@ export function regularPolygonBoard(n: number): BoardConfig {
 }
 
 /**
+ * A tetrahedron whose 4 faces each have a triangularBoard(w) topology (side length w), glued
+ * together along shared edges.
+ */
+export function tetrahedronBoard(w: number): BoardConfig {
+    assert(w > 0, `w must be positive, got w=${w}`);
+    const edgeScale = 1 / (2 * Math.sqrt(2));
+    const verts: number[][] = [
+        [1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1],
+    ].map(v => v.map(x => x * edgeScale));
+
+    const faces: [number, number, number][] = [
+        [1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2],
+    ];
+
+    const nFace = w * (w + 1) / 2;
+    const localIdx = (i: number, j: number) => i * (i + 1) / 2 + j;
+    const globalIdx = (f: number, i: number, j: number) => f * nFace + localIdx(i, j);
+
+    const pos: number[][] = new Array(4 * nFace);
+    const adj = zeroAdj(4 * nFace);
+    const dirs: [number, number][] = [[1, 0], [1, 1], [0, 1], [-1, 0], [-1, -1], [0, -1]];
+
+    for (let f = 0; f < 4; f++) {
+        const [A, B, C] = faces[f].map(v => verts[v]);
+        for (let i = 0; i < w; i++)
+            for (let j = 0; j <= i; j++) {
+                const a = w - 1 - i, b = i - j, c = j;
+                pos[globalIdx(f, i, j)] = A.map((_, k) => a * A[k] + b * B[k] + c * C[k]);
+            }
+        for (let i = 0; i < w; i++)
+            for (let j = 0; j <= i; j++)
+                for (const [di, dj] of dirs) {
+                    const ni = i + di, nj = j + dj;
+                    if (ni < 0 || ni >= w || nj < 0 || nj > ni) continue;
+                    adj[globalIdx(f, i, j)][globalIdx(f, ni, nj)] = 1;
+                }
+    }
+
+    // Boundary node sequence (as (i,j) pairs) for face f's edge between its two smallest corners
+    // (A-B, triangularBoard's own "left" edge), two largest (B-C, "bottom"), or extremes (A-C,
+    // "right"). p/q identify which pair of ORIGINAL vertex indices this edge is.
+    function boundarySeq(f: number, p: number, q: number): [number, number][] {
+        const [A, B, C] = faces[f];
+        if (p === A && q === B) return Array.from({ length: w }, (_, i): [number, number] => [i, 0]);
+        if (p === A && q === C) return Array.from({ length: w }, (_, i): [number, number] => [i, i]);
+        if (p === B && q === C) return Array.from({ length: w }, (_, j): [number, number] => [w - 1, j]);
+        throw new Error(`tetrahedronBoard: face ${f} does not have edge (${p},${q})`);
+    }
+
+    const quot: [number, number][] = [];
+    for (let f1 = 0; f1 < 4; f1++)
+        for (let f2 = f1 + 1; f2 < 4; f2++) {
+            const shared = faces[f1].filter(v => faces[f2].includes(v)).sort((x, y) => x - y);
+            const [p, q] = shared;
+            const seq1 = boundarySeq(f1, p, q);
+            const seq2 = boundarySeq(f2, p, q);
+            for (let k = 0; k < w; k++)
+                quot.push([globalIdx(f1, seq1[k][0], seq1[k][1]), globalIdx(f2, seq2[k][0], seq2[k][1])]);
+        }
+
+    // Simple axonometric-style projection (matches cubeLatticeBoard/dodecahedronBoard/
+    // icosahedronBoard's own hand-tuned approach for a 3D shape): x/y project straight through, z
+    // nudges diagonally so depth stays visible.
+    const projMat = [[1, 0, 0.4], [0, 1, 0.4]];
+    const combined = make(new Embedding(3, pos, projMat), adj);
+    return quotientBoard(combined, quot);
+}
+
+/**
  * A regular dodecahedron: 20 vertices, 12 pentagonal faces, 30 unit-length edges, centered at the
  * origin. Vertices form 4 groups of the classic "three mutually orthogonal golden rectangles"
  * construction (`phi` = golden ratio): 8 cube corners `(sa, sb, sc)`, plus 4+4+4 more at
@@ -514,7 +586,7 @@ export function dodecahedronBoard(): BoardConfig {
     for (let sb = 0; sb < 2; sb++) connect(zIdx(0, sb), zIdx(1, sb));
     for (let sa = 0; sa < 2; sa++) connect(wIdx(sa, 0), wIdx(sa, 1));
 
-    // Simple axonometric-style projection (matches cubicalBoard's own hand-tuned approach for a
+    // Simple axonometric-style projection (matches cubeLatticeBoard's own hand-tuned approach for a
     // 3D shape): x/y project straight through, z nudges diagonally so depth stays visible.
     const projMat = [[1, 0, 0.4], [0, 1, 0.4]];
     return make(new Embedding(3, pos, projMat), adj);
@@ -572,9 +644,9 @@ export function icosahedronBoard(): BoardConfig {
                 connect(cIdx(sp, sq), aIdx(free, sp));
             }
 
-    // Simple axonometric-style projection (matches cubicalBoard/dodecahedronBoard's own hand-tuned
-    // approach for a 3D shape): x/y project straight through, z nudges diagonally so depth stays
-    // visible.
+    // Simple axonometric-style projection (matches cubeLatticeBoard/dodecahedronBoard's own
+    // hand-tuned approach for a 3D shape): x/y project straight through, z nudges diagonally so
+    // depth stays visible.
     const projMat = [[1, 0, 0.4], [0, 1, 0.4]];
     return make(new Embedding(3, pos, projMat), adj);
 }
@@ -996,10 +1068,11 @@ export function snubSquareTriBoard(w: number, h: number, g: number): BoardConfig
 export enum PrescribedBoard {
     rectangularBoard,
     rectangularDiagonalBoard,
-    cubicalBoard,
+    cubeLatticeBoard,
     hypercubeBoard,
     triangularBoard,
     regularPolygonBoard,
+    tetrahedronBoard,
     dodecahedronBoard,
     icosahedronBoard,
     triangularHexBoard,
@@ -1016,13 +1089,16 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string
         [2, "rect", "&lt;w&gt; &lt;h&gt;", "Rectangular board"],
     [PrescribedBoard.rectangularDiagonalBoard]:
         [3, "rectd", "&lt;w&gt; &lt;h&gt; &lt;m&gt;", "Rectangular + diagonal connections every m squares"],
-    [PrescribedBoard.cubicalBoard]:             [3, "cub",   "&lt;w&gt; &lt;h&gt; &lt;d&gt;",               "Cubical board"],
+    [PrescribedBoard.cubeLatticeBoard]:         [3, "cublat", "&lt;w&gt; &lt;h&gt; &lt;d&gt;", "Cubical board"],
     [PrescribedBoard.hypercubeBoard]:
         [4, "hcub", "&lt;w&gt; &lt;h&gt; &lt;d&gt; &lt;t&gt;", "Hypercubical board"],
     [PrescribedBoard.triangularBoard]:
         [1, "tri", "&lt;w&gt;", "Triangular board of side w"],
     [PrescribedBoard.regularPolygonBoard]:
         [1, "regpoly", "&lt;n&gt;", "Regular polygon with n unit-length edges"],
+    [PrescribedBoard.tetrahedronBoard]:
+        [1, "tetra", "&lt;w&gt;",
+            "Tetrahedron whose 4 faces each have a triangular-board topology of side length w"],
     [PrescribedBoard.dodecahedronBoard]:
         [0, "dodeca", "", "Regular dodecahedron (20 vertices, 12 pentagonal faces, unit-length edges)"],
     [PrescribedBoard.icosahedronBoard]:
@@ -1049,10 +1125,11 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string
 export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => BoardConfig> = {
     [PrescribedBoard.rectangularBoard]:         (...a) => rectangularBoard(a[0], a[1]),
     [PrescribedBoard.rectangularDiagonalBoard]: (...a) => rectangularDiagonalBoard(a[0], a[1], a[2]),
-    [PrescribedBoard.cubicalBoard]:             (...a) => cubicalBoard(a[0], a[1], a[2]),
+    [PrescribedBoard.cubeLatticeBoard]:         (...a) => cubeLatticeBoard(a[0], a[1], a[2]),
     [PrescribedBoard.hypercubeBoard]:           (...a) => hypercubeBoard(a[0], a[1], a[2], a[3]),
     [PrescribedBoard.triangularBoard]:          (...a) => triangularBoard(a[0]),
     [PrescribedBoard.regularPolygonBoard]:      (...a) => regularPolygonBoard(a[0]),
+    [PrescribedBoard.tetrahedronBoard]:         (...a) => tetrahedronBoard(a[0]),
     [PrescribedBoard.dodecahedronBoard]:        () => dodecahedronBoard(),
     [PrescribedBoard.icosahedronBoard]:         () => icosahedronBoard(),
     [PrescribedBoard.triangularHexBoard]:       (...a) => triangularHexBoard(a[0]),
@@ -1065,7 +1142,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
 };
 
 /**
- * Command name (PrescribedBoardMap[pb][1], e.g. 'rect', 'cub') -> PrescribedBoard enum value -
+ * Command name (PrescribedBoardMap[pb][1], e.g. 'rect', 'cublat') -> PrescribedBoard enum value -
  * shared by buildPrescribedBoard below and parseModifier's beginprod validation.
  */
 const PRESCRIBED_BOARD_BY_NAME = new Map<string, PrescribedBoard>(
@@ -1074,7 +1151,7 @@ const PRESCRIBED_BOARD_BY_NAME = new Map<string, PrescribedBoard>(
 );
 
 /**
- * Builds a board from its command-name kind (e.g. 'rect', 'cub' - see PrescribedBoardMap) and
+ * Builds a board from its command-name kind (e.g. 'rect', 'cublat' - see PrescribedBoardMap) and
  * positional args - the same string-keyed dispatch renderer.ts's `_cmdToBoard` builds from the same
  * PrescribedBoardMap/PrescribedBoardFns pairing. Used by applyModifiers's BeginProd handling below.
  * Throws for an unrecognized kind.
@@ -1089,6 +1166,7 @@ export type BoardModifier =
     | { kind: 'Rectify' }
     | { kind: 'EdgeSplit'; splitN: number }
     | { kind: 'MergeClose'; dist: number }
+    | { kind: 'Prod'; boardType: string; boardArgs: number[] }
     | { kind: 'BeginProd'; boardType: string; boardArgs: number[] }
     | { kind: 'EndProd' };
 
@@ -1096,13 +1174,32 @@ export type BoardModifier =
 export const MC_DEFAULT_DIST = 0.01;
 
 /**
- * Parses a BoardModifier from its command name ('rect', 'es', 'mc', 'beginprod', 'endprod') and
- * string args - see applyModifier/applyModifiers. mc's arg is optional: with none, `dist` defaults to
- * MC_DEFAULT_DIST. beginprod's first arg is a board-type command name (e.g. 'rect', 'cub' - same
- * names as PrescribedBoardMap/the `bt` renderer command, validated eagerly here via
- * findPrescribedBoard), and its remaining args are that board type's own positional dimension args:
- * at least PrescribedBoardMap's required count or this throws; extras beyond that count are silently
- * truncated (so e.g. a leftover product-context arg doesn't need to be stripped by the caller).
+ * Parses a board-type command name (e.g. 'rect', 'cublat' - see PrescribedBoardMap) plus its
+ * positional dimension args, shared by `prod`/`beginprod`'s parseModifier branches below: the
+ * board type is validated eagerly via PRESCRIBED_BOARD_BY_NAME, and its args must number at least
+ * PrescribedBoardMap's required count for that type or this throws; extras beyond that count are
+ * silently truncated (so e.g. a leftover product-context arg doesn't need to be stripped by the
+ * caller).
+ */
+function parseBoardTypeArgs(cmdName: string, args: string[]): { boardType: string; boardArgs: number[] } {
+    assert(args.length >= 1, `${cmdName} takes at least 1 argument (board type), got ${args.length}`);
+    const [boardType, ...argStrs] = args;
+    const pb = PRESCRIBED_BOARD_BY_NAME.get(boardType);
+    if (pb === undefined) throw new Error(`${cmdName}: unknown board type "${boardType}"`);
+    const requiredArgs = PrescribedBoardMap[pb][0];
+    assert(argStrs.length >= requiredArgs,
+        `${cmdName}: board type "${boardType}" requires ${requiredArgs} argument(s), got ${argStrs.length}`);
+    const boardArgs = argStrs.slice(0, requiredArgs).map(Number);
+    assert(boardArgs.every(n => Number.isInteger(n)),
+        `${cmdName}: board args must be integers, got "${argStrs.join(' ')}"`);
+    return { boardType, boardArgs };
+}
+
+/**
+ * Parses a BoardModifier from its command name ('rect', 'es', 'mc', 'prod', 'beginprod', 'endprod')
+ * and string args - see applyModifier/applyModifiers. mc's arg is optional: with none, `dist`
+ * defaults to MC_DEFAULT_DIST. prod/beginprod's first arg is a board-type command name and the rest
+ * are that type's own positional dimension args - see parseBoardTypeArgs.
  */
 export function parseModifier(name: string, args: string[]): BoardModifier {
     if (name === 'rect') {
@@ -1121,17 +1218,12 @@ export function parseModifier(name: string, args: string[]): BoardModifier {
         assert(Number.isFinite(dist) && dist > 0, `mc: dist must be a positive number, got "${args[0]}"`);
         return { kind: 'MergeClose', dist };
     }
+    if (name === 'prod') {
+        const { boardType, boardArgs } = parseBoardTypeArgs('prod', args);
+        return { kind: 'Prod', boardType, boardArgs };
+    }
     if (name === 'beginprod') {
-        assert(args.length >= 1, `beginprod takes at least 1 argument (board type), got ${args.length}`);
-        const [boardType, ...argStrs] = args;
-        const pb = PRESCRIBED_BOARD_BY_NAME.get(boardType);
-        if (pb === undefined) throw new Error(`beginprod: unknown board type "${boardType}"`);
-        const requiredArgs = PrescribedBoardMap[pb][0];
-        assert(argStrs.length >= requiredArgs,
-            `beginprod: board type "${boardType}" requires ${requiredArgs} argument(s), got ${argStrs.length}`);
-        const boardArgs = argStrs.slice(0, requiredArgs).map(Number);
-        assert(boardArgs.every(n => Number.isInteger(n)),
-            `beginprod: board args must be integers, got "${argStrs.join(' ')}"`);
+        const { boardType, boardArgs } = parseBoardTypeArgs('beginprod', args);
         return { kind: 'BeginProd', boardType, boardArgs };
     }
     if (name === 'endprod') {
@@ -1142,17 +1234,21 @@ export function parseModifier(name: string, args: string[]): BoardModifier {
 }
 
 /**
- * Applies `modifier` to `bc`, dispatching to `rectify` / `edgeSplit` / `mergeClose`. Does NOT accept
- * BeginProd/EndProd - those have no meaning applied to a single board in isolation (BeginProd starts
- * a whole new board for applyModifiers to build up separately, and EndProd's `product()` needs that
- * suspended outer board back too) - see applyModifiers, which handles both specially and is the only
- * valid way to apply a modifier list containing them.
+ * Applies `modifier` to `bc`, dispatching to `rectify` / `edgeSplit` / `mergeClose` / `product`
+ * (Prod builds a fresh board from its own boardType/boardArgs via buildPrescribedBoard, then
+ * multiplies it into `bc`). Does NOT accept BeginProd/EndProd - those have no meaning applied to a
+ * single board in isolation (BeginProd starts a whole new board for applyModifiers to build up
+ * separately - potentially with further modifiers of its own before the product happens, unlike
+ * Prod's one-shot immediate product - and EndProd's `product()` needs that suspended outer board
+ * back too) - see applyModifiers, which handles both specially and is the only valid way to apply a
+ * modifier list containing them.
  */
 export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardConfig {
     switch (modifier.kind) {
         case 'Rectify': return rectify(bc);
         case 'EdgeSplit': return edgeSplit(bc, modifier.splitN);
         case 'MergeClose': return mergeClose(bc, modifier.dist);
+        case 'Prod': return product(bc, buildPrescribedBoard(modifier.boardType, modifier.boardArgs));
         case 'BeginProd':
         case 'EndProd':
             throw new Error(`applyModifier: ${modifier.kind} must be applied via applyModifiers, not directly`);

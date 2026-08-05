@@ -338,10 +338,11 @@ export class Renderer {
     boardDimensionForNew: Record<PrescribedBoard, number[]> = {
         [PrescribedBoard.rectangularBoard]:         [9, 9],
         [PrescribedBoard.rectangularDiagonalBoard]: [9, 9, 3],
-        [PrescribedBoard.cubicalBoard]:             [5, 5, 2],
+        [PrescribedBoard.cubeLatticeBoard]:         [5, 5, 2],
         [PrescribedBoard.hypercubeBoard]:           [5, 5, 2, 2],
         [PrescribedBoard.triangularBoard]:          [13],
         [PrescribedBoard.regularPolygonBoard]:      [6],
+        [PrescribedBoard.tetrahedronBoard]:         [5],
         [PrescribedBoard.dodecahedronBoard]:        [],
         [PrescribedBoard.icosahedronBoard]:         [],
         [PrescribedBoard.triangularHexBoard]:       [5],
@@ -1189,6 +1190,10 @@ export class Renderer {
             ${row('mc [dist]',
                 `MergeClose: merge every pair of nodes closer than dist into one node `
                 + `(default ${MC_DEFAULT_DIST})`)}
+            ${row('prod &lt;board-type&gt; &lt;args…&gt;',
+                'Prod: builds a second board (of the given type/args) and immediately multiplies it '
+                + 'into the current one (Cartesian product) - a one-shot shorthand for '
+                + '"beginprod ...; endprod" with no modifiers of its own in between')}
             ${row('beginprod &lt;board-type&gt; &lt;args…&gt;',
                 'Starts building a second board (of the given type/args) to multiply into the current '
                 + 'one - modifiers up to the matching endprod apply to this new board, not the outer one')}
