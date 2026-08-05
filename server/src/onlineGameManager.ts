@@ -1,5 +1,5 @@
 import { BoardState } from '@shared/boardState.js';
-import { PrescribedBoardMap, PrescribedBoardFns, PrescribedBoard } from '@shared/boardConfig.js';
+import { PrescribedBoardMap, PrescribedBoardFns, PrescribedBoard, applyModifiers } from '@shared/boardConfig.js';
 import type { BoardConfig } from '@shared/boardConfig.js';
 import { PlayerInfo, GameConfig, FinishedGame, OnlinePlayerRequest, makeId } from '@shared/types.js';
 import type { OnlineStateResponse, PendingGame, ReplayMove } from '@shared/types.js';
@@ -62,7 +62,7 @@ export class OnlineGameManager {
             try {
                 const fn = boardTypeToFn.get(finishedGame.config.boardType);
                 if (!fn) throw new Error(`Unknown board type: ${finishedGame.config.boardType}`);
-                const bc = fn(...finishedGame.config.boardArgs);
+                const bc = applyModifiers(fn(...finishedGame.config.boardArgs), finishedGame.config.boardModifiers);
                 const boardState = BoardState.fromFinishedGame(finishedGame, bc);
                 this.finishedGames.set(id, {
                     id, config: finishedGame.config, boardState, engineSessions: new Map(), observers,
@@ -233,7 +233,7 @@ export class OnlineGameManager {
     }
 
     private _startGame(pending: ServerPendingGame) {
-        const bc = boardTypeToFn.get(pending.config.boardType)!(...pending.config.boardArgs);
+        const bc = applyModifiers(boardTypeToFn.get(pending.config.boardType)!(...pending.config.boardArgs), pending.config.boardModifiers);
         const boardState = new BoardState(
             pending.config.numStones, pending.config.numPlayers,
             pending.config.turnList, pending.config.playerStonePlaceLimit, pending.config.globalStonePlaceLimit,

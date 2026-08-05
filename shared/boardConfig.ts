@@ -195,6 +195,38 @@ export function rectify(bc: BoardConfig): BoardConfig {
     return make(new Embedding(embDim, pos, bc.emb.projMat), adj);
 }
 
+export type BoardModifier =
+    | { kind: 'Rectify' }
+    | { kind: 'EdgeSplit'; splitN: number };
+
+/** Parses a BoardModifier from its command name ('rect', 'es') and string args - see applyModifier. */
+export function parseModifier(name: string, args: string[]): BoardModifier {
+    if (name === 'rect') {
+        assert(args.length === 0, `rect takes no arguments, got ${args.length}`);
+        return { kind: 'Rectify' };
+    }
+    if (name === 'es') {
+        assert(args.length === 1, `es takes exactly 1 argument (splitN), got ${args.length}`);
+        const splitN = Number(args[0]);
+        assert(Number.isInteger(splitN) && splitN >= 1, `es: splitN must be a positive integer, got "${args[0]}"`);
+        return { kind: 'EdgeSplit', splitN };
+    }
+    throw new Error(`Unknown board modifier: ${name}`);
+}
+
+/** Applies `modifier` to `bc`, dispatching to `rectify` / `edgeSplit`. */
+export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardConfig {
+    switch (modifier.kind) {
+        case 'Rectify': return rectify(bc);
+        case 'EdgeSplit': return edgeSplit(bc, modifier.splitN);
+    }
+}
+
+/** Applies every modifier in `modifiers`, in order, to `bc` - see applyModifier. */
+export function applyModifiers(bc: BoardConfig, modifiers: BoardModifier[]): BoardConfig {
+    return modifiers.reduce((acc, m) => applyModifier(acc, m), bc);
+}
+
 /** A rectangular board with width `w` and height `h`. Each node is identified by (col, row) where 0 ≤ col < w, 0 ≤ row < h. */
 export function rectangularBoard(w: number, h: number): BoardConfig {
     assert(w > 0 && h > 0, `w and h must be positive, got w=${w} h=${h}`);

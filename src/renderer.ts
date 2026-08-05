@@ -3,7 +3,7 @@ import { PlayerInfo, GameConfig, FinishedGame, OnlinePlayerRequest, makeId } fro
 import type { BoardView, OnlineStateResponse, PendingGame, ScoreRule, KoRule, TurnInfo, ReplayMove } from '@shared/types.js';
 import type { BoardConfig } from '@shared/boardConfig.js';
 import {
-    PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, computeStarPoints,
+    PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, computeStarPoints, parseModifier, applyModifiers,
 } from '@shared/boardConfig.js';
 import { ServerConnection, type RequestHandle } from './serverConnection.js';
 import {
@@ -282,7 +282,7 @@ export class Renderer {
     // pick which offered stone to place (see _onBoardClick/_renderMainBoard).
     selectingStone = false;
     pendingPos: number | null = null;
-    newCfg = new GameConfig(PrescribedBoardMap[PrescribedBoard.rectangularBoard][1], [9, 9], 2, 2, [{player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0]}, {player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0]}], [[null, null], [null, null]], [null, null], {1: new Set([1]), 2: new Set([2])}, true, 'area', [0, 0], 'situational', false, null);
+    newCfg = new GameConfig(PrescribedBoardMap[PrescribedBoard.rectangularBoard][1], [9, 9], [], 2, 2, [{player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0]}, {player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0]}], [[null, null], [null, null]], [null, null], {1: new Set([1]), 2: new Set([2])}, true, 'area', [0, 0], 'situational', false, null);
     // Pending online-game player setup, built by tfpro/sol/soe/adde/addl and
     // sent to the server in _createOnlineGame() - the server (not this
     // client) resolves it into actual slot assignments (see
@@ -1093,6 +1093,7 @@ export class Renderer {
             ${row('ascd',                     'Toggle allow-suicide for new games')}
             ${row('bt &lt;name&gt',           'Set board type for new game')}
             ${row('bd &lt;num&gt; &lt;num&gt; …', 'Set board dimension for new game')}
+            ${row('mod &lt;name&gt; &lt;args&gt; …', 'Push a board modifier onto the new-game config (see Board Modifiers)')}
             ${row('ns &lt;n&gt;',             'Set number of stone types for new games')}
             ${row('np &lt;n&gt;',             'Set number of players for new games')}
             ${row('tl &lt;player&gt;-&lt;stone bits&gt; …','Set turn list for new games: which player plays each turn, and which stone(s) they may choose from (numStones-length 0/1 string; the first offered stone is auto-picked - no selection UI yet)')}
@@ -1125,6 +1126,9 @@ export class Renderer {
             ${row('swf &lt;ID&gt;',       'Switch active view to a finished online game by ID')}
             ${head('Board Types')}
             ${[..._cmdToBoard.entries()].map(([cmd, { argStr, desc }]) => row(`${cmd} ${argStr}`, desc)).join('\n            ')}
+            ${head('Board Modifiers')}
+            ${row('rect', 'Rectify: place a node at each edge midpoint, connected via the convex-hull vertex figure around each original node')}
+            ${row('es &lt;splitN&gt;', 'EdgeSplit: split every edge into splitN sub-edges')}
         </table>`;
     }
 
@@ -1684,7 +1688,7 @@ export class Renderer {
     // see _createLocalGame()'s own doc comment.
     private _startNewGame(onStarted?: () => void) {
         const entry = _cmdToBoard.get(this.newCfg.boardType)!;
-        this._createLocalGame(entry.fn(...this.newCfg.boardArgs), onStarted);
+        this._createLocalGame(applyModifiers(entry.fn(...this.newCfg.boardArgs), this.newCfg.boardModifiers), onStarted);
     }
 
     // Called by a Select-Game-Preset button click (see renderGamePresetSelection,
@@ -1921,6 +1925,15 @@ export class Renderer {
                     this.boardDimensionForNew[boardTypeEnum][idx] = val;
                     this.newCfg.boardArgs[idx] = val;
                 }
+        }
+        else if (cmd === 'mod') {
+            if (!parts[1]) { this._setCmdOutput('Usage: mod <name> <args…>'); return; }
+            try {
+                this.newCfg.boardModifiers.push(parseModifier(parts[1], parts.slice(2)));
+            } catch (e) {
+                this._setCmdOutput(e instanceof Error ? e.message : String(e));
+                return;
+            }
         }
         else if (cmd === 'ns') {
             const n = Number(parts[1]);
@@ -2222,7 +2235,7 @@ export class Renderer {
                 const fg = FinishedGame.fromJSON(raw);
                 const boardEntry = _cmdToBoard.get(fg.config.boardType);
                 if (!boardEntry) continue;
-                const bc = boardEntry.fn(...fg.config.boardArgs);
+                const bc = applyModifiers(boardEntry.fn(...fg.config.boardArgs), fg.config.boardModifiers);
                 const bs = BoardState.fromFinishedGame(fg, bc);
                 this.finishedGames.set('O_' + id, {
                     bs, config: fg.config, displayPlyNum: bs.getView().plyCount,
@@ -2279,7 +2292,7 @@ export class Renderer {
     private _activatePendingGame(id: string, config: GameConfig) {
         const boardEntry = _cmdToBoard.get(config.boardType);
         if (!boardEntry) { this._setCmdOutput(`Unknown board type: ${config.boardType}`); return; }
-        const bc = boardEntry.fn(...config.boardArgs);
+        const bc = applyModifiers(boardEntry.fn(...config.boardArgs), config.boardModifiers);
         const bs = new BoardState(
             config.numStones, config.numPlayers,
             config.turnList, config.playerStonePlaceLimit, config.globalStonePlaceLimit, config.stoneToPlayerMap,

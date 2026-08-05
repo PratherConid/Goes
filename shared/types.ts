@@ -1,3 +1,5 @@
+import type { BoardModifier } from './boardConfig.js';
+
 export const enum MoveType {
     NOMOVE = 0,
     PLACE  = 1,
@@ -209,6 +211,7 @@ export class OnlinePlayerRequest {
 export class GameConfig {
     boardType: string;
     boardArgs: number[];
+    boardModifiers: BoardModifier[];
     numStones: number;
     numPlayers: number;
     turnList: TurnInfo[];
@@ -239,6 +242,7 @@ export class GameConfig {
     constructor(
         boardType: string,
         boardArgs: number[],
+        boardModifiers: BoardModifier[],
         numStones: number,
         numPlayers: number,
         turnList: TurnInfo[],
@@ -256,6 +260,7 @@ export class GameConfig {
         if (komi.some(k => k < 0)) throw new Error(`komi values must be >= 0, got [${komi.join(', ')}]`);
         this.boardType        = boardType;
         this.boardArgs        = boardArgs;
+        this.boardModifiers   = boardModifiers;
         this.numStones        = numStones;
         this.numPlayers       = numPlayers;
         this.turnList         = turnList;
@@ -275,6 +280,7 @@ export class GameConfig {
         return new GameConfig(
             this.boardType,
             [...this.boardArgs],
+            [...this.boardModifiers],
             this.numStones,
             this.numPlayers,
             this.turnList.map(t => ({ ...t, stones: [...t.stones], protected: [...t.protected], friendly: [...t.friendly] })),
@@ -297,7 +303,7 @@ export class GameConfig {
     // array, so JSON.stringify works (Set serializes to "{}" otherwise).
     toJSON() {
         return {
-            boardType: this.boardType, boardArgs: this.boardArgs,
+            boardType: this.boardType, boardArgs: this.boardArgs, boardModifiers: this.boardModifiers,
             numStones: this.numStones, numPlayers: this.numPlayers,
             turnList: this.turnList,
             playerStonePlaceLimit: this.playerStonePlaceLimit,
@@ -324,7 +330,7 @@ export class GameConfig {
         const globalStonePlaceLimit = (raw.globalStonePlaceLimit
             ?? new Array(raw.numStones).fill(null)) as (number | null)[];
         return new GameConfig(
-            raw.boardType, raw.boardArgs, raw.numStones, raw.numPlayers,
+            raw.boardType, raw.boardArgs, (raw.boardModifiers ?? []) as BoardModifier[], raw.numStones, raw.numPlayers,
             raw.turnList, playerStonePlaceLimit, globalStonePlaceLimit, stoneToPlayerMap, raw.forcedPassOnly,
             (raw.scoreRule ?? 'area') as ScoreRule,
             (raw.komi ?? new Array(raw.numPlayers).fill(0)) as number[],

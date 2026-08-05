@@ -1,6 +1,7 @@
 {
   "boardType": "rect",
   "boardArgs": [5, 5],
+  "boardModifiers": [],
   "numStones": 2,
   "numPlayers": 2,
   "turnList": [
