@@ -45,6 +45,17 @@ BoardConfig rectify(const BoardConfig& bc);
 // rectify()'s direction normalization - see geometry.h's doc comment).
 BoardConfig merge_close(const BoardConfig& bc, double dist);
 
+// Replaces every triangle (3 mutually-adjacent, distinct vertices - see topology.h's
+// find_triangles) in bc with a triangular_board(w)-shaped lattice, gluing new corners back to the
+// original vertices and gluing any triangles that share an edge along that shared boundary too.
+// Mirrors shared/boardConfig.ts's triangleForm() exactly, with one difference: the TS version
+// computes real (generally irrational, since it divides by w-1) node positions, but every C++
+// board with a genuine (non-zero) emb_dim is an exact-integer invariant throughout this file, so
+// this always produces an emb_dim = 0 board instead (same reasoning as regular_polygon_board /
+// tetrahedron_board / dodecahedron_board / icosahedron_board) - adjacency only, regardless of
+// whether bc itself had a real embedding.
+BoardConfig triangle_form(const BoardConfig& bc, int w);
+
 // The Cartesian (box) product of two board configs: N = bc1.N * bc2.N, one new node per pair (i, j)
 // (i from bc1, j from bc2), at the concatenated position embed[i] followed by embed[j] (emb_dim =
 // bc1.emb_dim + bc2.emb_dim - both stay exact integers here, unlike merge_close/rectify, since
@@ -60,10 +71,12 @@ BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2);
 // interactive command text, which has no analog here - train.cpp/server.cpp get their whole
 // GameConfig (including board_modifiers) from a JSON file/HTTP body via parse_game_cfg
 // (training/self_play.cpp) instead.
-enum class ModifierKind { Rectify, EdgeSplit, MergeClose, Prod, BeginProd, EndProd };
+enum class ModifierKind { Rectify, EdgeSplit, MergeClose, TriangleForm, Prod, BeginProd, EndProd };
 struct BoardModifier {
     ModifierKind kind;
-    int split_n = 0;              // only meaningful when kind == ModifierKind::EdgeSplit
+    // split_n is reused for TriangleForm's own single int parameter (its w) - both are "one plain
+    // int argument" modifiers, same as Prod/BeginProd already share board_type/board_args below.
+    int split_n = 0;              // meaningful when kind == ModifierKind::EdgeSplit / TriangleForm
     double dist = 0.0;             // only meaningful when kind == ModifierKind::MergeClose
     std::string board_type;        // only meaningful when kind == ModifierKind::Prod / BeginProd
     std::vector<int> board_args;   // only meaningful when kind == ModifierKind::Prod / BeginProd
@@ -76,9 +89,10 @@ struct BoardModifier {
     }
 };
 
-// Applies modifier to bc, dispatching to rectify / edge_split / merge_close / product (Prod builds
-// a fresh board from its own board_type/board_args via build_board_config, then multiplies it into
-// bc - a one-shot immediate product, unlike BeginProd/EndProd below). Does NOT accept
+// Applies modifier to bc, dispatching to rectify / edge_split / merge_close / triangle_form /
+// product (Prod builds a fresh board from its own board_type/board_args via build_board_config,
+// then multiplies it into bc - a one-shot immediate product, unlike BeginProd/EndProd below). Does
+// NOT accept
 // BeginProd/EndProd - those have no meaning applied to a single board in isolation (BeginProd starts
 // a whole new board for apply_modifiers to build up separately - potentially with further modifiers
 // of its own before the product happens - and EndProd's product() needs that suspended outer board
@@ -127,11 +141,13 @@ BoardConfig triangular_board(int w);
 // against emb_dim != 2 in cnn.cpp/unet.cpp) - neither is grid-shaped anyway, so nothing is lost.
 BoardConfig regular_polygon_board(int n);
 
-// A tetrahedron whose 4 faces each have a triangular_board(w) topology (side length w), glued
-// together along shared edges. Same emb_dim = 0 / empty embed[] approach as
-// regular_polygon_board, for the same reason - see shared/boardConfig.ts's tetrahedronBoard() for
-// the coordinates/connectivity derivation this mirrors, adjacency only.
-BoardConfig tetrahedron_board(int w);
+// A regular tetrahedron: 4 vertices, all mutually adjacent (K4), 6 edges. Same emb_dim = 0 / empty
+// embed[] approach as regular_polygon_board, for the same reason - see shared/boardConfig.ts's
+// tetrahedronBoard() for the coordinates this mirrors, adjacency only. A side-length-w subdivision
+// of its 4 triangular faces is built via triangle_form(w), not in here directly - see its own doc
+// comment; find_triangles finds exactly this board's 4 faces, since every 3-subset of K4's
+// vertices is a triangle.
+BoardConfig tetrahedron_board();
 
 // A regular dodecahedron: 20 vertices, 12 pentagonal faces, 30 edges (every vertex degree 3).
 // Same emb_dim = 0 / empty embed[] approach as regular_polygon_board, for the same reason

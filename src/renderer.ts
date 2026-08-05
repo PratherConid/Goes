@@ -342,7 +342,7 @@ export class Renderer {
         [PrescribedBoard.hypercubeBoard]:           [5, 5, 2, 2],
         [PrescribedBoard.triangularBoard]:          [13],
         [PrescribedBoard.regularPolygonBoard]:      [6],
-        [PrescribedBoard.tetrahedronBoard]:         [5],
+        [PrescribedBoard.tetrahedronBoard]:         [],
         [PrescribedBoard.dodecahedronBoard]:        [],
         [PrescribedBoard.icosahedronBoard]:         [],
         [PrescribedBoard.triangularHexBoard]:       [5],
@@ -1190,6 +1190,10 @@ export class Renderer {
             ${row('mc [dist]',
                 `MergeClose: merge every pair of nodes closer than dist into one node `
                 + `(default ${MC_DEFAULT_DIST})`)}
+            ${row('triform &lt;w&gt;',
+                'TriangleForm: replace every triangle (3 mutually-adjacent nodes) with a side-length-w '
+                + 'triangular board, gluing new corners to the old vertices and gluing shared triangle '
+                + 'edges together (w=1 collapses each triangle to a point; w=2 is a no-op)')}
             ${row('prod &lt;board-type&gt; &lt;args…&gt;',
                 'Prod: builds a second board (of the given type/args) and immediately multiplies it '
                 + 'into the current one (Cartesian product) - a one-shot shorthand for '

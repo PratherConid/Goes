@@ -1,5 +1,6 @@
 import type { GameConfig } from './types.js';
 import { convexHullEdges } from './geometry.js';
+import { findTriangles } from './topology.js';
 
 /**
  * A board's node positions in their natural embedding dimension (embDim - 2 for most boards, 3 for
@@ -209,6 +210,101 @@ export function mergeClose(bc: BoardConfig, dist: number): BoardConfig {
             if (d2 < dist2) quot.push([i, j]);
         }
     return quotientBoard(bc, quot);
+}
+
+/**
+ * Replaces every triangle (3 mutually-adjacent, distinct vertices - see topology.ts's
+ * findTriangles) in `bc` with a `triangularBoard(w)`-shaped lattice.
+ */
+export function triangleForm(bc: BoardConfig, w: number): BoardConfig {
+    assert(w >= 1, `w must be at least 1, got ${w}`);
+    const N = bc.N;
+    const embDim = bc.emb.embDim;
+    const scale = Math.max(w - 1, 1);
+    const scaledPos = bc.emb.pos.map(p => p.map(v => v * scale));
+
+    const triangles = findTriangles(bc.adj); // each [A, B, C] with A < B < C
+    const nFace = w * (w + 1) / 2;
+    const localIdx = (i: number, j: number) => i * (i + 1) / 2 + j;
+    const globalIdx = (t: number, i: number, j: number) => N + t * nFace + localIdx(i, j);
+
+    const isTriangleSide = new Set<string>(); // "p,q" (p < q)
+    for (const [A, B, C] of triangles) {
+        isTriangleSide.add(`${A},${B}`);
+        isTriangleSide.add(`${A},${C}`);
+        isTriangleSide.add(`${B},${C}`);
+    }
+
+    const totalN = N + triangles.length * nFace;
+    const pos: number[][] = new Array(totalN);
+    for (let i = 0; i < N; i++) pos[i] = scaledPos[i];
+
+    const adj = zeroAdj(totalN);
+    for (let i = 0; i < N; i++)
+        for (let j = i + 1; j < N; j++) {
+            if (!bc.adj[i][j] || isTriangleSide.has(`${i},${j}`)) continue;
+            adj[i][j] = 1;
+            adj[j][i] = 1;
+        }
+
+    const dirs: [number, number][] = [[1,0],[1,1],[0,1],[-1,0],[-1,-1],[0,-1]];
+    for (let t = 0; t < triangles.length; t++) {
+        const [A, B, C] = triangles[t];
+        const cornerA = scaledPos[A], cornerB = scaledPos[B], cornerC = scaledPos[C];
+        for (let i = 0; i < w; i++)
+            for (let j = 0; j <= i; j++) {
+                const a = w - 1 - i, b = i - j, c = j;
+                pos[globalIdx(t, i, j)] = w === 1
+                    ? cornerA.map((_, k) => (cornerA[k] + cornerB[k] + cornerC[k]) / 3)
+                    : cornerA.map((_, k) => (a * cornerA[k] + b * cornerB[k] + c * cornerC[k]) / (w - 1));
+            }
+        for (let i = 0; i < w; i++)
+            for (let j = 0; j <= i; j++)
+                for (const [di, dj] of dirs) {
+                    const ni = i + di, nj = j + dj;
+                    if (ni < 0 || ni >= w || nj < 0 || nj > ni) continue;
+                    adj[globalIdx(t, i, j)][globalIdx(t, ni, nj)] = 1;
+                }
+    }
+
+    // Boundary node sequence (as (i,j) pairs) for triangle t's edge between vertex-pair (p, q) -
+    // same left/right/bottom convention as triangularBoard's own row/col indexing.
+    function boundarySeq(t: number, p: number, q: number): [number, number][] {
+        const [A, B, C] = triangles[t];
+        if (p === A && q === B) return Array.from({ length: w }, (_, i): [number, number] => [i, 0]);
+        if (p === A && q === C) return Array.from({ length: w }, (_, i): [number, number] => [i, i]);
+        if (p === B && q === C) return Array.from({ length: w }, (_, j): [number, number] => [w - 1, j]);
+        throw new Error(`triangleForm: triangle ${t} does not have edge (${p},${q})`);
+    }
+
+    const quot: [number, number][] = [];
+    for (let t = 0; t < triangles.length; t++) {
+        const [A, B, C] = triangles[t];
+        quot.push([A, globalIdx(t, 0, 0)], [B, globalIdx(t, w - 1, 0)], [C, globalIdx(t, w - 1, w - 1)]);
+    }
+    const edgeToTriangles = new Map<string, number[]>();
+    for (let t = 0; t < triangles.length; t++) {
+        const [A, B, C] = triangles[t];
+        for (const [p, q] of [[A, B], [A, C], [B, C]] as [number, number][]) {
+            const key = `${p},${q}`;
+            if (!edgeToTriangles.has(key)) edgeToTriangles.set(key, []);
+            edgeToTriangles.get(key)!.push(t);
+        }
+    }
+    for (const [key, ts] of edgeToTriangles) {
+        if (ts.length < 2) continue;
+        const [p, q] = key.split(',').map(Number);
+        const canonical = boundarySeq(ts[0], p, q);
+        for (let k = 1; k < ts.length; k++) {
+            const seq = boundarySeq(ts[k], p, q);
+            for (let idx = 0; idx < w; idx++)
+                quot.push([globalIdx(ts[0], canonical[idx][0], canonical[idx][1]),
+                    globalIdx(ts[k], seq[idx][0], seq[idx][1])]);
+        }
+    }
+
+    const combined = make(new Embedding(embDim, pos, bc.emb.projMat), adj);
+    return quotientBoard(combined, quot);
 }
 
 /**
@@ -464,72 +560,27 @@ export function regularPolygonBoard(n: number): BoardConfig {
 }
 
 /**
- * A tetrahedron whose 4 faces each have a triangularBoard(w) topology (side length w), glued
- * together along shared edges.
+ * A regular tetrahedron: 4 vertices, all mutually adjacent (K4), 6 unit-length edges. A
+ * side-length-w subdivision of its 4 triangular faces is no longer built in here directly - apply
+ * the `triangleForm(w)` modifier afterward instead (findTriangles finds exactly its 4 faces on this
+ * board, since every 3-subset of K4's vertices is a triangle).
  */
-export function tetrahedronBoard(w: number): BoardConfig {
-    assert(w > 0, `w must be positive, got w=${w}`);
+export function tetrahedronBoard(): BoardConfig {
     const edgeScale = 1 / (2 * Math.sqrt(2));
-    const verts: number[][] = [
+    const pos: number[][] = [
         [1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1],
     ].map(v => v.map(x => x * edgeScale));
 
-    const faces: [number, number, number][] = [
-        [1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2],
-    ];
-
-    const nFace = w * (w + 1) / 2;
-    const localIdx = (i: number, j: number) => i * (i + 1) / 2 + j;
-    const globalIdx = (f: number, i: number, j: number) => f * nFace + localIdx(i, j);
-
-    const pos: number[][] = new Array(4 * nFace);
-    const adj = zeroAdj(4 * nFace);
-    const dirs: [number, number][] = [[1, 0], [1, 1], [0, 1], [-1, 0], [-1, -1], [0, -1]];
-
-    for (let f = 0; f < 4; f++) {
-        const [A, B, C] = faces[f].map(v => verts[v]);
-        for (let i = 0; i < w; i++)
-            for (let j = 0; j <= i; j++) {
-                const a = w - 1 - i, b = i - j, c = j;
-                pos[globalIdx(f, i, j)] = A.map((_, k) => a * A[k] + b * B[k] + c * C[k]);
-            }
-        for (let i = 0; i < w; i++)
-            for (let j = 0; j <= i; j++)
-                for (const [di, dj] of dirs) {
-                    const ni = i + di, nj = j + dj;
-                    if (ni < 0 || ni >= w || nj < 0 || nj > ni) continue;
-                    adj[globalIdx(f, i, j)][globalIdx(f, ni, nj)] = 1;
-                }
-    }
-
-    // Boundary node sequence (as (i,j) pairs) for face f's edge between its two smallest corners
-    // (A-B, triangularBoard's own "left" edge), two largest (B-C, "bottom"), or extremes (A-C,
-    // "right"). p/q identify which pair of ORIGINAL vertex indices this edge is.
-    function boundarySeq(f: number, p: number, q: number): [number, number][] {
-        const [A, B, C] = faces[f];
-        if (p === A && q === B) return Array.from({ length: w }, (_, i): [number, number] => [i, 0]);
-        if (p === A && q === C) return Array.from({ length: w }, (_, i): [number, number] => [i, i]);
-        if (p === B && q === C) return Array.from({ length: w }, (_, j): [number, number] => [w - 1, j]);
-        throw new Error(`tetrahedronBoard: face ${f} does not have edge (${p},${q})`);
-    }
-
-    const quot: [number, number][] = [];
-    for (let f1 = 0; f1 < 4; f1++)
-        for (let f2 = f1 + 1; f2 < 4; f2++) {
-            const shared = faces[f1].filter(v => faces[f2].includes(v)).sort((x, y) => x - y);
-            const [p, q] = shared;
-            const seq1 = boundarySeq(f1, p, q);
-            const seq2 = boundarySeq(f2, p, q);
-            for (let k = 0; k < w; k++)
-                quot.push([globalIdx(f1, seq1[k][0], seq1[k][1]), globalIdx(f2, seq2[k][0], seq2[k][1])]);
-        }
+    const adj = zeroAdj(4);
+    for (let i = 0; i < 4; i++)
+        for (let j = 0; j < 4; j++)
+            if (i !== j) adj[i][j] = 1;
 
     // Simple axonometric-style projection (matches cubeLatticeBoard/dodecahedronBoard/
     // icosahedronBoard's own hand-tuned approach for a 3D shape): x/y project straight through, z
     // nudges diagonally so depth stays visible.
     const projMat = [[1, 0, 0.4], [0, 1, 0.4]];
-    const combined = make(new Embedding(3, pos, projMat), adj);
-    return quotientBoard(combined, quot);
+    return make(new Embedding(3, pos, projMat), adj);
 }
 
 /**
@@ -1097,8 +1148,7 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string
     [PrescribedBoard.regularPolygonBoard]:
         [1, "regpoly", "&lt;n&gt;", "Regular polygon with n unit-length edges"],
     [PrescribedBoard.tetrahedronBoard]:
-        [1, "tetra", "&lt;w&gt;",
-            "Tetrahedron whose 4 faces each have a triangular-board topology of side length w"],
+        [0, "tetra", "", "Regular tetrahedron (4 vertices, all mutually adjacent, unit-length edges)"],
     [PrescribedBoard.dodecahedronBoard]:
         [0, "dodeca", "", "Regular dodecahedron (20 vertices, 12 pentagonal faces, unit-length edges)"],
     [PrescribedBoard.icosahedronBoard]:
@@ -1129,7 +1179,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.hypercubeBoard]:           (...a) => hypercubeBoard(a[0], a[1], a[2], a[3]),
     [PrescribedBoard.triangularBoard]:          (...a) => triangularBoard(a[0]),
     [PrescribedBoard.regularPolygonBoard]:      (...a) => regularPolygonBoard(a[0]),
-    [PrescribedBoard.tetrahedronBoard]:         (...a) => tetrahedronBoard(a[0]),
+    [PrescribedBoard.tetrahedronBoard]:         () => tetrahedronBoard(),
     [PrescribedBoard.dodecahedronBoard]:        () => dodecahedronBoard(),
     [PrescribedBoard.icosahedronBoard]:         () => icosahedronBoard(),
     [PrescribedBoard.triangularHexBoard]:       (...a) => triangularHexBoard(a[0]),
@@ -1166,6 +1216,7 @@ export type BoardModifier =
     | { kind: 'Rectify' }
     | { kind: 'EdgeSplit'; splitN: number }
     | { kind: 'MergeClose'; dist: number }
+    | { kind: 'TriangleForm'; w: number }
     | { kind: 'Prod'; boardType: string; boardArgs: number[] }
     | { kind: 'BeginProd'; boardType: string; boardArgs: number[] }
     | { kind: 'EndProd' };
@@ -1196,10 +1247,10 @@ function parseBoardTypeArgs(cmdName: string, args: string[]): { boardType: strin
 }
 
 /**
- * Parses a BoardModifier from its command name ('rect', 'es', 'mc', 'prod', 'beginprod', 'endprod')
- * and string args - see applyModifier/applyModifiers. mc's arg is optional: with none, `dist`
- * defaults to MC_DEFAULT_DIST. prod/beginprod's first arg is a board-type command name and the rest
- * are that type's own positional dimension args - see parseBoardTypeArgs.
+ * Parses a BoardModifier from its command name ('rect', 'es', 'mc', 'triform', 'prod', 'beginprod',
+ * 'endprod') and string args - see applyModifier/applyModifiers. mc's arg is optional: with none,
+ * `dist` defaults to MC_DEFAULT_DIST. prod/beginprod's first arg is a board-type command name and
+ * the rest are that type's own positional dimension args - see parseBoardTypeArgs.
  */
 export function parseModifier(name: string, args: string[]): BoardModifier {
     if (name === 'rect') {
@@ -1218,6 +1269,12 @@ export function parseModifier(name: string, args: string[]): BoardModifier {
         assert(Number.isFinite(dist) && dist > 0, `mc: dist must be a positive number, got "${args[0]}"`);
         return { kind: 'MergeClose', dist };
     }
+    if (name === 'triform') {
+        assert(args.length === 1, `triform takes exactly 1 argument (w), got ${args.length}`);
+        const w = Number(args[0]);
+        assert(Number.isInteger(w) && w >= 1, `triform: w must be a positive integer, got "${args[0]}"`);
+        return { kind: 'TriangleForm', w };
+    }
     if (name === 'prod') {
         const { boardType, boardArgs } = parseBoardTypeArgs('prod', args);
         return { kind: 'Prod', boardType, boardArgs };
@@ -1234,9 +1291,9 @@ export function parseModifier(name: string, args: string[]): BoardModifier {
 }
 
 /**
- * Applies `modifier` to `bc`, dispatching to `rectify` / `edgeSplit` / `mergeClose` / `product`
- * (Prod builds a fresh board from its own boardType/boardArgs via buildPrescribedBoard, then
- * multiplies it into `bc`). Does NOT accept BeginProd/EndProd - those have no meaning applied to a
+ * Applies `modifier` to `bc`, dispatching to `rectify` / `edgeSplit` / `mergeClose` /
+ * `triangleForm` / `product` (Prod builds a fresh board from its own boardType/boardArgs via
+ * buildPrescribedBoard, then multiplies it into `bc`). Does NOT accept BeginProd/EndProd - those have no meaning applied to a
  * single board in isolation (BeginProd starts a whole new board for applyModifiers to build up
  * separately - potentially with further modifiers of its own before the product happens, unlike
  * Prod's one-shot immediate product - and EndProd's `product()` needs that suspended outer board
@@ -1248,6 +1305,7 @@ export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardCo
         case 'Rectify': return rectify(bc);
         case 'EdgeSplit': return edgeSplit(bc, modifier.splitN);
         case 'MergeClose': return mergeClose(bc, modifier.dist);
+        case 'TriangleForm': return triangleForm(bc, modifier.w);
         case 'Prod': return product(bc, buildPrescribedBoard(modifier.boardType, modifier.boardArgs));
         case 'BeginProd':
         case 'EndProd':

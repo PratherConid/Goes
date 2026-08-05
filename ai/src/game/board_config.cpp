@@ -1,5 +1,6 @@
 #include "game/board_config.h"
 #include "game/geometry.h"
+#include "game/topology.h"
 #include <cassert>
 #include <algorithm>
 #include <functional>
@@ -7,6 +8,7 @@
 #include <cmath>
 #include <stdexcept>
 #include <map>
+#include <set>
 
 static BoardConfig make_bc(std::vector<std::vector<int>> adj,
                             unsigned emb_dim,
@@ -177,6 +179,85 @@ BoardConfig merge_close(const BoardConfig& bc, double dist) {
     return quotient_board(bc, quot);
 }
 
+BoardConfig triangle_form(const BoardConfig& bc, int w) {
+    assert(w >= 1 && "w must be at least 1");
+    int N = bc.N;
+    auto triangles = find_triangles(bc.adj); // each {A, B, C} with A < B < C
+
+    int n_face = w * (w + 1) / 2;
+    auto local_idx = [](int i, int j) { return i * (i + 1) / 2 + j; };
+    auto global_idx = [&](int t, int i, int j) { return N + t * n_face + local_idx(i, j); };
+
+    std::set<std::pair<int,int>> is_triangle_side;
+    for (auto& tri : triangles) {
+        is_triangle_side.insert({tri[0], tri[1]});
+        is_triangle_side.insert({tri[0], tri[2]});
+        is_triangle_side.insert({tri[1], tri[2]});
+    }
+
+    int total_n = N + (int)triangles.size() * n_face;
+    auto adj = zero_adj(total_n);
+    for (int i = 0; i < N; i++)
+        for (int j = i + 1; j < N; j++) {
+            if (!bc.adj[i][j] || is_triangle_side.count({i, j})) continue;
+            adj[i][j] = 1;
+            adj[j][i] = 1;
+        }
+
+    const int dirs[6][2] = {{1,0},{1,1},{0,1},{-1,0},{-1,-1},{0,-1}};
+    for (int t = 0; t < (int)triangles.size(); t++)
+        for (int i = 0; i < w; i++)
+            for (int j = 0; j <= i; j++)
+                for (auto& d : dirs) {
+                    int ni = i + d[0], nj = j + d[1];
+                    if (ni >= 0 && ni < w && nj >= 0 && nj <= ni)
+                        adj[global_idx(t, i, j)][global_idx(t, ni, nj)] = 1;
+                }
+
+    // Boundary node sequence (as (i,j) pairs) for triangle t's edge between vertex-pair (p, q) -
+    // same left/right/bottom convention as triangular_board's own row/col indexing.
+    auto boundary_seq = [&](int t, int p, int q) {
+        auto& tri = triangles[t];
+        int A = tri[0], B = tri[1], C = tri[2];
+        std::vector<std::pair<int,int>> seq(w);
+        if (p == A && q == B) { for (int i = 0; i < w; i++) seq[i] = {i, 0}; }
+        else if (p == A && q == C) { for (int i = 0; i < w; i++) seq[i] = {i, i}; }
+        else if (p == B && q == C) { for (int j = 0; j < w; j++) seq[j] = {w - 1, j}; }
+        else throw std::runtime_error("triangle_form: triangle has no such edge");
+        return seq;
+    };
+
+    std::vector<std::pair<int,int>> quot;
+    for (int t = 0; t < (int)triangles.size(); t++) {
+        auto& tri = triangles[t];
+        quot.push_back({tri[0], global_idx(t, 0, 0)});
+        quot.push_back({tri[1], global_idx(t, w - 1, 0)});
+        quot.push_back({tri[2], global_idx(t, w - 1, w - 1)});
+    }
+    std::map<std::pair<int,int>, std::vector<int>> edge_to_triangles;
+    for (int t = 0; t < (int)triangles.size(); t++) {
+        auto& tri = triangles[t];
+        for (auto& pq : {std::pair{tri[0], tri[1]}, std::pair{tri[0], tri[2]}, std::pair{tri[1], tri[2]}})
+            edge_to_triangles[pq].push_back(t);
+    }
+    for (auto& [pq, ts] : edge_to_triangles) {
+        if (ts.size() < 2) continue;
+        auto canonical = boundary_seq(ts[0], pq.first, pq.second);
+        for (size_t k = 1; k < ts.size(); k++) {
+            auto seq = boundary_seq(ts[k], pq.first, pq.second);
+            for (int idx = 0; idx < w; idx++)
+                quot.push_back({
+                    global_idx(ts[0], canonical[idx].first, canonical[idx].second),
+                    global_idx(ts[k], seq[idx].first, seq[idx].second),
+                });
+        }
+    }
+
+    std::vector<std::vector<unsigned>> embed(total_n); // emb_dim=0 - see board_config.h's doc comment
+    BoardConfig combined = make_bc(std::move(adj), 0u, std::move(embed));
+    return quotient_board(combined, quot);
+}
+
 BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2) {
     int N1 = bc1.N, N2 = bc2.N;
     unsigned emb_dim = bc1.emb_dim + bc2.emb_dim;
@@ -208,6 +289,7 @@ BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier)
         case ModifierKind::Rectify:    return rectify(bc);
         case ModifierKind::EdgeSplit:  return edge_split(bc, modifier.split_n);
         case ModifierKind::MergeClose: return merge_close(bc, modifier.dist);
+        case ModifierKind::TriangleForm: return triangle_form(bc, modifier.split_n);
         case ModifierKind::Prod:
             return product(bc, build_board_config(modifier.board_type, modifier.board_args));
         case ModifierKind::BeginProd:
@@ -372,57 +454,13 @@ BoardConfig regular_polygon_board(int n) {
 // order, both faces' boundary node sequences for a shared edge are always already aligned
 // position-for-position (see the TS side's doc comment for the full argument), so no
 // direction-flipping is ever needed here.
-BoardConfig tetrahedron_board(int w) {
-    assert(w > 0 && "w must be positive");
-
-    int n_face = w * (w + 1) / 2;
-    auto local_idx = [](int i, int j) { return i * (i + 1) / 2 + j; };
-    auto global_idx = [&](int f, int i, int j) { return f * n_face + local_idx(i, j); };
-
-    const int faces[4][3] = { {1, 2, 3}, {0, 2, 3}, {0, 1, 3}, {0, 1, 2} };
-
-    auto adj = zero_adj(4 * n_face);
-    const int dirs[6][2] = {{1,0},{1,1},{0,1},{-1,0},{-1,-1},{0,-1}};
-    for (int f = 0; f < 4; f++)
-        for (int i = 0; i < w; i++)
-            for (int j = 0; j <= i; j++)
-                for (auto& d : dirs) {
-                    int ni = i + d[0], nj = j + d[1];
-                    if (ni >= 0 && ni < w && nj >= 0 && nj <= ni)
-                        adj[global_idx(f, i, j)][global_idx(f, ni, nj)] = 1;
-                }
-
-    auto boundary_seq = [&](int f, int p, int q) {
-        int A = faces[f][0], B = faces[f][1], C = faces[f][2];
-        std::vector<std::pair<int,int>> seq(w);
-        if (p == A && q == B) { for (int i = 0; i < w; i++) seq[i] = {i, 0}; }
-        else if (p == A && q == C) { for (int i = 0; i < w; i++) seq[i] = {i, i}; }
-        else if (p == B && q == C) { for (int j = 0; j < w; j++) seq[j] = {w - 1, j}; }
-        else throw std::runtime_error("tetrahedron_board: face has no such edge");
-        return seq;
-    };
-
-    std::vector<std::pair<int,int>> quot;
-    for (int f1 = 0; f1 < 4; f1++)
-        for (int f2 = f1 + 1; f2 < 4; f2++) {
-            std::vector<int> shared;
-            for (int v : faces[f1])
-                for (int v2 : faces[f2])
-                    if (v == v2) shared.push_back(v);
-            std::sort(shared.begin(), shared.end());
-            int p = shared[0], q = shared[1];
-            auto seq1 = boundary_seq(f1, p, q);
-            auto seq2 = boundary_seq(f2, p, q);
-            for (int k = 0; k < w; k++)
-                quot.push_back({
-                    global_idx(f1, seq1[k].first, seq1[k].second),
-                    global_idx(f2, seq2[k].first, seq2[k].second),
-                });
-        }
-
-    std::vector<std::vector<unsigned>> embed(4 * n_face); // emb_dim=0
-    BoardConfig combined = make_bc(std::move(adj), 0u, std::move(embed));
-    return quotient_board(combined, quot);
+BoardConfig tetrahedron_board() {
+    auto adj = zero_adj(4);
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 4; j++)
+            if (i != j) adj[i][j] = 1;
+    std::vector<std::vector<unsigned>> embed(4); // emb_dim=0
+    return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
 // Mirrors shared/boardConfig.ts's dodecahedronBoard() connectivity exactly (adjacency only - no
@@ -891,7 +929,7 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<int>& 
     if (kind == "hcub")  return hypercube_board(v[0], v[1], v[2], v[3]);
     if (kind == "tri")   return triangular_board(v[0]);
     if (kind == "regpoly") return regular_polygon_board(v[0]);
-    if (kind == "tetra") return tetrahedron_board(v[0]);
+    if (kind == "tetra") return tetrahedron_board();
     if (kind == "dodeca") return dodecahedron_board();
     if (kind == "icosa") return icosahedron_board();
     if (kind == "trihex") return triangular_hex_board(v[0]);
