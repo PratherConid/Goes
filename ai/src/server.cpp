@@ -187,12 +187,6 @@ struct ServerState {
 
 // ── Request helpers ───────────────────────────────────────────────────────────
 
-static BoardConfig build_bc(const json& cfg) {
-    std::string kind   = cfg["boardType"].get<std::string>();
-    std::vector<int> v = cfg["boardArgs"].get<std::vector<int>>();
-    return build_board_config(kind, v);
-}
-
 // Each entry is either a legacy int|null, or {"pos": int|null, "stone": int|null}.
 static MoveRef parse_move_ref(const json& m) {
     if (m.is_object()) {
@@ -385,7 +379,7 @@ int main(int argc, char* argv[]) {
 
             GameConfig game_cfg     = parse_game_cfg(cfg);
             const std::string& tag  = find_checkpoint_dir(ss, game_cfg);
-            auto bc                 = build_bc(cfg);
+            auto bc                 = apply_modifiers(build_board_config(game_cfg.board_type, game_cfg.board_args), game_cfg.board_modifiers);
             auto adj_norms          = compute_adj_norms(bc, ss.device);
             auto& model_v           = load_model(ss, tag, bc);
             auto evaluator          = make_evaluator(model_v, adj_norms);

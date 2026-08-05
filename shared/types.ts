@@ -330,7 +330,7 @@ export class GameConfig {
         const globalStonePlaceLimit = (raw.globalStonePlaceLimit
             ?? new Array(raw.numStones).fill(null)) as (number | null)[];
         return new GameConfig(
-            raw.boardType, raw.boardArgs, (raw.boardModifiers ?? []) as BoardModifier[], raw.numStones, raw.numPlayers,
+            raw.boardType, raw.boardArgs, raw.boardModifiers as BoardModifier[], raw.numStones, raw.numPlayers,
             raw.turnList, playerStonePlaceLimit, globalStonePlaceLimit, stoneToPlayerMap, raw.forcedPassOnly,
             (raw.scoreRule ?? 'area') as ScoreRule,
             (raw.komi ?? new Array(raw.numPlayers).fill(0)) as number[],

@@ -307,23 +307,29 @@ static Args parse_args(int argc, char* argv[]) {
 // ── Model factory ─────────────────────────────────────────────────────────────
 
 // Returns "cnn", "unet", "gnn", or "transformer" — the architecture that will actually be used.
-static std::string effective_arch(const Args& args, const std::string& board_kind) {
+// has_board_modifiers: true iff GameConfig.board_modifiers is non-empty - rectify/edge_split both
+// change N away from the board_args-implied grid shape that CNN/UNet featurization assumes, so a
+// modified board is treated the same as a non-grid board_kind for arch-selection purposes, even if
+// board_kind itself would otherwise be grid2d_supported.
+static std::string effective_arch(const Args& args, const std::string& board_kind, bool has_board_modifiers) {
     bool grid2d_supported = (board_kind == "rect" || board_kind == "rectd" || board_kind == "tri" ||
                           board_kind == "trihex" || board_kind == "hex" || board_kind == "hexdel" ||
                           board_kind == "snubsq" || board_kind == "snubsqtri" ||
-                          board_kind == "twsq" || board_kind == "gtsq");
+                          board_kind == "twsq" || board_kind == "gtsq") && !has_board_modifiers;
     if (args.net_arch == "cnn") {
         if (!grid2d_supported) {
-            std::cerr << "Error: --net-arch cnn is not supported for board type '" << board_kind
-                      << "'. CNN requires a 2D grid embedding (rect/rectd/tri/trihex/hex/hexdel/snubsq/snubsqtri/twsq/gtsq).\n";
+            std::cerr << "Error: --net-arch cnn is not supported for board type '" << board_kind << "'"
+                      << (has_board_modifiers ? " with a non-empty boardModifiers (rectify/edgeSplit change N away from the board_args-implied grid shape CNN requires)" : "")
+                      << ". CNN requires a 2D grid embedding (rect/rectd/tri/trihex/hex/hexdel/snubsq/snubsqtri/twsq/gtsq) with no board_modifiers.\n";
             std::exit(1);
         }
         return "cnn";
     }
     if (args.net_arch == "unet") {
         if (!grid2d_supported) {
-            std::cerr << "Error: --net-arch unet is not supported for board type '" << board_kind
-                      << "'. UNet requires a 2D grid embedding (rect/rectd/tri/trihex/hex/hexdel/snubsq/snubsqtri/twsq/gtsq).\n";
+            std::cerr << "Error: --net-arch unet is not supported for board type '" << board_kind << "'"
+                      << (has_board_modifiers ? " with a non-empty boardModifiers (rectify/edgeSplit change N away from the board_args-implied grid shape UNet requires)" : "")
+                      << ". UNet requires a 2D grid embedding (rect/rectd/tri/trihex/hex/hexdel/snubsq/snubsqtri/twsq/gtsq) with no board_modifiers.\n";
             std::exit(1);
         }
         return "unet";
@@ -1045,12 +1051,12 @@ int main(int argc, char* argv[]) {
     // rather than part of --game-config.
     game_cfg.linear_move_bound = args.linear_move_bound;
 
-    auto bc = build_board_config(game_cfg.board_type, game_cfg.board_args);
+    auto bc = apply_modifiers(build_board_config(game_cfg.board_type, game_cfg.board_args), game_cfg.board_modifiers);
     std::cout << "Board: " << game_cfg.board_type;
     for (int a : game_cfg.board_args) std::cout << " " << a;
     std::cout << "  N=" << bc.N << std::endl;
 
-    const std::string arch = effective_arch(args, game_cfg.board_type);
+    const std::string arch = effective_arch(args, game_cfg.board_type, !game_cfg.board_modifiers.empty());
 
     // Requires forced_pass_only=False, unless --net-arch transformer. When forced_pass_only is
     // enabled, a player may only pass when no traditional placement is legal. In this case, players

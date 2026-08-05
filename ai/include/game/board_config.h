@@ -23,6 +23,41 @@ BoardConfig quotient_board(const BoardConfig& bc,
 // by construction (unlike a fractional split_n-th of an arbitrary distance).
 BoardConfig edge_split(const BoardConfig& bc, int split_n);
 
+// Rectifies bc: one new node per original edge, at that edge's midpoint (embed[i]+embed[j], the
+// exact-integer "scaled-by-2" convention - same trick as edge_split, but no division needed here
+// since summing two already-doubled positions and halving the sum is the same as summing the two
+// undoubled positions directly). Two new nodes are connected iff their edges are angularly adjacent
+// around a shared original vertex v: normalize each incident edge's direction from v to a unit
+// vector (the one non-integer-exact step in this function - see geometry.h's doc comment for why
+// there's no exact-integer alternative), then connect the pairs joined by an edge on the convex hull
+// of v's directions (see geometry.h's convex_hull_edges). Mirrors shared/boardConfig.ts's rectify()
+// exactly, including its own fix for a scale-mismatch bug (direction vectors are computed against
+// 2*embed[v], not embed[v] directly, to match the doubled scale of the midpoint positions).
+BoardConfig rectify(const BoardConfig& bc);
+
+// A BoardConfig-transforming operation - see apply_modifier/apply_modifiers. Mirrors
+// shared/boardConfig.ts's BoardModifier, minus a C++ port of parseModifier(name, args): that parses
+// interactive command text, which has no analog here - train.cpp/server.cpp get their whole
+// GameConfig (including board_modifiers) from a JSON file/HTTP body via parse_game_cfg
+// (training/self_play.cpp) instead.
+enum class ModifierKind { Rectify, EdgeSplit };
+struct BoardModifier {
+    ModifierKind kind;
+    int split_n = 0; // only meaningful when kind == ModifierKind::EdgeSplit
+
+    // Needed for std::vector<BoardModifier>::operator== (used by weak_equal, training/self_play.cpp)
+    // - C++17 has no defaulted struct equality (that's a C++20 feature), so this is spelled out.
+    bool operator==(const BoardModifier& other) const {
+        return kind == other.kind && split_n == other.split_n;
+    }
+};
+
+// Applies modifier to bc, dispatching to rectify / edge_split.
+BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier);
+
+// Applies every modifier in modifiers, in order, to bc - see apply_modifier.
+BoardConfig apply_modifiers(const BoardConfig& bc, const std::vector<BoardModifier>& modifiers);
+
 // A rectangular board with width w and height h. Each node is identified by
 // (col, row) where 0 <= col < w, 0 <= row < h.
 BoardConfig rectangular_board(int w, int h);

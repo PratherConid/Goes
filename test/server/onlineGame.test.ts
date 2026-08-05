@@ -19,7 +19,7 @@ after(async () => { await server.close(); });
 // OnlinePlayerRequest-based createGame()).
 function passOnlyConfig() {
     return {
-        boardType: 'rect', boardArgs: [1, 1], numStones: 2, numPlayers: 2,
+        boardType: 'rect', boardArgs: [1, 1], boardModifiers: [], numStones: 2, numPlayers: 2,
         turnList: [{ player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] }, { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] }], stoneToPlayerMap: { 1: [1], 2: [2] },
         forcedPassOnly: false, scoreRule: 'area', allowSuicide: false,
     };

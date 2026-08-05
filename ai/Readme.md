@@ -5,7 +5,7 @@ Self-play training pipeline for Goes using Monte Carlo Tree Search (MCTS), in th
 Four model architectures are available:
 - **CNN**: a plain residual conv stack (no pooling) for boards with a 2D integer embedding — `rect`, `rectd`, `tri`, `twsq`, `gtsq`. The default for these boards.
 - **UNet**: an alternative for the same board types (U-Net encoder/decoder with pooling), selectable via `--net-arch unet`.
-- **MessagePassingGNN**: for higher-dimensional boards whose nodes cannot be laid out on a 2D grid — `cub`, `hcub`.
+- **MessagePassingGNN**: for higher-dimensional boards whose nodes cannot be laid out on a 2D grid — `cub`, `hcub` — and for any board with a non-empty `boardModifiers` (`rectify`/`edgeSplit` both change the node count away from the grid shape CNN/UNet require, regardless of the underlying `boardType`).
 - **Transformer**: history-aware (attends over every previously reached board state, not just the current one), topology-agnostic, selectable via `--net-arch transformer` on any board type. This is the **only** architecture that supports `forcedPassOnly: true` — see **Transformer Architecture**, below.
 
 ## Differences from the TypeScript engine
@@ -204,6 +204,7 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
     - `config`: object with the game configuration (matches `shared/types.ts`'s `GameConfig.toJSON()` wire shape):
       - `boardType`: `"rect"` | `"rectd"` | `"cub"` | `"splitcub"` | `"hcub"` | `"tri"` | `"trihex"` | `"hex"` | `"hexdel"` | `"snubsq"` | `"snubsqtri"` | `"twsq"` | `"gtsq"`
       - `boardArgs`: integer dimensions matching the board type (e.g. `[9, 9]` for a 9×9 rect board)
+      - `boardModifiers` _(optional, default `[]`)_: array of `{kind: "Rectify"}` or `{kind: "EdgeSplit", splitN: int}`, applied in order to the board built from `boardType`/`boardArgs` (see `shared/boardConfig.ts`'s `BoardModifier`/`applyModifiers`) — a non-empty array forces `gnn`/`transformer` (see **AI Training Pipeline**, above)
       - `numStones`, `numPlayers`, `forcedPassOnly`
       - `turnList`: array of `{player, stones, protected, friendly}` (see `shared/types.ts`'s `TurnInfo`) — `stones`/`protected`/`friendly` are `numStones`-length 0/1 arrays
       - `stoneToPlayerMap`: `{stone: player[]}` — stone color → the set of players it scores for (a stone mapped to several players credits each one its full point value, not split)

@@ -57,6 +57,7 @@ endforeach()
 
 add_library(goes_core STATIC
   src/game/board_config.cpp
+  src/game/geometry.cpp
   src/game/board_state.cpp
   src/model/features.cpp
   src/model/model_config.cpp

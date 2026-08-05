@@ -1,4 +1,5 @@
 #include "game/board_config.h"
+#include "game/geometry.h"
 #include <cassert>
 #include <algorithm>
 #include <functional>
@@ -107,6 +108,72 @@ BoardConfig edge_split(const BoardConfig& bc, int split_n) {
     auto adj = zero_adj(new_n);
     for (auto& [a, b] : edges) { adj[a][b] = 1; adj[b][a] = 1; }
     return make_bc(std::move(adj), bc.emb_dim, std::move(pos));
+}
+
+BoardConfig rectify(const BoardConfig& bc) {
+    int N = bc.N;
+    unsigned emb_dim = bc.emb_dim;
+
+    // One new node per original edge (i<j), at the midpoint - embed[i]+embed[j] is already 2x the
+    // true midpoint (exact integer, no rounding).
+    std::map<std::pair<int,int>, int> edge_idx;
+    std::vector<std::vector<unsigned>> pos;
+    for (int i = 0; i < N; i++)
+        for (int j = i + 1; j < N; j++) {
+            if (!bc.adj[i][j]) continue;
+            edge_idx[{i, j}] = (int)pos.size();
+            std::vector<unsigned> mid(emb_dim);
+            for (unsigned k = 0; k < emb_dim; k++) mid[k] = bc.embed[i][k] + bc.embed[j][k];
+            pos.push_back(std::move(mid));
+        }
+
+    // Edges incident to each original node, as [midpoint node index] lists.
+    std::vector<std::vector<int>> incident(N);
+    for (auto& [ij, idx] : edge_idx) {
+        incident[ij.first].push_back(idx);
+        incident[ij.second].push_back(idx);
+    }
+
+    auto adj = zero_adj((int)pos.size());
+    for (int v = 0; v < N; v++) {
+        auto& mids = incident[v];
+        if (mids.size() < 2) continue;
+        // pos[midIdx] is at the doubled scale (see above), so subtract 2*embed[v] (not embed[v]) to
+        // get a consistently-scaled direction vector before normalizing - mixing scales here would
+        // give the wrong direction entirely (this is the exact bug the TS port hit and fixed).
+        std::vector<std::vector<double>> dirs;
+        for (int mid_idx : mids) {
+            std::vector<double> d(emb_dim);
+            double len_sq = 0;
+            for (unsigned k = 0; k < emb_dim; k++) {
+                d[k] = (double)pos[mid_idx][k] - 2.0 * (double)bc.embed[v][k];
+                len_sq += d[k] * d[k];
+            }
+            double len = std::sqrt(len_sq);
+            for (unsigned k = 0; k < emb_dim; k++) d[k] /= len;
+            dirs.push_back(std::move(d));
+        }
+        for (auto& [a, b] : convex_hull_edges(dirs)) {
+            adj[mids[a]][mids[b]] = 1;
+            adj[mids[b]][mids[a]] = 1;
+        }
+    }
+
+    return make_bc(std::move(adj), emb_dim, std::move(pos));
+}
+
+BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier) {
+    switch (modifier.kind) {
+        case ModifierKind::Rectify:   return rectify(bc);
+        case ModifierKind::EdgeSplit: return edge_split(bc, modifier.split_n);
+    }
+    throw std::runtime_error("apply_modifier: unknown ModifierKind");
+}
+
+BoardConfig apply_modifiers(const BoardConfig& bc, const std::vector<BoardModifier>& modifiers) {
+    BoardConfig result = bc;
+    for (auto& m : modifiers) result = apply_modifier(result, m);
+    return result;
 }
 
 BoardConfig rectangular_board(int w, int h) {

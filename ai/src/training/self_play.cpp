@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <random>
 #include <cstdint>
+#include <stdexcept>
 
 static std::mt19937 rng(std::random_device{}());
 
@@ -14,6 +15,7 @@ using json = nlohmann::json;
 bool weak_equal(const GameConfig& a, const GameConfig& b) {
     if (a.board_type != b.board_type) return false;
     if (a.board_args != b.board_args) return false;
+    if (a.board_modifiers != b.board_modifiers) return false;
     if (a.num_stones != b.num_stones) return false;
     if (a.num_players != b.num_players) return false;
     if (a.turn_list.size() != b.turn_list.size()) return false;
@@ -50,6 +52,14 @@ nlohmann::json GameConfig::to_json() const {
     json j;
     j["boardType"]  = board_type;
     j["boardArgs"]  = board_args;
+    json bm = json::array();
+    for (auto& m : board_modifiers) {
+        json mj;
+        mj["kind"] = (m.kind == ModifierKind::Rectify) ? "Rectify" : "EdgeSplit";
+        if (m.kind == ModifierKind::EdgeSplit) mj["splitN"] = m.split_n;
+        bm.push_back(std::move(mj));
+    }
+    j["boardModifiers"] = bm;
     j["numStones"]  = num_stones;
     j["numPlayers"] = num_players;
 
@@ -136,10 +146,22 @@ static std::optional<int> parse_max_plies(const json& j) {
     return j.is_null() ? std::nullopt : std::optional<int>(j.get<int>());
 }
 
+static std::vector<BoardModifier> parse_board_modifiers(const json& j) {
+    std::vector<BoardModifier> out;
+    for (auto& m : j) {
+        std::string kind = m["kind"].get<std::string>();
+        if (kind == "Rectify") out.push_back({ModifierKind::Rectify});
+        else if (kind == "EdgeSplit") out.push_back({ModifierKind::EdgeSplit, m["splitN"].get<int>()});
+        else throw std::runtime_error("Unknown board modifier kind: " + kind);
+    }
+    return out;
+}
+
 GameConfig parse_game_cfg(const json& cfg) {
     GameConfig game_cfg;
     game_cfg.board_type = cfg["boardType"].get<std::string>();
     game_cfg.board_args = cfg["boardArgs"].get<std::vector<int>>();
+    game_cfg.board_modifiers = parse_board_modifiers(cfg.value("boardModifiers", json::array()));
     game_cfg.num_stones  = cfg["numStones"].get<int>();
     game_cfg.num_players = cfg["numPlayers"].get<int>();
     game_cfg.turn_list   = parse_turn_list(cfg["turnList"]);
