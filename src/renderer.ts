@@ -3,7 +3,7 @@ import { PlayerInfo, GameConfig, FinishedGame, OnlinePlayerRequest, makeId } fro
 import type { BoardView, OnlineStateResponse, PendingGame, ScoreRule, KoRule, TurnInfo, ReplayMove } from '@shared/types.js';
 import type { BoardConfig } from '@shared/boardConfig.js';
 import {
-    PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, computeStarPoints, parseModifier, applyModifiers,
+    PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, computeStarPoints, parseModifier, applyModifiers, projectPoint,
 } from '@shared/boardConfig.js';
 import { ServerConnection, type RequestHandle } from './serverConnection.js';
 import {
@@ -106,6 +106,7 @@ function drawBoardFull(
 ) {
     const { originX, originY, cell, stone_r } = boardLayout(view, boardW, boardH);
     const N = view.N;
+    const pos = view.emb.project();
 
     // grid lines and stones/illegal markers are both dimmed together while
     // selecting a stone, so the whole board reads as "not interactive" - the
@@ -119,7 +120,7 @@ function drawBoardFull(
     for (let i = 0; i < N; i++) {
         for (let j = i + 1; j < N; j++) {
             if (!adj[i][j]) continue;
-            const [x1, y1] = view.pos[i], [x2, y2] = view.pos[j];
+            const [x1, y1] = pos[i], [x2, y2] = pos[j];
             const line = document.createElementNS(SVG_NS, 'line');
             line.setAttribute('x1', String(originX + x1 * cell));
             line.setAttribute('y1', String(originY - y1 * cell));
@@ -134,8 +135,11 @@ function drawBoardFull(
     // star points ("hoshi" board markings, rect boards only - computeStarPoints()
     // returns [] for any other boardType) - drawn before the stones loop below
     // so a stone placed on a star point visually covers the dot, matching real
-    // board conventions.
-    for (const [x, y] of computeStarPoints(config)) {
+    // board conventions. computeStarPoints() returns raw (un-projected) natural-space
+    // coordinates, same as node positions before emb.project() - so they need the same
+    // projMat applied to stay aligned with the actual (possibly non-identity) projected grid.
+    for (const starPoint of computeStarPoints(config)) {
+        const [x, y] = projectPoint(view.emb.projMat, starPoint);
         const sx = originX + x * cell, sy = originY - y * cell;
         const c = document.createElementNS(SVG_NS, 'circle');
         c.setAttribute('cx', String(sx));
@@ -147,7 +151,7 @@ function drawBoardFull(
 
     // stones / illegal markers
     for (let i = 0; i < N; i++) {
-        const [x, y] = view.pos[i];
+        const [x, y] = pos[i];
         const sx = originX + x * cell, sy = originY - y * cell;
         const stone = board[i];
         if (stone > 0) {
@@ -175,7 +179,7 @@ function drawBoardFull(
         for (let i = 0; i < N; i++) {
             const owner = territoryOwner[i];
             if (owner <= 0) continue;
-            const [x, y] = view.pos[i];
+            const [x, y] = pos[i];
             const sx = originX + x * cell, sy = originY - y * cell;
             const r = document.createElementNS(SVG_NS, 'rect');
             r.setAttribute('x', String(sx - side / 2));
@@ -1608,6 +1612,8 @@ export class Renderer {
             <div><b>Show Territory:</b> ${this.showTerritory}</div>
             <div><b>Show Illegal Moves:</b> ${this.showIllegalMoves}</div>
             <div><b>Evaluation:</b> ${evalStr}</div>
+            <div><b>Projection matrix:</b></div>
+            <div id="status-projmat-slot"></div>
         `;
 
         // The login prompt's button needs a click listener, so it's built
@@ -1621,6 +1627,54 @@ export class Renderer {
             loginBtn.addEventListener('click', () => this._navigateSidePanel(SidePanelContent.Account));
             this.statusPanel.querySelector('#status-login-btn-slot')?.replaceWith(loginBtn);
         }
+
+        // Projection matrix editor: one textbox per entry (2 rows x embDim columns), built via
+        // DOM API for the same reason the login button above is - each box needs its own Enter-key
+        // listener. Pressing Enter parses the box's value and writes it straight into the live
+        // BoardState.emb.projMat, mutating in place (Embedding.project() always reads the current
+        // array, so this takes effect on the very next render), then re-renders so the board
+        // redraws with the new projection.
+        const projMat = this._active.bs.emb.projMat;
+        const projMatEl = document.createElement('div');
+        for (let r = 0; r < projMat.length; r++) {
+            const rowEl = document.createElement('div');
+            rowEl.className = 'status-projmat-row';
+            for (let c = 0; c < projMat[r].length; c++) {
+                const box = document.createElement('input');
+                box.type = 'text';
+                box.className = 'status-projmat-input';
+                box.dataset.r = String(r);
+                box.dataset.c = String(c);
+                box.value = String(projMat[r][c]);
+                // _render() rebuilds the whole status panel (fresh innerHTML + fresh projMat
+                // boxes), which destroys this box and creates a new one at the same (r,c) -
+                // without re-focusing it explicitly, the textbox would lose focus on every edit.
+                const refocus = () => this.statusPanel
+                    .querySelector<HTMLInputElement>(`.status-projmat-input[data-r="${r}"][data-c="${c}"]`)
+                    ?.focus();
+                box.addEventListener('keydown', e => {
+                    if (e.key === 'Enter') {
+                        const val = Number(box.value);
+                        if (!Number.isFinite(val)) { box.value = String(projMat[r][c]); return; }
+                        projMat[r][c] = val;
+                        this._render();
+                        refocus();
+                    } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        const delta = e.key === 'ArrowUp' ? 0.05 : -0.05;
+                        // Rounded to 2dp - repeated +-0.05 steps otherwise accumulate ugly
+                        // floating-point noise (e.g. 0.1 + 0.05 = 0.15000000000000002).
+                        projMat[r][c] = Math.round((projMat[r][c] + delta) * 100) / 100;
+                        box.value = String(projMat[r][c]);
+                        this._render();
+                        refocus();
+                    }
+                });
+                rowEl.appendChild(box);
+            }
+            projMatEl.appendChild(rowEl);
+        }
+        this.statusPanel.querySelector('#status-projmat-slot')?.replaceWith(projMatEl);
     }
 
     private _onBoardClick(e: MouseEvent) {
@@ -1658,9 +1712,10 @@ export class Renderer {
         const { originX, originY, cell, stone_r } =
             boardLayout(v, this.mainBoardSize, this.mainBoardSize);
 
+        const vpos = v.emb.project();
         let bestDist = Infinity, bestId = -1;
         for (let i = 0; i < v.N; i++) {
-            const [bx, by] = v.pos[i];
+            const [bx, by] = vpos[i];
             const sx = originX + bx * cell, sy = originY - by * cell;
             const dist = Math.hypot(mx - sx, my - sy);
             if (dist < bestDist) { bestDist = dist; bestId = i; }

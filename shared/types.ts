@@ -1,4 +1,4 @@
-import type { BoardModifier } from './boardConfig.js';
+import type { BoardModifier, Embedding } from './boardConfig.js';
 
 export const enum MoveType {
     NOMOVE = 0,
@@ -423,7 +423,7 @@ export interface OnlineStateResponse {
 
 export interface BoardView {
     N: number;
-    pos: number[][];           // N×2
+    emb: Embedding;             // natural-dim node positions + their 2D projection
     boardDimension: [[number, number], [number, number]];
     numStones: number;
     numPlayers: number;

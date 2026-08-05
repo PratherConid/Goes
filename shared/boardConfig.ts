@@ -8,6 +8,14 @@ import { convexHullEdges } from './geometry.js';
  * operations that care about real dimensionality (e.g. a convex-hull-based rectify()) can operate on
  * `pos` directly instead of an already-flattened 2D approximation.
  */
+/** Applies a 2 x embDim projMat to a single embDim-length point, returning its 2D projection. */
+export function projectPoint(projMat: number[][], p: number[]): number[] {
+    return [
+        p.reduce((s, v, k) => s + projMat[0][k] * v, 0),
+        p.reduce((s, v, k) => s + projMat[1][k] * v, 0),
+    ];
+}
+
 export class Embedding {
     embDim: number;
     pos: number[][];       // N x embDim
@@ -24,10 +32,7 @@ export class Embedding {
 
     /** The 2D render position: projMat applied to each row of pos. */
     project(): number[][] {
-        return this.pos.map(p => [
-            p.reduce((s, v, k) => s + this.projMat[0][k] * v, 0),
-            p.reduce((s, v, k) => s + this.projMat[1][k] * v, 0),
-        ]);
+        return this.pos.map(p => projectPoint(this.projMat, p));
     }
 }
 
@@ -35,7 +40,6 @@ export interface BoardConfig {
     emb: Embedding;    // natural-dimension node positions + their 2D projection
     adj: number[][];  // N×N symmetric adjacency matrix, entries 0/1
     N: number;
-    boardDimension: [[number, number], [number, number]];  // [[xmin,ymin],[xmax,ymax]], of the 2D projection
 }
 
 function assert(cond: boolean, msg: string): asserts cond {
@@ -51,13 +55,7 @@ function make(posOrEmb: number[][] | Embedding, adj: number[][]): BoardConfig {
     for (let i = 0; i < N; i++)
         for (let j = 0; j < N; j++)
             assert(adj[i][j] === adj[j][i], `adj must be symmetric: [${i}][${j}]`);
-    const projected = emb.project();
-    const xs = projected.map(p => p[0]), ys = projected.map(p => p[1]);
-    const boardDimension: [[number, number], [number, number]] = [
-        [Math.min(...xs), Math.min(...ys)],
-        [Math.max(...xs), Math.max(...ys)],
-    ];
-    return { emb, adj, N, boardDimension };
+    return { emb, adj, N };
 }
 
 function zeroAdj(N: number): number[][] {

@@ -334,10 +334,9 @@ export class BoardState {
     maxPlies: number | null; // max plies before the game auto-ends (see makeMove); null = unlimited
     nextTurn:     TurnInfo; // the turnList entry for the upcoming ply - nextTurn.stones lists the offered stone colors (see STONE_MAP), nextTurn.player is the player whose turn is next
     board:        number[];
-    pos:          number[][];
+    emb:          Embedding; // natural-dim node positions + their 2D projection - see Embedding
     adj:          number[][];
     N:            number;
-    boardDimension: [[number, number], [number, number]];
 
     situations:       Situation[];
     sortedSituations: AVLTree<Situation>;
@@ -425,10 +424,9 @@ export class BoardState {
         this.maxPlies      = maxPlies;
         this.nextTurn       = turnList[0];
         this.board         = board;
-        this.pos           = bc.emb.project();
+        this.emb           = bc.emb;
         this.adj           = bc.adj;
         this.N             = bc.N;
-        this.boardDimension = bc.boardDimension;
 
         this.situations       = [];
         // sortedSituations is queried with two different comparators, both
@@ -840,7 +838,7 @@ export class BoardState {
             [...this.globalStonePlaceLimit],
             Object.fromEntries(Object.entries(this.stoneToPlayerMap).map(([k, v]) => [k, new Set(v)])),
             this.forcedPassOnly, this.scoreRule, this.komi, this.koRule, this.allowSuicide, this.maxPlies, this.board.slice(),
-            { emb: new Embedding(2, this.pos, [[1, 0], [0, 1]]), adj: this.adj, N: this.N, boardDimension: this.boardDimension },
+            { emb: this.emb, adj: this.adj, N: this.N },
         );
         // replace history/situations with deep copies
         c.situations       = this.situations.map(e => ({ ...e, board: e.board.slice() }));
@@ -862,10 +860,19 @@ export class BoardState {
 
     getView(): BoardView {
         const lm = this.lastMove();
+        // Computed fresh (not cached) since emb.projMat can be edited live (see the status panel's
+        // projection-matrix editor) - a cached boardDimension would go stale after such an edit,
+        // leaving boardLayout()'s cell-size/origin math sized to the board's old projected extent.
+        const projected = this.emb.project();
+        const xs = projected.map(p => p[0]), ys = projected.map(p => p[1]);
+        const boardDimension: [[number, number], [number, number]] = [
+            [Math.min(...xs), Math.min(...ys)],
+            [Math.max(...xs), Math.max(...ys)],
+        ];
         return {
             N: this.N,
-            pos: this.pos,
-            boardDimension: this.boardDimension,
+            emb: this.emb,
+            boardDimension,
             numStones: this.numStones,
             numPlayers: this.numPlayers,
             turnList: this.turnList,
