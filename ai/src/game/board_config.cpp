@@ -238,10 +238,6 @@ BoardConfig cubical_board(int w, int h, int d) {
     return make_bc(std::move(adj), 3u, std::move(pos));
 }
 
-BoardConfig split_cubical_board(int w, int h, int d, int s) {
-    return edge_split(cubical_board(w, h, d), s);
-}
-
 BoardConfig hypercube_board(int w, int h, int d, int t) {
     assert(w > 0 && h > 0 && d > 0 && t > 0 && "w, h, d, t must be positive");
     std::vector<std::vector<unsigned>> pos;
@@ -701,7 +697,6 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<int>& 
     if (kind == "rect")  return rectangular_board(v[0], v[1]);
     if (kind == "rectd") return rectangular_diagonal_board(v[0], v[1], v[2]);
     if (kind == "cub")   return cubical_board(v[0], v[1], v[2]);
-    if (kind == "splitcub") return split_cubical_board(v[0], v[1], v[2], v[3]);
     if (kind == "hcub")  return hypercube_board(v[0], v[1], v[2], v[3]);
     if (kind == "tri")   return triangular_board(v[0]);
     if (kind == "trihex") return triangular_hex_board(v[0]);

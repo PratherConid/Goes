@@ -202,7 +202,7 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
 - `POST /move` — runs MCTS from the given position and returns the chosen move.
   - **Request fields:**
     - `config`: object with the game configuration (matches `shared/types.ts`'s `GameConfig.toJSON()` wire shape):
-      - `boardType`: `"rect"` | `"rectd"` | `"cub"` | `"splitcub"` | `"hcub"` | `"tri"` | `"trihex"` | `"hex"` | `"hexdel"` | `"snubsq"` | `"snubsqtri"` | `"twsq"` | `"gtsq"`
+      - `boardType`: `"rect"` | `"rectd"` | `"cub"` | `"hcub"` | `"tri"` | `"trihex"` | `"hex"` | `"hexdel"` | `"snubsq"` | `"snubsqtri"` | `"twsq"` | `"gtsq"`
       - `boardArgs`: integer dimensions matching the board type (e.g. `[9, 9]` for a 9×9 rect board)
       - `boardModifiers` _(optional, default `[]`)_: array of `{kind: "Rectify"}` or `{kind: "EdgeSplit", splitN: int}`, applied in order to the board built from `boardType`/`boardArgs` (see `shared/boardConfig.ts`'s `BoardModifier`/`applyModifiers`) — a non-empty array forces `gnn`/`transformer` (see **AI Training Pipeline**, above)
       - `numStones`, `numPlayers`, `forcedPassOnly`

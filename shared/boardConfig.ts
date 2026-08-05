@@ -339,11 +339,6 @@ export function cubicalBoard(w: number, h: number, d: number): BoardConfig {
     return make(new Embedding(3, pos, projMat), adj);
 }
 
-/** A `w × h × d` cubical board with every edge split into `s` sub-edges - see `edgeSplit`. */
-export function splitCubicalBoard(w: number, h: number, d: number, s: number): BoardConfig {
-    return edgeSplit(cubicalBoard(w, h, d), s);
-}
-
 /** A hypercubical board with width `w`, height `h`, depth `d` and hyperdepth `t`. Each node is identified by (col, row, slice, hyperslice) where 0 ≤ col < w, 0 ≤ row < h, 0 ≤ slice < d, 0 ≤ hyperslice < t. */
 export function hypercubeBoard(w: number, h: number, d: number, t: number): BoardConfig {
     assert(w > 0 && h > 0 && d > 0 && t > 0, `w, h, d, and t must be positive, got w=${w} h=${h} d=${d} t=${t}`);
@@ -814,7 +809,6 @@ export enum PrescribedBoard {
     rectangularBoard,
     rectangularDiagonalBoard,
     cubicalBoard,
-    splitCubicalBoard,
     hypercubeBoard,
     triangularBoard,
     triangularHexBoard,
@@ -830,7 +824,6 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string
     [PrescribedBoard.rectangularBoard]:         [2, "rect",  "&lt;w&gt; &lt;h&gt;",                         "Rectangular board"],
     [PrescribedBoard.rectangularDiagonalBoard]: [3, "rectd", "&lt;w&gt; &lt;h&gt; &lt;m&gt;",               "Rectangular + diagonal connections every m squares"],
     [PrescribedBoard.cubicalBoard]:             [3, "cub",   "&lt;w&gt; &lt;h&gt; &lt;d&gt;",               "Cubical board"],
-    [PrescribedBoard.splitCubicalBoard]:        [4, "splitcub", "&lt;w&gt; &lt;h&gt; &lt;d&gt; &lt;s&gt;",  "Cubical board with every edge split into s sub-edges"],
     [PrescribedBoard.hypercubeBoard]:           [4, "hcub",  "&lt;w&gt; &lt;h&gt; &lt;d&gt; &lt;t&gt;",    "Hypercubical board"],
     [PrescribedBoard.triangularBoard]:          [1, "tri",   "&lt;w&gt;",                                    "Triangular board of side w"],
     [PrescribedBoard.triangularHexBoard]:       [1, "trihex", "&lt;d&gt;",                                   "Triangular-lattice board in a hexagon shape, with d layers of triangles around the center"],
@@ -846,7 +839,6 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.rectangularBoard]:         (...a) => rectangularBoard(a[0], a[1]),
     [PrescribedBoard.rectangularDiagonalBoard]: (...a) => rectangularDiagonalBoard(a[0], a[1], a[2]),
     [PrescribedBoard.cubicalBoard]:             (...a) => cubicalBoard(a[0], a[1], a[2]),
-    [PrescribedBoard.splitCubicalBoard]:        (...a) => splitCubicalBoard(a[0], a[1], a[2], a[3]),
     [PrescribedBoard.hypercubeBoard]:           (...a) => hypercubeBoard(a[0], a[1], a[2], a[3]),
     [PrescribedBoard.triangularBoard]:          (...a) => triangularBoard(a[0]),
     [PrescribedBoard.triangularHexBoard]:       (...a) => triangularHexBoard(a[0]),

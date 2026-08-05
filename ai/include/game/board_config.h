@@ -70,9 +70,6 @@ BoardConfig rectangular_diagonal_board(int w, int h, int m);
 // by (col, row, slice) where 0 <= col < w, 0 <= row < h, 0 <= slice < d.
 BoardConfig cubical_board(int w, int h, int d);
 
-// A w x h x d cubical board with every edge split into s sub-edges - see edge_split.
-BoardConfig split_cubical_board(int w, int h, int d, int s);
-
 // A hypercubical board with width w, height h, depth d and hyperdepth t. Each
 // node is identified by (col, row, slice, hyperslice) where 0 <= col < w,
 // 0 <= row < h, 0 <= slice < d, 0 <= hyperslice < t.
@@ -137,7 +134,7 @@ BoardConfig glue_twisted_square_board(int w, int h, int g);
 BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("rect" | "rectd" |
-// "cub" | "splitcub" | "hcub" | "tri" | "trihex" | "hex" | "hexdel" | "snubsq" | "snubsqtri" |
+// "cub" | "hcub" | "tri" | "trihex" | "hex" | "hexdel" | "snubsq" | "snubsqtri" |
 // "twsq" | "gtsq" - matches shared/types.ts's
 // GameConfig.boardType strings), passing `args` as that builder's positional
 // parameters. Throws std::runtime_error for an unknown kind. Shared by
