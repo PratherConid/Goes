@@ -1094,6 +1094,8 @@ export class Renderer {
             ${row('bt &lt;name&gt',           'Set board type for new game')}
             ${row('bd &lt;num&gt; &lt;num&gt; …', 'Set board dimension for new game')}
             ${row('mod &lt;name&gt; &lt;args&gt; …', 'Push a board modifier onto the new-game config (see Board Modifiers)')}
+            ${row('pmod &lt;n&gt;', 'Pop n modifiers off the end of the new-game modifier list')}
+            ${row('cmod', 'Clear the new-game modifier list')}
             ${row('ns &lt;n&gt;',             'Set number of stone types for new games')}
             ${row('np &lt;n&gt;',             'Set number of players for new games')}
             ${row('tl &lt;player&gt;-&lt;stone bits&gt; …','Set turn list for new games: which player plays each turn, and which stone(s) they may choose from (numStones-length 0/1 string; the first offered stone is auto-picked - no selection UI yet)')}
@@ -1934,6 +1936,14 @@ export class Renderer {
                 this._setCmdOutput(e instanceof Error ? e.message : String(e));
                 return;
             }
+        }
+        else if (cmd === 'pmod') {
+            const n = posInt(parts[1]);
+            if (n === null) { this._setCmdOutput('Usage: pmod <n>  (positive integer)'); return; }
+            this.newCfg.boardModifiers.splice(-n);
+        }
+        else if (cmd === 'cmod') {
+            this.newCfg.boardModifiers = [];
         }
         else if (cmd === 'ns') {
             const n = Number(parts[1]);
