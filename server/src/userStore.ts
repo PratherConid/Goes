@@ -62,7 +62,9 @@ async function verifyPassword(password: string, salt: string, hash: string): Pro
 // Registers a new user, appending one JSON-line to state.filePath. Returns an
 // error (without touching the file) if the name contains whitespace, is
 // already taken, or another registration for the same name is currently in flight.
-export async function registerUser(state: UserStoreState, name: string, password: string): Promise<{ ok: true } | { ok: false; error: string }> {
+export async function registerUser(
+    state: UserStoreState, name: string, password: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
     if (/\s/.test(name)) return { ok: false, error: 'Username cannot contain spaces' };
     if (state.users.has(name)) return { ok: false, error: 'Username already exists' };
     // Reserve the name synchronously, before any await, so a second concurrent

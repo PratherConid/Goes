@@ -42,7 +42,9 @@ export interface MoveInfo {
 
 // Genesis value of HistoryEntry.moveInfo (history[0], before any real move has been made) -
 // also what BoardState.lastMove() naturally returns at that point. Shared/immutable - never mutate.
-export const NO_MOVE: MoveInfo = { moveType: MoveType.NOMOVE, pos: null, stone: null, captures: [], consecutivePasses: 0, allPassed: false };
+export const NO_MOVE: MoveInfo = {
+    moveType: MoveType.NOMOVE, pos: null, stone: null, captures: [], consecutivePasses: 0, allPassed: false,
+};
 
 // One slot in the turn order: `player` is who plays this turn - the sole
 // source of truth for turn ownership. `stones` has length numStones (0 = not
@@ -163,7 +165,9 @@ export class OnlinePlayerRequest {
 
     toJSON() {
         return {
-            fixedOrder: [...this.fixedOrder.entries()].map(([slot, pi]) => ({ slot, type: pi.type, name: pi.name, emsim: pi.emsim, temp: pi.temp })),
+            fixedOrder: [...this.fixedOrder.entries()].map(
+                ([slot, pi]) => ({ slot, type: pi.type, name: pi.name, emsim: pi.emsim, temp: pi.temp }),
+            ),
             randomOrder: this.randomOrder.map(pi => ({ type: pi.type, name: pi.name, emsim: pi.emsim, temp: pi.temp })),
             fixed: this.fixed,
         };
@@ -171,7 +175,9 @@ export class OnlinePlayerRequest {
 
     static fromJSON(raw: any): OnlinePlayerRequest {
         return new OnlinePlayerRequest(
-            new Map((raw.fixedOrder ?? []).map((p: any) => [p.slot, new PlayerInfo(p.type, p.name, p.emsim ?? 0, p.temp ?? 0)])),
+            new Map((raw.fixedOrder ?? []).map(
+                (p: any) => [p.slot, new PlayerInfo(p.type, p.name, p.emsim ?? 0, p.temp ?? 0)],
+            )),
             (raw.randomOrder ?? []).map((p: any) => new PlayerInfo(p.type, p.name, p.emsim ?? 0, p.temp ?? 0)),
             raw.fixed ?? true,
         );

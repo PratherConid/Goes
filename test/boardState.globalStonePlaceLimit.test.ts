@@ -24,7 +24,10 @@ function emptyGame(playerStonePlaceLimit: (number | null)[][], globalStonePlaceL
         false, 'area', [0, 0], 'situational', false, null, new Array(bc.N).fill(0), bc);
 }
 
-test('a stone becomes illegal for EVERY player once the global limit is reached, even one who never placed it themselves', () => {
+test(
+    'a stone becomes illegal for EVERY player once the global limit is reached, ' +
+    'even one who never placed it themselves',
+    () => {
     // stone1 global limit 1 (across both players combined); stone2 unlimited; no per-player limits.
     const bs = emptyGame([[null, null], [null, null]], [1, null]);
 

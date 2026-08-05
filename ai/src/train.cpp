@@ -321,8 +321,13 @@ static std::string effective_arch(const Args& args, const std::string& board_kin
     if (args.net_arch == "cnn") {
         if (!grid2d_supported) {
             std::cerr << "Error: --net-arch cnn is not supported for board type '" << board_kind << "'"
-                      << (has_board_modifiers ? " with a non-empty boardModifiers - not disallowed by anything fundamental, but untested and not currently allowed as a precaution" : "")
-                      << ". CNN requires a 2D grid embedding (rect/rectd/tri/trihex/hex/hexdel/snubsq/snubsqtri/twsq/gtsq) with no board_modifiers.\n";
+                      << (has_board_modifiers
+                          ? " with a non-empty boardModifiers - not disallowed by anything fundamental,"
+                            " but untested and not currently allowed as a precaution"
+                          : "")
+                      << ". CNN requires a 2D grid embedding"
+                         " (rect/rectd/tri/trihex/hex/hexdel/snubsq/snubsqtri/twsq/gtsq)"
+                         " with no board_modifiers.\n";
             std::exit(1);
         }
         return "cnn";
@@ -330,8 +335,13 @@ static std::string effective_arch(const Args& args, const std::string& board_kin
     if (args.net_arch == "unet") {
         if (!grid2d_supported) {
             std::cerr << "Error: --net-arch unet is not supported for board type '" << board_kind << "'"
-                      << (has_board_modifiers ? " with a non-empty boardModifiers - not disallowed by anything fundamental, but untested and not currently allowed as a precaution" : "")
-                      << ". UNet requires a 2D grid embedding (rect/rectd/tri/trihex/hex/hexdel/snubsq/snubsqtri/twsq/gtsq) with no board_modifiers.\n";
+                      << (has_board_modifiers
+                          ? " with a non-empty boardModifiers - not disallowed by anything fundamental,"
+                            " but untested and not currently allowed as a precaution"
+                          : "")
+                      << ". UNet requires a 2D grid embedding"
+                         " (rect/rectd/tri/trihex/hex/hexdel/snubsq/snubsqtri/twsq/gtsq)"
+                         " with no board_modifiers.\n";
             std::exit(1);
         }
         return "unet";
@@ -1106,7 +1116,10 @@ int main(int argc, char* argv[]) {
     std::unique_ptr<ModelConfig> model_cfg;
     if (arch == "cnn")       model_cfg = std::make_unique<CNNConfig>(in_dim, hidden_dim, input_descr, args.cnn_conv_size);
     else if (arch == "unet") model_cfg = std::make_unique<UNetConfig>(in_dim, hidden_dim, input_descr);
-    else if (arch == "transformer") model_cfg = std::make_unique<TransformerConfig>(in_dim, hidden_dim, args.num_attn_layers, input_descr, history_descr);
+    else if (arch == "transformer")
+        model_cfg = std::make_unique<TransformerConfig>(
+            in_dim, hidden_dim, args.num_attn_layers, input_descr, history_descr
+        );
     else                     model_cfg = std::make_unique<GNNConfig>(in_dim, hidden_dim, args.num_layers, input_descr);
     // The one continuously-trained model for the entire run: --retrain's replay phase (if any)
     // trains it first with model_optimizer below, then the live loop keeps training the very same

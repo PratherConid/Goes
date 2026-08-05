@@ -3,12 +3,13 @@ import { PlayerInfo, GameConfig, FinishedGame, OnlinePlayerRequest, makeId } fro
 import type { BoardView, OnlineStateResponse, PendingGame, ScoreRule, KoRule, TurnInfo, ReplayMove } from '@shared/types.js';
 import type { BoardConfig } from '@shared/boardConfig.js';
 import {
-    PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, computeStarPoints, parseModifier, applyModifiers, projectPoint,
+    PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, computeStarPoints, parseModifier, applyModifiers,
+    projectPoint,
 } from '@shared/boardConfig.js';
 import { ServerConnection, type RequestHandle } from './serverConnection.js';
 import {
-    SidePanelContent, SidePanelHierarchy, SidePanelBwFw, renderSidePanelChrome, sidePanelParent, childButtons, renderGamePresetSelection,
-    currentGameSetupHtml, newGameSetupHtml,
+    SidePanelContent, SidePanelHierarchy, SidePanelBwFw, renderSidePanelChrome, sidePanelParent, childButtons,
+    renderGamePresetSelection, currentGameSetupHtml, newGameSetupHtml,
     coloredStoneCircle, fmtTurnList,
 } from './sidePanel.js';
 
@@ -43,8 +44,10 @@ const _presetDescriptions = new Map([
     ['9x9_go_fpo',         'Small 9×9 Go, forced-pass-only'],
     ['7x7x2_twsq_go',      '7×7×2 twisted-square board'],
     ['7x7x2_twsq_go_fpo',  '7×7×2 twisted-square board, forced-pass-only'],
-    ['3_coin_go',          "19×19 Go plus a protected, non-friendly 'coin' stone (worth no points) either player may place, up to 3 times each"],
-    ['10_coin_go',         "19×19 Go plus a protected, non-friendly 'coin' stone (worth no points) either player may place, up to 10 times each"],
+    ['3_coin_go',          "19×19 Go plus a protected, non-friendly 'coin' stone (worth no points) either "
+                          + 'player may place, up to 3 times each'],
+    ['10_coin_go',         "19×19 Go plus a protected, non-friendly 'coin' stone (worth no points) either "
+                          + 'player may place, up to 10 times each'],
     ['3_friend_go',        "Like 3_coin_go, but the 'coin' stone is also friendly (doesn't block anyone's liberties)"],
     ['10_friend_go',       "Like 10_coin_go, but the 'coin' stone is also friendly (doesn't block anyone's liberties)"],
 ]);
@@ -286,7 +289,20 @@ export class Renderer {
     // pick which offered stone to place (see _onBoardClick/_renderMainBoard).
     selectingStone = false;
     pendingPos: number | null = null;
-    newCfg = new GameConfig(PrescribedBoardMap[PrescribedBoard.rectangularBoard][1], [9, 9], [], 2, 2, [{player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0]}, {player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0]}], [[null, null], [null, null]], [null, null], {1: new Set([1]), 2: new Set([2])}, true, 'area', [0, 0], 'situational', false, null);
+    newCfg = new GameConfig(
+        PrescribedBoardMap[PrescribedBoard.rectangularBoard][1],
+        [9, 9],
+        [],
+        2, 2,
+        [
+            {player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0]},
+            {player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0]},
+        ],
+        [[null, null], [null, null]],
+        [null, null],
+        {1: new Set([1]), 2: new Set([2])},
+        true, 'area', [0, 0], 'situational', false, null,
+    );
     // Pending online-game player setup, built by tfpro/sol/soe/adde/addl and
     // sent to the server in _createOnlineGame() - the server (not this
     // client) resolves it into actual slot assignments (see
@@ -742,9 +758,15 @@ export class Renderer {
                 this._render();
             });
         });
-        this.panelDockBtn.addEventListener('click', () => { this.panelMode = 'locked'; this._applyPanelMode(); this._render(); });
-        this.panelFullBtn.addEventListener('click', () => { this.panelMode = 'full';   this._applyPanelMode(); this._render(); });
-        this.panelHideBtn.addEventListener('click', () => { this.panelMode = 'hidden'; this._applyPanelMode(); this._render(); });
+        this.panelDockBtn.addEventListener('click', () => {
+            this.panelMode = 'locked'; this._applyPanelMode(); this._render();
+        });
+        this.panelFullBtn.addEventListener('click', () => {
+            this.panelMode = 'full'; this._applyPanelMode(); this._render();
+        });
+        this.panelHideBtn.addEventListener('click', () => {
+            this.panelMode = 'hidden'; this._applyPanelMode(); this._render();
+        });
         this.panelMode = this._screenIsSmall() ? 'hidden' : 'locked';
         this._updatePanelModeAvailability();
 
@@ -822,7 +844,9 @@ export class Renderer {
     private _fireEngineMove(): void {
         const v = this._active.bs.getView();
         if (v.gameOver) { console.warn('em: game is already over'); this.engineManager.cancel(); return; }
-        if (this._active.displayPlyNum !== v.plyCount) { console.warn('em: not at live position (navigate to end first)'); this.engineManager.cancel(); return; }
+        if (this._active.displayPlyNum !== v.plyCount) {
+            console.warn('em: not at live position (navigate to end first)'); this.engineManager.cancel(); return;
+        }
         const moves: ReplayMove[] = this._active.bs.moveInfos().map(m => ({ pos: m.pos, stone: m.stone }));
         // A 'localEngine' slot's own configured emsim/temp take precedence
         // over the global em settings - already concretely populated (never
@@ -885,7 +909,9 @@ export class Renderer {
             if (this.currentSidePanel === SidePanelContent.ActiveOnlineGames) this._renderActiveOnlineGames();
             if (this.currentSidePanel === SidePanelContent.FinishedOnlineGames) this._renderFinishedOnlineGames();
             if (this.currentSidePanel === SidePanelContent.GamePresetSelection)
-                renderGamePresetSelection(this.gamePresetSelectionPanel, [...this.presets.keys()], name => this._selectPreset(name));
+                renderGamePresetSelection(
+                    this.gamePresetSelectionPanel, [...this.presets.keys()], name => this._selectPreset(name),
+                );
             if (this.currentSidePanel === SidePanelContent.ConfigureOnlinePlayers) this._renderConfigureOnlinePlayers();
         }
         this.renderPopup();
@@ -983,7 +1009,9 @@ export class Renderer {
         const offeredStones: number[] = [];
         for (let s = 0; s < v.nextTurn.stones.length; s++) if (v.nextTurn.stones[s]) offeredStones.push(s + 1);
         this.turnStone.style.background = offeredStones.length === 0 ? 'transparent' : `conic-gradient(${
-            offeredStones.map((stone, i) => `${STONE_MAP[stone].color} ${i / offeredStones.length * 100}% ${(i + 1) / offeredStones.length * 100}%`).join(', ')
+            offeredStones.map((stone, i) =>
+                `${STONE_MAP[stone].color} ${i / offeredStones.length * 100}% ${(i + 1) / offeredStones.length * 100}%`,
+            ).join(', ')
         })`;
         this.plyNum.textContent = `${dpn}/${v.plyCount}`;
         this.bwEndBtn.disabled = dpn === 0;
@@ -1005,7 +1033,9 @@ export class Renderer {
             || dpn !== v.plyCount || !v.passEnabled || !this._isMyTurn();
         this.resignBtn.hidden = this.activeIdx.startsWith('L_');
         this.resignBtn.disabled = this.activeIdx.startsWith('L_') || v.gameOver
-            || [...this._active.config.players.entries()].every(([s, pi]) => pi.name !== this.userName || v.resignedPlayers.includes(s));
+            || [...this._active.config.players.entries()].every(
+                ([s, pi]) => pi.name !== this.userName || v.resignedPlayers.includes(s),
+            );
     }
 
     private _renderHistoryPanel(v: BoardView) {
@@ -1101,12 +1131,22 @@ export class Renderer {
             ${row('cmod', 'Clear the new-game modifier list')}
             ${row('ns &lt;n&gt;',             'Set number of stone types for new games')}
             ${row('np &lt;n&gt;',             'Set number of players for new games')}
-            ${row('tl &lt;player&gt;-&lt;stone bits&gt; …','Set turn list for new games: which player plays each turn, and which stone(s) they may choose from (numStones-length 0/1 string; the first offered stone is auto-picked - no selection UI yet)')}
-            ${row('sprot &lt;0-1 str&gt; …',      'Set protected stones per turn for new games: one numStones-length 0/1 string per turn list entry')}
-            ${row('sfriend &lt;0-1 str&gt; …',    'Set friendly stones per turn for new games: one numStones-length 0/1 string per turn list entry')}
-            ${row('spm s &lt;stone&gt; p &lt;player&gt; …','Set which player(s) a stone scores for (zero or more; each gets the stone\'s full points). Players are 1-indexed')}
-            ${row('spspl &lt;player&gt; s &lt;num|-&gt; …','Set how many times a player may place each stone color (one value per stone, \'-\' = unlimited)')}
-            ${row('sgspl &lt;num|-&gt; …','Set how many times each stone color may ever be placed in total, across all players (one value per stone, \'-\' = unlimited)')}
+            ${row('tl &lt;player&gt;-&lt;stone bits&gt; …',
+                'Set turn list for new games: which player plays each turn, and which stone(s) they may '
+                + 'choose from (numStones-length 0/1 string; the first offered stone is auto-picked - no '
+                + 'selection UI yet)')}
+            ${row('sprot &lt;0-1 str&gt; …',
+                'Set protected stones per turn for new games: one numStones-length 0/1 string per turn list entry')}
+            ${row('sfriend &lt;0-1 str&gt; …',
+                'Set friendly stones per turn for new games: one numStones-length 0/1 string per turn list entry')}
+            ${row('spm s &lt;stone&gt; p &lt;player&gt; …',
+                'Set which player(s) a stone scores for (zero or more; each gets the stone\'s full points). '
+                + 'Players are 1-indexed')}
+            ${row('spspl &lt;player&gt; s &lt;num|-&gt; …',
+                'Set how many times a player may place each stone color (one value per stone, \'-\' = unlimited)')}
+            ${row('sgspl &lt;num|-&gt; …',
+                'Set how many times each stone color may ever be placed in total, across all players (one '
+                + 'value per stone, \'-\' = unlimited)')}
             ${row('sr &lt;rule&gt;',            'Set scoring rule for new games: stone | territoryonly | area | territory')}
             ${row('ko &lt;pos|sit&gt;',          'Set ko rule for new games: positional | situational')}
             ${row('komi &lt;k1&gt; &lt;k2&gt; …', 'Set per-player komi for new games. One value per player, each &gt;= 0')}
@@ -1116,14 +1156,19 @@ export class Renderer {
             ${head('Online Multiplayer')}
             ${row('register &lt;name&gt; &lt;password&gt;', 'Create an account and log in as it')}
             ${row('login &lt;name&gt; &lt;password&gt;',    'Log in to play online games')}
-            ${row('flogin &lt;name&gt; &lt;password&gt;',   'Log in, taking over from another connection already logged in as this name')}
-            ${row('tfpro',                 'Toggle fixed online player order (sol/soe/soi vs adde/addl/addi)')}
-            ${row('sol &lt;num&gt;',      'Mark player slot &lt;num&gt; as local (you) before newo - fixed order only')}
-            ${row('soe &lt;num&gt; [sim] [t]', 'Mark player slot &lt;num&gt; as server engine; optional sim count and temperature - fixed order only')}
-            ${row('soi &lt;num&gt; &lt;name&gt;', 'Reserve player slot &lt;num&gt; for an invited username, pending their acceptance - fixed order only')}
-            ${row('adde [sim] [t]',       'Append a server-engine player to random order; optional sim count and temperature - random order only')}
+            ${row('flogin &lt;name&gt; &lt;password&gt;',
+                'Log in, taking over from another connection already logged in as this name')}
+            ${row('tfpro', 'Toggle fixed online player order (sol/soe/soi vs adde/addl/addi)')}
+            ${row('sol &lt;num&gt;', 'Mark player slot &lt;num&gt; as local (you) before newo - fixed order only')}
+            ${row('soe &lt;num&gt; [sim] [t]',
+                'Mark player slot &lt;num&gt; as server engine; optional sim count and temperature - fixed order only')}
+            ${row('soi &lt;num&gt; &lt;name&gt;',
+                'Reserve player slot &lt;num&gt; for an invited username, pending their acceptance - fixed order only')}
+            ${row('adde [sim] [t]',
+                'Append a server-engine player to random order; optional sim count and temperature - random order only')}
             ${row('addl',                 'Append yourself (local) to random order - random order only')}
-            ${row('addi &lt;name&gt;',    'Append an invited username to random order, pending their acceptance - random order only')}
+            ${row('addi &lt;name&gt;',
+                'Append an invited username to random order, pending their acceptance - random order only')}
             ${row('newo',                 'Create online game with current config; prints game ID')}
             ${row('joino &lt;ID&gt;',     'Join an existing online game by ID')}
             ${row('swl &lt;ID&gt;',       'Switch active view to a local game by ID')}
@@ -1132,7 +1177,9 @@ export class Renderer {
             ${head('Board Types')}
             ${[..._cmdToBoard.entries()].map(([cmd, { argStr, desc }]) => row(`${cmd} ${argStr}`, desc)).join('\n            ')}
             ${head('Board Modifiers')}
-            ${row('rect', 'Rectify: place a node at each edge midpoint, connected via the convex-hull vertex figure around each original node')}
+            ${row('rect',
+                'Rectify: place a node at each edge midpoint, connected via the convex-hull vertex figure '
+                + 'around each original node')}
             ${row('es &lt;splitN&gt;', 'EdgeSplit: split every edge into splitN sub-edges')}
         </table>`;
     }
@@ -1397,8 +1444,11 @@ export class Renderer {
                 const slotLabel = document.createElement('span');
                 slotLabel.textContent = `Slot ${slot}: ${fmtStatus(pi)}`;
 
-                const localBtn  = mkBtn('status-login-btn', 'Local',  () => req.fixedOrder.set(slot, new PlayerInfo('local', this.userName ?? 'Player')));
-                const engineBtn = mkBtn('status-login-btn', 'Engine', () => req.fixedOrder.set(slot, new PlayerInfo('serverEngine', 'Engine', this.emNumSims, this.emTemperature)));
+                const localBtn  = mkBtn('status-login-btn', 'Local',
+                    () => req.fixedOrder.set(slot, new PlayerInfo('local', this.userName ?? 'Player')));
+                const engineBtn = mkBtn('status-login-btn', 'Engine', () => req.fixedOrder.set(
+                    slot, new PlayerInfo('serverEngine', 'Engine', this.emNumSims, this.emTemperature),
+                ));
                 const inviteBtn = mkBtn('status-login-btn', 'Invite', () => {
                     this.inviteInputTarget = this.inviteInputTarget === slot ? null : slot;
                     this.inviteInputValue = '';
@@ -1407,7 +1457,9 @@ export class Renderer {
 
                 grid.append(slotLabel, localBtn, engineBtn, inviteBtn, clearBtn);
                 if (this.inviteInputTarget === slot)
-                    grid.appendChild(buildInviteRow(name => req.fixedOrder.set(slot, new PlayerInfo('pendingInvitedOnline', name))));
+                    grid.appendChild(buildInviteRow(
+                        name => req.fixedOrder.set(slot, new PlayerInfo('pendingInvitedOnline', name)),
+                    ));
             }
             this.configureOnlinePlayersPanel.appendChild(grid);
         } else {
@@ -1422,8 +1474,11 @@ export class Renderer {
             const btnRow = document.createElement('div');
             btnRow.className = 'btn-row';
             btnRow.append(
-                mkBtn('panel-child-btn', 'Add Local',  () => req.randomOrder.push(new PlayerInfo('local', this.userName ?? 'Player')), atCap),
-                mkBtn('panel-child-btn', 'Add Engine', () => req.randomOrder.push(new PlayerInfo('serverEngine', 'Engine', this.emNumSims, this.emTemperature)), atCap),
+                mkBtn('panel-child-btn', 'Add Local',
+                    () => req.randomOrder.push(new PlayerInfo('local', this.userName ?? 'Player')), atCap),
+                mkBtn('panel-child-btn', 'Add Engine', () => req.randomOrder.push(
+                    new PlayerInfo('serverEngine', 'Engine', this.emNumSims, this.emTemperature),
+                ), atCap),
                 mkBtn('panel-child-btn', 'Invite', () => {
                     this.inviteInputTarget = this.inviteInputTarget === 'random' ? null : 'random';
                     this.inviteInputValue = '';
@@ -1550,7 +1605,8 @@ export class Renderer {
                 ? `Game over, ${winnerNames[0]} wins`
                 : `Game over, tied: ${winnerNames.join(', ')}`;
         }
-        else if (lm.moveType === MoveType.PLACE)    lastMoveStr = `${coloredStoneCircle(lm.stone!)}@${lm.pos}†${lm.captures.length}`;
+        else if (lm.moveType === MoveType.PLACE)
+            lastMoveStr = `${coloredStoneCircle(lm.stone!)}@${lm.pos}†${lm.captures.length}`;
         else if (lm.moveType === MoveType.PASS)     lastMoveStr = 'Pass';
 
         // Renders e.g. "⬤ 3   ⬤ 5" with each circle colored by its stone type.
@@ -1785,13 +1841,15 @@ export class Renderer {
             for (let slot = 1; slot <= config.numPlayers; slot++) {
                 const pi = resolved.get(slot);
                 if (!pi || pi.type === 'pendingInvitedOnline') config.players.set(slot, new PlayerInfo('local', ''));
-                else if (pi.type === 'serverEngine') config.players.set(slot, new PlayerInfo('localEngine', pi.name, pi.emsim, pi.temp));
+                else if (pi.type === 'serverEngine')
+                    config.players.set(slot, new PlayerInfo('localEngine', pi.name, pi.emsim, pi.temp));
                 else config.players.set(slot, pi);
             }
             const bs = new BoardState(
-                config.numStones, config.numPlayers, config.turnList, config.playerStonePlaceLimit, config.globalStonePlaceLimit,
-                config.stoneToPlayerMap, config.forcedPassOnly, config.scoreRule, config.komi, config.koRule, config.allowSuicide,
-                config.maxPlies, new Array(bc.N).fill(0), bc,
+                config.numStones, config.numPlayers, config.turnList,
+                config.playerStonePlaceLimit, config.globalStonePlaceLimit,
+                config.stoneToPlayerMap, config.forcedPassOnly, config.scoreRule, config.komi, config.koRule,
+                config.allowSuicide, config.maxPlies, new Array(bc.N).fill(0), bc,
             );
             this._registerGame('L_' + makeId(12), bs, config);
             onStarted?.();
@@ -1819,7 +1877,9 @@ export class Renderer {
     // guards live in exactly one place.
     private _withdrawMove(n: number) {
         if (this.activeIdx.startsWith('O_')) { this._setCmdOutput('Cannot withdraw moves in online games'); return; }
-        if (this.finishedGames.has(this.activeIdx)) { this._setCmdOutput('Cannot withdraw moves from a finished game'); return; }
+        if (this.finishedGames.has(this.activeIdx)) {
+            this._setCmdOutput('Cannot withdraw moves from a finished game'); return;
+        }
         this.engineManager.cancel();
         this.engineManager.sessionId = null;
         for (let i = 0; i < n; i++) this._active.bs.withdrawMove();
@@ -1830,7 +1890,9 @@ export class Renderer {
     // command and the WCD button.
     private _withdrawToCurrentDisplay() {
         if (this.activeIdx.startsWith('O_')) { this._setCmdOutput('Cannot withdraw moves in online games'); return; }
-        if (this.finishedGames.has(this.activeIdx)) { this._setCmdOutput('Cannot withdraw moves from a finished game'); return; }
+        if (this.finishedGames.has(this.activeIdx)) {
+            this._setCmdOutput('Cannot withdraw moves from a finished game'); return;
+        }
         this.engineManager.cancel();
         this.engineManager.sessionId = null;
         const n = this._active.bs.situations.length - 1 - this._active.displayPlyNum;
@@ -1862,46 +1924,70 @@ export class Renderer {
             this._render();
         }
         else if (cmd === 'sol') {
-            if (!this.onlinePlayerRequest.fixed) { this._setCmdOutput('sol: only available when fixed order is enabled (see tfpro)'); return; }
+            if (!this.onlinePlayerRequest.fixed) {
+                this._setCmdOutput('sol: only available when fixed order is enabled (see tfpro)'); return;
+            }
             const n = posInt(parts[1]); if (n === null) { this._setCmdOutput('Usage: sol <player-id>'); return; }
             this.onlinePlayerRequest.fixedOrder.set(n, new PlayerInfo('local', this.userName ?? 'Player')); this._render();
         }
         else if (cmd === 'soe') {
-            if (!this.onlinePlayerRequest.fixed) { this._setCmdOutput('soe: only available when fixed order is enabled (see tfpro)'); return; }
+            if (!this.onlinePlayerRequest.fixed) {
+                this._setCmdOutput('soe: only available when fixed order is enabled (see tfpro)'); return;
+            }
             const n = posInt(parts[1]); if (n === null) { this._setCmdOutput('Usage: soe <player-id> [emsim] [temp]'); return; }
-            const nonNeg = (s: string | undefined) => { const v = Number(s); return s !== undefined && isFinite(v) && v >= 0 ? v : null; };
+            const nonNeg = (s: string | undefined) => {
+                const v = Number(s); return s !== undefined && isFinite(v) && v >= 0 ? v : null;
+            };
             const emsim = parts[2] !== undefined ? nonNeg(parts[2]) : this.emNumSims;
             const temp  = parts[3] !== undefined ? nonNeg(parts[3]) : this.emTemperature;
             if (emsim === null || temp === null) { this._setCmdOutput('Usage: soe <player-id> [emsim] [temp]'); return; }
-            this.onlinePlayerRequest.fixedOrder.set(n, new PlayerInfo('serverEngine', 'Engine', emsim, temp)); this._render();
+            this.onlinePlayerRequest.fixedOrder.set(n, new PlayerInfo('serverEngine', 'Engine', emsim, temp));
+            this._render();
         }
         else if (cmd === 'soi') {
-            if (!this.onlinePlayerRequest.fixed) { this._setCmdOutput('soi: only available when fixed order is enabled (see tfpro)'); return; }
-            const n = posInt(parts[1]); if (n === null || !parts[2]) { this._setCmdOutput('Usage: soi <player-id> <name>'); return; }
+            if (!this.onlinePlayerRequest.fixed) {
+                this._setCmdOutput('soi: only available when fixed order is enabled (see tfpro)'); return;
+            }
+            const n = posInt(parts[1]);
+            if (n === null || !parts[2]) { this._setCmdOutput('Usage: soi <player-id> <name>'); return; }
             this.onlinePlayerRequest.fixedOrder.set(n, new PlayerInfo('pendingInvitedOnline', parts[2])); this._render();
         }
         else if (cmd === 'adde') {
-            if (this.onlinePlayerRequest.fixed) { this._setCmdOutput('adde: only available when fixed order is disabled (see tfpro)'); return; }
-            if (this.onlinePlayerRequest.randomOrder.length >= this.newCfg.numPlayers)
-                { this._setCmdOutput(`adde: randomOrder is already full (${this.newCfg.numPlayers} players)`); return; }
-            const nonNeg = (s: string | undefined) => { const v = Number(s); return s !== undefined && isFinite(v) && v >= 0 ? v : null; };
+            if (this.onlinePlayerRequest.fixed) {
+                this._setCmdOutput('adde: only available when fixed order is disabled (see tfpro)'); return;
+            }
+            if (this.onlinePlayerRequest.randomOrder.length >= this.newCfg.numPlayers) {
+                this._setCmdOutput(`adde: randomOrder is already full (${this.newCfg.numPlayers} players)`); return;
+            }
+            const nonNeg = (s: string | undefined) => {
+                const v = Number(s); return s !== undefined && isFinite(v) && v >= 0 ? v : null;
+            };
             const emsim = parts[1] !== undefined ? nonNeg(parts[1]) : this.emNumSims;
             const temp  = parts[2] !== undefined ? nonNeg(parts[2]) : this.emTemperature;
             if (emsim === null || temp === null) { this._setCmdOutput('Usage: adde [emsim] [temp]'); return; }
-            this.onlinePlayerRequest.randomOrder.push(new PlayerInfo('serverEngine', 'Engine', emsim, temp)); this._render();
+            this.onlinePlayerRequest.randomOrder.push(new PlayerInfo('serverEngine', 'Engine', emsim, temp));
+            this._render();
         }
         else if (cmd === 'addl') {
-            if (this.onlinePlayerRequest.fixed) { this._setCmdOutput('addl: only available when fixed order is disabled (see tfpro)'); return; }
-            if (this.onlinePlayerRequest.randomOrder.length >= this.newCfg.numPlayers)
-                { this._setCmdOutput(`addl: randomOrder is already full (${this.newCfg.numPlayers} players)`); return; }
-            this.onlinePlayerRequest.randomOrder.push(new PlayerInfo('local', this.userName ?? 'Player')); this._render();
+            if (this.onlinePlayerRequest.fixed) {
+                this._setCmdOutput('addl: only available when fixed order is disabled (see tfpro)'); return;
+            }
+            if (this.onlinePlayerRequest.randomOrder.length >= this.newCfg.numPlayers) {
+                this._setCmdOutput(`addl: randomOrder is already full (${this.newCfg.numPlayers} players)`); return;
+            }
+            this.onlinePlayerRequest.randomOrder.push(new PlayerInfo('local', this.userName ?? 'Player'));
+            this._render();
         }
         else if (cmd === 'addi') {
-            if (this.onlinePlayerRequest.fixed) { this._setCmdOutput('addi: only available when fixed order is disabled (see tfpro)'); return; }
-            if (this.onlinePlayerRequest.randomOrder.length >= this.newCfg.numPlayers)
-                { this._setCmdOutput(`addi: randomOrder is already full (${this.newCfg.numPlayers} players)`); return; }
+            if (this.onlinePlayerRequest.fixed) {
+                this._setCmdOutput('addi: only available when fixed order is disabled (see tfpro)'); return;
+            }
+            if (this.onlinePlayerRequest.randomOrder.length >= this.newCfg.numPlayers) {
+                this._setCmdOutput(`addi: randomOrder is already full (${this.newCfg.numPlayers} players)`); return;
+            }
             if (!parts[1]) { this._setCmdOutput('Usage: addi <name>'); return; }
-            this.onlinePlayerRequest.randomOrder.push(new PlayerInfo('pendingInvitedOnline', parts[1])); this._render();
+            this.onlinePlayerRequest.randomOrder.push(new PlayerInfo('pendingInvitedOnline', parts[1]));
+            this._render();
         }
         else if (cmd === 'newo') {
             void this._createOnlineGame();
@@ -1929,7 +2015,9 @@ export class Renderer {
             if (!parts[1]) { this._setCmdOutput('Usage: swf <game-id>'); return; }
             const raw = parts[1].startsWith('O_') ? parts[1].slice(2) : parts[1];
             const id = 'O_' + raw.toUpperCase();
-            if (!this.finishedGames.has(id)) { this._setCmdOutput(`Finished online game not found: ${raw.toUpperCase()}`); return; }
+            if (!this.finishedGames.has(id)) {
+                this._setCmdOutput(`Finished online game not found: ${raw.toUpperCase()}`); return;
+            }
             this.engineManager.cancel();
             this.activeIdx = id;
         }
@@ -1974,7 +2062,9 @@ export class Renderer {
         else if (cmd === 'bd') {
             if (!parts[1]) { this._setCmdOutput('Usage: bd <num> <num> …'); return; }
             const nums = parts.slice(1).map(Number);
-            if (nums.some(n => !Number.isInteger(n) || n <= 0)) { this._setCmdOutput('bd: all arguments must be positive integers'); return; }
+            if (nums.some(n => !Number.isInteger(n) || n <= 0)) {
+                this._setCmdOutput('bd: all arguments must be positive integers'); return;
+            }
             const boardTypeEnum = _cmdToBoard.get(this.newCfg.boardType)!.boardType as PrescribedBoard;
             for (const [idx, val] of nums.entries())
                 if (idx < PrescribedBoardMap[boardTypeEnum][0]) {
@@ -2022,9 +2112,14 @@ export class Renderer {
                 // Only stone i+1 offered, same single-stone default as before -
                 // multi-stone turns are only ever set explicitly, via tl.
                 const offeredStones = Array.from({ length: n }, (_, j) => j === i ? 1 : 0);
-                return { player: i % this.newCfg.numPlayers + 1, stones: offeredStones, protected: protectedStones, friendly: friendlyStones };
+                return {
+                    player: i % this.newCfg.numPlayers + 1,
+                    stones: offeredStones, protected: protectedStones, friendly: friendlyStones,
+                };
             });
-            this.newCfg.stoneToPlayerMap = Object.fromEntries(Array.from({ length: n }, (_, i) => [i + 1, new Set([i % this.newCfg.numPlayers + 1])]));
+            this.newCfg.stoneToPlayerMap = Object.fromEntries(
+                Array.from({ length: n }, (_, i) => [i + 1, new Set([i % this.newCfg.numPlayers + 1])]),
+            );
             // playerStonePlaceLimit's outer (per-stone) axis is resized to n;
             // each surviving stone's inner (per-player) axis keeps its length
             // unchanged (numPlayers isn't touched by ns), null-extended for any
@@ -2041,18 +2136,24 @@ export class Renderer {
             const n = Number(parts[1]);
             if (!parts[1] || !Number.isInteger(n) || n < 1 || n > 8) { this._setCmdOutput('Usage: np <n>  (1–8)'); return; }
             this.newCfg.numPlayers = n;
-            this.newCfg.stoneToPlayerMap = Object.fromEntries(Array.from({ length: this.newCfg.numStones }, (_, i) => [i + 1, new Set([i % n + 1])]));
+            this.newCfg.stoneToPlayerMap = Object.fromEntries(
+                Array.from({ length: this.newCfg.numStones }, (_, i) => [i + 1, new Set([i % n + 1])]),
+            );
             // Keep turnList's player assignments in sync with the new player
             // count (same round-robin as stoneToPlayerMap above), keeping each
             // entry's stone and protected/friendly lists unchanged (numStones is
             // untouched by np, so neither needs resizing here).
-            this.newCfg.turnList = this.newCfg.turnList.map((t, i) => ({ player: i % n + 1, stones: t.stones, protected: t.protected, friendly: t.friendly }));
+            this.newCfg.turnList = this.newCfg.turnList.map((t, i) => ({
+                player: i % n + 1, stones: t.stones, protected: t.protected, friendly: t.friendly,
+            }));
             // Keep komi in sync with the new player count: truncate if shorter,
             // zero-extend (no komi for the new players) if longer.
             this.newCfg.komi = Array.from({ length: n }, (_, i) => this.newCfg.komi[i] ?? 0);
             // Resize each stone's inner (per-player) axis of playerStonePlaceLimit
             // the same way, null-extended (numStones is untouched by np).
-            this.newCfg.playerStonePlaceLimit = this.newCfg.playerStonePlaceLimit.map(row => Array.from({ length: n }, (_, j) => row[j] ?? null));
+            this.newCfg.playerStonePlaceLimit = this.newCfg.playerStonePlaceLimit.map(
+                row => Array.from({ length: n }, (_, j) => row[j] ?? null),
+            );
         }
         else if (cmd === 'tl') {
             if (parts.length < 2) { this._setCmdOutput('Usage: tl <player>-<stone bits> <player>-<stone bits> …'); return; }
@@ -2063,10 +2164,16 @@ export class Renderer {
                 if (pieces.length !== 2) { this._setCmdOutput('tl: each entry must be <player>-<stone bits>'); return; }
                 const player = Number(pieces[0]);
                 const stoneBits = pieces[1];
-                if (!Number.isInteger(player) || player < 1 || player > this.newCfg.numPlayers)
-                    { this._setCmdOutput(`tl: player must be an integer between 1 and ${this.newCfg.numPlayers}`); return; }
-                if (stoneBits.length !== this.newCfg.numStones || !/^[01]+$/.test(stoneBits))
-                    { this._setCmdOutput(`tl: stone bits must be a ${this.newCfg.numStones}-character string of 0s and 1s`); return; }
+                if (!Number.isInteger(player) || player < 1 || player > this.newCfg.numPlayers) {
+                    this._setCmdOutput(`tl: player must be an integer between 1 and ${this.newCfg.numPlayers}`);
+                    return;
+                }
+                if (stoneBits.length !== this.newCfg.numStones || !/^[01]+$/.test(stoneBits)) {
+                    this._setCmdOutput(
+                        `tl: stone bits must be a ${this.newCfg.numStones}-character string of 0s and 1s`,
+                    );
+                    return;
+                }
                 const stones = stoneBits.split('').map(Number);
                 if (!stones.some(s => s === 1))
                     { this._setCmdOutput('tl: each entry must offer at least one stone'); return; }
@@ -2081,59 +2188,94 @@ export class Renderer {
         else if (cmd === 'sprot') {
             if (parts.length < 2) { this._setCmdOutput('Usage: sprot <0-1 str> <0-1 str> …'); return; }
             const strs = parts.slice(1);
-            if (strs.length !== this.newCfg.turnList.length)
-                { this._setCmdOutput(`sprot: expected ${this.newCfg.turnList.length} value(s) (one per turn), got ${strs.length}`); return; }
-            if (!strs.every(s => s.length === this.newCfg.numStones && /^[01]+$/.test(s)))
-                { this._setCmdOutput(`sprot: each value must be a ${this.newCfg.numStones}-character string of 0s and 1s`); return; }
+            if (strs.length !== this.newCfg.turnList.length) {
+                this._setCmdOutput(
+                    `sprot: expected ${this.newCfg.turnList.length} value(s) (one per turn), got ${strs.length}`,
+                );
+                return;
+            }
+            if (!strs.every(s => s.length === this.newCfg.numStones && /^[01]+$/.test(s))) {
+                this._setCmdOutput(
+                    `sprot: each value must be a ${this.newCfg.numStones}-character string of 0s and 1s`,
+                );
+                return;
+            }
             this.newCfg.turnList = this.newCfg.turnList.map((t, i) => ({ ...t, protected: strs[i].split('').map(Number) }));
         }
         else if (cmd === 'sfriend') {
             if (parts.length < 2) { this._setCmdOutput('Usage: sfriend <0-1 str> <0-1 str> …'); return; }
             const strs = parts.slice(1);
-            if (strs.length !== this.newCfg.turnList.length)
-                { this._setCmdOutput(`sfriend: expected ${this.newCfg.turnList.length} value(s) (one per turn), got ${strs.length}`); return; }
-            if (!strs.every(s => s.length === this.newCfg.numStones && /^[01]+$/.test(s)))
-                { this._setCmdOutput(`sfriend: each value must be a ${this.newCfg.numStones}-character string of 0s and 1s`); return; }
+            if (strs.length !== this.newCfg.turnList.length) {
+                this._setCmdOutput(
+                    `sfriend: expected ${this.newCfg.turnList.length} value(s) (one per turn), got ${strs.length}`,
+                );
+                return;
+            }
+            if (!strs.every(s => s.length === this.newCfg.numStones && /^[01]+$/.test(s))) {
+                this._setCmdOutput(
+                    `sfriend: each value must be a ${this.newCfg.numStones}-character string of 0s and 1s`,
+                );
+                return;
+            }
             this.newCfg.turnList = this.newCfg.turnList.map((t, i) => ({ ...t, friendly: strs[i].split('').map(Number) }));
         }
         else if (cmd === 'spm') {
-            if (parts.length < 4 || parts[1] !== 's' || parts[3] !== 'p')
-                { this._setCmdOutput('Usage: spm s <stone> p <player> <player> …'); return; }
+            if (parts.length < 4 || parts[1] !== 's' || parts[3] !== 'p') {
+                this._setCmdOutput('Usage: spm s <stone> p <player> <player> …'); return;
+            }
             const stone = Number(parts[2]);
-            if (!Number.isInteger(stone) || stone < 1 || stone > this.newCfg.numStones)
-                { this._setCmdOutput(`spm: stone must be an integer between 1 and ${this.newCfg.numStones}`); return; }
+            if (!Number.isInteger(stone) || stone < 1 || stone > this.newCfg.numStones) {
+                this._setCmdOutput(`spm: stone must be an integer between 1 and ${this.newCfg.numStones}`); return;
+            }
             const players = parts.slice(4).map(Number);
-            if (!players.every(p => Number.isInteger(p) && p >= 1 && p <= this.newCfg.numPlayers))
-                { this._setCmdOutput(`spm: each player must be an integer between 1 and ${this.newCfg.numPlayers}`); return; }
+            if (!players.every(p => Number.isInteger(p) && p >= 1 && p <= this.newCfg.numPlayers)) {
+                this._setCmdOutput(`spm: each player must be an integer between 1 and ${this.newCfg.numPlayers}`);
+                return;
+            }
             this.newCfg.stoneToPlayerMap[stone] = new Set(players);
         }
         else if (cmd === 'spspl') {
-            if (parts.length < 3 || parts[2] !== 's')
-                { this._setCmdOutput('Usage: spspl <player-id> s <num|-> <num|-> …'); return; }
+            if (parts.length < 3 || parts[2] !== 's') {
+                this._setCmdOutput('Usage: spspl <player-id> s <num|-> <num|-> …'); return;
+            }
             const player = Number(parts[1]);
-            if (!Number.isInteger(player) || player < 1 || player > this.newCfg.numPlayers)
-                { this._setCmdOutput(`spspl: player must be an integer between 1 and ${this.newCfg.numPlayers}`); return; }
+            if (!Number.isInteger(player) || player < 1 || player > this.newCfg.numPlayers) {
+                this._setCmdOutput(`spspl: player must be an integer between 1 and ${this.newCfg.numPlayers}`);
+                return;
+            }
             const toks = parts.slice(3);
-            if (toks.length !== this.newCfg.numStones)
-                { this._setCmdOutput(`spspl: expected ${this.newCfg.numStones} value(s) (one per stone), got ${toks.length}`); return; }
+            if (toks.length !== this.newCfg.numStones) {
+                this._setCmdOutput(
+                    `spspl: expected ${this.newCfg.numStones} value(s) (one per stone), got ${toks.length}`,
+                );
+                return;
+            }
             const limits: (number | null)[] = [];
             for (const tok of toks) {
                 if (tok === '-') { limits.push(null); continue; }
                 const n = Number(tok);
-                if (!Number.isInteger(n) || n < 0) { this._setCmdOutput(`spspl: each value must be a non-negative integer or '-'`); return; }
+                if (!Number.isInteger(n) || n < 0) {
+                    this._setCmdOutput(`spspl: each value must be a non-negative integer or '-'`); return;
+                }
                 limits.push(n);
             }
             limits.forEach((lim, i) => { this.newCfg.playerStonePlaceLimit[i][player - 1] = lim; });
         }
         else if (cmd === 'sgspl') {
             const toks = parts.slice(1);
-            if (toks.length !== this.newCfg.numStones)
-                { this._setCmdOutput(`sgspl: expected ${this.newCfg.numStones} value(s) (one per stone), got ${toks.length}`); return; }
+            if (toks.length !== this.newCfg.numStones) {
+                this._setCmdOutput(
+                    `sgspl: expected ${this.newCfg.numStones} value(s) (one per stone), got ${toks.length}`,
+                );
+                return;
+            }
             const limits: (number | null)[] = [];
             for (const tok of toks) {
                 if (tok === '-') { limits.push(null); continue; }
                 const n = Number(tok);
-                if (!Number.isInteger(n) || n < 0) { this._setCmdOutput(`sgspl: each value must be a non-negative integer or '-'`); return; }
+                if (!Number.isInteger(n) || n < 0) {
+                    this._setCmdOutput(`sgspl: each value must be a non-negative integer or '-'`); return;
+                }
                 limits.push(n);
             }
             this.newCfg.globalStonePlaceLimit = limits;
@@ -2157,8 +2299,12 @@ export class Renderer {
                 { this._setCmdOutput('komi: each value must be a number'); return; }
             if (values.some(v => v < 0))
                 { this._setCmdOutput('komi: each value must be >= 0'); return; }
-            if (values.length !== this.newCfg.numPlayers)
-                { this._setCmdOutput(`komi: expected ${this.newCfg.numPlayers} value(s) (one per player), got ${values.length}`); return; }
+            if (values.length !== this.newCfg.numPlayers) {
+                this._setCmdOutput(
+                    `komi: expected ${this.newCfg.numPlayers} value(s) (one per player), got ${values.length}`,
+                );
+                return;
+            }
             this.newCfg.komi = values;
         }
         else if (cmd === 'mpl') {
@@ -2166,14 +2312,19 @@ export class Renderer {
             if (parts[1] === '-') { this.newCfg.maxPlies = null; }
             else {
                 const n = Number(parts[1]);
-                if (!Number.isInteger(n) || n < 1) { this._setCmdOutput(`mpl: value must be a positive integer or '-'`); return; }
+                if (!Number.isInteger(n) || n < 1) {
+                    this._setCmdOutput(`mpl: value must be a positive integer or '-'`); return;
+                }
                 this.newCfg.maxPlies = n;
             }
         }
         else if (cmd === 'preset') {
             if (!parts[1]) { this._setCmdOutput('Usage: preset <name>'); return; }
             const p = this.presets.get(parts[1]);
-            if (!p) { this._setCmdOutput(`Unknown preset: ${parts[1]} (known: ${[...this.presets.keys()].join(', ')})`); return; }
+            if (!p) {
+                this._setCmdOutput(`Unknown preset: ${parts[1]} (known: ${[...this.presets.keys()].join(', ')})`);
+                return;
+            }
             this.newCfg = p.copy();
             this.onlinePlayerRequest = new OnlinePlayerRequest();
         }

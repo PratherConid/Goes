@@ -16,7 +16,15 @@ const { BoardState } = await import('../../shared/boardState.ts');
 const { rectangularBoard } = await import('../../shared/boardConfig.ts');
 
 const bc = rectangularBoard(3, 3);
-const initialGame = new BoardState(2, 2, [{ player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] }, { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] }], [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', [0, 0], 'situational', false, null, new Array(bc.N).fill(0), bc);
+const initialGame = new BoardState(
+    2, 2,
+    [
+        { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
+        { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
+    ],
+    [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', [0, 0],
+    'situational', false, null, new Array(bc.N).fill(0), bc,
+);
 const renderer = new Renderer(initialGame);
 renderer.init();
 
@@ -49,7 +57,11 @@ test('LOGIN round trip updates the status panel\'s Your Name line', async () => 
 test("game/start activates the online game and passBtn reflects _isMyTurn()'s 'client' branch", async () => {
     const config = {
         boardType: 'rect', boardArgs: [3, 3], boardModifiers: [], numStones: 2, numPlayers: 2,
-        turnList: [{ player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] }, { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] }], stoneToPlayerMap: { 1: [1], 2: [2] },
+        turnList: [
+            { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
+            { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
+        ],
+        stoneToPlayerMap: { 1: [1], 2: [2] },
         forcedPassOnly: false, scoreRule: 'area', allowSuicide: false,
         players: [
             { slot: 1, type: 'client', name: 'alice', emsim: 0, temp: 0 },
@@ -67,7 +79,11 @@ test("game/start activates the online game and passBtn reflects _isMyTurn()'s 'c
 test("it is not alice's turn once the opponent's slot is next", async () => {
     const config = {
         boardType: 'rect', boardArgs: [3, 3], boardModifiers: [], numStones: 2, numPlayers: 2,
-        turnList: [{ player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] }, { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] }], stoneToPlayerMap: { 1: [1], 2: [2] },
+        turnList: [
+            { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
+            { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
+        ],
+        stoneToPlayerMap: { 1: [1], 2: [2] },
         forcedPassOnly: false, scoreRule: 'area', allowSuicide: false,
         players: [
             { slot: 1, type: 'client', name: 'bob', emsim: 0, temp: 0 },

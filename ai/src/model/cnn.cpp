@@ -51,9 +51,13 @@ CNNImpl::CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_players, i
     int pad = cfg_.conv_size / 2;
     for (int k = 0; k < num_blocks_; k++) {
         torch::nn::Sequential seq;
-        seq->push_back(torch::nn::Conv2d(torch::nn::Conv2dOptions(cfg_.hidden_dim, cfg_.hidden_dim, cfg_.conv_size).padding(pad)));
+        seq->push_back(torch::nn::Conv2d(
+            torch::nn::Conv2dOptions(cfg_.hidden_dim, cfg_.hidden_dim, cfg_.conv_size).padding(pad)
+        ));
         seq->push_back(torch::nn::ReLU());
-        seq->push_back(torch::nn::Conv2d(torch::nn::Conv2dOptions(cfg_.hidden_dim, cfg_.hidden_dim, cfg_.conv_size).padding(pad)));
+        seq->push_back(torch::nn::Conv2d(
+            torch::nn::Conv2dOptions(cfg_.hidden_dim, cfg_.hidden_dim, cfg_.conv_size).padding(pad)
+        ));
         blocks_.push_back(register_module("block_" + std::to_string(k), seq));
     }
 

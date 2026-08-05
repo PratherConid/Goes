@@ -233,7 +233,10 @@ public:
     // True iff the last move (if any) completed a full round of consecutive
     // passes - see MoveInfo::all_passed. Just that flag's snapshot, same
     // "no separate live field to keep in sync" pattern as score()/etc. below.
-    bool all_passed() const { return !history_entry_ids_.empty() && hm_->history_entry_of(history_entry_ids_.back()).move_info.all_passed; }
+    bool all_passed() const {
+        return !history_entry_ids_.empty() &&
+               hm_->history_entry_of(history_entry_ids_.back()).move_info.all_passed;
+    }
 
     // True iff the game has ended, via any of three independent conditions:
     // too few non-resigned players remain, max_plies has been reached, or the

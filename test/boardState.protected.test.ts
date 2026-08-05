@@ -58,7 +58,10 @@ function twoEyeTurnList() {
 
 test('white kills a two-eyed black group by planting in both eyes, one protected and one a normal capture', () => {
     const { bc, board, blackEye1, blackEye2, whiteEye1 } = twoEyeBoard();
-    const bs = new BoardState(2, 2, twoEyeTurnList(), [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', [0, 0], 'situational', false, null, board, bc);
+    const bs = new BoardState(
+        2, 2, twoEyeTurnList(), [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) },
+        false, 'area', [0, 0], 'situational', false, null, board, bc,
+    );
 
     assert.equal(bs.makeMove(null), true);          // turn0: black passes
     assert.equal(bs.makeMove(null), true);           // turn1: white passes
@@ -75,7 +78,10 @@ test('white kills a two-eyed black group by planting in both eyes, one protected
 
 test('black cannot finish killing the white group: its own planted stone gets swept by its own unprotected pass first', () => {
     const { bc, board, blackEye1, blackEye2, whiteEye1, whiteEye2 } = twoEyeBoard();
-    const bs = new BoardState(2, 2, twoEyeTurnList(), [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', [0, 0], 'situational', false, null, board, bc);
+    const bs = new BoardState(
+        2, 2, twoEyeTurnList(), [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) },
+        false, 'area', [0, 0], 'situational', false, null, board, bc,
+    );
 
     bs.makeMove(null);          // turn0: black passes
     bs.makeMove(null);          // turn1: white passes
@@ -87,7 +93,10 @@ test('black cannot finish killing the white group: its own planted stone gets sw
     // whiteEye1 - no longer protected - is swept by the pass itself
     // (earlySelfCapture applies unconditionally on a pass; see boardState.ts).
     bs.makeMove(null);
-    assert.equal(bs.board[whiteEye1], 0, 'black\'s own planted stone is undone by its own pass, since it is unprotected this turn');
+    assert.equal(
+        bs.board[whiteEye1], 0,
+        'black\'s own planted stone is undone by its own pass, since it is unprotected this turn',
+    );
 
     bs.makeMove(blackEye2);     // turn1 again: white finishes killing black's group
 
@@ -128,7 +137,12 @@ test('two different players can gang up to kill a third player\'s two-eyed group
         { player: 2, stones: [0, 1, 0], protected: [0, 1, 0], friendly: [0, 0, 0] },
         { player: 3, stones: [0, 0, 1], protected: [0, 0, 1], friendly: [0, 0, 0] },
     ];
-    const bs = new BoardState(3, 3, turnList, [[null, null, null], [null, null, null], [null, null, null]], [null, null, null], { 1: new Set([1]), 2: new Set([2]), 3: new Set([3]) }, false, 'area', [0, 0, 0], 'situational', false, null, board, bc);
+    const bs = new BoardState(
+        3, 3, turnList,
+        [[null, null, null], [null, null, null], [null, null, null]], [null, null, null],
+        { 1: new Set([1]), 2: new Set([2]), 3: new Set([3]) }, false, 'area', [0, 0, 0],
+        'situational', false, null, board, bc,
+    );
 
     assert.equal(bs.makeMove(eye1), true);   // turn0: player 1 plants in eye1 (protected self-atari)
     assert.equal(bs.board[eye1], 1, 'player 1\'s stone survives at zero liberties, protected');
@@ -169,7 +183,10 @@ test('black playing in its own eye is not suicide when it would capture an alrea
     // allowSuicide: false - if this move were actually treated as a suicide,
     // it would be rejected outright; it must be legal via the ordinary
     // "connects to a group with a real liberty" path instead.
-    const bs = new BoardState(2, 2, turnList, [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', [0, 0], 'situational', false, null, board, bc);
+    const bs = new BoardState(
+        2, 2, turnList, [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) },
+        false, 'area', [0, 0], 'situational', false, null, board, bc,
+    );
 
     assert.equal(bs.legalMovesData().passCapture.size, 16, 'sanity: the entire white ring is already at zero liberties');
     assert.notEqual(bs.legalMovesData().captures[1][center], null, 'legal - not suicide');

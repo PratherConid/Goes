@@ -127,7 +127,10 @@ static std::optional<fs::path> latest_checkpoint(const fs::path& dir) {
     }
     if (!cnn_ckpts.empty()) { std::sort(cnn_ckpts.begin(), cnn_ckpts.end()); return cnn_ckpts.back(); }
     if (!unet_ckpts.empty()) { std::sort(unet_ckpts.begin(), unet_ckpts.end()); return unet_ckpts.back(); }
-    if (!transformer_ckpts.empty()) { std::sort(transformer_ckpts.begin(), transformer_ckpts.end()); return transformer_ckpts.back(); }
+    if (!transformer_ckpts.empty()) {
+        std::sort(transformer_ckpts.begin(), transformer_ckpts.end());
+        return transformer_ckpts.back();
+    }
     if (!gnn_ckpts.empty()) { std::sort(gnn_ckpts.begin(), gnn_ckpts.end()); return gnn_ckpts.back(); }
     return std::nullopt;
 }
@@ -309,13 +312,17 @@ static AnyModel& load_model(ServerState& ss, const std::string& tag,
         } else if (arch == "unet") {
             return UNet(bc, static_cast<const UNetConfig&>(*model_cfg), game_cfg.num_players, game_cfg.num_stones);
         } else if (arch == "transformer") {
-            return Transformer(bc, static_cast<const TransformerConfig&>(*model_cfg), game_cfg.num_players, game_cfg.num_stones);
+            return Transformer(
+                bc, static_cast<const TransformerConfig&>(*model_cfg), game_cfg.num_players, game_cfg.num_stones
+            );
         } else {
             // adj_norms is only needed to size the GNN's neighbor-count embedding
             // table (max_degree); compute it locally rather than threading it
             // through load_model's signature for architectures that don't use it.
             auto adj_norms = compute_adj_norms(bc, torch::kCPU);
-            return MessagePassingGNN(static_cast<const GNNConfig&>(*model_cfg), game_cfg.num_players, game_cfg.num_stones, adj_norms);
+            return MessagePassingGNN(
+                static_cast<const GNNConfig&>(*model_cfg), game_cfg.num_players, game_cfg.num_stones, adj_norms
+            );
         }
     }();
 
@@ -379,7 +386,9 @@ int main(int argc, char* argv[]) {
 
             GameConfig game_cfg     = parse_game_cfg(cfg);
             const std::string& tag  = find_checkpoint_dir(ss, game_cfg);
-            auto bc                 = apply_modifiers(build_board_config(game_cfg.board_type, game_cfg.board_args), game_cfg.board_modifiers);
+            auto bc                 = apply_modifiers(
+                build_board_config(game_cfg.board_type, game_cfg.board_args), game_cfg.board_modifiers
+            );
             auto adj_norms          = compute_adj_norms(bc, ss.device);
             auto& model_v           = load_model(ss, tag, bc);
             auto evaluator          = make_evaluator(model_v, adj_norms);

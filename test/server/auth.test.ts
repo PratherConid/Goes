@@ -9,7 +9,9 @@ after(async () => { await server.close(); });
 
 test('register then login round-trips', async () => {
     const client = await connect(server.url);
-    const reg = await client.req<{ name: string; finishedGames: unknown[] }>('REGISTER', { name: 'alice', password: 'hunter2' });
+    const reg = await client.req<{ name: string; finishedGames: unknown[] }>(
+        'REGISTER', { name: 'alice', password: 'hunter2' },
+    );
     assert.equal(reg.name, 'alice');
     assert.deepEqual(reg.finishedGames, []);
     // REGISTER auto-logs-in this connection - close it (and wait for the

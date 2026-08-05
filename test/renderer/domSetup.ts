@@ -144,7 +144,9 @@ export function setupDom(): void {
     Object.defineProperty(dom.window.Element.prototype, 'clientHeight', { configurable: true, get: () => BOARD_PX });
     (dom.window.Element.prototype as any).getBoundingClientRect = () =>
         ({ x: 0, y: 0, left: 0, top: 0, right: BOARD_PX, bottom: BOARD_PX, width: BOARD_PX, height: BOARD_PX, toJSON() {} });
-    globalThis.getComputedStyle = (() => ({ paddingLeft: '0px', paddingRight: '0px', paddingTop: '0px', paddingBottom: '0px' })) as any;
+    globalThis.getComputedStyle = (() => (
+        { paddingLeft: '0px', paddingRight: '0px', paddingTop: '0px', paddingBottom: '0px' }
+    )) as any;
 
     (globalThis as any).WebSocket = FakeWebSocket;
     installFetchMock();

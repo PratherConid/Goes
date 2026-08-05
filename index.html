@@ -169,7 +169,10 @@
       align-items: center;
       justify-content: center;
     }
-    #pass-btn:disabled, #withdraw-btn:disabled, #wcd-btn:disabled, #resign-btn:disabled { background: #b5a99e; cursor: default; }
+    #pass-btn:disabled, #withdraw-btn:disabled, #wcd-btn:disabled, #resign-btn:disabled {
+      background: #b5a99e;
+      cursor: default;
+    }
     /* Same gotcha as .panel-mode-btn[hidden] below: the hidden attribute's
        UA-stylesheet display:none loses to this file's own #resign-btn
        display:flex above (any author rule beats UA-stylesheet ones), so it
@@ -317,9 +320,10 @@
     }
     #commands-panel td:last-child { color: #000; }
 
-    #home-panel, #history-panel, #status-panel, #current-game-setup-panel, #new-game-panel, #game-records-panel, #game-preset-selection-panel,
-    #active-local-games-panel, #pending-games-panel, #active-online-games-panel, #finished-online-games-panel, #account-panel,
-    #configure-online-players-panel {
+    #home-panel, #history-panel, #status-panel, #current-game-setup-panel, #new-game-panel,
+    #game-records-panel, #game-preset-selection-panel, #active-local-games-panel,
+    #pending-games-panel, #active-online-games-panel, #finished-online-games-panel,
+    #account-panel, #configure-online-players-panel {
       flex: 1 1 0;
       display: flex;
       flex-direction: column;
@@ -568,13 +572,25 @@
   </div>
 
   <div id="panel-mode-bar">
-    <button id="panel-home-btn" class="panel-mode-btn" title="Home"><img src="/icons/home.svg" width="16" height="16" alt=""></button>
-    <button id="panel-back-btn" class="panel-mode-btn" title="Back"><img src="/icons/back.svg" width="16" height="16" alt=""></button>
-    <button id="panel-forward-btn" class="panel-mode-btn" title="Forward"><img src="/icons/forward.svg" width="16" height="16" alt=""></button>
-    <button id="panel-up-btn" class="panel-mode-btn" title="Up"><img src="/icons/up.svg" width="16" height="16" alt=""></button>
+    <button id="panel-home-btn" class="panel-mode-btn" title="Home">
+      <img src="/icons/home.svg" width="16" height="16" alt="">
+    </button>
+    <button id="panel-back-btn" class="panel-mode-btn" title="Back">
+      <img src="/icons/back.svg" width="16" height="16" alt="">
+    </button>
+    <button id="panel-forward-btn" class="panel-mode-btn" title="Forward">
+      <img src="/icons/forward.svg" width="16" height="16" alt="">
+    </button>
+    <button id="panel-up-btn" class="panel-mode-btn" title="Up">
+      <img src="/icons/up.svg" width="16" height="16" alt="">
+    </button>
     <button id="panel-dock-btn" class="panel-mode-btn" title="Dock panel" hidden>&minus;</button>
-    <button id="panel-full-btn" class="panel-mode-btn" title="Full-screen panel"><img src="/icons/full.svg" width="16" height="16" alt=""></button>
-    <button id="panel-hide-btn" class="panel-mode-btn" title="Hide panel"><img src="/icons/hide.svg" width="16" height="16" alt=""></button>
+    <button id="panel-full-btn" class="panel-mode-btn" title="Full-screen panel">
+      <img src="/icons/full.svg" width="16" height="16" alt="">
+    </button>
+    <button id="panel-hide-btn" class="panel-mode-btn" title="Hide panel">
+      <img src="/icons/hide.svg" width="16" height="16" alt="">
+    </button>
   </div>
 
   <div id="popup-overlay" hidden></div>

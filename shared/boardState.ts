@@ -2,7 +2,9 @@ import type { BoardConfig } from './boardConfig.js';
 import { Embedding } from './boardConfig.js';
 import { MoveType, STONE_MAP } from './types.js';
 import { NO_MOVE } from './types.js';
-import type { MoveInfo, Situation, HistoryEntry, BoardView, ScoreData, ScoreRule, KoRule, TurnInfo, FinishedGame, ReplayMove } from './types.js';
+import type {
+    MoveInfo, Situation, HistoryEntry, BoardView, ScoreData, ScoreRule, KoRule, TurnInfo, FinishedGame, ReplayMove,
+} from './types.js';
 import { LegalMovesData } from './types.js';
 import { AVLTree } from './avlTree.js';
 
@@ -332,7 +334,9 @@ export class BoardState {
     koRule: KoRule;
     allowSuicide: boolean;
     maxPlies: number | null; // max plies before the game auto-ends (see makeMove); null = unlimited
-    nextTurn:     TurnInfo; // the turnList entry for the upcoming ply - nextTurn.stones lists the offered stone colors (see STONE_MAP), nextTurn.player is the player whose turn is next
+    // the turnList entry for the upcoming ply - nextTurn.stones lists the offered stone colors (see
+    // STONE_MAP), nextTurn.player is the player whose turn is next
+    nextTurn:     TurnInfo;
     board:        number[];
     emb:          Embedding; // natural-dim node positions + their 2D projection - see Embedding
     adj:          number[][];
@@ -387,19 +391,33 @@ export class BoardState {
         assert(numStones > 0, `numStones must be > 0, got ${numStones}`);
         assert(turnList.length > 0, 'turnList must be non-empty');
         for (const t of turnList) {
-            assert(t.player >= 1 && t.player <= numPlayers, `turnList player ${t.player} out of range [1, ${numPlayers}]`);
-            assert(t.stones.length === numStones, `turnList stones length ${t.stones.length} must equal numStones ${numStones}`);
+            assert(
+                t.player >= 1 && t.player <= numPlayers, `turnList player ${t.player} out of range [1, ${numPlayers}]`,
+            );
+            assert(
+                t.stones.length === numStones,
+                `turnList stones length ${t.stones.length} must equal numStones ${numStones}`,
+            );
             assert(t.stones.every(p => p === 0 || p === 1), 'turnList stones values must be 0 or 1');
             assert(t.stones.some(p => p === 1), 'turnList stones must have at least one available stone');
-            assert(t.protected.length === numStones, `turnList protected length ${t.protected.length} must equal numStones ${numStones}`);
+            assert(
+                t.protected.length === numStones,
+                `turnList protected length ${t.protected.length} must equal numStones ${numStones}`,
+            );
             assert(t.protected.every(p => p === 0 || p === 1), 'turnList protected values must be 0 or 1');
-            assert(t.friendly.length === numStones, `turnList friendly length ${t.friendly.length} must equal numStones ${numStones}`);
+            assert(
+                t.friendly.length === numStones,
+                `turnList friendly length ${t.friendly.length} must equal numStones ${numStones}`,
+            );
             assert(t.friendly.every(p => p === 0 || p === 1), 'turnList friendly values must be 0 or 1');
         }
         assert(playerStonePlaceLimit.length === numStones,
             `playerStonePlaceLimit length ${playerStonePlaceLimit.length} must equal numStones ${numStones}`);
         for (const row of playerStonePlaceLimit) {
-            assert(row.length === numPlayers, `playerStonePlaceLimit sublist length ${row.length} must equal numPlayers ${numPlayers}`);
+            assert(
+                row.length === numPlayers,
+                `playerStonePlaceLimit sublist length ${row.length} must equal numPlayers ${numPlayers}`,
+            );
             assert(row.every(v => v === null || (Number.isInteger(v) && v >= 0)),
                 'playerStonePlaceLimit values must be null or a non-negative integer');
         }
@@ -747,8 +765,13 @@ export class BoardState {
             consecutivePasses = this.lastMove().consecutivePasses + 1;
             if (consecutivePasses >= this.turnList.length) {
                 this._advanceTurn();
-                const moveInfo: MoveInfo = { moveType: MoveType.PASS, pos: null, stone: null, captures: [], consecutivePasses, allPassed: true };
-                this._afterMove(moveInfo, this.playerStonePlaceCnt().map(row => row.slice()), this.captureCount().slice()); return true;
+                const moveInfo: MoveInfo = {
+                    moveType: MoveType.PASS, pos: null, stone: null, captures: [], consecutivePasses, allPassed: true,
+                };
+                this._afterMove(
+                    moveInfo, this.playerStonePlaceCnt().map(row => row.slice()), this.captureCount().slice(),
+                );
+                return true;
             }
         } else {
             if (this.noTradLegal()) return false;
@@ -779,7 +802,10 @@ export class BoardState {
         // allPassed is always false here: this branch is only reached for a PLACE move or a
         // non-round-completing PASS (the round-completing case returns early above) - maxPlies
         // ending the game is handled entirely by gameOver()'s own live check, no stamping needed.
-        const moveInfo: MoveInfo = { moveType, pos: k, stone: k === null ? null : stone!, captures: [...captures], consecutivePasses: k === null ? consecutivePasses : 0, allPassed: false };
+        const moveInfo: MoveInfo = {
+            moveType, pos: k, stone: k === null ? null : stone!, captures: [...captures],
+            consecutivePasses: k === null ? consecutivePasses : 0, allPassed: false,
+        };
         this._afterMove(moveInfo, newPlayerStonePlaceCnt, newCaptureCount);
         return true;
     }
@@ -833,7 +859,10 @@ export class BoardState {
 
     private _copy(): BoardState {
         const c = new BoardState(
-            this.numStones, this.numPlayers, this.turnList.map(t => ({...t, stones: [...t.stones], protected: [...t.protected], friendly: [...t.friendly]})),
+            this.numStones, this.numPlayers,
+            this.turnList.map(t => ({
+                ...t, stones: [...t.stones], protected: [...t.protected], friendly: [...t.friendly],
+            })),
             this.playerStonePlaceLimit.map(row => [...row]),
             [...this.globalStonePlaceLimit],
             Object.fromEntries(Object.entries(this.stoneToPlayerMap).map(([k, v]) => [k, new Set(v)])),

@@ -444,7 +444,9 @@ void BoardState::after_move(MoveInfo move_info, std::vector<std::vector<int>> ne
     refresh_winners();
 }
 
-LegalMovesData BoardState::compute_legal_moves(bool all_passed, const std::vector<std::vector<int>>& player_stone_place_cnt) const {
+LegalMovesData BoardState::compute_legal_moves(
+    bool all_passed, const std::vector<std::vector<int>>& player_stone_place_cnt
+) const {
     if (all_passed) {
         return LegalMovesData{
             {}, LegalMovesByStone(num_stones + 1, LegalMoves(N, std::nullopt)),
@@ -588,7 +590,10 @@ BoardState::BoardState(int num_stones_,
         assert((int)t.is_protected.size() == num_stones && "turn_list is_protected length must equal num_stones");
         assert((int)t.friendly.size() == num_stones && "turn_list friendly length must equal num_stones");
         bool any_offered = false;
-        for (int v : t.stones) { assert((v == 0 || v == 1) && "turn_list stones values must be 0 or 1"); if (v == 1) any_offered = true; }
+        for (int v : t.stones) {
+            assert((v == 0 || v == 1) && "turn_list stones values must be 0 or 1");
+            if (v == 1) any_offered = true;
+        }
         assert(any_offered && "turn_list stones must have at least one available stone");
         for (int v : t.is_protected) assert((v == 0 || v == 1) && "turn_list is_protected values must be 0 or 1");
         for (int v : t.friendly) assert((v == 0 || v == 1) && "turn_list friendly values must be 0 or 1");
@@ -596,10 +601,16 @@ BoardState::BoardState(int num_stones_,
     assert((int)player_stone_place_limit.size() == num_stones && "player_stone_place_limit length must equal num_stones");
     for (auto& row : player_stone_place_limit) {
         assert((int)row.size() == num_players && "player_stone_place_limit sublist length must equal num_players");
-        for (auto& v : row) assert((!v.has_value() || *v >= 0) && "player_stone_place_limit values must be nullopt or non-negative");
+        for (auto& v : row) {
+            assert((!v.has_value() || *v >= 0) &&
+                   "player_stone_place_limit values must be nullopt or non-negative");
+        }
     }
     assert((int)global_stone_place_limit.size() == num_stones && "global_stone_place_limit length must equal num_stones");
-    for (auto& v : global_stone_place_limit) assert((!v.has_value() || *v >= 0) && "global_stone_place_limit values must be nullopt or non-negative");
+    for (auto& v : global_stone_place_limit) {
+        assert((!v.has_value() || *v >= 0) &&
+               "global_stone_place_limit values must be nullopt or non-negative");
+    }
     assert((!max_plies.has_value() || *max_plies >= 1) && "max_plies must be nullopt or a positive integer");
     assert(std::all_of(komi.begin(), komi.end(), [](float k) { return k >= 0.0f; }) && "komi values must be >= 0");
     assert((int)player_model_id.size() == num_players && "player_model_id length must equal num_players");

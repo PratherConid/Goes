@@ -64,7 +64,9 @@ export function loadGameRecordStore(dataDir: string): GameRecordStoreState {
 // Appends one JSON-line record of a finished game, then updates the in-memory
 // index - only after the write succeeds, so a failed append never leaves a
 // phantom in-memory-only entry.
-export async function recordFinishedGame(state: GameRecordStoreState, id: string, finishedGame: FinishedGame, observers: Set<string>): Promise<void> {
+export async function recordFinishedGame(
+    state: GameRecordStoreState, id: string, finishedGame: FinishedGame, observers: Set<string>,
+): Promise<void> {
     const record = { id, finishedGame: finishedGame.toJSON(), observers: [...observers] };
     await fs.promises.appendFile(state.filePath, JSON.stringify(record) + '\n');
     addToIndex(state.finishedGamesByUser, id, observers);

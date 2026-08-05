@@ -179,7 +179,9 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                 if (!await verifyLogin(userStoreState, name, password))
                     throw Object.assign(new Error('Invalid username or password'), { statusCode: 401 });
                 if (userToWs.has(name) && userToWs.get(name) !== ws)
-                    throw Object.assign(new Error('Already logged in elsewhere - use flogin to take over'), { statusCode: 409 });
+                    throw Object.assign(
+                        new Error('Already logged in elsewhere - use flogin to take over'), { statusCode: 409 },
+                    );
                 setLogin(ws, name);
                 return { results: [{ data: { name, finishedGames: buildFinishedGamesPayload(name) } }] };
             }
@@ -247,7 +249,12 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                         .map(pi => pi.name)
                 )].map(name => ({ to: name, type: 'game/invite', payload: { id: result.id, from: userName } }));
                 return {
-                    results: [{ data: { id: result.id, status: result.status }, broadcast: buildBroadcast(result.id, result.status === 'playing' ? 'game/start' : 'game/pending-games') }],
+                    results: [{
+                        data: { id: result.id, status: result.status },
+                        broadcast: buildBroadcast(
+                            result.id, result.status === 'playing' ? 'game/start' : 'game/pending-games',
+                        ),
+                    }],
                     engineGame: result.status === 'playing' ? result.id : undefined,
                     pushes,
                 };
@@ -261,11 +268,20 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                 if (result.status === 'cancelled') {
                     return {
                         results: [{ data: { status: result.status } }],
-                        pushes: result.notify.map(name => ({ to: name, type: 'game/invite-failed', payload: { id, message: `Creation of invited online game ${id} failed due to user refusal` } })),
+                        pushes: result.notify.map(name => ({
+                            to: name,
+                            type: 'game/invite-failed',
+                            payload: { id, message: `Creation of invited online game ${id} failed due to user refusal` },
+                        })),
                     };
                 }
                 return {
-                    results: [{ data: { status: result.status }, broadcast: buildBroadcast(id, result.status === 'playing' ? 'game/start' : 'game/pending-games') }],
+                    results: [{
+                        data: { status: result.status },
+                        broadcast: buildBroadcast(
+                            id, result.status === 'playing' ? 'game/start' : 'game/pending-games',
+                        ),
+                    }],
                     engineGame: result.status === 'playing' ? id : undefined,
                 };
             }
@@ -276,7 +292,12 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                 const result = onlineGameManager.joinGame(id, userName);
                 onlineGameManager.addObserver(id, userName);
                 return {
-                    results: [{ data: { position: result.position }, broadcast: buildBroadcast(id, result.status === 'playing' ? 'game/start' : 'game/pending-games') }],
+                    results: [{
+                        data: { position: result.position },
+                        broadcast: buildBroadcast(
+                            id, result.status === 'playing' ? 'game/start' : 'game/pending-games',
+                        ),
+                    }],
                     engineGame: result.status === 'playing' ? id : undefined,
                 };
             }
@@ -286,13 +307,19 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                 const moveIndex = (msg['moveIndex'] as number | null) ?? null;
                 const stone = (msg['stone'] as number | null) ?? null;
                 onlineGameManager.applyMove(id, positions, moveIndex, stone, msg['clientIdx'] as number);
-                return { results: [{ data: { ok: true }, broadcast: { id, type: 'game/move', payload: { moveIndex, stone } } }], engineGame: id };
+                return {
+                    results: [{ data: { ok: true }, broadcast: { id, type: 'game/move', payload: { moveIndex, stone } } }],
+                    engineGame: id,
+                };
             }
             case 'game/resign': {
                 const id = msg['id'] as string;
                 const positions = requirePositions(id, ws);
                 const slot = onlineGameManager.resign(id, positions);
-                return { results: [{ data: { ok: true }, broadcast: { id, type: 'game/resign', payload: { slots: [slot] } } }], engineGame: id };
+                return {
+                    results: [{ data: { ok: true }, broadcast: { id, type: 'game/resign', payload: { slots: [slot] } } }],
+                    engineGame: id,
+                };
             }
             case 'game/subscribe': {
                 // Re-bind this connection after a reconnect; reply with full state + personalised config for catchup.
@@ -302,7 +329,9 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                 const position = msg['position'] as number;
                 if (!onlineGameManager.acceptJoin(id, userName, position))
                     throw Object.assign(new Error('Not your slot'), { statusCode: 403 });
-                return { results: [{ data: { state: onlineGameManager.getState(id), config: onlineGameManager.getConfig(id) } }] };
+                return {
+                    results: [{ data: { state: onlineGameManager.getState(id), config: onlineGameManager.getConfig(id) } }],
+                };
             }
             default:
                 throw Object.assign(new Error(`Unknown request type: ${msg.type}`), { statusCode: 400 });

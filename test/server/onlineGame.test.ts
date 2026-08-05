@@ -3,7 +3,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { startTestServer, startTestServerProcess, connect, waitForEvents, type TestServer, type TestClient } from './testServer.ts';
+import {
+    startTestServer, startTestServerProcess, connect, waitForEvents, type TestServer, type TestClient,
+} from './testServer.ts';
 
 let server: TestServer;
 
@@ -20,7 +22,11 @@ after(async () => { await server.close(); });
 function passOnlyConfig() {
     return {
         boardType: 'rect', boardArgs: [1, 1], boardModifiers: [], numStones: 2, numPlayers: 2,
-        turnList: [{ player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] }, { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] }], stoneToPlayerMap: { 1: [1], 2: [2] },
+        turnList: [
+            { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
+            { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
+        ],
+        stoneToPlayerMap: { 1: [1], 2: [2] },
         forcedPassOnly: false, scoreRule: 'area', allowSuicide: false,
     };
 }
@@ -90,7 +96,9 @@ test('alternating passes reach a natural finish, both observers see both moves',
     await alice.close();
     const aliceAgain = await connect(server.url);
     await aliceAgain.req('LOGIN', { name: 'carol', password: 'pw' });
-    const state = await aliceAgain.req<{ state: { status: string; moves: { pos: number | null; stone: number | null }[] } }>('game/subscribe', { id, position: 1 });
+    const state = await aliceAgain.req<
+        { state: { status: string; moves: { pos: number | null; stone: number | null }[] } }
+    >('game/subscribe', { id, position: 1 });
     assert.equal(state.state.status, 'finished');
     assert.deepEqual(state.state.moves, [{ pos: null, stone: null }, { pos: null, stone: null }]);
 
@@ -165,7 +173,9 @@ test('game/create rejects an invited username that does not exist', async () => 
     await assert.rejects(
         alice.req('game/create', {
             config: passOnlyConfig(),
-            onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'pendingInvitedOnline', name: 'nobody' }]]),
+            onlinePlayerRequest: fixedRequest([
+                [1, { type: 'local', name: '' }], [2, { type: 'pendingInvitedOnline', name: 'nobody' }],
+            ]),
         }),
         (e: any) => { assert.match(e.message, /does not exist/); assert.equal(e.statusCode, 400); return true; },
     );
@@ -205,7 +215,9 @@ test('game/create rejects invited usernames that are offline, proven via a real 
             await assert.rejects(
                 alice.req('game/create', {
                     config: passOnlyConfig(),
-                    onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'pendingInvitedOnline', name: 'xavier' }]]),
+                    onlinePlayerRequest: fixedRequest([
+                        [1, { type: 'local', name: '' }], [2, { type: 'pendingInvitedOnline', name: 'xavier' }],
+                    ]),
                 }),
                 (e: any) => {
                     assert.equal(e.message, 'Cannot create game. User xavier is offline.');
@@ -286,7 +298,9 @@ test('invite + accept starts the game and notifies both observers', async () => 
     const bobInvite = new Promise<any>(resolve => bob.onEvent('game/invite', resolve));
     const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
         config: passOnlyConfig(),
-        onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'pendingInvitedOnline', name: 'kevin' }]]),
+        onlinePlayerRequest: fixedRequest([
+            [1, { type: 'local', name: '' }], [2, { type: 'pendingInvitedOnline', name: 'kevin' }],
+        ]),
     });
     assert.equal(status, 'waiting');   // an unconfirmed invite never starts the game immediately
 
@@ -313,7 +327,9 @@ test('invite + refuse cancels the game and notifies everyone involved', async ()
     const bobInvite = new Promise<any>(resolve => bob.onEvent('game/invite', resolve));
     const { id } = await alice.req<{ id: string }>('game/create', {
         config: passOnlyConfig(),
-        onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'pendingInvitedOnline', name: 'mike' }]]),
+        onlinePlayerRequest: fixedRequest([
+            [1, { type: 'local', name: '' }], [2, { type: 'pendingInvitedOnline', name: 'mike' }],
+        ]),
     });
     await bobInvite;
 
@@ -334,7 +350,10 @@ test('invite + refuse cancels the game and notifies everyone involved', async ()
     await bob.close();
 });
 
-test('a multi-invite decline waits for every invitee before cancelling, and a too-late accept is rejected with a specific message', async () => {
+test(
+    'a multi-invite decline waits for every invitee before cancelling, and a too-late accept is '
+    + 'rejected with a specific message',
+    async () => {
     const alice = await registerAndLogin('olga');
     const bob = await registerAndLogin('peter');
     const carol = await registerAndLogin('quinn');
@@ -343,7 +362,9 @@ test('a multi-invite decline waits for every invitee before cancelling, and a to
     const carolInvite = new Promise<any>(resolve => carol.onEvent('game/invite', resolve));
     const { id } = await alice.req<{ id: string }>('game/create', {
         config: passOnlyConfig(),
-        onlinePlayerRequest: fixedRequest([[1, { type: 'pendingInvitedOnline', name: 'peter' }], [2, { type: 'pendingInvitedOnline', name: 'quinn' }]]),
+        onlinePlayerRequest: fixedRequest([
+            [1, { type: 'pendingInvitedOnline', name: 'peter' }], [2, { type: 'pendingInvitedOnline', name: 'quinn' }],
+        ]),
     });
     await Promise.all([bobInvite, carolInvite]);
 
@@ -368,7 +389,11 @@ test('a multi-invite decline waits for every invitee before cancelling, and a to
     const aliceFailed = new Promise<any>(resolve => alice.onEvent('game/invite-failed', resolve));
     await assert.rejects(
         carol.req('game/invite-respond', { id, accept: true }),
-        (e: any) => { assert.match(e.message, /already refused by another invited player/); assert.equal(e.statusCode, 409); return true; },
+        (e: any) => {
+            assert.match(e.message, /already refused by another invited player/);
+            assert.equal(e.statusCode, 409);
+            return true;
+        },
     );
     const failedMsg = await aliceFailed;
     assert.equal(failedMsg.id, id);
@@ -400,7 +425,9 @@ test('inviting the same user into two slots resolves both from one response, wit
         bob.onEvent('game/invite', m => { bobInvites.push(m); if (bobInvites.length === 1) resolve(m); }));
     const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
         config: passOnlyConfig(),
-        onlinePlayerRequest: fixedRequest([[1, { type: 'pendingInvitedOnline', name: 'sam' }], [2, { type: 'pendingInvitedOnline', name: 'sam' }]]),
+        onlinePlayerRequest: fixedRequest([
+            [1, { type: 'pendingInvitedOnline', name: 'sam' }], [2, { type: 'pendingInvitedOnline', name: 'sam' }],
+        ]),
     });
     assert.equal(status, 'waiting');
     await firstBobInvite;

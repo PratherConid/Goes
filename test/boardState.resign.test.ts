@@ -38,7 +38,10 @@ test('resigning after real moves have been made ends the game via the last real 
 
     bs.resign(1);
     assert.equal(bs.gameOver(), true);
-    assert.equal(bs.lastMove().allPassed, false, 'resign() never stamps anything onto MoveInfo - gameOver() checks resignedPlayers directly');
+    assert.equal(
+        bs.lastMove().allPassed, false,
+        'resign() never stamps anything onto MoveInfo - gameOver() checks resignedPlayers directly',
+    );
 });
 
 test('resigning with more than one non-resigned player left does not end the game', () => {
@@ -48,8 +51,12 @@ test('resigning with more than one non-resigned player left does not end the gam
         { player: 2, stones: [0, 1, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },
         { player: 3, stones: [0, 0, 1], protected: [0, 0, 0], friendly: [0, 0, 0] },
     ];
-    const bs = new BoardState(3, 3, turnList, [[null, null, null], [null, null, null], [null, null, null]], [null, null, null],
-        { 1: new Set([1]), 2: new Set([2]), 3: new Set([3]) }, false, 'area', [0, 0, 0], 'situational', false, null, new Array(bc.N).fill(0), bc);
+    const bs = new BoardState(
+        3, 3, turnList,
+        [[null, null, null], [null, null, null], [null, null, null]], [null, null, null],
+        { 1: new Set([1]), 2: new Set([2]), 3: new Set([3]) }, false, 'area', [0, 0, 0],
+        'situational', false, null, new Array(bc.N).fill(0), bc,
+    );
 
     bs.resign(1);
     assert.equal(bs.gameOver(), false, '2 non-resigned players remain');

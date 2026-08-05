@@ -86,7 +86,8 @@ export class OnlineGameManager {
         game.engineSessions.clear();   // ephemeral AI session IDs have no value once the game is over
         this.finishedGames.set(game.id, game);
         const finishedGame = new FinishedGame(
-            game.config, game.boardState.moveInfos().map(m => ({ pos: m.pos, stone: m.stone })), new Map(game.boardState.resigns),
+            game.config, game.boardState.moveInfos().map(m => ({ pos: m.pos, stone: m.stone })),
+            new Map(game.boardState.resigns),
         );
         void recordFinishedGame(this.gameRecordState, game.id, finishedGame, game.observers).catch(e =>
             console.error('[onlineGameManager] failed to record finished game', game.id, e));
@@ -119,11 +120,17 @@ export class OnlineGameManager {
 
         if (this._readyToStart(serverConfig)) {
             // All slots pre-assigned and confirmed — start immediately.
-            const pending: ServerPendingGame = { id, config: serverConfig, observers: new Set(), fixed: request.fixed, refused: new Set(), unrespondedInvited };
+            const pending: ServerPendingGame = {
+                id, config: serverConfig, observers: new Set(), fixed: request.fixed,
+                refused: new Set(), unrespondedInvited,
+            };
             this._startGame(pending);
             return { id, status: 'playing' };
         }
-        this.pendingGames.set(id, { id, config: serverConfig, observers: new Set(), fixed: request.fixed, refused: new Set(), unrespondedInvited });
+        this.pendingGames.set(id, {
+            id, config: serverConfig, observers: new Set(), fixed: request.fixed,
+            refused: new Set(), unrespondedInvited,
+        });
         return { id, status: 'waiting' };
     }
 
@@ -210,7 +217,13 @@ export class OnlineGameManager {
         if (accept)  // only reachable here when the game was already refused
             throw Object.assign(
                 new Error(`Game ${id} already refused by another invited player`),
-                { statusCode: 409, pushes: (notify ?? []).map(name => ({ to: name, type: 'game/invite-failed', payload: { id, message: `Creation of invited online game ${id} failed due to user refusal` } })) },
+                {
+                    statusCode: 409,
+                    pushes: (notify ?? []).map(name => ({
+                        to: name, type: 'game/invite-failed',
+                        payload: { id, message: `Creation of invited online game ${id} failed due to user refusal` },
+                    })),
+                },
             );
         return { status: 'cancelled', notify: notify ?? [] };
     }
@@ -233,13 +246,15 @@ export class OnlineGameManager {
     }
 
     private _startGame(pending: ServerPendingGame) {
-        const bc = applyModifiers(boardTypeToFn.get(pending.config.boardType)!(...pending.config.boardArgs), pending.config.boardModifiers);
+        const bc = applyModifiers(
+            boardTypeToFn.get(pending.config.boardType)!(...pending.config.boardArgs), pending.config.boardModifiers,
+        );
         const boardState = new BoardState(
             pending.config.numStones, pending.config.numPlayers,
             pending.config.turnList, pending.config.playerStonePlaceLimit, pending.config.globalStonePlaceLimit,
             pending.config.stoneToPlayerMap,
-            pending.config.forcedPassOnly, pending.config.scoreRule, pending.config.komi, pending.config.koRule, pending.config.allowSuicide,
-            pending.config.maxPlies, new Array(bc.N).fill(0), bc,
+            pending.config.forcedPassOnly, pending.config.scoreRule, pending.config.komi, pending.config.koRule,
+            pending.config.allowSuicide, pending.config.maxPlies, new Array(bc.N).fill(0), bc,
         );
         this.pendingGames.delete(pending.id);
         this.activeGames.set(pending.id, {
@@ -295,7 +310,8 @@ export class OnlineGameManager {
             const game = this.finishedGames.get(id);
             if (!game) continue;   // shouldn't happen, but don't crash on a bookkeeping mismatch
             result.push({ id, finishedGame: new FinishedGame(
-                game.config, game.boardState.moveInfos().map(m => ({ pos: m.pos, stone: m.stone })), new Map(game.boardState.resigns),
+                game.config, game.boardState.moveInfos().map(m => ({ pos: m.pos, stone: m.stone })),
+                new Map(game.boardState.resigns),
             ) });
         }
         return result;
@@ -326,10 +342,12 @@ export class OnlineGameManager {
         const game = this.activeGames.get(id);
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
         if (game.boardState.gameOver()) throw Object.assign(new Error('Game is not in progress'), { statusCode: 409 });
-        if (game.boardState.getView().plyCount !== clientIdx) throw Object.assign(new Error('Move index mismatch'), { statusCode: 409 });
+        if (game.boardState.getView().plyCount !== clientIdx)
+            throw Object.assign(new Error('Move index mismatch'), { statusCode: 409 });
         if (!positions.includes(game.boardState.nextTurn.player))
             throw Object.assign(new Error('Not your turn'), { statusCode: 403 });
-        if (!game.boardState.makeMove(moveIndex, stone ?? undefined)) throw Object.assign(new Error('Illegal move'), { statusCode: 400 });
+        if (!game.boardState.makeMove(moveIndex, stone ?? undefined))
+            throw Object.assign(new Error('Illegal move'), { statusCode: 400 });
         game.boardState.advanceResigned();
         this._maybeFinish(game);
     }

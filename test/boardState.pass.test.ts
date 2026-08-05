@@ -14,7 +14,15 @@ import { rectangularBoard } from '../shared/boardConfig.ts';
 
 function freshState(forcedPassOnly: boolean) {
     const bc = rectangularBoard(3, 3);
-    return new BoardState(2, 2, [{ player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] }, { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] }], [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, forcedPassOnly, 'area', [0, 0], 'situational', false, null, new Array(bc.N).fill(0), bc);
+    return new BoardState(
+        2, 2,
+        [
+            { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
+            { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
+        ],
+        [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, forcedPassOnly, 'area',
+        [0, 0], 'situational', false, null, new Array(bc.N).fill(0), bc,
+    );
 }
 
 test('forcedPassOnly=false: pass is enabled even when legal PLACE moves exist', () => {
@@ -39,7 +47,15 @@ test('forcedPassOnly=true: pass is enabled once no legal PLACE moves remain', ()
     // would risk violating the engine's "no group has 0 liberties" invariant
     // if hand-constructed instead of reached via legal play).
     const bc = rectangularBoard(1, 1);
-    const bs = new BoardState(2, 2, [{ player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] }, { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] }], [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, true, 'area', [0, 0], 'situational', false, null, new Array(bc.N).fill(0), bc);
+    const bs = new BoardState(
+        2, 2,
+        [
+            { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
+            { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
+        ],
+        [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, true, 'area', [0, 0],
+        'situational', false, null, new Array(bc.N).fill(0), bc,
+    );
     assert.equal(bs.gameOver(), false, 'sanity: 2 active players, no moves played yet');
     assert.equal(bs.noTradLegal(), true, 'the lone node cannot legally hold a stone');
     assert.equal(bs.getView().passEnabled, true);
@@ -51,7 +67,17 @@ test('a resigned player may always pass, regardless of forcedPassOnly', () => {
     // "<=1 active players" rule would end the game via the resignation itself,
     // masking whether the pass-permission logic is what actually allowed it.
     const bc = rectangularBoard(3, 3);
-    const bs = new BoardState(3, 3, [{ player: 1, stones: [1, 0, 0], protected: [0, 0, 0], friendly: [0, 0, 0] }, { player: 2, stones: [0, 1, 0], protected: [0, 0, 0], friendly: [0, 0, 0] }, { player: 3, stones: [0, 0, 1], protected: [0, 0, 0], friendly: [0, 0, 0] }], [[null, null, null], [null, null, null], [null, null, null]], [null, null, null], { 1: new Set([1]), 2: new Set([2]), 3: new Set([3]) }, true, 'area', [0, 0, 0], 'situational', false, null, new Array(bc.N).fill(0), bc);
+    const bs = new BoardState(
+        3, 3,
+        [
+            { player: 1, stones: [1, 0, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },
+            { player: 2, stones: [0, 1, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },
+            { player: 3, stones: [0, 0, 1], protected: [0, 0, 0], friendly: [0, 0, 0] },
+        ],
+        [[null, null, null], [null, null, null], [null, null, null]], [null, null, null],
+        { 1: new Set([1]), 2: new Set([2]), 3: new Set([3]) }, true, 'area', [0, 0, 0],
+        'situational', false, null, new Array(bc.N).fill(0), bc,
+    );
     assert.equal(bs.noTradLegal(), false, 'sanity: board is empty, legal moves should exist');
     bs.resign(1);
     assert.equal(bs.gameOver(), false, 'sanity: 2 non-resigned players remain');

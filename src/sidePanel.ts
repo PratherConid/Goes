@@ -45,7 +45,9 @@ export const SidePanelHierarchy: Record<SidePanelContent, [SidePanelContent | nu
     // GamePresetSelection's nav button is likewise rendered by
     // Renderer._refreshSidePanel() - into #new-game-buttons, alongside the
     // Start-new-game action button - not the generic #home-panel slot.
-    [SidePanelContent.NewGame]:          [SidePanelContent.Home, [SidePanelContent.GamePresetSelection, SidePanelContent.ConfigureOnlinePlayers]],
+    [SidePanelContent.NewGame]:          [SidePanelContent.Home, [
+        SidePanelContent.GamePresetSelection, SidePanelContent.ConfigureOnlinePlayers,
+    ]],
     // GameRecords is a pure hub (like Home) - its own buttons go into the
     // generic #game-records-panel slot itself (see Renderer._refreshSidePanel(),
     // same pattern as #home-panel), since it has no other content of its own.

@@ -43,7 +43,10 @@ test('reaching maxPlies via a PLACE move ends the game', () => {
     assert.equal(bs.makeMove(0, 1), true, 'the single allowed ply is a placement');
 
     assert.equal(bs.lastMove().moveType, MoveType.PLACE);
-    assert.equal(bs.lastMove().allPassed, false, 'this PLACE move did not complete an all-pass round - maxPlies alone ends the game');
+    assert.equal(
+        bs.lastMove().allPassed, false,
+        'this PLACE move did not complete an all-pass round - maxPlies alone ends the game',
+    );
     assert.equal(bs.gameOver(), true);
     assert.notEqual(bs.getView().winners, null);
 
@@ -59,7 +62,10 @@ test('reaching maxPlies via an ordinary (non-terminal) PASS move ends the game',
 
     assert.equal(bs.lastMove().moveType, MoveType.PASS);
     assert.equal(bs.lastMove().consecutivePasses, 1, 'sanity: below turnList.length=2');
-    assert.equal(bs.lastMove().allPassed, false, 'consecutivePasses=1 < turnList.length=2 - maxPlies alone ends the game, not an all-pass round');
+    assert.equal(
+        bs.lastMove().allPassed, false,
+        'consecutivePasses=1 < turnList.length=2 - maxPlies alone ends the game, not an all-pass round',
+    );
     assert.equal(bs.gameOver(), true);
 });
 
@@ -73,7 +79,10 @@ test('withdrawMove() past a maxPlies-triggered game-over move un-ends the game',
     assert.equal(bs.getView().winners, null);
 });
 
-test('the pre-existing terminal-consecutive-pass game-over still works, now reported via MoveInfo.allPassed on a PASS move', () => {
+test(
+    'the pre-existing terminal-consecutive-pass game-over still works, ' +
+    'now reported via MoveInfo.allPassed on a PASS move',
+    () => {
     const bs = game(null, true);
     assert.equal(bs.makeMove(null), true, 'player 1 passes');
     assert.equal(bs.gameOver(), false, 'sanity: only 1 consecutive pass so far, turnList.length=2');

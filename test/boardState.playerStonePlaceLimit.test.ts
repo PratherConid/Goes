@@ -21,7 +21,10 @@ function emptyGame(playerStonePlaceLimit: (number | null)[][]) {
         false, 'area', [0, 0], 'situational', false, null, new Array(bc.N).fill(0), bc);
 }
 
-test('a stone becomes illegal for a player once their placement limit is reached, while other stones/players are unaffected', () => {
+test(
+    'a stone becomes illegal for a player once their placement limit is reached, ' +
+    'while other stones/players are unaffected',
+    () => {
     // stone1 limited to 1 placement for player 1; stone2 unlimited.
     const bs = emptyGame([[1, null], [null, null]]);
 

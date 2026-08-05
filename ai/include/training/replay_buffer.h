@@ -101,7 +101,8 @@ private:
     int capacity_;  // max games
     std::vector<Slot> buf_;
     uint64_t removed_ply_count_ = 0;   // # plies belonging to evicted games (front of the live ALL_REC window)
-    uint64_t removed_game_count_ = 0;  // # games evicted so far (also: next eviction targets slot removed_game_count_ % capacity_)
+    uint64_t removed_game_count_ = 0;  // # games evicted so far (also: next eviction targets slot
+                                        // removed_game_count_ % capacity_)
     int64_t live_ply_count_ = 0;       // # plies currently in buf_ (width of the live ALL_REC window)
     std::unordered_map<uint64_t, size_t> idx_map_;  // live ALL_REC index -> slot in buf_
 };

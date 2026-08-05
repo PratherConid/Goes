@@ -29,7 +29,9 @@ test('two stones both legal at the clicked location: opens the popup with both',
     const game = new BoardState(2, 2, [
         { player: 1, stones: [1, 1], protected: [0, 0], friendly: [0, 0] },
         { player: 2, stones: [1, 1], protected: [0, 0], friendly: [0, 0] },
-    ], [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', [0, 0], 'situational', false, null, new Array(bc.N).fill(0), bc);
+    ],
+    [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', [0, 0],
+    'situational', false, null, new Array(bc.N).fill(0), bc);
     const renderer: any = createRenderer(game);
     const mainSvg = document.getElementById('main-canvas') as unknown as SVGSVGElement;
     const plyNum = document.getElementById('ply-num') as HTMLSpanElement;
@@ -47,7 +49,9 @@ test('clicking a popup circle places a move with that specific stone', () => {
     const game = new BoardState(2, 2, [
         { player: 1, stones: [1, 1], protected: [0, 0], friendly: [0, 0] },
         { player: 2, stones: [1, 1], protected: [0, 0], friendly: [0, 0] },
-    ], [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', [0, 0], 'situational', false, null, new Array(bc.N).fill(0), bc);
+    ],
+    [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', [0, 0],
+    'situational', false, null, new Array(bc.N).fill(0), bc);
     const renderer: any = createRenderer(game);
     const mainSvg = document.getElementById('main-canvas') as unknown as SVGSVGElement;
     const plyNum = document.getElementById('ply-num') as HTMLSpanElement;
@@ -71,7 +75,9 @@ test('clicking the board away from the popup circles cancels selection without c
     const game = new BoardState(2, 2, [
         { player: 1, stones: [1, 1], protected: [0, 0], friendly: [0, 0] },
         { player: 2, stones: [1, 1], protected: [0, 0], friendly: [0, 0] },
-    ], [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', [0, 0], 'situational', false, null, new Array(bc.N).fill(0), bc);
+    ],
+    [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', [0, 0],
+    'situational', false, null, new Array(bc.N).fill(0), bc);
     const renderer: any = createRenderer(game);
     const mainSvg = document.getElementById('main-canvas') as unknown as SVGSVGElement;
     const plyNum = document.getElementById('ply-num') as HTMLSpanElement;
@@ -102,7 +108,10 @@ function suicideTrapBoard(protectedStones: number[], offered1: number[], offered
     const game = new BoardState(3, 2, [
         { player: 1, stones: offered1, protected: protectedStones, friendly: [0, 0, 0] },
         { player: 2, stones: offered2, protected: [0, 0, 0], friendly: [0, 0, 0] },
-    ], [[null, null], [null, null], [null, null]], [null, null, null], { 1: new Set([1]), 2: new Set([2]), 3: new Set() }, false, 'area', [0, 0], 'situational', false, null, board, bc);
+    ],
+        [[null, null], [null, null], [null, null]], [null, null, null],
+        { 1: new Set([1]), 2: new Set([2]), 3: new Set() }, false, 'area', [0, 0], 'situational', false, null,
+        board, bc);
     return { game, center: 4 };
 }
 

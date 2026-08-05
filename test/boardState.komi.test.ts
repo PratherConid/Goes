@@ -9,7 +9,15 @@ import { rectangularBoard } from '../shared/boardConfig.ts';
 // winner, same "both pass" pattern used in boardState.finishedGame.test.ts.
 function playToTiedFinish(komi: number[]) {
     const bc = rectangularBoard(1, 1);
-    const bs = new BoardState(2, 2, [{ player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] }, { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] }], [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', komi, 'situational', false, null, new Array(bc.N).fill(0), bc);
+    const bs = new BoardState(
+        2, 2,
+        [
+            { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
+            { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
+        ],
+        [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', komi,
+        'situational', false, null, new Array(bc.N).fill(0), bc,
+    );
     assert.equal(bs.makeMove(null), true);
     assert.equal(bs.makeMove(null), true);
     assert.equal(bs.gameOver(), true);
@@ -31,8 +39,17 @@ test('a resigned player\'s komi does not count', () => {
     // 3 players so resigning 1 leaves 2 active, matching the pattern used in
     // boardState.pass.test.ts (resigning down to 1 active player would end
     // the game via the separate "<=1 active players" rule instead).
-    const turnList = [{ player: 1, stones: [1, 0, 0], protected: [0, 0, 0], friendly: [0, 0, 0] }, { player: 2, stones: [0, 1, 0], protected: [0, 0, 0], friendly: [0, 0, 0] }, { player: 3, stones: [0, 0, 1], protected: [0, 0, 0], friendly: [0, 0, 0] }];
-    const bs = new BoardState(3, 3, turnList, [[null, null, null], [null, null, null], [null, null, null]], [null, null, null], { 1: new Set([1]), 2: new Set([2]), 3: new Set([3]) }, false, 'area', [0, 5, 0], 'situational', false, null, new Array(bc.N).fill(0), bc);
+    const turnList = [
+        { player: 1, stones: [1, 0, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },
+        { player: 2, stones: [0, 1, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },
+        { player: 3, stones: [0, 0, 1], protected: [0, 0, 0], friendly: [0, 0, 0] },
+    ];
+    const bs = new BoardState(
+        3, 3, turnList,
+        [[null, null, null], [null, null, null], [null, null, null]], [null, null, null],
+        { 1: new Set([1]), 2: new Set([2]), 3: new Set([3]) }, false, 'area', [0, 5, 0],
+        'situational', false, null, new Array(bc.N).fill(0), bc,
+    );
     bs.resign(2);
     assert.equal(bs.makeMove(null), true);
     assert.equal(bs.makeMove(null), true);

@@ -9,7 +9,8 @@ function mkConfig(boardType: string, boardArgs: number[]): GameConfig {
     return new GameConfig(boardType, boardArgs, [], 2, 2, [
         { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
         { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
-    ], [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', [0, 0], 'situational', false, null);
+    ], [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', [0, 0],
+    'situational', false, null);
 }
 
 test('9x9 rect board has 5 star points (4 corners at the 3-3 point + center)', () => {

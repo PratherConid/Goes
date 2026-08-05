@@ -286,7 +286,10 @@ export function computeStarPoints(config: GameConfig): number[][] {
     return points;
 }
 
-/** A rectangular board with width `w` and height `h` where diagonally adjacent nodes are also connected, but only at every `m`-th square. */
+/**
+ * A rectangular board with width `w` and height `h` where diagonally adjacent nodes are also
+ * connected, but only at every `m`-th square.
+ */
 export function rectangularDiagonalBoard(w: number, h: number, m: number): BoardConfig {
     assert(w > 0 && h > 0 && m > 0, `w, h, and m must be positive, got w=${w} h=${h} m=${m}`);
     const pos: number[][] = [];
@@ -310,7 +313,10 @@ export function rectangularDiagonalBoard(w: number, h: number, m: number): Board
     return make(pos, adj);
 }
 
-/** A cubical board with width `w`, height `h` and depth `d`. Each node is identified by (col, row, slice) where 0 ≤ col < w, 0 ≤ row < h, 0 ≤ slice < d. */
+/**
+ * A cubical board with width `w`, height `h` and depth `d`. Each node is identified by
+ * (col, row, slice) where 0 ≤ col < w, 0 ≤ row < h, 0 ≤ slice < d.
+ */
 export function cubicalBoard(w: number, h: number, d: number): BoardConfig {
     assert(w > 0 && h > 0 && d > 0, `w, h, and d must be positive, got w=${w} h=${h} d=${d}`);
     // Natural 3D coords (col, row, slice), centered. Rendered via projMat below - chosen so that
@@ -337,7 +343,11 @@ export function cubicalBoard(w: number, h: number, d: number): BoardConfig {
     return make(new Embedding(3, pos, projMat), adj);
 }
 
-/** A hypercubical board with width `w`, height `h`, depth `d` and hyperdepth `t`. Each node is identified by (col, row, slice, hyperslice) where 0 ≤ col < w, 0 ≤ row < h, 0 ≤ slice < d, 0 ≤ hyperslice < t. */
+/**
+ * A hypercubical board with width `w`, height `h`, depth `d` and hyperdepth `t`. Each node is
+ * identified by (col, row, slice, hyperslice) where 0 ≤ col < w, 0 ≤ row < h, 0 ≤ slice < d,
+ * 0 ≤ hyperslice < t.
+ */
 export function hypercubeBoard(w: number, h: number, d: number, t: number): BoardConfig {
     assert(w > 0 && h > 0 && d > 0 && t > 0, `w, h, d, and t must be positive, got w=${w} h=${h} d=${d} t=${t}`);
     // Natural 4D coords (col, row, slice, hyperslice), all centered. projMat below reproduces the
@@ -354,11 +364,14 @@ export function hypercubeBoard(w: number, h: number, d: number, t: number): Boar
     const adj = zeroAdj(N);
     const idx = (r: number, c: number, u: number, s: number) =>
         ((s * d + u) * h + r) * w + c;
+    const dirs4: [number, number, number, number][] = [
+        [0,1,0,0],[1,0,0,0],[0,-1,0,0],[-1,0,0,0],[0,0,1,0],[0,0,-1,0],[0,0,0,1],[0,0,0,-1],
+    ];
     for (let s = 0; s < t; s++)
         for (let u = 0; u < d; u++)
             for (let r = 0; r < h; r++)
                 for (let c = 0; c < w; c++)
-                    for (const [dr,dc,du,ds] of [[0,1,0,0],[1,0,0,0],[0,-1,0,0],[-1,0,0,0],[0,0,1,0],[0,0,-1,0],[0,0,0,1],[0,0,0,-1]]) {
+                    for (const [dr,dc,du,ds] of dirs4) {
                         const nr=r+dr, nc=c+dc, nu=u+du, ns=s+ds;
                         if (nr<0||nr>=h||nc<0||nc>=w||nu<0||nu>=d||ns<0||ns>=t) continue;
                         adj[idx(r,c,u,s)][idx(nr,nc,nu,ns)] = 1;
@@ -819,18 +832,32 @@ export enum PrescribedBoard {
 }
 
 export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string, string]> = {
-    [PrescribedBoard.rectangularBoard]:         [2, "rect",  "&lt;w&gt; &lt;h&gt;",                         "Rectangular board"],
-    [PrescribedBoard.rectangularDiagonalBoard]: [3, "rectd", "&lt;w&gt; &lt;h&gt; &lt;m&gt;",               "Rectangular + diagonal connections every m squares"],
+    [PrescribedBoard.rectangularBoard]:
+        [2, "rect", "&lt;w&gt; &lt;h&gt;", "Rectangular board"],
+    [PrescribedBoard.rectangularDiagonalBoard]:
+        [3, "rectd", "&lt;w&gt; &lt;h&gt; &lt;m&gt;", "Rectangular + diagonal connections every m squares"],
     [PrescribedBoard.cubicalBoard]:             [3, "cub",   "&lt;w&gt; &lt;h&gt; &lt;d&gt;",               "Cubical board"],
-    [PrescribedBoard.hypercubeBoard]:           [4, "hcub",  "&lt;w&gt; &lt;h&gt; &lt;d&gt; &lt;t&gt;",    "Hypercubical board"],
-    [PrescribedBoard.triangularBoard]:          [1, "tri",   "&lt;w&gt;",                                    "Triangular board of side w"],
-    [PrescribedBoard.triangularHexBoard]:       [1, "trihex", "&lt;d&gt;",                                   "Triangular-lattice board in a hexagon shape, with d layers of triangles around the center"],
-    [PrescribedBoard.hexBoard]:                 [1, "hex",   "&lt;d&gt;",                                    "Hexagon-tiled board with d layers of hexagons around a center hexagon"],
-    [PrescribedBoard.trihexBoard]:               [1, "hexdel", "&lt;d&gt;",                                   "Trihexagonal (hexdel) board, d layers of hexagons connected by triangles around a center hexagon"],
-    [PrescribedBoard.snubSquareBoard]:          [3, "snubsq", "&lt;w&gt; &lt;h&gt; &lt;g&gt;",              "Snub square board (g\xD7g squares)"],
-    [PrescribedBoard.snubSquareTriBoard]:       [3, "snubsqtri", "&lt;w&gt; &lt;h&gt; &lt;g&gt;",           "Snub square board with the connecting triangles as g\xD7g triangular boards too"],
-    [PrescribedBoard.twistedSquareBoard]:       [3, "twsq",  "&lt;w&gt; &lt;h&gt; &lt;g&gt;",               "Twisted-square board (g\xD7g squares)"],
-    [PrescribedBoard.glueTwistedSquareBoard]:   [3, "gtsq",  "&lt;w&gt; &lt;h&gt; &lt;g&gt;",               "Glued-twisted-square board (g\xD7g squares)"],
+    [PrescribedBoard.hypercubeBoard]:
+        [4, "hcub", "&lt;w&gt; &lt;h&gt; &lt;d&gt; &lt;t&gt;", "Hypercubical board"],
+    [PrescribedBoard.triangularBoard]:
+        [1, "tri", "&lt;w&gt;", "Triangular board of side w"],
+    [PrescribedBoard.triangularHexBoard]:
+        [1, "trihex", "&lt;d&gt;",
+            "Triangular-lattice board in a hexagon shape, with d layers of triangles around the center"],
+    [PrescribedBoard.hexBoard]:
+        [1, "hex", "&lt;d&gt;", "Hexagon-tiled board with d layers of hexagons around a center hexagon"],
+    [PrescribedBoard.trihexBoard]:
+        [1, "hexdel", "&lt;d&gt;",
+            "Trihexagonal (hexdel) board, d layers of hexagons connected by triangles around a center hexagon"],
+    [PrescribedBoard.snubSquareBoard]:
+        [3, "snubsq", "&lt;w&gt; &lt;h&gt; &lt;g&gt;", "Snub square board (g\xD7g squares)"],
+    [PrescribedBoard.snubSquareTriBoard]:
+        [3, "snubsqtri", "&lt;w&gt; &lt;h&gt; &lt;g&gt;",
+            "Snub square board with the connecting triangles as g\xD7g triangular boards too"],
+    [PrescribedBoard.twistedSquareBoard]:
+        [3, "twsq", "&lt;w&gt; &lt;h&gt; &lt;g&gt;", "Twisted-square board (g\xD7g squares)"],
+    [PrescribedBoard.glueTwistedSquareBoard]:
+        [3, "gtsq", "&lt;w&gt; &lt;h&gt; &lt;g&gt;", "Glued-twisted-square board (g\xD7g squares)"],
 };
 
 export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => BoardConfig> = {

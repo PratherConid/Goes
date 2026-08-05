@@ -18,7 +18,10 @@ test('a stone mapped to multiple players adds its full point value to each, not 
     ];
     // stone1 scores only for player 1; stone2 scores for both players 2 and 3.
     const stoneToPlayerMap = { 1: new Set([1]), 2: new Set([2, 3]) };
-    const bs = new BoardState(2, 3, turnList, [[null, null, null], [null, null, null]], [null, null], stoneToPlayerMap, false, 'stone', [0, 0, 0], 'situational', false, null, board, bc);
+    const bs = new BoardState(
+        2, 3, turnList, [[null, null, null], [null, null, null]], [null, null], stoneToPlayerMap,
+        false, 'stone', [0, 0, 0], 'situational', false, null, board, bc,
+    );
 
     assert.equal(bs.makeMove(null), true);
     assert.equal(bs.makeMove(null), true);
@@ -38,7 +41,10 @@ test('a stone mapped to an empty set scores for no one', () => {
     ];
     // stone2 never appears on the board; stone3 does, but maps to no players.
     const stoneToPlayerMap = { 1: new Set([1]), 2: new Set([2]), 3: new Set<number>() };
-    const bs = new BoardState(3, 2, turnList, [[null, null], [null, null], [null, null]], [null, null, null], stoneToPlayerMap, false, 'stone', [0, 0], 'situational', false, null, board, bc);
+    const bs = new BoardState(
+        3, 2, turnList, [[null, null], [null, null], [null, null]], [null, null, null], stoneToPlayerMap,
+        false, 'stone', [0, 0], 'situational', false, null, board, bc,
+    );
 
     assert.equal(bs.makeMove(null), true);
     assert.equal(bs.makeMove(null), true);
