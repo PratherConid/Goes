@@ -5,7 +5,7 @@ Self-play training pipeline for Goes using Monte Carlo Tree Search (MCTS), in th
 Four model architectures are available:
 - **CNN**: a plain residual conv stack (no pooling) for boards with a 2D integer embedding — `rect`, `rectd`, `tri`, `twsq`, `gtsq`. The default for these boards.
 - **UNet**: an alternative for the same board types (U-Net encoder/decoder with pooling), selectable via `--net-arch unet`.
-- **MessagePassingGNN**: for higher-dimensional boards whose nodes cannot be laid out on a 2D grid — `cub`, `hcub` — and for any board with a non-empty `boardModifiers` (`rectify`/`edgeSplit` both change the node count away from the grid shape CNN/UNet require, regardless of the underlying `boardType`).
+- **MessagePassingGNN**: for higher-dimensional boards whose nodes cannot be laid out on a 2D grid — `cub`, `hcub` — and for any board with a non-empty `boardModifiers`. CNN/UNet's featurizer actually derives its grid shape dynamically from the board's own embedding, not from `boardArgs`, so a modified (`rectify`/`edgeSplit`'d) 2D board wouldn't crash it - but that combination is untested and we can't currently rule out unexpected results, so it's gated to GNN/Transformer as a precaution, regardless of the underlying `boardType`.
 - **Transformer**: history-aware (attends over every previously reached board state, not just the current one), topology-agnostic, selectable via `--net-arch transformer` on any board type. This is the **only** architecture that supports `forcedPassOnly: true` — see **Transformer Architecture**, below.
 
 ## Differences from the TypeScript engine
