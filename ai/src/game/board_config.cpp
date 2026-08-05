@@ -349,6 +349,71 @@ BoardConfig triangular_board(int w) {
     return make_bc(std::move(adj), 2u, std::move(pos));
 }
 
+BoardConfig regular_polygon_board(int n) {
+    assert(n >= 3 && "n must be at least 3");
+    auto adj = zero_adj(n);
+    for (int k = 0; k < n; k++) {
+        int next = (k + 1) % n;
+        adj[k][next] = 1;
+        adj[next][k] = 1;
+    }
+    std::vector<std::vector<unsigned>> embed(n); // emb_dim=0: every node's embed[] is empty
+    return make_bc(std::move(adj), 0u, std::move(embed));
+}
+
+// Mirrors shared/boardConfig.ts's dodecahedronBoard() connectivity exactly (adjacency only - no
+// position/embedding, see board_config.h's own doc comment on this function).
+BoardConfig dodecahedron_board() {
+    auto x_idx = [](int sa, int sb, int sc) { return sa * 4 + sb * 2 + sc; };
+    auto y_idx = [](int sb, int sc) { return 8 + sb * 2 + sc; };
+    auto z_idx = [](int sa, int sb) { return 12 + sa * 2 + sb; };
+    auto w_idx = [](int sa, int sc) { return 16 + sa * 2 + sc; };
+
+    auto adj = zero_adj(20);
+    auto connect = [&](int i, int j) { adj[i][j] = 1; adj[j][i] = 1; };
+    for (int sa = 0; sa < 2; sa++)
+        for (int sb = 0; sb < 2; sb++)
+            for (int sc = 0; sc < 2; sc++) {
+                int x = x_idx(sa, sb, sc);
+                connect(x, y_idx(sb, sc));
+                connect(x, z_idx(sa, sb));
+                connect(x, w_idx(sa, sc));
+            }
+    for (int sc = 0; sc < 2; sc++) connect(y_idx(0, sc), y_idx(1, sc));
+    for (int sb = 0; sb < 2; sb++) connect(z_idx(0, sb), z_idx(1, sb));
+    for (int sa = 0; sa < 2; sa++) connect(w_idx(sa, 0), w_idx(sa, 1));
+
+    std::vector<std::vector<unsigned>> embed(20); // emb_dim=0
+    return make_bc(std::move(adj), 0u, std::move(embed));
+}
+
+// Mirrors shared/boardConfig.ts's icosahedronBoard() connectivity exactly (adjacency only - no
+// position/embedding, see board_config.h's own doc comment on this function).
+BoardConfig icosahedron_board() {
+    auto a_idx = [](int sp, int sq) { return sp * 2 + sq; };
+    auto b_idx = [](int sp, int sq) { return 4 + sp * 2 + sq; };
+    auto c_idx = [](int sp, int sq) { return 8 + sp * 2 + sq; };
+
+    auto adj = zero_adj(12);
+    auto connect = [&](int i, int j) { adj[i][j] = 1; adj[j][i] = 1; };
+
+    for (int sq = 0; sq < 2; sq++) {
+        connect(a_idx(0, sq), a_idx(1, sq));
+        connect(b_idx(0, sq), b_idx(1, sq));
+        connect(c_idx(0, sq), c_idx(1, sq));
+    }
+    for (int sp = 0; sp < 2; sp++)
+        for (int sq = 0; sq < 2; sq++)
+            for (int free = 0; free < 2; free++) {
+                connect(a_idx(sp, sq), b_idx(free, sp));
+                connect(b_idx(sp, sq), c_idx(free, sp));
+                connect(c_idx(sp, sq), a_idx(free, sp));
+            }
+
+    std::vector<std::vector<unsigned>> embed(12); // emb_dim=0
+    return make_bc(std::move(adj), 0u, std::move(embed));
+}
+
 BoardConfig triangular_hex_board(int d) {
     assert(d >= 0 && "d must be non-negative");
     std::vector<std::pair<int,int>> coords;
@@ -761,6 +826,9 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<int>& 
     if (kind == "cub")   return cubical_board(v[0], v[1], v[2]);
     if (kind == "hcub")  return hypercube_board(v[0], v[1], v[2], v[3]);
     if (kind == "tri")   return triangular_board(v[0]);
+    if (kind == "regpoly") return regular_polygon_board(v[0]);
+    if (kind == "dodeca") return dodecahedron_board();
+    if (kind == "icosa") return icosahedron_board();
     if (kind == "trihex") return triangular_hex_board(v[0]);
     if (kind == "hex")   return hex_board(v[0]);
     if (kind == "hexdel") return trihex_board(v[0]);

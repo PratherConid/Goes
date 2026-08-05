@@ -2,6 +2,8 @@
 #include <limits>
 #include <algorithm>
 #include <cassert>
+#include <stdexcept>
+#include <string>
 #include <omp.h>
 
 // Match x's channel count to out_ch for a parameter-free residual shortcut:
@@ -38,7 +40,13 @@ TORCH_MODULE(ChannelLayerNorm);
 UNetImpl::UNetImpl(const BoardConfig& bc, const UNetConfig& cfg, int num_players, int num_stones)
     : cfg_(cfg), num_players_(num_players), num_stones_(num_stones)
 {
-    assert(bc.emb_dim == 2 && "UNet requires a 2D embedding (bc.emb_dim == 2)");
+    // A real (always-active) check, not assert() - assert compiles out under NDEBUG (this project's
+    // Release builds), which would otherwise let a non-2D-embedded board (e.g. regpoly/dodeca/icosa
+    // - see board_config.h - all use emb_dim=0 with an empty embed[] per node) fall through into the
+    // bc.embed[i][0]/[1] accesses below as undefined behavior instead of failing loudly here.
+    if (bc.emb_dim != 2)
+        throw std::runtime_error(
+            "UNet requires a 2D embedding (bc.emb_dim == 2), got emb_dim=" + std::to_string(bc.emb_dim));
     assert(bc.N > 0);
 
     // Compute the board's tight bounding box from embedding, then pad it up to

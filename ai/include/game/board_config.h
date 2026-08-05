@@ -115,6 +115,27 @@ BoardConfig hypercube_board(int w, int h, int d, int t);
 // A triangular board with side length w.
 BoardConfig triangular_board(int w);
 
+// A regular polygon with n edges (a simple n-cycle graph), n >= 3. Unlike every other board type
+// here, a unit-edge-length regular n-gon has no exact-integer Cartesian embedding for general n
+// (see shared/boardConfig.ts's regularPolygonBoard() and ai/Readme.md's now-resolved TODO note).
+// Rather than force an approximate/scaled embedding that would behave inconsistently with every
+// other board's "1 embed unit = 1 real unit" convention (see merge_close's own doc comment), this
+// uses emb_dim = 0 and an empty embed[] per node - adjacency (a plain n-cycle) is exact and
+// complete on its own, and only CNN/UNet actually need real 2D coordinates (see their own guards
+// against emb_dim != 2 in cnn.cpp/unet.cpp) - neither is grid-shaped anyway, so nothing is lost.
+BoardConfig regular_polygon_board(int n);
+
+// A regular dodecahedron: 20 vertices, 12 pentagonal faces, 30 edges (every vertex degree 3).
+// Same emb_dim = 0 / empty embed[] approach as regular_polygon_board, for the same reason
+// (dodecahedron vertices are inherently irrational - see shared/boardConfig.ts's
+// dodecahedronBoard() for the coordinates/connectivity derivation this mirrors, adjacency only).
+BoardConfig dodecahedron_board();
+
+// A regular icosahedron: 12 vertices, 20 triangular faces, 30 edges (every vertex degree 5).
+// Same emb_dim = 0 / empty embed[] approach, for the same reason - see shared/boardConfig.ts's
+// icosahedronBoard() for the coordinates/connectivity derivation this mirrors, adjacency only.
+BoardConfig icosahedron_board();
+
 // A triangular-lattice board arranged in a hexagon shape, with d layers of triangles surrounding
 // the central point. Not tiled by hexagons - see hex_board below for that. Cells are
 // identified by axial coordinates (q, r) with max(|q|, |r|, |q+r|) <= d, embedded (shifted to
@@ -171,8 +192,8 @@ BoardConfig glue_twisted_square_board(int w, int h, int g);
 BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("rect" | "rectd" |
-// "cub" | "hcub" | "tri" | "trihex" | "hex" | "hexdel" | "snubsq" | "snubsqtri" |
-// "twsq" | "gtsq" - matches shared/types.ts's
+// "cub" | "hcub" | "tri" | "regpoly" | "dodeca" | "icosa" | "trihex" | "hex" |
+// "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" - matches shared/types.ts's
 // GameConfig.boardType strings), passing `args` as that builder's positional
 // parameters. Throws std::runtime_error for an unknown kind. Shared by
 // train.cpp (via GameConfig::board_type/board_args, loaded from
