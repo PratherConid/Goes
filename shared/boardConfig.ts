@@ -1,28 +1,63 @@
 import type { GameConfig } from './types.js';
+import { convexHullEdges } from './geometry.js';
+
+/**
+ * A board's node positions in their natural embedding dimension (embDim - 2 for most boards, 3 for
+ * cubicalBoard, 4 for hypercubeBoard), plus the linear map (projMat, 2 x embDim) that projects them
+ * down to a 2D render position. Kept separate from the 2D render position so that geometric
+ * operations that care about real dimensionality (e.g. a convex-hull-based rectify()) can operate on
+ * `pos` directly instead of an already-flattened 2D approximation.
+ */
+export class Embedding {
+    embDim: number;
+    pos: number[][];       // N x embDim
+    projMat: number[][];   // 2 x embDim - projects natural coords to a 2D render position
+
+    constructor(embDim: number, pos: number[][], projMat: number[][]) {
+        assert(pos.every(p => p.length === embDim), 'Embedding: pos row length must equal embDim');
+        assert(projMat.length === 2 && projMat.every(r => r.length === embDim),
+            'Embedding: projMat must be 2 x embDim');
+        this.embDim = embDim;
+        this.pos = pos;
+        this.projMat = projMat;
+    }
+
+    /** The 2D render position: projMat applied to each row of pos. */
+    project(): number[][] {
+        return this.pos.map(p => [
+            p.reduce((s, v, k) => s + this.projMat[0][k] * v, 0),
+            p.reduce((s, v, k) => s + this.projMat[1][k] * v, 0),
+        ]);
+    }
+}
 
 export interface BoardConfig {
-    pos: number[][];  // N×2 array of node positions
+    emb: Embedding;    // natural-dimension node positions + their 2D projection
     adj: number[][];  // N×N symmetric adjacency matrix, entries 0/1
     N: number;
-    boardDimension: [[number, number], [number, number]];  // [[xmin,ymin],[xmax,ymax]]
+    boardDimension: [[number, number], [number, number]];  // [[xmin,ymin],[xmax,ymax]], of the 2D projection
 }
 
 function assert(cond: boolean, msg: string): asserts cond {
     if (!cond) throw new Error(`Assertion failed: ${msg}`);
 }
 
-function make(pos: number[][], adj: number[][]): BoardConfig {
-    const N = pos.length;
+const IDENTITY_2X2 = [[1, 0], [0, 1]];
+
+function make(posOrEmb: number[][] | Embedding, adj: number[][]): BoardConfig {
+    const emb = Array.isArray(posOrEmb) ? new Embedding(2, posOrEmb, IDENTITY_2X2) : posOrEmb;
+    const N = emb.pos.length;
     assert(adj.length === N && (N === 0 || adj[0].length === N), 'adj dimensions must match pos length');
     for (let i = 0; i < N; i++)
         for (let j = 0; j < N; j++)
             assert(adj[i][j] === adj[j][i], `adj must be symmetric: [${i}][${j}]`);
-    const xs = pos.map(p => p[0]), ys = pos.map(p => p[1]);
+    const projected = emb.project();
+    const xs = projected.map(p => p[0]), ys = projected.map(p => p[1]);
     const boardDimension: [[number, number], [number, number]] = [
         [Math.min(...xs), Math.min(...ys)],
         [Math.max(...xs), Math.max(...ys)],
     ];
-    return { pos, adj, N, boardDimension };
+    return { emb, adj, N, boardDimension };
 }
 
 function zeroAdj(N: number): number[][] {
@@ -50,19 +85,18 @@ export function quotientBoard(bc: BoardConfig, quot: [number, number][]): BoardC
     const newN = uniqueRoots.length;
     const nodeToNew = roots.map(r => rootToNew.get(r)!);
 
-    // New positions: average of class members
-    const newPos = Array.from({ length: newN }, () => [0, 0]);
+    // New positions: average of class members (in the natural embedding dimension - projMat is
+    // linear, so its projected 2D average equals the average of the already-projected positions).
+    const embDim = bc.emb.embDim;
+    const newPos = Array.from({ length: newN }, () => new Array<number>(embDim).fill(0));
     const cnt = new Array<number>(newN).fill(0);
     for (let i = 0; i < N; i++) {
         const ni = nodeToNew[i];
-        newPos[ni][0] += bc.pos[i][0];
-        newPos[ni][1] += bc.pos[i][1];
+        for (let k = 0; k < embDim; k++) newPos[ni][k] += bc.emb.pos[i][k];
         cnt[ni]++;
     }
-    for (let ni = 0; ni < newN; ni++) {
-        newPos[ni][0] /= cnt[ni];
-        newPos[ni][1] /= cnt[ni];
-    }
+    for (let ni = 0; ni < newN; ni++)
+        for (let k = 0; k < embDim; k++) newPos[ni][k] /= cnt[ni];
 
     // New adjacency: adjacent if any pair across the two classes was adjacent
     const newAdj = zeroAdj(newN);
@@ -73,7 +107,7 @@ export function quotientBoard(bc: BoardConfig, quot: [number, number][]): BoardC
             if (ni !== nj) newAdj[ni][nj] = 1;
         }
     }
-    return make(newPos, newAdj);
+    return make(new Embedding(embDim, newPos, bc.emb.projMat), newAdj);
 }
 
 /**
@@ -84,7 +118,8 @@ export function quotientBoard(bc: BoardConfig, quot: [number, number][]): BoardC
 export function edgeSplit(bc: BoardConfig, splitN: number): BoardConfig {
     assert(splitN >= 1, `splitN must be at least 1, got ${splitN}`);
     const N = bc.N;
-    const pos: number[][] = bc.pos.map(p => [p[0] * splitN, p[1] * splitN]);
+    const embDim = bc.emb.embDim;
+    const pos: number[][] = bc.emb.pos.map(p => p.map(v => v * splitN));
     const edges: [number, number][] = [];
     for (let i = 0; i < N; i++)
         for (let j = i + 1; j < N; j++) {
@@ -93,7 +128,7 @@ export function edgeSplit(bc: BoardConfig, splitN: number): BoardConfig {
             for (let k = 1; k < splitN; k++) {
                 const t = k / splitN;
                 const idx = pos.length;
-                pos.push([pos[i][0] + (pos[j][0] - pos[i][0]) * t, pos[i][1] + (pos[j][1] - pos[i][1]) * t]);
+                pos.push(pos[i].map((v, d) => v + (pos[j][d] - v) * t));
                 edges.push([prev, idx]);
                 prev = idx;
             }
@@ -102,7 +137,62 @@ export function edgeSplit(bc: BoardConfig, splitN: number): BoardConfig {
 
     const adj = zeroAdj(pos.length);
     for (const [a, b] of edges) { adj[a][b] = 1; adj[b][a] = 1; }
-    return make(pos, adj);
+    return make(new Embedding(embDim, pos, bc.emb.projMat), adj);
+}
+
+/**
+ * Rectifies `bc`: one new node per original edge, at that edge's midpoint (original node positions
+ * are doubled first, same trick as `edgeSplit`, so the midpoint `(pos2[i]+pos2[j])/2` is exact).
+ *
+ * Two new nodes (midpoints of edges incident to a shared original node `v`) are connected iff their
+ * edges are angularly adjacent around `v`: take `X`, the set of midpoints of edges incident to `v`;
+ * subtract `v`'s own position from each and normalize to unit length; the pair is connected iff its
+ * two normalized directions are joined by an edge on the convex hull of all of `v`'s directions (see
+ * `shared/geometry.ts`'s `convexHullEdges`). This is what correctly excludes, say, the two diagonal
+ * pairs at a degree-4 grid vertex - only the four "consecutive" directions around `v` get connected.
+ */
+export function rectify(bc: BoardConfig): BoardConfig {
+    const N = bc.N;
+    const embDim = bc.emb.embDim;
+    const pos2 = bc.emb.pos.map(p => p.map(v => v * 2));
+
+    // One new node per original edge (i<j), at the midpoint.
+    const edgeIdx = new Map<string, number>(); // "i,j" (i<j) -> new node index
+    const pos: number[][] = [];
+    for (let i = 0; i < N; i++)
+        for (let j = i + 1; j < N; j++) {
+            if (!bc.adj[i][j]) continue;
+            edgeIdx.set(`${i},${j}`, pos.length);
+            pos.push(pos2[i].map((v, k) => (v + pos2[j][k]) / 2));
+        }
+
+    // Edges incident to each original node, as [midpoint node index] lists.
+    const incident: number[][] = Array.from({ length: N }, () => []);
+    for (const [key, idx] of edgeIdx) {
+        const [i, j] = key.split(',').map(Number);
+        incident[i].push(idx);
+        incident[j].push(idx);
+    }
+
+    const adj = zeroAdj(pos.length);
+    for (let v = 0; v < N; v++) {
+        const mids = incident[v];
+        if (mids.length < 2) continue;
+        const dirs = mids.map(midIdx => {
+            // pos[midIdx] is at the doubled scale (see pos2 above), so subtract pos2[v] (not
+            // bc.emb.pos[v]) to get a consistently-scaled direction vector - normalizing removes
+            // the scale either way, but mixing scales here would give the wrong direction entirely.
+            const d = pos[midIdx].map((val, k) => val - pos2[v][k]);
+            const len = Math.sqrt(d.reduce((s, x) => s + x * x, 0));
+            return d.map(x => x / len);
+        });
+        for (const [a, b] of convexHullEdges(dirs)) {
+            adj[mids[a]][mids[b]] = 1;
+            adj[mids[b]][mids[a]] = 1;
+        }
+    }
+
+    return make(new Embedding(embDim, pos, bc.emb.projMat), adj);
 }
 
 /** A rectangular board with width `w` and height `h`. Each node is identified by (col, row) where 0 ≤ col < w, 0 ≤ row < h. */
@@ -192,15 +282,16 @@ export function rectangularDiagonalBoard(w: number, h: number, m: number): Board
 /** A cubical board with width `w`, height `h` and depth `d`. Each node is identified by (col, row, slice) where 0 ≤ col < w, 0 ≤ row < h, 0 ≤ slice < d. */
 export function cubicalBoard(w: number, h: number, d: number): BoardConfig {
     assert(w > 0 && h > 0 && d > 0, `w, h, and d must be positive, got w=${w} h=${h} d=${d}`);
+    // Natural 3D coords (col, row, slice), centered. Rendered via projMat below - chosen so that
+    // projMat . [c', r', s] == the old direct 2D formula [(d*c'+0.8*s)*scale, (d*r'+0.8*s)*scale]
+    // exactly (each slice's w x h grid scaled up by d, then diagonally offset by the slice index).
     const pos: number[][] = [];
-    const scale = d > 1 ? 1 / 1.2 : 1;
     for (let s = 0; s < d; s++)
         for (let r = 0; r < h; r++)
             for (let c = 0; c < w; c++)
-                pos.push([
-                    (d * (c - (w-1)/2) + s * 0.8) * scale,
-                    (d * (r - (h-1)/2) + s * 0.8) * scale,
-                ]);
+                pos.push([c - (w-1)/2, r - (h-1)/2, s]);
+    const scale = d > 1 ? 1 / 1.2 : 1;
+    const projMat = [[d * scale, 0, 0.8 * scale], [0, d * scale, 0.8 * scale]];
     const N = w * h * d;
     const adj = zeroAdj(N);
     const idx = (r: number, c: number, s: number) => s * h * w + r * w + c;
@@ -212,7 +303,7 @@ export function cubicalBoard(w: number, h: number, d: number): BoardConfig {
                     if (nr<0||nr>=h||nc<0||nc>=w||ns<0||ns>=d) continue;
                     adj[idx(r,c,s)][idx(nr,nc,ns)] = 1;
                 }
-    return make(pos, adj);
+    return make(new Embedding(3, pos, projMat), adj);
 }
 
 /** A `w × h × d` cubical board with every edge split into `s` sub-edges - see `edgeSplit`. */
@@ -223,15 +314,16 @@ export function splitCubicalBoard(w: number, h: number, d: number, s: number): B
 /** A hypercubical board with width `w`, height `h`, depth `d` and hyperdepth `t`. Each node is identified by (col, row, slice, hyperslice) where 0 ≤ col < w, 0 ≤ row < h, 0 ≤ slice < d, 0 ≤ hyperslice < t. */
 export function hypercubeBoard(w: number, h: number, d: number, t: number): BoardConfig {
     assert(w > 0 && h > 0 && d > 0 && t > 0, `w, h, d, and t must be positive, got w=${w} h=${h} d=${d} t=${t}`);
+    // Natural 4D coords (col, row, slice, hyperslice), all centered. projMat below reproduces the
+    // old direct 2D "grid-of-grids" formula exactly: d copies of the w x h grid tiled horizontally
+    // (spacing w+1), t rows of those tiled vertically (spacing h+1).
     const pos: number[][] = [];
     for (let s = 0; s < t; s++)
         for (let u = 0; u < d; u++)
             for (let r = 0; r < h; r++)
                 for (let c = 0; c < w; c++)
-                    pos.push([
-                        c - (w-1)/2 + u * (w+1) - (d-1)*(w+1)/2,
-                        r - (h-1)/2 + s * (h+1) - (t-1)*(h+1)/2,
-                    ]);
+                    pos.push([c - (w-1)/2, r - (h-1)/2, u - (d-1)/2, s - (t-1)/2]);
+    const projMat = [[1, 0, w+1, 0], [0, 1, 0, h+1]];
     const N = w * h * d * t;
     const adj = zeroAdj(N);
     const idx = (r: number, c: number, u: number, s: number) =>
@@ -245,7 +337,7 @@ export function hypercubeBoard(w: number, h: number, d: number, t: number): Boar
                         if (nr<0||nr>=h||nc<0||nc>=w||nu<0||nu>=d||ns<0||ns>=t) continue;
                         adj[idx(r,c,u,s)][idx(nr,nc,nu,ns)] = 1;
                     }
-    return make(pos, adj);
+    return make(new Embedding(4, pos, projMat), adj);
 }
 
 /** A triangular board with side length `w`. */

@@ -1,4 +1,5 @@
 import type { BoardConfig } from './boardConfig.js';
+import { Embedding } from './boardConfig.js';
 import { MoveType, STONE_MAP } from './types.js';
 import { NO_MOVE } from './types.js';
 import type { MoveInfo, Situation, HistoryEntry, BoardView, ScoreData, ScoreRule, KoRule, TurnInfo, FinishedGame, ReplayMove } from './types.js';
@@ -424,7 +425,7 @@ export class BoardState {
         this.maxPlies      = maxPlies;
         this.nextTurn       = turnList[0];
         this.board         = board;
-        this.pos           = bc.pos;
+        this.pos           = bc.emb.project();
         this.adj           = bc.adj;
         this.N             = bc.N;
         this.boardDimension = bc.boardDimension;
@@ -839,7 +840,7 @@ export class BoardState {
             [...this.globalStonePlaceLimit],
             Object.fromEntries(Object.entries(this.stoneToPlayerMap).map(([k, v]) => [k, new Set(v)])),
             this.forcedPassOnly, this.scoreRule, this.komi, this.koRule, this.allowSuicide, this.maxPlies, this.board.slice(),
-            { pos: this.pos, adj: this.adj, N: this.N, boardDimension: this.boardDimension },
+            { emb: new Embedding(2, this.pos, [[1, 0], [0, 1]]), adj: this.adj, N: this.N, boardDimension: this.boardDimension },
         );
         // replace history/situations with deep copies
         c.situations       = this.situations.map(e => ({ ...e, board: e.board.slice() }));
