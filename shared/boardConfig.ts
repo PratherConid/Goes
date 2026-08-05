@@ -193,11 +193,30 @@ export function rectify(bc: BoardConfig): BoardConfig {
     return make(new Embedding(embDim, pos, bc.emb.projMat), adj);
 }
 
+/**
+ * Merges every pair of nodes whose Euclidean distance (in the natural embedding dimension) is
+ * strictly less than `dist` into a single node, via quotientBoard. Closeness is transitive under
+ * quotientBoard's union-find, so a chain of nodes each within `dist` of the next all collapse into
+ * one node, not just each individual close pair.
+ */
+export function mergeClose(bc: BoardConfig, dist: number): BoardConfig {
+    assert(dist > 0, `dist must be positive, got ${dist}`);
+    const dist2 = dist * dist;
+    const quot: [number, number][] = [];
+    for (let i = 0; i < bc.N; i++)
+        for (let j = i + 1; j < bc.N; j++) {
+            const d2 = bc.emb.pos[i].reduce((s, v, k) => s + (v - bc.emb.pos[j][k]) ** 2, 0);
+            if (d2 < dist2) quot.push([i, j]);
+        }
+    return quotientBoard(bc, quot);
+}
+
 export type BoardModifier =
     | { kind: 'Rectify' }
-    | { kind: 'EdgeSplit'; splitN: number };
+    | { kind: 'EdgeSplit'; splitN: number }
+    | { kind: 'MergeClose'; dist: number };
 
-/** Parses a BoardModifier from its command name ('rect', 'es') and string args - see applyModifier. */
+/** Parses a BoardModifier from its command name ('rect', 'es', 'mc') and string args - see applyModifier. */
 export function parseModifier(name: string, args: string[]): BoardModifier {
     if (name === 'rect') {
         assert(args.length === 0, `rect takes no arguments, got ${args.length}`);
@@ -209,14 +228,21 @@ export function parseModifier(name: string, args: string[]): BoardModifier {
         assert(Number.isInteger(splitN) && splitN >= 1, `es: splitN must be a positive integer, got "${args[0]}"`);
         return { kind: 'EdgeSplit', splitN };
     }
+    if (name === 'mc') {
+        assert(args.length === 1, `mc takes exactly 1 argument (dist), got ${args.length}`);
+        const dist = Number(args[0]);
+        assert(Number.isFinite(dist) && dist > 0, `mc: dist must be a positive number, got "${args[0]}"`);
+        return { kind: 'MergeClose', dist };
+    }
     throw new Error(`Unknown board modifier: ${name}`);
 }
 
-/** Applies `modifier` to `bc`, dispatching to `rectify` / `edgeSplit`. */
+/** Applies `modifier` to `bc`, dispatching to `rectify` / `edgeSplit` / `mergeClose`. */
 export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardConfig {
     switch (modifier.kind) {
         case 'Rectify': return rectify(bc);
         case 'EdgeSplit': return edgeSplit(bc, modifier.splitN);
+        case 'MergeClose': return mergeClose(bc, modifier.dist);
     }
 }
 

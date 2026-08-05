@@ -55,8 +55,11 @@ nlohmann::json GameConfig::to_json() const {
     json bm = json::array();
     for (auto& m : board_modifiers) {
         json mj;
-        mj["kind"] = (m.kind == ModifierKind::Rectify) ? "Rectify" : "EdgeSplit";
-        if (m.kind == ModifierKind::EdgeSplit) mj["splitN"] = m.split_n;
+        switch (m.kind) {
+            case ModifierKind::Rectify:    mj["kind"] = "Rectify"; break;
+            case ModifierKind::EdgeSplit:  mj["kind"] = "EdgeSplit"; mj["splitN"] = m.split_n; break;
+            case ModifierKind::MergeClose: mj["kind"] = "MergeClose"; mj["dist"] = m.dist; break;
+        }
         bm.push_back(std::move(mj));
     }
     j["boardModifiers"] = bm;
@@ -152,6 +155,8 @@ static std::vector<BoardModifier> parse_board_modifiers(const json& j) {
         std::string kind = m["kind"].get<std::string>();
         if (kind == "Rectify") out.push_back({ModifierKind::Rectify});
         else if (kind == "EdgeSplit") out.push_back({ModifierKind::EdgeSplit, m["splitN"].get<int>()});
+        else if (kind == "MergeClose")
+            out.push_back({ModifierKind::MergeClose, 0, m["dist"].get<double>()});
         else throw std::runtime_error("Unknown board modifier kind: " + kind);
     }
     return out;

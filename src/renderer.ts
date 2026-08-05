@@ -1181,6 +1181,7 @@ export class Renderer {
                 'Rectify: place a node at each edge midpoint, connected via the convex-hull vertex figure '
                 + 'around each original node')}
             ${row('es &lt;splitN&gt;', 'EdgeSplit: split every edge into splitN sub-edges')}
+            ${row('mc &lt;dist&gt;', 'MergeClose: merge every pair of nodes closer than dist into one node')}
         </table>`;
     }
 

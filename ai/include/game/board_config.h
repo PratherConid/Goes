@@ -35,24 +35,35 @@ BoardConfig edge_split(const BoardConfig& bc, int split_n);
 // 2*embed[v], not embed[v] directly, to match the doubled scale of the midpoint positions).
 BoardConfig rectify(const BoardConfig& bc);
 
+// Merges every pair of nodes whose Euclidean distance (in the natural embedding dimension) is
+// strictly less than dist into a single node, via quotient_board. Closeness is transitive under
+// quotient_board's union-find, so a chain of nodes each within dist of the next all collapse into
+// one node, not just each individual close pair. Mirrors shared/boardConfig.ts's mergeClose()
+// exactly. Unlike edge_split/rectify's own node *positions*, dist and the distance test are
+// floating point - embed coordinates stay exact integers throughout, but there's no exact-integer
+// way to compare an arbitrary real-valued threshold against a Euclidean distance (same reasoning as
+// rectify()'s direction normalization - see geometry.h's doc comment).
+BoardConfig merge_close(const BoardConfig& bc, double dist);
+
 // A BoardConfig-transforming operation - see apply_modifier/apply_modifiers. Mirrors
 // shared/boardConfig.ts's BoardModifier, minus a C++ port of parseModifier(name, args): that parses
 // interactive command text, which has no analog here - train.cpp/server.cpp get their whole
 // GameConfig (including board_modifiers) from a JSON file/HTTP body via parse_game_cfg
 // (training/self_play.cpp) instead.
-enum class ModifierKind { Rectify, EdgeSplit };
+enum class ModifierKind { Rectify, EdgeSplit, MergeClose };
 struct BoardModifier {
     ModifierKind kind;
-    int split_n = 0; // only meaningful when kind == ModifierKind::EdgeSplit
+    int split_n = 0;   // only meaningful when kind == ModifierKind::EdgeSplit
+    double dist = 0.0; // only meaningful when kind == ModifierKind::MergeClose
 
     // Needed for std::vector<BoardModifier>::operator== (used by weak_equal, training/self_play.cpp)
     // - C++17 has no defaulted struct equality (that's a C++20 feature), so this is spelled out.
     bool operator==(const BoardModifier& other) const {
-        return kind == other.kind && split_n == other.split_n;
+        return kind == other.kind && split_n == other.split_n && dist == other.dist;
     }
 };
 
-// Applies modifier to bc, dispatching to rectify / edge_split.
+// Applies modifier to bc, dispatching to rectify / edge_split / merge_close.
 BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier);
 
 // Applies every modifier in modifiers, in order, to bc - see apply_modifier.

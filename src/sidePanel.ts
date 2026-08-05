@@ -287,11 +287,17 @@ export const fmtGlobalLimit = (limit: (number | null)[]) =>
     limit
         .map((lim, i) => `${coloredStoneCircle(i + 1)}&nbsp;${lim === null ? '∞' : lim}`)
         .join('&nbsp;&nbsp;&nbsp;');
-// Renders e.g. "rect; es 3" - one "<name> <args>" entry per modifier (same short
-// names as the `mod` command, see boardConfig.ts's parseModifier), joined by "; ".
+// Renders e.g. "rect; es 3; mc 0.5" - one "<name> <args>" entry per modifier (same
+// short names as the `mod` command, see boardConfig.ts's parseModifier), joined by "; ".
 export const fmtModifiers = (modifiers: BoardModifier[]) =>
     modifiers
-        .map(m => m.kind === 'Rectify' ? 'rect' : `es ${m.splitN}`)
+        .map(m => {
+            switch (m.kind) {
+                case 'Rectify': return 'rect';
+                case 'EdgeSplit': return `es ${m.splitN}`;
+                case 'MergeClose': return `mc ${m.dist}`;
+            }
+        })
         .join('; ');
 
 // Pure: HTML for the "Current Game Info" side-panel node's content - the

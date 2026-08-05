@@ -54,19 +54,17 @@ BoardConfig quotient_board(const BoardConfig& bc,
     std::vector<int> node_to_new(N);
     for (int i = 0; i < N; i++) node_to_new[i] = root_to_new[roots[i]];
 
-    // New positions: average of class members
+    // New positions: average of class members (all emb_dim coordinates, not just the first two -
+    // needed for merge_close to work on cubical/hypercube boards, not just 2D ones).
     std::vector<std::vector<unsigned>> new_embed(new_n, std::vector<unsigned>(bc.emb_dim, 0u));
     std::vector<int> cnt(new_n, 0);
     for (int i = 0; i < N; i++) {
         int ni = node_to_new[i];
-        new_embed[ni][0] += bc.embed[i][0];
-        new_embed[ni][1] += bc.embed[i][1];
+        for (unsigned k = 0; k < bc.emb_dim; k++) new_embed[ni][k] += bc.embed[i][k];
         cnt[ni]++;
     }
-    for (int ni = 0; ni < new_n; ni++) {
-        new_embed[ni][0] /= cnt[ni];
-        new_embed[ni][1] /= cnt[ni];
-    }
+    for (int ni = 0; ni < new_n; ni++)
+        for (unsigned k = 0; k < bc.emb_dim; k++) new_embed[ni][k] /= cnt[ni];
 
     auto new_adj = zero_adj(new_n);
     for (int i = 0; i < N; i++)
@@ -162,10 +160,28 @@ BoardConfig rectify(const BoardConfig& bc) {
     return make_bc(std::move(adj), emb_dim, std::move(pos));
 }
 
+BoardConfig merge_close(const BoardConfig& bc, double dist) {
+    assert(dist > 0 && "dist must be positive");
+    double dist2 = dist * dist;
+    int N = bc.N;
+    std::vector<std::pair<int,int>> quot;
+    for (int i = 0; i < N; i++)
+        for (int j = i + 1; j < N; j++) {
+            double d2 = 0.0;
+            for (unsigned k = 0; k < bc.emb_dim; k++) {
+                double diff = (double)bc.embed[i][k] - (double)bc.embed[j][k];
+                d2 += diff * diff;
+            }
+            if (d2 < dist2) quot.push_back({i, j});
+        }
+    return quotient_board(bc, quot);
+}
+
 BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier) {
     switch (modifier.kind) {
-        case ModifierKind::Rectify:   return rectify(bc);
-        case ModifierKind::EdgeSplit: return edge_split(bc, modifier.split_n);
+        case ModifierKind::Rectify:    return rectify(bc);
+        case ModifierKind::EdgeSplit:  return edge_split(bc, modifier.split_n);
+        case ModifierKind::MergeClose: return merge_close(bc, modifier.dist);
     }
     throw std::runtime_error("apply_modifier: unknown ModifierKind");
 }
