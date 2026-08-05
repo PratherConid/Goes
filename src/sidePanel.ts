@@ -4,6 +4,7 @@
 // that isn't hardcoded to one flat level.
 
 import type { BoardView, GameConfig, PlayerInfo, TurnInfo } from '@shared/types.js';
+import type { BoardModifier } from '@shared/boardConfig.js';
 import { STONE_MAP } from '@shared/boardState.js';
 
 export enum SidePanelContent {
@@ -284,6 +285,12 @@ export const fmtGlobalLimit = (limit: (number | null)[]) =>
     limit
         .map((lim, i) => `${coloredStoneCircle(i + 1)}&nbsp;${lim === null ? '∞' : lim}`)
         .join('&nbsp;&nbsp;&nbsp;');
+// Renders e.g. "rect; es 3" - one "<name> <args>" entry per modifier (same short
+// names as the `mod` command, see boardConfig.ts's parseModifier), joined by "; ".
+export const fmtModifiers = (modifiers: BoardModifier[]) =>
+    modifiers
+        .map(m => m.kind === 'Rectify' ? 'rect' : `es ${m.splitN}`)
+        .join('; ');
 
 // Pure: HTML for the "Current Game Info" side-panel node's content - the
 // active game's live rules, sourced from its BoardView v (already-resolved
@@ -318,6 +325,7 @@ export function newGameSetupHtml(cfg: GameConfig): string {
     return `
         <div><b>Board type:</b> ${cfg.boardType}</div>
         <div><b>Board dimension:</b> ${cfg.boardArgs}</div>
+        <div><b>Board modifiers:</b> ${fmtModifiers(cfg.boardModifiers)}</div>
         <div><b>Type of stones:</b> ${cfg.numStones}</div>
         <div><b>Number of players:</b> ${cfg.numPlayers}</div>
         <div><b>Turn list:</b> ${fmtTurnList(cfg.turnList, cfg.players)}</div>

@@ -260,6 +260,7 @@ export function rectangularBoard(w: number, h: number): BoardConfig {
  */
 export function computeStarPoints(config: GameConfig): number[][] {
     if (config.boardType !== 'rect') return [];
+    if (config.boardModifiers.length > 0) return [];
     const [w, h] = config.boardArgs;
     const toBoard = (c: number, r: number): number[] => [c - (w - 1) / 2, r - (h - 1) / 2];
     const points: number[][] = [];
