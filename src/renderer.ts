@@ -13,7 +13,8 @@ import {
     coloredStoneCircle, fmtTurnList,
 } from './sidePanel.js';
 import {
-    type Quaternion, QUAT_IDENTITY, quatToMat3, quatConjugate, applyOrbitDrag, applyRoll,
+    type Quaternion, type Viewport, QUAT_IDENTITY, defaultViewport, computeAlpha,
+    quatToMat3, quatConjugate, applyOrbitDrag, applyRoll,
 } from './camera.js';
 
 // Single persistent WebSocket connection to the main server, shared by the
@@ -129,31 +130,63 @@ function boardLayout(view: BoardView, w: number, h: number, cameraOrientation: Q
 
 // ── board SVG drawing ────────────────────────────────────────────────────────
 
-// One line connecting two adjacent nodes' screen positions.
-function drawGridLine(g: SVGElement, x1: number, y1: number, x2: number, y2: number): void {
+// One line connecting two adjacent nodes' screen positions. alpha1/alpha2 are each endpoint's own
+// fade alpha (see computeAlpha(), src/camera.ts) - when they differ, a plain stroke opacity can't
+// express that, so a per-line <linearGradient> (added to `defs`, referenced via url(#gradientId))
+// fades smoothly between them instead; when they're equal, a flat opacity is enough and no
+// gradient/defs entry is created at all.
+function drawGridLine(
+    g: SVGElement, defs: SVGDefsElement,
+    x1: number, y1: number, x2: number, y2: number, alpha1: number, alpha2: number, gradientId: string,
+): void {
     const line = document.createElementNS(SVG_NS, 'line');
     line.setAttribute('x1', String(x1));
     line.setAttribute('y1', String(y1));
     line.setAttribute('x2', String(x2));
     line.setAttribute('y2', String(y2));
-    line.setAttribute('stroke', COLOR_GRID);
     line.setAttribute('stroke-width', '1');
+    if (alpha1 === alpha2) {
+        line.setAttribute('stroke', COLOR_GRID);
+        if (alpha1 !== 1) line.setAttribute('opacity', String(alpha1));
+    } else {
+        const grad = document.createElementNS(SVG_NS, 'linearGradient');
+        grad.setAttribute('id', gradientId);
+        grad.setAttribute('gradientUnits', 'userSpaceOnUse');
+        grad.setAttribute('x1', String(x1));
+        grad.setAttribute('y1', String(y1));
+        grad.setAttribute('x2', String(x2));
+        grad.setAttribute('y2', String(y2));
+        const stop1 = document.createElementNS(SVG_NS, 'stop');
+        stop1.setAttribute('offset', '0%');
+        stop1.setAttribute('stop-color', COLOR_GRID);
+        stop1.setAttribute('stop-opacity', String(alpha1));
+        const stop2 = document.createElementNS(SVG_NS, 'stop');
+        stop2.setAttribute('offset', '100%');
+        stop2.setAttribute('stop-color', COLOR_GRID);
+        stop2.setAttribute('stop-opacity', String(alpha2));
+        grad.append(stop1, stop2);
+        defs.appendChild(grad);
+        line.setAttribute('stroke', `url(#${gradientId})`);
+    }
     g.appendChild(line);
 }
 
 // A "hoshi" star-point dot.
-function drawStarPoint(g: SVGElement, sx: number, sy: number, r: number): void {
+function drawStarPoint(g: SVGElement, sx: number, sy: number, r: number, alpha: number): void {
     const c = document.createElementNS(SVG_NS, 'circle');
     c.setAttribute('cx', String(sx));
     c.setAttribute('cy', String(sy));
     c.setAttribute('r', String(r));
     c.setAttribute('fill', COLOR_GRID);
+    if (alpha !== 1) c.setAttribute('opacity', String(alpha));
     g.appendChild(c);
 }
 
 // A stone circle - also used for an illegal-move marker (same shape, just a different
 // color/no stroke), since the two are visually identical apart from those two properties.
-function drawStone(g: SVGElement, sx: number, sy: number, r: number, color: string, stroke: string | null): void {
+function drawStone(
+    g: SVGElement, sx: number, sy: number, r: number, color: string, stroke: string | null, alpha: number,
+): void {
     const c = document.createElementNS(SVG_NS, 'circle');
     c.setAttribute('cx', String(sx));
     c.setAttribute('cy', String(sy));
@@ -163,11 +196,14 @@ function drawStone(g: SVGElement, sx: number, sy: number, r: number, color: stri
         c.setAttribute('stroke', stroke);
         c.setAttribute('stroke-width', '1');
     }
+    if (alpha !== 1) c.setAttribute('opacity', String(alpha));
     g.appendChild(c);
 }
 
 // A territory-ownership marker square.
-function drawTerritorySquare(g: SVGElement, sx: number, sy: number, side: number, color: string): void {
+function drawTerritorySquare(
+    g: SVGElement, sx: number, sy: number, side: number, color: string, alpha: number,
+): void {
     const r = document.createElementNS(SVG_NS, 'rect');
     r.setAttribute('x', String(sx - side / 2));
     r.setAttribute('y', String(sy - side / 2));
@@ -176,6 +212,7 @@ function drawTerritorySquare(g: SVGElement, sx: number, sy: number, side: number
     r.setAttribute('fill', color);
     r.setAttribute('stroke', '#888');
     r.setAttribute('stroke-width', String(side / 6));
+    if (alpha !== 1) r.setAttribute('opacity', String(alpha));
     g.appendChild(r);
 }
 
@@ -188,14 +225,14 @@ function drawTerritorySquare(g: SVGElement, sx: number, sy: number, side: number
 // account for the circle representing a 3D sphere (whose near surface bulges toward the camera)
 // rather than a flat disc sitting exactly at its center.
 type DrawItem =
-    | { kind: 'gridLine'; depth: number; args: [number, number, number, number] }
-    | { kind: 'starPoint'; depth: number; args: [number, number, number] }
-    | { kind: 'stone'; depth: number; args: [number, number, number, string, string | null] }
-    | { kind: 'territorySquare'; depth: number; args: [number, number, number, string] };
+    | { kind: 'gridLine'; depth: number; args: [number, number, number, number, number, number, string] }
+    | { kind: 'starPoint'; depth: number; args: [number, number, number, number] }
+    | { kind: 'stone'; depth: number; args: [number, number, number, string, string | null, number] }
+    | { kind: 'territorySquare'; depth: number; args: [number, number, number, string, number] };
 
-function drawItem(g: SVGElement, item: DrawItem): void {
+function drawItem(g: SVGElement, defs: SVGDefsElement, item: DrawItem): void {
     switch (item.kind) {
-        case 'gridLine': return drawGridLine(g, ...item.args);
+        case 'gridLine': return drawGridLine(g, defs, ...item.args);
         case 'starPoint': return drawStarPoint(g, ...item.args);
         case 'stone': return drawStone(g, ...item.args);
         case 'territorySquare': return drawTerritorySquare(g, ...item.args);
@@ -223,10 +260,16 @@ function drawBoardFull(
     legalMoves: (Set<number> | null)[][] | null,
     territoryOwner: number[] | null = null,
     dim = false,
-    cameraOrientation: Quaternion = QUAT_IDENTITY,
+    viewport: Viewport = defaultViewport(),
 ) {
-    const { originX, originY, cell, stone_r, pos, rotMat } = boardLayout(view, boardW, boardH, cameraOrientation);
+    const { originX, originY, cell, stone_r, pos, rotMat } = boardLayout(view, boardW, boardH, viewport.quat);
     const N = view.N;
+    // dmax (see computeAlpha(), src/camera.ts) is rotation-invariant (a rotation never changes a
+    // point's distance from the origin), so it's the same whether measured from `pos` (rotated) or
+    // the board's own raw natural-space points - computed here from `pos` since that's already at
+    // hand. 0 for an empty board (Math.max() of nothing is -Infinity, not a usable dmax).
+    const dmax = pos.length > 0 ? Math.max(...pos.map(p => Math.hypot(p[0], p[1], p[2]))) : 0;
+    const alphaOf = (depth: number) => computeAlpha(depth, dmax, viewport.fadecfg);
 
     // grid lines and stones/illegal markers are both dimmed together while
     // selecting a stone, so the whole board reads as "not interactive" - the
@@ -235,6 +278,11 @@ function drawBoardFull(
     const g = document.createElementNS(SVG_NS, 'g');
     if (dim) g.setAttribute('opacity', '0.5');
     parent.appendChild(g);
+    // Holds the <linearGradient> defs drawGridLine() creates for lines whose two endpoints fade to
+    // different alphas - id'd gradient-<i>, unique within this call (stale ones from the previous
+    // render are already gone, since the caller clears `parent`'s children before calling this).
+    const defs = document.createElementNS(SVG_NS, 'defs') as unknown as SVGDefsElement;
+    g.appendChild(defs);
 
     // Every grid line/star point/stone/illegal-marker/territory-square gets collected here first
     // (with its screen-space draw args and its depth), rather than drawn immediately - so the
@@ -245,14 +293,20 @@ function drawBoardFull(
     const screenX = (x: number) => originX + x * cell, screenY = (y: number) => originY - y * cell;
 
     // grid lines - depth is the FAR endpoint's (the smaller of the two), so the whole line sits
-    // behind both endpoints' own stones rather than poking through the middle of either.
+    // behind both endpoints' own stones rather than poking through the middle of either. Alpha is
+    // computed separately per endpoint (its own actual depth, not the line's sort-key depth above),
+    // since the two ends can genuinely fade to different amounts - see drawGridLine()'s own comment.
+    let gradientCounter = 0;
     for (let i = 0; i < N; i++) {
         for (let j = i + 1; j < N; j++) {
             if (!adj[i][j]) continue;
             const [x1, y1, z1] = pos[i], [x2, y2, z2] = pos[j];
             items.push({
                 kind: 'gridLine', depth: Math.min(z1, z2),
-                args: [screenX(x1), screenY(y1), screenX(x2), screenY(y2)],
+                args: [
+                    screenX(x1), screenY(y1), screenX(x2), screenY(y2), alphaOf(z1), alphaOf(z2),
+                    `gradient-${gradientCounter++}`,
+                ],
             });
         }
     }
@@ -264,7 +318,7 @@ function drawBoardFull(
     // projMat, possibly rotated) projected grid.
     for (const starPoint of computeStarPoints(config)) {
         const [x, y, z] = projectPoint(rotMat, projectPoint(view.emb.projMat, starPoint));
-        items.push({ kind: 'starPoint', depth: z, args: [screenX(x), screenY(y), cell * 0.09] });
+        items.push({ kind: 'starPoint', depth: z, args: [screenX(x), screenY(y), cell * 0.09, alphaOf(z)] });
     }
 
     // stones / illegal markers - depth offset by +0.1*radius (see DrawItem's own doc comment).
@@ -273,14 +327,17 @@ function drawBoardFull(
     for (let i = 0; i < N; i++) {
         const [x, y, z] = pos[i];
         const depth = z + 0.1 * STONE_RADIUS_FACTOR;
+        const alpha = alphaOf(depth);
         const stone = board[i];
         if (stone > 0) {
             items.push({
                 kind: 'stone', depth,
-                args: [screenX(x), screenY(y), stone_r, STONE_MAP[stone].color, '#333'],
+                args: [screenX(x), screenY(y), stone_r, STONE_MAP[stone].color, '#333', alpha],
             });
         } else if (legalMoves !== null && legalMoves.every(row => row[i] === null)) {
-            items.push({ kind: 'stone', depth, args: [screenX(x), screenY(y), stone_r, COLOR_ILLEGAL, null] });
+            items.push({
+                kind: 'stone', depth, args: [screenX(x), screenY(y), stone_r, COLOR_ILLEGAL, null, alpha],
+            });
         }
     }
 
@@ -293,7 +350,7 @@ function drawBoardFull(
             const [x, y, z] = pos[i];
             items.push({
                 kind: 'territorySquare', depth: z,
-                args: [screenX(x), screenY(y), side, STONE_MAP[owner]?.color ?? '#888'],
+                args: [screenX(x), screenY(y), side, STONE_MAP[owner]?.color ?? '#888', alphaOf(z)],
             });
         }
     }
@@ -302,7 +359,7 @@ function drawBoardFull(
     // so drawing back-to-front (ascending depth) is what makes nearer shapes correctly paint over
     // farther ones where they visually overlap after camera rotation (painter's algorithm).
     items.sort((a, b) => a.depth - b.depth);
-    for (const item of items) drawItem(g, item);
+    for (const item of items) drawItem(g, defs, item);
 }
 
 // ── EngineManager ────────────────────────────────────────────────────────────
@@ -369,10 +426,11 @@ interface ActiveGame {
     displayPlyNum: number;
     idxShowHistory: number;
     randomEvaled: Record<number, number> | null;
-    // Orbiting camera orientation for this game's board (see src/camera.ts) - ephemeral UI state,
-    // same as displayPlyNum, not persisted/restored beyond this in-memory ActiveGame.
-    cameraOrientation: Quaternion;
-    // When true, _onBoardMouseDown ignores drags (no camera orbit) - toggled by the
+    // Orbiting camera orientation + fade-out settings for this game's board (see src/camera.ts) -
+    // ephemeral UI state, same as displayPlyNum, not persisted/restored beyond this in-memory
+    // ActiveGame.
+    viewport: Viewport;
+    // When true, _onBoardPointerDown ignores drags (no camera orbit) - toggled by the
     // #lock-rotation-btn control-bar button.
     rotationLocked: boolean;
 }
@@ -864,7 +922,7 @@ export class Renderer {
         document.addEventListener('keydown', e => {
             if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
             if (document.activeElement instanceof HTMLInputElement) return;
-            this._active.cameraOrientation = applyRoll(this._active.cameraOrientation, e.key === 'ArrowLeft' ? 1 : -1);
+            this._active.viewport.quat = applyRoll(this._active.viewport.quat, e.key === 'ArrowLeft' ? 1 : -1);
             this._render();
         });
         this.bwEndBtn.addEventListener('click', () => {
@@ -902,7 +960,7 @@ export class Renderer {
         this.withdrawBtn.addEventListener('click', () => { this._withdrawMove(1); this._render(); });
         this.wcdBtn.addEventListener('click', () => { this._withdrawToCurrentDisplay(); this._render(); });
         this.resetViewportBtn.addEventListener('click', () => {
-            this._active.cameraOrientation = QUAT_IDENTITY;
+            this._active.viewport.quat = QUAT_IDENTITY;
             this._render();
         });
         this.lockRotationBtn.addEventListener('click', () => {
@@ -1145,7 +1203,7 @@ export class Renderer {
                       this._active.config, size, size,
                       this.showIllegalMoves ? v.history[this._active.displayPlyNum].legalMoves.captures : null,
                       this.showTerritory ? v.history[this._active.displayPlyNum].score.territoryOwner : null,
-                      this.selectingStone, this._active.cameraOrientation);
+                      this.selectingStone, this._active.viewport);
         if (this.selectingStone) {
             const popup = document.createElementNS(SVG_NS, 'g');
             for (const { stone, x, y, r } of this._stonePopupCircles(v)) {
@@ -1275,7 +1333,7 @@ export class Renderer {
                 svg.appendChild(bg);
                 drawBoardFull(
                     svg, v, this._active.bs.adj, he.board, this._active.config, size, size, null,
-                    null, false, this._active.cameraOrientation,
+                    null, false, this._active.viewport,
                 );
             });
         }
@@ -1877,6 +1935,8 @@ export class Renderer {
             <div><b>Evaluation:</b> ${evalStr}</div>
             <div><b>Projection matrix:</b></div>
             <div id="status-projmat-slot"></div>
+            <div><b>Fading Init:</b> <span id="status-fadeinit-slot"></span></div>
+            <div><b>Fading Rate:</b> <span id="status-faderate-slot"></span></div>
         `;
 
         // The login prompt's button needs a click listener, so it's built
@@ -1938,6 +1998,39 @@ export class Renderer {
             projMatEl.appendChild(rowEl);
         }
         this.statusPanel.querySelector('#status-projmat-slot')?.replaceWith(projMatEl);
+
+        // Fading Init/Rate editors: single-value versions of the projection-matrix editor above -
+        // same textbox styling, same Enter-to-commit/ArrowUp-ArrowDown-to-nudge behavior, but each
+        // edits one scalar field of the live game's viewport.fadecfg (see computeAlpha(),
+        // src/camera.ts) directly instead of a matrix cell.
+        const fadecfg = this._active.viewport.fadecfg;
+        const makeScalarBox = (slotId: string, key: 'init' | 'rate') => {
+            const box = document.createElement('input');
+            box.type = 'text';
+            box.id = `${slotId}-input`;
+            box.className = 'status-projmat-input';
+            box.value = String(fadecfg[key]);
+            const refocus = () => this.statusPanel.querySelector<HTMLInputElement>(`#${box.id}`)?.focus();
+            box.addEventListener('keydown', e => {
+                if (e.key === 'Enter') {
+                    const val = Number(box.value);
+                    if (!Number.isFinite(val)) { box.value = String(fadecfg[key]); return; }
+                    fadecfg[key] = val;
+                    this._render();
+                    refocus();
+                } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    const delta = e.key === 'ArrowUp' ? 0.05 : -0.05;
+                    fadecfg[key] = Math.round((fadecfg[key] + delta) * 100) / 100;
+                    box.value = String(fadecfg[key]);
+                    this._render();
+                    refocus();
+                }
+            });
+            this.statusPanel.querySelector(`#${slotId}`)?.replaceWith(box);
+        };
+        makeScalarBox('status-fadeinit-slot', 'init');
+        makeScalarBox('status-faderate-slot', 'rate');
     }
 
     // Wired to mainSvg's 'pointerdown' (init()) - disambiguates a plain click (place a stone, via
@@ -1978,7 +2071,7 @@ export class Renderer {
             // pointer happened to lift, which is what skipping this "moved = true" would cause.
             moved = true;
             if (this._active.rotationLocked) return;
-            this._active.cameraOrientation = applyOrbitDrag(this._active.cameraOrientation, dx, dy);
+            this._active.viewport.quat = applyOrbitDrag(this._active.viewport.quat, dx, dy);
             this._render();
         };
         const cleanup = () => {
@@ -2038,7 +2131,7 @@ export class Renderer {
         }
 
         const { originX, originY, cell, stone_r, pos: vpos } =
-            boardLayout(v, this.mainBoardSize, this.mainBoardSize, this._active.cameraOrientation);
+            boardLayout(v, this.mainBoardSize, this.mainBoardSize, this._active.viewport.quat);
 
         let bestDist = Infinity, bestId = -1;
         for (let i = 0; i < v.N; i++) {
@@ -2161,7 +2254,7 @@ export class Renderer {
         this.engineManager.sessionId = null;
         this.activeGames.set(id, {
             bs, config, displayPlyNum: 0, idxShowHistory: 0, randomEvaled: null,
-            cameraOrientation: QUAT_IDENTITY, rotationLocked: false,
+            viewport: defaultViewport(), rotationLocked: false,
         });
         this.activeIdx = id;
     }
@@ -2752,7 +2845,7 @@ export class Renderer {
                 const bs = BoardState.fromFinishedGame(fg, bc);
                 this.finishedGames.set('O_' + id, {
                     bs, config: fg.config, displayPlyNum: bs.getView().plyCount,
-                    idxShowHistory: 0, randomEvaled: null, cameraOrientation: QUAT_IDENTITY,
+                    idxShowHistory: 0, randomEvaled: null, viewport: defaultViewport(),
                     rotationLocked: false,
                 });
             } catch (e) { console.error('Failed to reconstruct finished game', id, e); }

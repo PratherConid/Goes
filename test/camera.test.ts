@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     QUAT_IDENTITY, quatMultiply, quatNormalize, quatFromAxisAngle, quatRotateVector, quatToMat3,
-    applyOrbitDrag, applyRoll,
+    applyOrbitDrag, applyRoll, computeAlpha,
 } from '../src/camera.ts';
 
 const EPS = 1e-9;
@@ -92,4 +92,29 @@ test('opposite-direction rolls cancel out', () => {
     const q0 = applyOrbitDrag(QUAT_IDENTITY, 10, -15);
     const back = applyRoll(applyRoll(q0, 1), -1);
     assertVecClose([back.w, back.x, back.y, back.z], [q0.w, q0.x, q0.y, q0.z], 'roll then un-roll');
+});
+
+test('computeAlpha: an object nearer than the origin never fades, regardless of rate', () => {
+    assertClose(computeAlpha(8, 10, { init: 0, rate: 1 }), 1, 'positive depth (near camera) stays opaque');
+    assertClose(computeAlpha(0, 10, { init: 0, rate: 1 }), 1, 'depth exactly at the origin stays opaque');
+});
+
+test('computeAlpha: an object receding behind the origin fades, not one in front of it', () => {
+    const alpha = computeAlpha(-8, 10, { init: 0, rate: 1 });
+    assertClose(alpha, 0.2, 'depth=-8, dmax=10, init=0, rate=1 -> alpha = 1 - 8*1/10');
+});
+
+test('computeAlpha: fading is clamped to [0, 1]', () => {
+    assertClose(computeAlpha(-100, 10, { init: 0, rate: 1 }), 0, 'far past full fade clamps to 0');
+    assertClose(computeAlpha(-1, 10, { init: 0, rate: -5 }), 1, 'a negative rate cannot push alpha above 1');
+});
+
+test('computeAlpha: fading only starts once recession exceeds init * dmax', () => {
+    const fadecfg = { init: 0.5, rate: 1 };
+    assertClose(computeAlpha(-4, 10, fadecfg), 1, 'recession=4 is within the init=0.5*dmax=5 threshold');
+    assertClose(computeAlpha(-6, 10, fadecfg), 0.9, 'recession=6 exceeds the threshold by 1, so alpha = 1 - 1/10');
+});
+
+test('computeAlpha: dmax <= 0 never fades, even with a nonzero rate', () => {
+    assertClose(computeAlpha(-5, 0, { init: 0, rate: 1 }), 1, 'degenerate single-point board');
 });
