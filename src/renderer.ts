@@ -514,6 +514,9 @@ export class Renderer {
     // The pointerId currently being tracked as a board drag/click gesture, or null if none - see
     // _onBoardPointerDown.
     private _activePointerId: number | null = null;
+    // Tears down the currently-tracked pointer's drag/click listeners without firing a click -
+    // set/cleared by _onBoardPointerDown, called when a second pointer interrupts the gesture.
+    private _abortBoardDrag: (() => void) | null = null;
     private histBoards:   HTMLDivElement;
     private passBtn:       HTMLButtonElement;
     private resignBtn:    HTMLButtonElement;
@@ -1950,7 +1953,16 @@ export class Renderer {
     // so there's no need for window-level listeners or manual "still-active gesture" bookkeeping
     // the way the old touch implementation needed.
     private _onBoardPointerDown(e: PointerEvent) {
-        if (this._activePointerId !== null) return; // a gesture is already active - ignore any other pointer
+        if (this._activePointerId !== null) {
+            // A second pointer went down while we were already tracking one as a drag/click - a
+            // multi-touch gesture (e.g. a pinch-zoom), not a single-finger drag. Abort our own
+            // tracking entirely (no click, no further rotation) rather than just ignoring this
+            // second pointer, so the first finger's continued movement during the pinch doesn't
+            // keep rotating the camera - see touch-action: pinch-zoom (index.html), which is what
+            // lets the browser handle the pinch natively once we get out of its way.
+            this._abortBoardDrag?.();
+            return;
+        }
         this._activePointerId = e.pointerId;
         this.mainSvg.setPointerCapture(e.pointerId);
         const start = { x: e.clientX, y: e.clientY };
@@ -1973,8 +1985,10 @@ export class Renderer {
             this.mainSvg.removeEventListener('pointermove', onMove);
             this.mainSvg.removeEventListener('pointerup', onUp);
             this.mainSvg.removeEventListener('pointercancel', onCancel);
+            if (this._abortBoardDrag === cleanup) this._abortBoardDrag = null;
             this._activePointerId = null;
         };
+        this._abortBoardDrag = cleanup;
         const onCancel = (ev: PointerEvent) => {
             if (ev.pointerId !== e.pointerId) return;
             cleanup();
@@ -1989,9 +2003,8 @@ export class Renderer {
         this.mainSvg.addEventListener('pointercancel', onCancel);
     }
 
-    // clientX/clientY only (not the full MouseEvent) - so this is equally callable from a real
-    // mouseup (MouseEvent) or a synthesized point from _onBoardTouchStart's touchend (TouchEvent
-    // has no clientX/clientY of its own, only per-finger Touch objects do).
+    // clientX/clientY only (not the full MouseEvent) - so this is callable from either a real
+    // pointerup (PointerEvent) or a synthesized point.
     private _onBoardClick(e: { clientX: number; clientY: number }) {
         // Local games used to let any click through unconditionally (every
         // slot was 'local'); now a 'localEngine' slot's turn must not be

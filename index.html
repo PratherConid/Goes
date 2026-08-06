@@ -129,10 +129,11 @@
       display: block;
       cursor: pointer;
       /* size set dynamically */
-      /* Stops the browser's own scroll/pan/zoom from fighting a one-finger drag-to-orbit gesture
-         (see Renderer._onBoardTouchStart, src/renderer.ts) - belt-and-suspenders alongside that
-         handler's own preventDefault() calls. */
-      touch-action: none;
+      /* Stops the browser's own native panning from fighting a one-finger drag-to-orbit gesture
+         (see Renderer._onBoardPointerDown, src/renderer.ts), while still allowing a genuine
+         two-finger pinch to zoom the page natively - _onBoardPointerDown aborts its own tracking
+         as soon as a second pointer appears, so the two don't fight each other. */
+      touch-action: pinch-zoom;
     }
 
     /* control bar - two rows (top: turn indicator + pass/resign, bottom: ply
