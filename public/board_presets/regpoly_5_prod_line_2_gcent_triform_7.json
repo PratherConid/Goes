@@ -1,0 +1,9 @@
+{
+  "boardType": "regpoly",
+  "boardArgs": [5],
+  "boardModifiers": [
+    {"kind": "Prod", "boardType": "line", "boardArgs": [2]},
+    {"kind": "GlobalCentralize"},
+    {"kind": "TriangleForm", "w": 7}
+  ]
+}

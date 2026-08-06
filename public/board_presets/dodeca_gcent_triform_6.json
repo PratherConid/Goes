@@ -1,0 +1,8 @@
+{
+  "boardType": "dodeca",
+  "boardArgs": [],
+  "boardModifiers": [
+    {"kind": "GlobalCentralize"},
+    {"kind": "TriangleForm", "w": 6}
+  ]
+}

@@ -296,7 +296,7 @@ export const fmtGlobalLimit = (limit: (number | null)[]) =>
     limit
         .map((lim, i) => `${coloredStoneCircle(i + 1)}&nbsp;${lim === null ? '∞' : lim}`)
         .join('&nbsp;&nbsp;&nbsp;');
-// Renders e.g. "rect; es 3; mc 0.5; triform 3; prod rect 3 3; beginprod rect 3 3; endprod" - one
+// Renders e.g. "rect; es 3; mc 0.5; triform 3; prod rect 3 3; beginprod rect 3 3; endprod; gcent" - one
 // "<name> <args>" entry per modifier (same short names as the `mod` command, see
 // boardConfig.ts's parseModifier), joined by "; ".
 export const fmtModifiers = (modifiers: BoardModifier[]) =>
@@ -311,6 +311,7 @@ export const fmtModifiers = (modifiers: BoardModifier[]) =>
                 case 'Prod': return `prod ${m.boardType} ${m.boardArgs.join(' ')}`;
                 case 'BeginProd': return `beginprod ${m.boardType} ${m.boardArgs.join(' ')}`;
                 case 'EndProd': return 'endprod';
+                case 'GlobalCentralize': return 'gcent';
             }
         })
         .join('; ');

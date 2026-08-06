@@ -72,6 +72,7 @@ nlohmann::json GameConfig::to_json() const {
                 mj["boardArgs"] = m.board_args;
                 break;
             case ModifierKind::EndProd:    mj["kind"] = "EndProd"; break;
+            case ModifierKind::GlobalCentralize: mj["kind"] = "GlobalCentralize"; break;
         }
         bm.push_back(std::move(mj));
     }
@@ -189,6 +190,7 @@ static std::vector<BoardModifier> parse_board_modifiers(const json& j) {
             out.push_back(std::move(bm));
         }
         else if (kind == "EndProd") out.push_back({ModifierKind::EndProd});
+        else if (kind == "GlobalCentralize") out.push_back({ModifierKind::GlobalCentralize});
         else throw std::runtime_error("Unknown board modifier kind: " + kind);
     }
     return out;

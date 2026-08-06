@@ -422,6 +422,35 @@ export function squareForm(bc: BoardConfig, w: number): BoardConfig {
 }
 
 /**
+ * Adds one new node at `bc`'s barycenter (the component-wise average of every existing node's
+ * natural-dimension position), connected to every existing node - a single hub adjacent to the
+ * whole board at once, unlike squareForm/triangleForm's per-face subdivision. Existing nodes/edges
+ * are otherwise untouched.
+ */
+export function globalCentralize(bc: BoardConfig): BoardConfig {
+    const N = bc.N;
+    const embDim = bc.emb.embDim;
+    const barycenter = new Array(embDim).fill(0);
+    for (const p of bc.emb.pos)
+        for (let k = 0; k < embDim; k++) barycenter[k] += p[k] / N;
+
+    const pos = [...bc.emb.pos, barycenter];
+    const adj = zeroAdj(N + 1);
+    for (let i = 0; i < N; i++)
+        for (let j = i + 1; j < N; j++) {
+            if (!bc.adj[i][j]) continue;
+            adj[i][j] = 1;
+            adj[j][i] = 1;
+        }
+    for (let i = 0; i < N; i++) {
+        adj[i][N] = 1;
+        adj[N][i] = 1;
+    }
+
+    return make(new Embedding(embDim, pos, bc.emb.projMat), adj);
+}
+
+/**
  * The default projMat assigned to a freshly-`product()`-ed board (see below): dims 0, 1, 2 map
  * straight to x, y, z (identity - the whole matrix is exactly DEFAULT_3D_PROJMAT when embDim <= 3),
  * and every triple of dims beyond that cycles through x/y/z again at a halved-again magnitude, e.g.
@@ -717,6 +746,29 @@ export function tetrahedronBoard(): BoardConfig {
     for (let i = 0; i < 4; i++)
         for (let j = 0; j < 4; j++)
             if (i !== j) adj[i][j] = 1;
+
+    return make(new Embedding(3, pos, DEFAULT_3D_PROJMAT), adj);
+}
+
+/**
+ * A regular octahedron: 6 vertices at (+-1, 0, 0), (0, +-1, 0), (0, 0, +-1) (pre-scaled so edges
+ * come out exactly 1 - the raw distance between two non-antipodal vertices is sqrt(2)), 12
+ * unit-length edges, 8 triangular faces. Each vertex connects to every other vertex except its own
+ * antipode (the one differing only by a sign flip) - vertex `2k` and `2k+1` are always antipodal
+ * pairs, by construction. A side-length-w subdivision of its 8 triangular faces can be applied via
+ * the `triangleForm(w)` modifier afterward (findTriangles finds exactly its 8 faces).
+ */
+export function octahedronBoard(): BoardConfig {
+    const edgeScale = 1 / Math.sqrt(2);
+    const pos: number[][] = [
+        [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
+    ].map(v => v.map(x => x * edgeScale));
+
+    const adj = zeroAdj(6);
+    const antipode = (i: number) => i % 2 === 0 ? i + 1 : i - 1;
+    for (let i = 0; i < 6; i++)
+        for (let j = 0; j < 6; j++)
+            if (i !== j && j !== antipode(i)) adj[i][j] = 1;
 
     return make(new Embedding(3, pos, DEFAULT_3D_PROJMAT), adj);
 }
@@ -1265,7 +1317,8 @@ export enum PrescribedBoard {
     snubSquareTriBoard,
     twistedSquareBoard,
     glueTwistedSquareBoard,
-    starBoard
+    starBoard,
+    octahedronBoard
 }
 
 export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string, string]> = {
@@ -1307,6 +1360,8 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string
         [3, "gtsq", "&lt;w&gt; &lt;h&gt; &lt;g&gt;", "Glued-twisted-square board (g\xD7g squares)"],
     [PrescribedBoard.starBoard]:
         [1, "star", "&lt;n&gt;", "Star graph: 1 center node connected to n outer nodes"],
+    [PrescribedBoard.octahedronBoard]:
+        [0, "octa", "", "Regular octahedron (6 vertices, 8 triangular faces, unit-length edges)"],
 };
 
 export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => BoardConfig> = {
@@ -1328,6 +1383,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.twistedSquareBoard]:       (...a) => twistedSquareBoard(a[0], a[1], a[2]),
     [PrescribedBoard.glueTwistedSquareBoard]:   (...a) => glueTwistedSquareBoard(a[0], a[1], a[2]),
     [PrescribedBoard.starBoard]:                 (...a) => starBoard(a[0]),
+    [PrescribedBoard.octahedronBoard]:          () => octahedronBoard(),
 };
 
 /**
@@ -1359,7 +1415,8 @@ export type BoardModifier =
     | { kind: 'SquareForm'; w: number }
     | { kind: 'Prod'; boardType: string; boardArgs: number[] }
     | { kind: 'BeginProd'; boardType: string; boardArgs: number[] }
-    | { kind: 'EndProd' };
+    | { kind: 'EndProd' }
+    | { kind: 'GlobalCentralize' };
 
 /** mc's default `dist` when called with no argument - see parseModifier and renderer.ts's command reference panel. */
 export const MC_DEFAULT_DIST = 0.01;
@@ -1388,7 +1445,7 @@ function parseBoardTypeArgs(cmdName: string, args: string[]): { boardType: strin
 
 /**
  * Parses a BoardModifier from its command name ('rect', 'es', 'mc', 'triform', 'sqform', 'prod',
- * 'beginprod', 'endprod') and string args - see applyModifier/applyModifiers. mc's arg is optional: with none,
+ * 'beginprod', 'endprod', 'gcent') and string args - see applyModifier/applyModifiers. mc's arg is optional: with none,
  * `dist` defaults to MC_DEFAULT_DIST. prod/beginprod's first arg is a board-type command name and
  * the rest are that type's own positional dimension args - see parseBoardTypeArgs.
  */
@@ -1396,6 +1453,10 @@ export function parseModifier(name: string, args: string[]): BoardModifier {
     if (name === 'rect') {
         assert(args.length === 0, `rect takes no arguments, got ${args.length}`);
         return { kind: 'Rectify' };
+    }
+    if (name === 'gcent') {
+        assert(args.length === 0, `gcent takes no arguments, got ${args.length}`);
+        return { kind: 'GlobalCentralize' };
     }
     if (name === 'es') {
         assert(args.length === 1, `es takes exactly 1 argument (splitN), got ${args.length}`);
@@ -1438,8 +1499,9 @@ export function parseModifier(name: string, args: string[]): BoardModifier {
 
 /**
  * Applies `modifier` to `bc`, dispatching to `rectify` / `edgeSplit` / `mergeClose` /
- * `triangleForm` / `squareForm` / `product` (Prod builds a fresh board from its own boardType/boardArgs via
- * buildPrescribedBoard, then multiplies it into `bc`). Does NOT accept BeginProd/EndProd - those have no meaning applied to a
+ * `triangleForm` / `squareForm` / `product` / `globalCentralize` (Prod builds a fresh board from
+ * its own boardType/boardArgs via buildPrescribedBoard, then multiplies it into `bc`). Does NOT
+ * accept BeginProd/EndProd - those have no meaning applied to a
  * single board in isolation (BeginProd starts a whole new board for applyModifiers to build up
  * separately - potentially with further modifiers of its own before the product happens, unlike
  * Prod's one-shot immediate product - and EndProd's `product()` needs that suspended outer board
@@ -1454,6 +1516,7 @@ export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardCo
         case 'TriangleForm': return triangleForm(bc, modifier.w);
         case 'SquareForm': return squareForm(bc, modifier.w);
         case 'Prod': return product(bc, buildPrescribedBoard(modifier.boardType, modifier.boardArgs));
+        case 'GlobalCentralize': return globalCentralize(bc);
         case 'BeginProd':
         case 'EndProd':
             throw new Error(`applyModifier: ${modifier.kind} must be applied via applyModifiers, not directly`);

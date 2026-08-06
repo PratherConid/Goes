@@ -74,6 +74,12 @@ const _boardConfigDescriptions = new Map([
     ['regpoly_13_prod_regpoly_13', 'Product of two 13-sided regular polygon boards'],
     ['star_5_es_6_prod_line_5',
         '5-armed star board, each edge split into 6, then multiplied by a 5-node line'],
+    ['regpoly_5_prod_line_2_gcent_triform_7',
+        '5-sided regular polygon board multiplied by a 2-node line (a pentagonal prism), plus a '
+        + 'central hub node, each resulting triangle replaced by a side-length-7 triangular board'],
+    ['dodeca_gcent_triform_6',
+        'Regular dodecahedron with a central hub node, each resulting triangle replaced by a '
+        + 'side-length-6 triangular board'],
 ]);
 
 
@@ -535,6 +541,7 @@ export class Renderer {
         [PrescribedBoard.twistedSquareBoard]:       [4, 4, 3],
         [PrescribedBoard.glueTwistedSquareBoard]:   [4, 4, 3],
         [PrescribedBoard.starBoard]:                 [6],
+        [PrescribedBoard.octahedronBoard]:          [],
     };
     nShowHistory = 10;
     currentSidePanel: SidePanelContent = SidePanelContent.Home;
@@ -1452,6 +1459,9 @@ export class Renderer {
             ${row('endprod',
                 'Ends the innermost beginprod: multiplies its finished board into the board that was '
                 + 'active before that beginprod (Cartesian product), and resumes modifying the result')}
+            ${row('gcent',
+                'GlobalCentralize: add one new node at the barycenter of every existing node, connected '
+                + 'to all of them')}
         </table>`;
     }
 

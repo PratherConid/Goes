@@ -365,6 +365,25 @@ BoardConfig square_form(const BoardConfig& bc, int w) {
     return quotient_board(combined, quot);
 }
 
+BoardConfig global_centralize(const BoardConfig& bc) {
+    int N = bc.N;
+    int hub = N;
+    auto adj = zero_adj(N + 1);
+    for (int i = 0; i < N; i++)
+        for (int j = i + 1; j < N; j++) {
+            if (!bc.adj[i][j]) continue;
+            adj[i][j] = 1;
+            adj[j][i] = 1;
+        }
+    for (int i = 0; i < N; i++) {
+        adj[i][hub] = 1;
+        adj[hub][i] = 1;
+    }
+
+    std::vector<std::vector<unsigned>> embed(N + 1); // emb_dim=0 - see board_config.h's doc comment
+    return make_bc(std::move(adj), 0u, std::move(embed));
+}
+
 BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2) {
     int N1 = bc1.N, N2 = bc2.N;
     unsigned emb_dim = bc1.emb_dim + bc2.emb_dim;
@@ -400,6 +419,7 @@ BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier)
         case ModifierKind::SquareForm: return square_form(bc, modifier.split_n);
         case ModifierKind::Prod:
             return product(bc, build_board_config(modifier.board_type, modifier.board_args));
+        case ModifierKind::GlobalCentralize: return global_centralize(bc);
         case ModifierKind::BeginProd:
         case ModifierKind::EndProd:
             throw std::runtime_error(
@@ -594,6 +614,20 @@ BoardConfig tetrahedron_board() {
         for (int j = 0; j < 4; j++)
             if (i != j) adj[i][j] = 1;
     std::vector<std::vector<unsigned>> embed(4); // emb_dim=0
+    return make_bc(std::move(adj), 0u, std::move(embed));
+}
+
+// Mirrors shared/boardConfig.ts's octahedronBoard() connectivity exactly (adjacency only - no
+// position/embedding, see board_config.h's own doc comment on this function). Vertex 2k and 2k+1
+// are always antipodal pairs, by construction - each vertex connects to every other vertex except
+// its own antipode.
+BoardConfig octahedron_board() {
+    auto adj = zero_adj(6);
+    auto antipode = [](int i) { return i % 2 == 0 ? i + 1 : i - 1; };
+    for (int i = 0; i < 6; i++)
+        for (int j = 0; j < 6; j++)
+            if (i != j && j != antipode(i)) adj[i][j] = 1;
+    std::vector<std::vector<unsigned>> embed(6); // emb_dim=0
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
@@ -1066,6 +1100,7 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<int>& 
     if (kind == "regpoly") return regular_polygon_board(v[0]);
     if (kind == "star")  return star_board(v[0]);
     if (kind == "tetra") return tetrahedron_board();
+    if (kind == "octa") return octahedron_board();
     if (kind == "dodeca") return dodecahedron_board();
     if (kind == "icosa") return icosahedron_board();
     if (kind == "trihex") return triangular_hex_board(v[0]);

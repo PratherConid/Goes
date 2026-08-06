@@ -64,6 +64,15 @@ BoardConfig triangle_form(const BoardConfig& bc, int w);
 // this always produces an emb_dim = 0 board. Mirrors shared/boardConfig.ts's squareForm() exactly.
 BoardConfig square_form(const BoardConfig& bc, int w);
 
+// Adds one new node connected to every existing node of bc, at the barycenter of bc's existing
+// node positions - mirrors shared/boardConfig.ts's globalCentralize() connectivity exactly, but
+// (like triangle_form/square_form above) always produces an emb_dim = 0 board regardless of bc's
+// own embedding: the barycenter is generally not an exact integer (it divides by N), and even
+// where it happens to be, a hub node adjacent to the *entire* board doesn't fit the local-grid
+// shape CNN/UNet expect anyway (see cnn.cpp/unet.cpp) - so nothing real is lost by dropping to
+// adjacency-only here, same reasoning as those two functions' own doc comments.
+BoardConfig global_centralize(const BoardConfig& bc);
+
 // The Cartesian (box) product of two board configs: N = bc1.N * bc2.N, one new node per pair (i, j)
 // (i from bc1, j from bc2), at the concatenated position embed[i] followed by embed[j] (emb_dim =
 // bc1.emb_dim + bc2.emb_dim - both stay exact integers here, unlike merge_close/rectify, since
@@ -80,7 +89,8 @@ BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2);
 // GameConfig (including board_modifiers) from a JSON file/HTTP body via parse_game_cfg
 // (training/self_play.cpp) instead.
 enum class ModifierKind {
-    Rectify, EdgeSplit, MergeClose, TriangleForm, SquareForm, Prod, BeginProd, EndProd
+    Rectify, EdgeSplit, MergeClose, TriangleForm, SquareForm, Prod, BeginProd, EndProd,
+    GlobalCentralize
 };
 struct BoardModifier {
     ModifierKind kind;
@@ -101,7 +111,7 @@ struct BoardModifier {
 };
 
 // Applies modifier to bc, dispatching to rectify / edge_split / merge_close / triangle_form /
-// square_form / product (Prod builds a fresh board from its own board_type/board_args via
+// square_form / product / global_centralize (Prod builds a fresh board from its own board_type/board_args via
 // build_board_config, then multiplies it into bc - a one-shot immediate product, unlike
 // BeginProd/EndProd below). Does NOT accept
 // BeginProd/EndProd - those have no meaning applied to a single board in isolation (BeginProd starts
@@ -170,6 +180,13 @@ BoardConfig star_board(int n);
 // vertices is a triangle.
 BoardConfig tetrahedron_board();
 
+// A regular octahedron: 6 vertices, 12 edges, 8 triangular faces (every vertex degree 4). Same
+// emb_dim = 0 / empty embed[] approach as regular_polygon_board, for the same reason (the raw
+// distance between two non-antipodal vertices is sqrt(2), irrational - see shared/boardConfig.ts's
+// octahedronBoard() for the coordinates/connectivity derivation this mirrors, adjacency only). A
+// side-length-w subdivision of its 8 triangular faces can be applied via triangle_form(w).
+BoardConfig octahedron_board();
+
 // A regular dodecahedron: 20 vertices, 12 pentagonal faces, 30 edges (every vertex degree 3).
 // Same emb_dim = 0 / empty embed[] approach as regular_polygon_board, for the same reason
 // (dodecahedron vertices are inherently irrational - see shared/boardConfig.ts's
@@ -237,7 +254,7 @@ BoardConfig glue_twisted_square_board(int w, int h, int g);
 BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("line" | "rect" | "rectd" |
-// "cublat" | "hcub" | "tri" | "regpoly" | "tetra" | "dodeca" | "icosa" | "trihex" |
+// "cublat" | "hcub" | "tri" | "regpoly" | "tetra" | "octa" | "dodeca" | "icosa" | "trihex" |
 // "hex" | "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" | "star" - matches
 // shared/types.ts's GameConfig.boardType strings), passing `args` as that
 // builder's positional parameters. Throws std::runtime_error for an unknown
