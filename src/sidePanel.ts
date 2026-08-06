@@ -298,6 +298,7 @@ export const fmtModifiers = (modifiers: BoardModifier[]) =>
                 case 'EdgeSplit': return `es ${m.splitN}`;
                 case 'MergeClose': return `mc ${m.dist}`;
                 case 'TriangleForm': return `triform ${m.w}`;
+                case 'SquareForm': return `sqform ${m.w}`;
                 case 'Prod': return `prod ${m.boardType} ${m.boardArgs.join(' ')}`;
                 case 'BeginProd': return `beginprod ${m.boardType} ${m.boardArgs.join(' ')}`;
                 case 'EndProd': return 'endprod';

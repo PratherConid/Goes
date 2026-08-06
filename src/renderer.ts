@@ -1194,6 +1194,10 @@ export class Renderer {
                 'TriangleForm: replace every triangle (3 mutually-adjacent nodes) with a side-length-w '
                 + 'triangular board, gluing new corners to the old vertices and gluing shared triangle '
                 + 'edges together (w=1 collapses each triangle to a point; w=2 is a no-op)')}
+            ${row('sqform &lt;w&gt;',
+                'SquareForm: replace every square (4-cycle with no diagonal edges) with a w-by-w grid, '
+                + 'gluing new corners to the old vertices and gluing shared square edges together '
+                + '(w=1 collapses each square to a point; w=2 is a no-op)')}
             ${row('prod &lt;board-type&gt; &lt;args…&gt;',
                 'Prod: builds a second board (of the given type/args) and immediately multiplies it '
                 + 'into the current one (Cartesian product) - a one-shot shorthand for '

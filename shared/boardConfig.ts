@@ -1,6 +1,6 @@
 import type { GameConfig } from './types.js';
 import { convexHullEdges } from './geometry.js';
-import { findTriangles } from './topology.js';
+import { findTriangles, findSquares } from './topology.js';
 
 /**
  * A board's node positions in their natural embedding dimension (embDim - 2 for most boards, 3 for
@@ -300,6 +300,114 @@ export function triangleForm(bc: BoardConfig, w: number): BoardConfig {
             for (let idx = 0; idx < w; idx++)
                 quot.push([globalIdx(ts[0], canonical[idx][0], canonical[idx][1]),
                     globalIdx(ts[k], seq[idx][0], seq[idx][1])]);
+        }
+    }
+
+    const combined = make(new Embedding(embDim, pos, bc.emb.projMat), adj);
+    return quotientBoard(combined, quot);
+}
+
+/**
+ * Replaces every square (4 distinct vertices forming a cycle with no diagonal edges - see
+ * topology.ts's findSquares) in `bc` with a `w`-by-`w` grid, the same way `triangleForm` replaces
+ * triangles with `triangularBoard(w)`-shaped lattices.
+ */
+export function squareForm(bc: BoardConfig, w: number): BoardConfig {
+    assert(w >= 1, `w must be at least 1, got ${w}`);
+    const N = bc.N;
+    const embDim = bc.emb.embDim;
+    const scale = Math.max(w - 1, 1);
+    const scaledPos = bc.emb.pos.map(p => p.map(v => v * scale));
+
+    const squares = findSquares(bc.adj); // each [A, B, C, D] in cycle order
+    const nFace = w * w;
+    const localIdx = (i: number, j: number) => i * w + j;
+    const globalIdx = (t: number, i: number, j: number) => N + t * nFace + localIdx(i, j);
+
+    const isSquareSide = new Set<string>(); // "p,q" (p < q)
+    for (const [A, B, C, D] of squares)
+        for (const [p, q] of [[A, B], [B, C], [C, D], [D, A]] as [number, number][])
+            isSquareSide.add(`${Math.min(p, q)},${Math.max(p, q)}`);
+
+    const totalN = N + squares.length * nFace;
+    const pos: number[][] = new Array(totalN);
+    for (let i = 0; i < N; i++) pos[i] = scaledPos[i];
+
+    const adj = zeroAdj(totalN);
+    for (let i = 0; i < N; i++)
+        for (let j = i + 1; j < N; j++) {
+            if (!bc.adj[i][j] || isSquareSide.has(`${i},${j}`)) continue;
+            adj[i][j] = 1;
+            adj[j][i] = 1;
+        }
+
+    const dirs: [number, number][] = [[0, 1], [1, 0], [0, -1], [-1, 0]];
+    for (let t = 0; t < squares.length; t++) {
+        const [A, B, C, D] = squares[t];
+        const cornerA = scaledPos[A], cornerB = scaledPos[B], cornerC = scaledPos[C], cornerD = scaledPos[D];
+        const denom = (w - 1) * (w - 1);
+        for (let i = 0; i < w; i++)
+            for (let j = 0; j < w; j++) {
+                const wA = (w - 1 - i) * (w - 1 - j), wB = (w - 1 - i) * j;
+                const wC = i * j, wD = i * (w - 1 - j);
+                pos[globalIdx(t, i, j)] = w === 1
+                    ? cornerA.map((_, k) => (cornerA[k] + cornerB[k] + cornerC[k] + cornerD[k]) / 4)
+                    : cornerA.map((_, k) =>
+                        (wA * cornerA[k] + wB * cornerB[k] + wC * cornerC[k] + wD * cornerD[k]) / denom);
+            }
+        for (let i = 0; i < w; i++)
+            for (let j = 0; j < w; j++)
+                for (const [di, dj] of dirs) {
+                    const ni = i + di, nj = j + dj;
+                    if (ni < 0 || ni >= w || nj < 0 || nj >= w) continue;
+                    adj[globalIdx(t, i, j)][globalIdx(t, ni, nj)] = 1;
+                }
+    }
+
+    // The "natural" boundary sequence (local (i,j) pairs, k=0..w-1) for square t's side `side`
+    // (0=A-B top row, 1=B-C right col, 2=C-D bottom row, 3=D-A left col), running from that side's
+    // first-listed corner (k=0) to its second (k=w-1), matching the block's own A/B/C/D corner
+    // assignment: (0,0)=A, (0,w-1)=B, (w-1,w-1)=C, (w-1,0)=D.
+    function naturalSeq(side: 0 | 1 | 2 | 3): [number, number][] {
+        if (side === 0) return Array.from({ length: w }, (_, j): [number, number] => [0, j]);
+        if (side === 1) return Array.from({ length: w }, (_, i): [number, number] => [i, w - 1]);
+        if (side === 2) return Array.from({ length: w }, (_, k): [number, number] => [w - 1, w - 1 - k]);
+        return Array.from({ length: w }, (_, k): [number, number] => [w - 1 - k, 0]);
+    }
+
+    const quot: [number, number][] = [];
+    for (let t = 0; t < squares.length; t++) {
+        const [A, B, C, D] = squares[t];
+        quot.push(
+            [A, globalIdx(t, 0, 0)], [B, globalIdx(t, 0, w - 1)],
+            [C, globalIdx(t, w - 1, w - 1)], [D, globalIdx(t, w - 1, 0)],
+        );
+    }
+    // Unlike triangleForm's A < B < C corner convention, a square's cycle order isn't globally
+    // monotonic in vertex index, so each side's natural sequence is explicitly re-oriented here to
+    // always run from min(endpoint) to max(endpoint) - the shared canonical direction every square
+    // touching that original edge agrees on, regardless of its own cycle orientation.
+    const edgeToSeqs = new Map<string, { t: number; seq: [number, number][] }[]>();
+    for (let t = 0; t < squares.length; t++) {
+        const [A, B, C, D] = squares[t];
+        const sides: [number, number, 0 | 1 | 2 | 3][] = [[A, B, 0], [B, C, 1], [C, D, 2], [D, A, 3]];
+        for (const [ep1, ep2, side] of sides) {
+            const key = `${Math.min(ep1, ep2)},${Math.max(ep1, ep2)}`;
+            const seq = ep1 < ep2 ? naturalSeq(side) : [...naturalSeq(side)].reverse();
+            if (!edgeToSeqs.has(key)) edgeToSeqs.set(key, []);
+            edgeToSeqs.get(key)!.push({ t, seq });
+        }
+    }
+    for (const entries of edgeToSeqs.values()) {
+        if (entries.length < 2) continue;
+        const canonical = entries[0].seq;
+        for (let k = 1; k < entries.length; k++) {
+            const seq = entries[k].seq;
+            for (let idx = 0; idx < w; idx++)
+                quot.push([
+                    globalIdx(entries[0].t, canonical[idx][0], canonical[idx][1]),
+                    globalIdx(entries[k].t, seq[idx][0], seq[idx][1]),
+                ]);
         }
     }
 
@@ -1217,6 +1325,7 @@ export type BoardModifier =
     | { kind: 'EdgeSplit'; splitN: number }
     | { kind: 'MergeClose'; dist: number }
     | { kind: 'TriangleForm'; w: number }
+    | { kind: 'SquareForm'; w: number }
     | { kind: 'Prod'; boardType: string; boardArgs: number[] }
     | { kind: 'BeginProd'; boardType: string; boardArgs: number[] }
     | { kind: 'EndProd' };
@@ -1247,8 +1356,8 @@ function parseBoardTypeArgs(cmdName: string, args: string[]): { boardType: strin
 }
 
 /**
- * Parses a BoardModifier from its command name ('rect', 'es', 'mc', 'triform', 'prod', 'beginprod',
- * 'endprod') and string args - see applyModifier/applyModifiers. mc's arg is optional: with none,
+ * Parses a BoardModifier from its command name ('rect', 'es', 'mc', 'triform', 'sqform', 'prod',
+ * 'beginprod', 'endprod') and string args - see applyModifier/applyModifiers. mc's arg is optional: with none,
  * `dist` defaults to MC_DEFAULT_DIST. prod/beginprod's first arg is a board-type command name and
  * the rest are that type's own positional dimension args - see parseBoardTypeArgs.
  */
@@ -1275,6 +1384,12 @@ export function parseModifier(name: string, args: string[]): BoardModifier {
         assert(Number.isInteger(w) && w >= 1, `triform: w must be a positive integer, got "${args[0]}"`);
         return { kind: 'TriangleForm', w };
     }
+    if (name === 'sqform') {
+        assert(args.length === 1, `sqform takes exactly 1 argument (w), got ${args.length}`);
+        const w = Number(args[0]);
+        assert(Number.isInteger(w) && w >= 1, `sqform: w must be a positive integer, got "${args[0]}"`);
+        return { kind: 'SquareForm', w };
+    }
     if (name === 'prod') {
         const { boardType, boardArgs } = parseBoardTypeArgs('prod', args);
         return { kind: 'Prod', boardType, boardArgs };
@@ -1292,7 +1407,7 @@ export function parseModifier(name: string, args: string[]): BoardModifier {
 
 /**
  * Applies `modifier` to `bc`, dispatching to `rectify` / `edgeSplit` / `mergeClose` /
- * `triangleForm` / `product` (Prod builds a fresh board from its own boardType/boardArgs via
+ * `triangleForm` / `squareForm` / `product` (Prod builds a fresh board from its own boardType/boardArgs via
  * buildPrescribedBoard, then multiplies it into `bc`). Does NOT accept BeginProd/EndProd - those have no meaning applied to a
  * single board in isolation (BeginProd starts a whole new board for applyModifiers to build up
  * separately - potentially with further modifiers of its own before the product happens, unlike
@@ -1306,6 +1421,7 @@ export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardCo
         case 'EdgeSplit': return edgeSplit(bc, modifier.splitN);
         case 'MergeClose': return mergeClose(bc, modifier.dist);
         case 'TriangleForm': return triangleForm(bc, modifier.w);
+        case 'SquareForm': return squareForm(bc, modifier.w);
         case 'Prod': return product(bc, buildPrescribedBoard(modifier.boardType, modifier.boardArgs));
         case 'BeginProd':
         case 'EndProd':

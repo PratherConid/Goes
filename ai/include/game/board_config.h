@@ -32,7 +32,8 @@ BoardConfig edge_split(const BoardConfig& bc, int split_n);
 // there's no exact-integer alternative), then connect the pairs joined by an edge on the convex hull
 // of v's directions (see geometry.h's convex_hull_edges). Mirrors shared/boardConfig.ts's rectify()
 // exactly, including its own fix for a scale-mismatch bug (direction vectors are computed against
-// 2*embed[v], not embed[v] directly, to match the doubled scale of the midpoint positions).
+// 2*embed[v], not embed[v] directly, to match the doubled scale of the midpoint positions). Throws if
+// bc.emb_dim == 0 - there are no real coordinates to compute edge directions from.
 BoardConfig rectify(const BoardConfig& bc);
 
 // Merges every pair of nodes whose Euclidean distance (in the natural embedding dimension) is
@@ -42,7 +43,8 @@ BoardConfig rectify(const BoardConfig& bc);
 // exactly. Unlike edge_split/rectify's own node *positions*, dist and the distance test are
 // floating point - embed coordinates stay exact integers throughout, but there's no exact-integer
 // way to compare an arbitrary real-valued threshold against a Euclidean distance (same reasoning as
-// rectify()'s direction normalization - see geometry.h's doc comment).
+// rectify()'s direction normalization - see geometry.h's doc comment). Throws if bc.emb_dim == 0 -
+// there are no real coordinates to compute a distance from.
 BoardConfig merge_close(const BoardConfig& bc, double dist);
 
 // Replaces every triangle (3 mutually-adjacent, distinct vertices - see topology.h's
@@ -55,6 +57,12 @@ BoardConfig merge_close(const BoardConfig& bc, double dist);
 // tetrahedron_board / dodecahedron_board / icosahedron_board) - adjacency only, regardless of
 // whether bc itself had a real embedding.
 BoardConfig triangle_form(const BoardConfig& bc, int w);
+
+// Replaces every square (4 distinct vertices forming a cycle with no diagonal edges - see
+// topology.h's find_squares) in bc with a w-by-w grid, the same way triangle_form replaces
+// triangles with triangular_board(w)-shaped lattices - see that function's own doc comment for why
+// this always produces an emb_dim = 0 board. Mirrors shared/boardConfig.ts's squareForm() exactly.
+BoardConfig square_form(const BoardConfig& bc, int w);
 
 // The Cartesian (box) product of two board configs: N = bc1.N * bc2.N, one new node per pair (i, j)
 // (i from bc1, j from bc2), at the concatenated position embed[i] followed by embed[j] (emb_dim =
@@ -71,12 +79,15 @@ BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2);
 // interactive command text, which has no analog here - train.cpp/server.cpp get their whole
 // GameConfig (including board_modifiers) from a JSON file/HTTP body via parse_game_cfg
 // (training/self_play.cpp) instead.
-enum class ModifierKind { Rectify, EdgeSplit, MergeClose, TriangleForm, Prod, BeginProd, EndProd };
+enum class ModifierKind {
+    Rectify, EdgeSplit, MergeClose, TriangleForm, SquareForm, Prod, BeginProd, EndProd
+};
 struct BoardModifier {
     ModifierKind kind;
-    // split_n is reused for TriangleForm's own single int parameter (its w) - both are "one plain
-    // int argument" modifiers, same as Prod/BeginProd already share board_type/board_args below.
-    int split_n = 0;              // meaningful when kind == ModifierKind::EdgeSplit / TriangleForm
+    // split_n is reused for TriangleForm/SquareForm's own single int parameter (its w) - all three
+    // are "one plain int argument" modifiers, same as Prod/BeginProd already share board_type/
+    // board_args below.
+    int split_n = 0;         // meaningful when kind == ModifierKind::EdgeSplit / TriangleForm/SquareForm
     double dist = 0.0;             // only meaningful when kind == ModifierKind::MergeClose
     std::string board_type;        // only meaningful when kind == ModifierKind::Prod / BeginProd
     std::vector<int> board_args;   // only meaningful when kind == ModifierKind::Prod / BeginProd
@@ -90,9 +101,9 @@ struct BoardModifier {
 };
 
 // Applies modifier to bc, dispatching to rectify / edge_split / merge_close / triangle_form /
-// product (Prod builds a fresh board from its own board_type/board_args via build_board_config,
-// then multiplies it into bc - a one-shot immediate product, unlike BeginProd/EndProd below). Does
-// NOT accept
+// square_form / product (Prod builds a fresh board from its own board_type/board_args via
+// build_board_config, then multiplies it into bc - a one-shot immediate product, unlike
+// BeginProd/EndProd below). Does NOT accept
 // BeginProd/EndProd - those have no meaning applied to a single board in isolation (BeginProd starts
 // a whole new board for apply_modifiers to build up separately - potentially with further modifiers
 // of its own before the product happens - and EndProd's product() needs that suspended outer board

@@ -60,6 +60,7 @@ nlohmann::json GameConfig::to_json() const {
             case ModifierKind::EdgeSplit:  mj["kind"] = "EdgeSplit"; mj["splitN"] = m.split_n; break;
             case ModifierKind::MergeClose: mj["kind"] = "MergeClose"; mj["dist"] = m.dist; break;
             case ModifierKind::TriangleForm: mj["kind"] = "TriangleForm"; mj["w"] = m.split_n; break;
+            case ModifierKind::SquareForm: mj["kind"] = "SquareForm"; mj["w"] = m.split_n; break;
             case ModifierKind::Prod:
                 mj["kind"] = "Prod";
                 mj["boardType"] = m.board_type;
@@ -171,6 +172,8 @@ static std::vector<BoardModifier> parse_board_modifiers(const json& j) {
             out.push_back({ModifierKind::MergeClose, 0, m["dist"].get<double>()});
         else if (kind == "TriangleForm")
             out.push_back({ModifierKind::TriangleForm, m["w"].get<int>()});
+        else if (kind == "SquareForm")
+            out.push_back({ModifierKind::SquareForm, m["w"].get<int>()});
         else if (kind == "Prod") {
             BoardModifier bm;
             bm.kind = ModifierKind::Prod;

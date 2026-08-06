@@ -111,6 +111,15 @@ BoardConfig edge_split(const BoardConfig& bc, int split_n) {
 }
 
 BoardConfig rectify(const BoardConfig& bc) {
+    // A real (always-active) check, not assert() - rectify's connectivity is decided by the angular
+    // ordering of real edge directions around each vertex (see convex_hull_edges below), which is
+    // undefined for an emb_dim=0 board (e.g. dodeca/icosa/tetra/regpoly, or triform/sqform output -
+    // see board_config.h). Left unchecked, the convex-hull LP degenerates on 0-dimensional points and
+    // silently returns no edges at all, rather than failing loudly.
+    if (bc.emb_dim == 0)
+        throw std::runtime_error(
+            "rectify: requires a real (non-zero) embedding, got emb_dim=0 - this board has no "
+            "coordinates to compute edge directions from");
     int N = bc.N;
     unsigned emb_dim = bc.emb_dim;
 
@@ -164,6 +173,14 @@ BoardConfig rectify(const BoardConfig& bc) {
 
 BoardConfig merge_close(const BoardConfig& bc, double dist) {
     assert(dist > 0 && "dist must be positive");
+    // A real (always-active) check, not assert() - merge_close needs real coordinates to compute a
+    // meaningful distance. Left unchecked, an emb_dim=0 board (e.g. dodeca/icosa/tetra/regpoly, or
+    // triform/sqform output - see board_config.h) makes every pairwise distance compute to 0 (the
+    // loop over emb_dim coordinates never runs), silently collapsing the entire board into one node.
+    if (bc.emb_dim == 0)
+        throw std::runtime_error(
+            "merge_close: requires a real (non-zero) embedding, got emb_dim=0 - this board has no "
+            "coordinates to compute a distance from");
     double dist2 = dist * dist;
     int N = bc.N;
     std::vector<std::pair<int,int>> quot;
@@ -258,6 +275,96 @@ BoardConfig triangle_form(const BoardConfig& bc, int w) {
     return quotient_board(combined, quot);
 }
 
+BoardConfig square_form(const BoardConfig& bc, int w) {
+    assert(w >= 1 && "w must be at least 1");
+    int N = bc.N;
+    auto squares = find_squares(bc.adj); // each {A, B, C, D} in cycle order
+
+    int n_face = w * w;
+    auto local_idx = [&](int i, int j) { return i * w + j; };
+    auto global_idx = [&](int t, int i, int j) { return N + t * n_face + local_idx(i, j); };
+
+    std::set<std::pair<int,int>> is_square_side;
+    for (auto& sq : squares) {
+        int A = sq[0], B = sq[1], C = sq[2], D = sq[3];
+        for (auto& pq : {std::pair{A, B}, std::pair{B, C}, std::pair{C, D}, std::pair{D, A}})
+            is_square_side.insert({std::min(pq.first, pq.second), std::max(pq.first, pq.second)});
+    }
+
+    int total_n = N + (int)squares.size() * n_face;
+    auto adj = zero_adj(total_n);
+    for (int i = 0; i < N; i++)
+        for (int j = i + 1; j < N; j++) {
+            if (!bc.adj[i][j] || is_square_side.count({i, j})) continue;
+            adj[i][j] = 1;
+            adj[j][i] = 1;
+        }
+
+    const int dirs[4][2] = {{0,1},{1,0},{0,-1},{-1,0}};
+    for (int t = 0; t < (int)squares.size(); t++)
+        for (int i = 0; i < w; i++)
+            for (int j = 0; j < w; j++)
+                for (auto& d : dirs) {
+                    int ni = i + d[0], nj = j + d[1];
+                    if (ni >= 0 && ni < w && nj >= 0 && nj < w)
+                        adj[global_idx(t, i, j)][global_idx(t, ni, nj)] = 1;
+                }
+
+    // The "natural" boundary sequence (local (i,j) pairs, k=0..w-1) for square t's side `side`
+    // (0=A-B top row, 1=B-C right col, 2=C-D bottom row, 3=D-A left col), running from that side's
+    // first-listed corner (k=0) to its second (k=w-1) - matches shared/boardConfig.ts's naturalSeq().
+    auto natural_seq = [&](int side) {
+        std::vector<std::pair<int,int>> seq(w);
+        if (side == 0) { for (int j = 0; j < w; j++) seq[j] = {0, j}; }
+        else if (side == 1) { for (int i = 0; i < w; i++) seq[i] = {i, w - 1}; }
+        else if (side == 2) { for (int k = 0; k < w; k++) seq[k] = {w - 1, w - 1 - k}; }
+        else { for (int k = 0; k < w; k++) seq[k] = {w - 1 - k, 0}; }
+        return seq;
+    };
+
+    std::vector<std::pair<int,int>> quot;
+    for (int t = 0; t < (int)squares.size(); t++) {
+        auto& sq = squares[t];
+        quot.push_back({sq[0], global_idx(t, 0, 0)});
+        quot.push_back({sq[1], global_idx(t, 0, w - 1)});
+        quot.push_back({sq[2], global_idx(t, w - 1, w - 1)});
+        quot.push_back({sq[3], global_idx(t, w - 1, 0)});
+    }
+    // Unlike triangle_form's A < B < C corner convention, a square's cycle order isn't globally
+    // monotonic in vertex index, so each side's natural sequence is explicitly re-oriented here to
+    // always run from min(endpoint) to max(endpoint) - the shared canonical direction every square
+    // touching that original edge agrees on, regardless of its own cycle orientation.
+    std::map<std::pair<int,int>, std::vector<std::pair<int, std::vector<std::pair<int,int>>>>> edge_to_seqs;
+    for (int t = 0; t < (int)squares.size(); t++) {
+        auto& sq = squares[t];
+        int A = sq[0], B = sq[1], C = sq[2], D = sq[3];
+        int sides[4][3] = {{A, B, 0}, {B, C, 1}, {C, D, 2}, {D, A, 3}};
+        for (auto& s : sides) {
+            int ep1 = s[0], ep2 = s[1], side = s[2];
+            auto key = std::pair{std::min(ep1, ep2), std::max(ep1, ep2)};
+            auto seq = natural_seq(side);
+            if (ep1 > ep2) std::reverse(seq.begin(), seq.end());
+            edge_to_seqs[key].push_back({t, seq});
+        }
+    }
+    for (auto& [key, entries] : edge_to_seqs) {
+        if (entries.size() < 2) continue;
+        auto& [t0, canonical] = entries[0];
+        for (size_t k = 1; k < entries.size(); k++) {
+            auto& [tk, seq] = entries[k];
+            for (int idx = 0; idx < w; idx++)
+                quot.push_back({
+                    global_idx(t0, canonical[idx].first, canonical[idx].second),
+                    global_idx(tk, seq[idx].first, seq[idx].second),
+                });
+        }
+    }
+
+    std::vector<std::vector<unsigned>> embed(total_n); // emb_dim=0 - see board_config.h's doc comment
+    BoardConfig combined = make_bc(std::move(adj), 0u, std::move(embed));
+    return quotient_board(combined, quot);
+}
+
 BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2) {
     int N1 = bc1.N, N2 = bc2.N;
     unsigned emb_dim = bc1.emb_dim + bc2.emb_dim;
@@ -290,6 +397,7 @@ BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier)
         case ModifierKind::EdgeSplit:  return edge_split(bc, modifier.split_n);
         case ModifierKind::MergeClose: return merge_close(bc, modifier.dist);
         case ModifierKind::TriangleForm: return triangle_form(bc, modifier.split_n);
+        case ModifierKind::SquareForm: return square_form(bc, modifier.split_n);
         case ModifierKind::Prod:
             return product(bc, build_board_config(modifier.board_type, modifier.board_args));
         case ModifierKind::BeginProd:
