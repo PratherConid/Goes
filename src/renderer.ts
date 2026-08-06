@@ -82,6 +82,12 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 // (place a stone) rather than a camera-orbit drag - see Renderer._onBoardMouseDown().
 const DRAG_THRESHOLD_PX = 4;
 
+// Stone radius as a fraction of cell (pixels per board-coordinate unit) - see boardLayout()'s
+// stone_r. Also, since cell is pixels-per-natural-unit, this same factor IS the stone's radius
+// in natural (un-scaled) board units - used by drawBoardFull() to offset a stone's depth by its
+// own radius without mixing pixel-space and natural-unit-space quantities.
+const STONE_RADIUS_FACTOR = 0.42;
+
 // ── layout helper ────────────────────────────────────────────────────────────
 
 // Given a board size w×h, compute how to map board coordinates to screen pixels so that
@@ -100,7 +106,7 @@ const DRAG_THRESHOLD_PX = 4;
 //                      sx = originX + bx * cell
 //                      sy = originY - by * cell  (board y-up → screen y-down)
 //   cell             - pixels per board-coordinate unit
-//   stone_r          - stone radius in pixels (= 0.42 * cell)
+//   stone_r          - stone radius in pixels (= STONE_RADIUS_FACTOR * cell)
 //   pos              - every node's rotated (x, y, z) point, in the same order as view.emb.pos
 //   rotMat           - the 3x3 matrix actually applied to get pos - see projectPoint()
 function boardLayout(view: BoardView, w: number, h: number, cameraOrientation: Quaternion) {
@@ -115,13 +121,86 @@ function boardLayout(view: BoardView, w: number, h: number, cameraOrientation: Q
     const xMax = Math.max(...xs), yMax = Math.max(...ys);
     const spanX = xMax - xMin || 1, spanY = yMax - yMin || 1;
     const cell = Math.min(w / (spanX + 1), h / (spanY + 1)) * 0.95;
-    const stone_r = cell * 0.42;
+    const stone_r = cell * STONE_RADIUS_FACTOR;
     const originX = w / 2 - (xMin + xMax) / 2 * cell;
     const originY = h / 2 + (yMin + yMax) / 2 * cell;
     return { originX, originY, cell, stone_r, pos, rotMat };
 }
 
 // ── board SVG drawing ────────────────────────────────────────────────────────
+
+// One line connecting two adjacent nodes' screen positions.
+function drawGridLine(g: SVGElement, x1: number, y1: number, x2: number, y2: number): void {
+    const line = document.createElementNS(SVG_NS, 'line');
+    line.setAttribute('x1', String(x1));
+    line.setAttribute('y1', String(y1));
+    line.setAttribute('x2', String(x2));
+    line.setAttribute('y2', String(y2));
+    line.setAttribute('stroke', COLOR_GRID);
+    line.setAttribute('stroke-width', '1');
+    g.appendChild(line);
+}
+
+// A "hoshi" star-point dot.
+function drawStarPoint(g: SVGElement, sx: number, sy: number, r: number): void {
+    const c = document.createElementNS(SVG_NS, 'circle');
+    c.setAttribute('cx', String(sx));
+    c.setAttribute('cy', String(sy));
+    c.setAttribute('r', String(r));
+    c.setAttribute('fill', COLOR_GRID);
+    g.appendChild(c);
+}
+
+// A stone circle - also used for an illegal-move marker (same shape, just a different
+// color/no stroke), since the two are visually identical apart from those two properties.
+function drawStone(g: SVGElement, sx: number, sy: number, r: number, color: string, stroke: string | null): void {
+    const c = document.createElementNS(SVG_NS, 'circle');
+    c.setAttribute('cx', String(sx));
+    c.setAttribute('cy', String(sy));
+    c.setAttribute('r', String(r));
+    c.setAttribute('fill', color);
+    if (stroke !== null) {
+        c.setAttribute('stroke', stroke);
+        c.setAttribute('stroke-width', '1');
+    }
+    g.appendChild(c);
+}
+
+// A territory-ownership marker square.
+function drawTerritorySquare(g: SVGElement, sx: number, sy: number, side: number, color: string): void {
+    const r = document.createElementNS(SVG_NS, 'rect');
+    r.setAttribute('x', String(sx - side / 2));
+    r.setAttribute('y', String(sy - side / 2));
+    r.setAttribute('width', String(side));
+    r.setAttribute('height', String(side));
+    r.setAttribute('fill', color);
+    r.setAttribute('stroke', '#888');
+    r.setAttribute('stroke-width', String(side / 6));
+    g.appendChild(r);
+}
+
+// Everything drawBoardFull can draw, tagged with the depth (z, after camera rotation - larger is
+// nearer, see boardLayout()) it should be painter's-algorithm-sorted by, plus the exact argument
+// tuple its drawing function above takes. A grid line's depth is its FAR endpoint's (the smaller of
+// its two endpoints' z), not the midpoint - so the whole line reliably sits behind both endpoints'
+// own stones, rather than a near stone at one end poking through the middle of "its own" line. A
+// stone's depth is offset by +0.1*radius (its own screen radius) from its center's raw depth, to
+// account for the circle representing a 3D sphere (whose near surface bulges toward the camera)
+// rather than a flat disc sitting exactly at its center.
+type DrawItem =
+    | { kind: 'gridLine'; depth: number; args: [number, number, number, number] }
+    | { kind: 'starPoint'; depth: number; args: [number, number, number] }
+    | { kind: 'stone'; depth: number; args: [number, number, number, string, string | null] }
+    | { kind: 'territorySquare'; depth: number; args: [number, number, number, string] };
+
+function drawItem(g: SVGElement, item: DrawItem): void {
+    switch (item.kind) {
+        case 'gridLine': return drawGridLine(g, ...item.args);
+        case 'starPoint': return drawStarPoint(g, ...item.args);
+        case 'stone': return drawStone(g, ...item.args);
+        case 'territorySquare': return drawTerritorySquare(g, ...item.args);
+    }
+}
 
 // Render a board state as SVG into `parent` (an already-created/cleared <svg> or
 // <g> - this function only appends, never clears `parent` itself; the caller owns
@@ -157,65 +236,51 @@ function drawBoardFull(
     if (dim) g.setAttribute('opacity', '0.5');
     parent.appendChild(g);
 
-    // grid lines
+    // Every grid line/star point/stone/illegal-marker/territory-square gets collected here first
+    // (with its screen-space draw args and its depth), rather than drawn immediately - so the
+    // whole board can be painter's-algorithm-sorted and drawn back-to-front in one pass below,
+    // instead of each shape category being internally sorted (or not) independently. Larger depth
+    // is nearer the camera (see boardLayout()'s pos, the (x, y, z) point after rotMat).
+    const items: DrawItem[] = [];
+    const screenX = (x: number) => originX + x * cell, screenY = (y: number) => originY - y * cell;
+
+    // grid lines - depth is the FAR endpoint's (the smaller of the two), so the whole line sits
+    // behind both endpoints' own stones rather than poking through the middle of either.
     for (let i = 0; i < N; i++) {
         for (let j = i + 1; j < N; j++) {
             if (!adj[i][j]) continue;
-            const [x1, y1] = pos[i], [x2, y2] = pos[j];
-            const line = document.createElementNS(SVG_NS, 'line');
-            line.setAttribute('x1', String(originX + x1 * cell));
-            line.setAttribute('y1', String(originY - y1 * cell));
-            line.setAttribute('x2', String(originX + x2 * cell));
-            line.setAttribute('y2', String(originY - y2 * cell));
-            line.setAttribute('stroke', COLOR_GRID);
-            line.setAttribute('stroke-width', '1');
-            g.appendChild(line);
+            const [x1, y1, z1] = pos[i], [x2, y2, z2] = pos[j];
+            items.push({
+                kind: 'gridLine', depth: Math.min(z1, z2),
+                args: [screenX(x1), screenY(y1), screenX(x2), screenY(y2)],
+            });
         }
     }
 
-    // star points ("hoshi" board markings, rect boards only - computeStarPoints()
-    // returns [] for any other boardType) - drawn before the stones loop below
-    // so a stone placed on a star point visually covers the dot, matching real
-    // board conventions. computeStarPoints() returns raw (un-projected) natural-space
-    // coordinates, same as node positions before emb.project() - so they need the same
-    // projMat AND the same camera rotMat applied to stay aligned with the actual
-    // (possibly non-identity projMat, possibly rotated) projected grid.
+    // star points ("hoshi" board markings, rect boards only - computeStarPoints() returns [] for
+    // any other boardType). computeStarPoints() returns raw (un-projected) natural-space
+    // coordinates, same as node positions before emb.project() - so they need the same projMat AND
+    // the same camera rotMat applied to stay aligned with the actual (possibly non-identity
+    // projMat, possibly rotated) projected grid.
     for (const starPoint of computeStarPoints(config)) {
-        const [x, y] = projectPoint(rotMat, projectPoint(view.emb.projMat, starPoint));
-        const sx = originX + x * cell, sy = originY - y * cell;
-        const c = document.createElementNS(SVG_NS, 'circle');
-        c.setAttribute('cx', String(sx));
-        c.setAttribute('cy', String(sy));
-        c.setAttribute('r', String(cell * 0.09));
-        c.setAttribute('fill', COLOR_GRID);
-        g.appendChild(c);
+        const [x, y, z] = projectPoint(rotMat, projectPoint(view.emb.projMat, starPoint));
+        items.push({ kind: 'starPoint', depth: z, args: [screenX(x), screenY(y), cell * 0.09] });
     }
 
-    // stones / illegal markers - drawn back-to-front by depth (z), so nearer stones paint over
-    // farther ones where they visually overlap after camera rotation (SVG has no z-index; later
-    // elements in document order simply render on top of earlier ones - painter's algorithm).
-    // Larger z is nearer the camera (see boardLayout()'s pos, the (x, y, z) point after rotMat).
-    const stoneOrder = Array.from({ length: N }, (_, i) => i).sort((a, b) => pos[a][2] - pos[b][2]);
-    for (const i of stoneOrder) {
-        const [x, y] = pos[i];
-        const sx = originX + x * cell, sy = originY - y * cell;
+    // stones / illegal markers - depth offset by +0.1*radius (see DrawItem's own doc comment).
+    // STONE_RADIUS_FACTOR, not stone_r, since depth/z is in natural board units, not pixels -
+    // stone_r (a pixel quantity, = cell * STONE_RADIUS_FACTOR) would be the wrong scale entirely.
+    for (let i = 0; i < N; i++) {
+        const [x, y, z] = pos[i];
+        const depth = z + 0.1 * STONE_RADIUS_FACTOR;
         const stone = board[i];
         if (stone > 0) {
-            const c = document.createElementNS(SVG_NS, 'circle');
-            c.setAttribute('cx', String(sx));
-            c.setAttribute('cy', String(sy));
-            c.setAttribute('r', String(stone_r));
-            c.setAttribute('fill', STONE_MAP[stone].color);
-            c.setAttribute('stroke', '#333');
-            c.setAttribute('stroke-width', '1');
-            g.appendChild(c);
+            items.push({
+                kind: 'stone', depth,
+                args: [screenX(x), screenY(y), stone_r, STONE_MAP[stone].color, '#333'],
+            });
         } else if (legalMoves !== null && legalMoves.every(row => row[i] === null)) {
-            const c = document.createElementNS(SVG_NS, 'circle');
-            c.setAttribute('cx', String(sx));
-            c.setAttribute('cy', String(sy));
-            c.setAttribute('r', String(stone_r));
-            c.setAttribute('fill', COLOR_ILLEGAL);
-            g.appendChild(c);
+            items.push({ kind: 'stone', depth, args: [screenX(x), screenY(y), stone_r, COLOR_ILLEGAL, null] });
         }
     }
 
@@ -225,19 +290,19 @@ function drawBoardFull(
         for (let i = 0; i < N; i++) {
             const owner = territoryOwner[i];
             if (owner <= 0) continue;
-            const [x, y] = pos[i];
-            const sx = originX + x * cell, sy = originY - y * cell;
-            const r = document.createElementNS(SVG_NS, 'rect');
-            r.setAttribute('x', String(sx - side / 2));
-            r.setAttribute('y', String(sy - side / 2));
-            r.setAttribute('width', String(side));
-            r.setAttribute('height', String(side));
-            r.setAttribute('fill', STONE_MAP[owner]?.color ?? '#888');
-            r.setAttribute('stroke', '#888');
-            r.setAttribute('stroke-width', String(side / 6));
-            g.appendChild(r);
+            const [x, y, z] = pos[i];
+            items.push({
+                kind: 'territorySquare', depth: z,
+                args: [screenX(x), screenY(y), side, STONE_MAP[owner]?.color ?? '#888'],
+            });
         }
     }
+
+    // SVG has no z-index; later elements in document order simply render on top of earlier ones -
+    // so drawing back-to-front (ascending depth) is what makes nearer shapes correctly paint over
+    // farther ones where they visually overlap after camera rotation (painter's algorithm).
+    items.sort((a, b) => a.depth - b.depth);
+    for (const item of items) drawItem(g, item);
 }
 
 // ── EngineManager ────────────────────────────────────────────────────────────
