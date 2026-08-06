@@ -337,6 +337,7 @@ export class Renderer {
     presets = new Map<string, GameConfig>();
     // Per-board-type dimension memory so 'bt' restores custom dimensions on type switch
     boardDimensionForNew: Record<PrescribedBoard, number[]> = {
+        [PrescribedBoard.linearBoard]:               [9],
         [PrescribedBoard.rectangularBoard]:         [9, 9],
         [PrescribedBoard.rectangularDiagonalBoard]: [9, 9, 3],
         [PrescribedBoard.cubeLatticeBoard]:         [5, 5, 2],

@@ -122,6 +122,10 @@ BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier)
 // shared/boardConfig.ts's applyModifiers() exactly.
 BoardConfig apply_modifiers(const BoardConfig& bc, const std::vector<BoardModifier>& modifiers);
 
+// A board with w nodes forming a simple line: node i is connected to node i + 1, at position [i]
+// (emb_dim = 1 - unlike rectangular_board(w, 1), the useless constant second dimension is dropped).
+BoardConfig linear_board(int w);
+
 // A rectangular board with width w and height h. Each node is identified by
 // (col, row) where 0 <= col < w, 0 <= row < h.
 BoardConfig rectangular_board(int w, int h);
@@ -226,7 +230,7 @@ BoardConfig glue_twisted_square_board(int w, int h, int g);
 // squares are connected by an edge.
 BoardConfig twisted_square_board(int w, int h, int g);
 
-// Dispatches to the board builder above matching `kind` ("rect" | "rectd" |
+// Dispatches to the board builder above matching `kind` ("line" | "rect" | "rectd" |
 // "cublat" | "hcub" | "tri" | "regpoly" | "tetra" | "dodeca" | "icosa" | "trihex" |
 // "hex" | "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" - matches
 // shared/types.ts's GameConfig.boardType strings), passing `args` as that

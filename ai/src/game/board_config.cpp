@@ -430,6 +430,18 @@ BoardConfig apply_modifiers(const BoardConfig& bc, const std::vector<BoardModifi
     return current;
 }
 
+BoardConfig linear_board(int w) {
+    assert(w > 0 && "w must be positive");
+    std::vector<std::vector<unsigned>> pos;
+    for (unsigned i = 0; i < (unsigned)w; i++) pos.push_back({i});
+    auto adj = zero_adj(w);
+    for (int i = 0; i < w - 1; i++) {
+        adj[i][i + 1] = 1;
+        adj[i + 1][i] = 1;
+    }
+    return make_bc(std::move(adj), 1u, std::move(pos));
+}
+
 BoardConfig rectangular_board(int w, int h) {
     assert(w > 0 && h > 0 && "w and h must be positive");
     std::vector<std::vector<unsigned>> pos;
@@ -1031,6 +1043,7 @@ BoardConfig twisted_square_board(int w, int h, int g) {
 
 BoardConfig build_board_config(const std::string& kind, const std::vector<int>& args) {
     const auto& v = args;
+    if (kind == "line")  return linear_board(v[0]);
     if (kind == "rect")  return rectangular_board(v[0], v[1]);
     if (kind == "rectd") return rectangular_diagonal_board(v[0], v[1], v[2]);
     if (kind == "cublat") return cube_lattice_board(v[0], v[1], v[2]);

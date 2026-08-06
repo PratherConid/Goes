@@ -467,6 +467,19 @@ export function product(bc1: BoardConfig, bc2: BoardConfig): BoardConfig {
     return make(new Embedding(embDim, pos, defaultProductProjMat(embDim)), adj);
 }
 
+/** A board with `w` nodes forming a simple line: node `i` is connected to node `i + 1`. */
+export function linearBoard(w: number): BoardConfig {
+    assert(w > 0, `w must be positive, got w=${w}`);
+    const pos: number[][] = [];
+    for (let i = 0; i < w; i++) pos.push([i - (w - 1) / 2]);
+    const adj = zeroAdj(w);
+    for (let i = 0; i < w - 1; i++) {
+        adj[i][i + 1] = 1;
+        adj[i + 1][i] = 1;
+    }
+    return make(new Embedding(1, pos, [[1], [0]]), adj);
+}
+
 /** A rectangular board with width `w` and height `h`. Each node is identified by (col, row) where 0 ≤ col < w, 0 ≤ row < h. */
 export function rectangularBoard(w: number, h: number): BoardConfig {
     assert(w > 0 && h > 0, `w and h must be positive, got w=${w} h=${h}`);
@@ -1225,6 +1238,7 @@ export function snubSquareTriBoard(w: number, h: number, g: number): BoardConfig
 
 
 export enum PrescribedBoard {
+    linearBoard,
     rectangularBoard,
     rectangularDiagonalBoard,
     cubeLatticeBoard,
@@ -1244,6 +1258,8 @@ export enum PrescribedBoard {
 }
 
 export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string, string]> = {
+    [PrescribedBoard.linearBoard]:
+        [1, "line", "&lt;w&gt;", "A simple line of w nodes"],
     [PrescribedBoard.rectangularBoard]:
         [2, "rect", "&lt;w&gt; &lt;h&gt;", "Rectangular board"],
     [PrescribedBoard.rectangularDiagonalBoard]:
@@ -1281,6 +1297,7 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string
 };
 
 export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => BoardConfig> = {
+    [PrescribedBoard.linearBoard]:               (...a) => linearBoard(a[0]),
     [PrescribedBoard.rectangularBoard]:         (...a) => rectangularBoard(a[0], a[1]),
     [PrescribedBoard.rectangularDiagonalBoard]: (...a) => rectangularDiagonalBoard(a[0], a[1], a[2]),
     [PrescribedBoard.cubeLatticeBoard]:         (...a) => cubeLatticeBoard(a[0], a[1], a[2]),
