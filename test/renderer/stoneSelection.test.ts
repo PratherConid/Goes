@@ -20,11 +20,14 @@ function createRenderer(game: InstanceType<typeof BoardState>) {
     return renderer;
 }
 
-// A plain click is now mousedown+mouseup with no movement between them (see
-// Renderer._onBoardMouseDown, src/renderer.ts) - a real 'click' event is no longer listened to.
+// A plain click is now pointerdown+pointerup with no movement between them (see
+// Renderer._onBoardPointerDown, src/renderer.ts) - mouse/touch events are no longer listened to
+// directly, only the unified Pointer Events they both also generate in real browsers (see
+// test/renderer/domSetup.ts's PointerEvent polyfill).
 function clickAt(mainSvg: SVGSVGElement, clientX: number, clientY: number) {
-    mainSvg.dispatchEvent(new MouseEvent('mousedown', { clientX, clientY, bubbles: true }));
-    mainSvg.dispatchEvent(new MouseEvent('mouseup', { clientX, clientY, bubbles: true }));
+    const opts = { clientX, clientY, bubbles: true, pointerId: 1 };
+    mainSvg.dispatchEvent(new PointerEvent('pointerdown', opts));
+    mainSvg.dispatchEvent(new PointerEvent('pointerup', opts));
 }
 
 function clickCenter(mainSvg: SVGSVGElement) {

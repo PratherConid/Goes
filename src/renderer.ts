@@ -511,6 +511,9 @@ export class Renderer {
     // this as a plain number; SVGSVGElement.width isn't usable (undefined in jsdom,
     // an SVGAnimatedLength object rather than a number in real browsers).
     private mainBoardSize = 1;
+    // The pointerId currently being tracked as a board drag/click gesture, or null if none - see
+    // _onBoardPointerDown.
+    private _activePointerId: number | null = null;
     private histBoards:   HTMLDivElement;
     private passBtn:       HTMLButtonElement;
     private resignBtn:    HTMLButtonElement;
@@ -851,8 +854,7 @@ export class Renderer {
         this._initCommandsPanel();
         void this._loadPresets().then(() => this._initCommandsPanel());
         void this._loadBoardConfigs();
-        this.mainSvg.addEventListener('mousedown', e => this._onBoardMouseDown(e));
-        this.mainSvg.addEventListener('touchstart', e => this._onBoardTouchStart(e), { passive: false });
+        this.mainSvg.addEventListener('pointerdown', e => this._onBoardPointerDown(e));
         // Camera roll (see src/camera.ts) - global so it works regardless of which side-panel node
         // is focused, but skipped while a text input (cmdInput, the projMat cell editor, etc.) has
         // focus so it doesn't hijack arrow-key input meant for that field.
@@ -1935,72 +1937,56 @@ export class Renderer {
         this.statusPanel.querySelector('#status-projmat-slot')?.replaceWith(projMatEl);
     }
 
-    // Wired to mainSvg's 'mousedown' (init()) - disambiguates a plain click (place a stone, via
-    // _onBoardClick) from a drag (orbit the camera, via applyOrbitDrag/src/camera.ts). Tracks
-    // mousemove/mouseup on `window` (not mainSvg) so a drag that leaves the SVG bounds mid-gesture
-    // still keeps rotating/still resolves cleanly, then removes both listeners on mouseup. While
-    // rotationLocked, onMove is a no-op - moved never becomes true, so any drag just resolves as a
-    // plain click at the mouseup position, same as before drag-to-orbit existed.
-    private _onBoardMouseDown(e: MouseEvent) {
+    // Wired to mainSvg's 'pointerdown' (init()) - disambiguates a plain click (place a stone, via
+    // _onBoardClick) from a drag (orbit the camera, via applyOrbitDrag/src/camera.ts). Pointer
+    // Events unify mouse/touch/pen into one model, so this single handler replaces what used to be
+    // separate mouse and touch implementations - notably, touch-sourced *touch* events (touchstart/
+    // touchmove/touchend) were found to silently stop being dispatched by the browser partway
+    // through a drag on some devices once a synchronous re-render occurred mid-gesture, while the
+    // underlying pointer events for that same physical touch kept flowing normally throughout -
+    // pointer events are the browser's own more fundamental stream, not a layer that can be dropped
+    // independently. setPointerCapture guarantees this element keeps receiving this pointer's
+    // move/up/cancel events for the rest of the gesture regardless of where it physically travels,
+    // so there's no need for window-level listeners or manual "still-active gesture" bookkeeping
+    // the way the old touch implementation needed.
+    private _onBoardPointerDown(e: PointerEvent) {
+        if (this._activePointerId !== null) return; // a gesture is already active - ignore any other pointer
+        this._activePointerId = e.pointerId;
+        this.mainSvg.setPointerCapture(e.pointerId);
         const start = { x: e.clientX, y: e.clientY };
         let last = { x: e.clientX, y: e.clientY };
         let moved = false;
-        const onMove = (ev: MouseEvent) => {
+        const onMove = (ev: PointerEvent) => {
+            if (ev.pointerId !== e.pointerId) return;
             const dx = ev.clientX - last.x, dy = ev.clientY - last.y;
             last = { x: ev.clientX, y: ev.clientY };
-            if (this._active.rotationLocked) return;
             if (!moved && Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < DRAG_THRESHOLD_PX) return;
+            // Still counts as a drag (so onUp below skips _onBoardClick) even while locked - a
+            // locked drag should do nothing at all, not fall back to placing a stone wherever the
+            // pointer happened to lift, which is what skipping this "moved = true" would cause.
             moved = true;
-            this._active.cameraOrientation = applyOrbitDrag(this._active.cameraOrientation, dx, dy);
-            this._render();
-        };
-        const onUp = (ev: MouseEvent) => {
-            window.removeEventListener('mousemove', onMove);
-            window.removeEventListener('mouseup', onUp);
-            if (!moved) this._onBoardClick(ev);
-        };
-        window.addEventListener('mousemove', onMove);
-        window.addEventListener('mouseup', onUp);
-    }
-
-    // Touch equivalent of _onBoardMouseDown, same drag-to-orbit/tap-to-place disambiguation - a
-    // single finger's touch point stands in for the mouse's clientX/clientY. Ignores any gesture
-    // that ever involves more than one finger (pinch/zoom etc.), rather than trying to interpret
-    // it as a drag. preventDefault() (needs { passive: false } on both listeners, see init()) stops
-    // the page itself from scrolling/zooming while a one-finger drag is orbiting the board.
-    private _onBoardTouchStart(e: TouchEvent) {
-        if (e.touches.length !== 1) return;
-        e.preventDefault();
-        const touch = e.touches[0];
-        const start = { x: touch.clientX, y: touch.clientY };
-        let last = { x: touch.clientX, y: touch.clientY };
-        let moved = false;
-        const onMove = (ev: TouchEvent) => {
-            if (ev.touches.length !== 1) return;
-            ev.preventDefault();
-            const t = ev.touches[0];
-            const dx = t.clientX - last.x, dy = t.clientY - last.y;
-            last = { x: t.clientX, y: t.clientY };
             if (this._active.rotationLocked) return;
-            if (!moved && Math.hypot(t.clientX - start.x, t.clientY - start.y) < DRAG_THRESHOLD_PX) return;
-            moved = true;
             this._active.cameraOrientation = applyOrbitDrag(this._active.cameraOrientation, dx, dy);
             this._render();
         };
         const cleanup = () => {
-            window.removeEventListener('touchmove', onMove);
-            window.removeEventListener('touchend', onEnd);
-            window.removeEventListener('touchcancel', cleanup);
+            this.mainSvg.removeEventListener('pointermove', onMove);
+            this.mainSvg.removeEventListener('pointerup', onUp);
+            this.mainSvg.removeEventListener('pointercancel', onCancel);
+            this._activePointerId = null;
         };
-        const onEnd = (ev: TouchEvent) => {
+        const onCancel = (ev: PointerEvent) => {
+            if (ev.pointerId !== e.pointerId) return;
             cleanup();
-            if (moved) return;
-            const t = ev.changedTouches[0];
-            if (t) this._onBoardClick({ clientX: t.clientX, clientY: t.clientY });
         };
-        window.addEventListener('touchmove', onMove, { passive: false });
-        window.addEventListener('touchend', onEnd);
-        window.addEventListener('touchcancel', cleanup);
+        const onUp = (ev: PointerEvent) => {
+            if (ev.pointerId !== e.pointerId) return;
+            cleanup();
+            if (!moved) this._onBoardClick(ev);
+        };
+        this.mainSvg.addEventListener('pointermove', onMove);
+        this.mainSvg.addEventListener('pointerup', onUp);
+        this.mainSvg.addEventListener('pointercancel', onCancel);
     }
 
     // clientX/clientY only (not the full MouseEvent) - so this is equally callable from a real

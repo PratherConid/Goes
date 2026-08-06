@@ -84,13 +84,14 @@ test('clicking the board places a stone at the clicked node', () => {
     const plyNum = document.getElementById('ply-num') as HTMLSpanElement;
     assert.equal(plyNum.textContent, '0/0');
 
-    // rectangularBoard(3,3)'s center node sits exactly at board center - see
-    // domSetup.ts's BOARD_PX comment. A plain click is now mousedown+mouseup with no movement
-    // between them (see Renderer._onBoardMouseDown, src/renderer.ts) - a real 'click' event is no
-    // longer listened to.
-    const clickOpts = { clientX: BOARD_PX / 2, clientY: BOARD_PX / 2, bubbles: true };
-    mainSvg.dispatchEvent(new MouseEvent('mousedown', clickOpts));
-    mainSvg.dispatchEvent(new MouseEvent('mouseup', clickOpts));
+    // rectangularBoard(3,3)'s center node sits exactly at board center - see domSetup.ts's
+    // BOARD_PX comment. A plain click is now pointerdown+pointerup with no movement between them
+    // (see Renderer._onBoardPointerDown, src/renderer.ts) - mouse/touch events are no longer
+    // listened to directly, only the unified Pointer Events they both also generate in real
+    // browsers (see test/renderer/domSetup.ts's PointerEvent polyfill).
+    const clickOpts = { clientX: BOARD_PX / 2, clientY: BOARD_PX / 2, bubbles: true, pointerId: 1 };
+    mainSvg.dispatchEvent(new PointerEvent('pointerdown', clickOpts));
+    mainSvg.dispatchEvent(new PointerEvent('pointerup', clickOpts));
 
     assert.equal(plyNum.textContent, '1/1');
 });

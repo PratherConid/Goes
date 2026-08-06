@@ -135,6 +135,29 @@ export function setupDom(): void {
         Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
     }
 
+    // jsdom has no PointerEvent at all (as of this project's jsdom version) - src/renderer.ts's
+    // board-drag handling (_onBoardPointerDown) needs one, so fake the one property it actually
+    // reads beyond what MouseEvent already provides (pointerId) by subclassing this jsdom
+    // instance's own MouseEvent - built fresh each setupDom() call, same as the other event
+    // classes above, so it's always tied to the currently-installed MouseEvent/Event globals.
+    class FakePointerEvent extends dom.window.MouseEvent {
+        pointerId: number;
+        constructor(type: string, init: MouseEventInit & { pointerId?: number } = {}) {
+            super(type, init);
+            this.pointerId = init.pointerId ?? 0;
+        }
+    }
+    Object.defineProperty(globalThis, 'PointerEvent', {
+        value: FakePointerEvent, configurable: true, writable: true,
+    });
+    // jsdom doesn't implement pointer capture at all - _onBoardPointerDown calls
+    // setPointerCapture() unconditionally, so a missing stub would throw. No-ops are enough here:
+    // tests dispatch pointer events directly at mainSvg, so capture (which only matters for
+    // routing events that land on OTHER elements back to the captured one) has nothing to do.
+    (dom.window.Element.prototype as any).setPointerCapture = () => {};
+    (dom.window.Element.prototype as any).releasePointerCapture = () => {};
+    (dom.window.Element.prototype as any).hasPointerCapture = () => false;
+
     // jsdom doesn't implement these.
     globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => setTimeout(() => cb(Date.now()), 0)) as any;
     globalThis.cancelAnimationFrame = ((id: number) => clearTimeout(id)) as any;
