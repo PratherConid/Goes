@@ -64,8 +64,9 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 // ── layout helper ────────────────────────────────────────────────────────────
 
 // Given a board size w×h, compute how to map board coordinates to screen pixels so that
-// the board is centred and as large as possible without exceeding 150 px per cell.
-// +1.26 adds 1.5 stone diameter of margin so the outermost stones are not flush against the edges.
+// the board is centred and as large as possible.
+// +1 reserves one cell's worth of margin, then the overall *0.95 shrink adds a further fixed-
+// proportion margin on top, so the outermost stones are not flush against the edges.
 //
 // Returns:
 //   originX, originY - screen pixel for board coordinate (0, 0):
@@ -76,7 +77,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 function boardLayout(view: BoardView, w: number, h: number) {
     const [[xMin, yMin], [xMax, yMax]] = view.boardDimension;
     const spanX = xMax - xMin || 1, spanY = yMax - yMin || 1;
-    const cell = Math.min(w / (spanX + 1.26), h / (spanY + 1.26), 150);
+    const cell = Math.min(w / (spanX + 1), h / (spanY + 1)) * 0.95;
     const stone_r = cell * 0.42;
     const originX = w / 2 - (xMin + xMax) / 2 * cell;
     const originY = h / 2 + (yMin + yMax) / 2 * cell;
