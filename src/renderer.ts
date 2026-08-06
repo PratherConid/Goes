@@ -852,6 +852,7 @@ export class Renderer {
         void this._loadPresets().then(() => this._initCommandsPanel());
         void this._loadBoardConfigs();
         this.mainSvg.addEventListener('mousedown', e => this._onBoardMouseDown(e));
+        this.mainSvg.addEventListener('touchstart', e => this._onBoardTouchStart(e), { passive: false });
         // Camera roll (see src/camera.ts) - global so it works regardless of which side-panel node
         // is focused, but skipped while a text input (cmdInput, the projMat cell editor, etc.) has
         // focus so it doesn't hijack arrow-key input meant for that field.
@@ -1962,7 +1963,50 @@ export class Renderer {
         window.addEventListener('mouseup', onUp);
     }
 
-    private _onBoardClick(e: MouseEvent) {
+    // Touch equivalent of _onBoardMouseDown, same drag-to-orbit/tap-to-place disambiguation - a
+    // single finger's touch point stands in for the mouse's clientX/clientY. Ignores any gesture
+    // that ever involves more than one finger (pinch/zoom etc.), rather than trying to interpret
+    // it as a drag. preventDefault() (needs { passive: false } on both listeners, see init()) stops
+    // the page itself from scrolling/zooming while a one-finger drag is orbiting the board.
+    private _onBoardTouchStart(e: TouchEvent) {
+        if (e.touches.length !== 1) return;
+        e.preventDefault();
+        const touch = e.touches[0];
+        const start = { x: touch.clientX, y: touch.clientY };
+        let last = { x: touch.clientX, y: touch.clientY };
+        let moved = false;
+        const onMove = (ev: TouchEvent) => {
+            if (ev.touches.length !== 1) return;
+            ev.preventDefault();
+            const t = ev.touches[0];
+            const dx = t.clientX - last.x, dy = t.clientY - last.y;
+            last = { x: t.clientX, y: t.clientY };
+            if (this._active.rotationLocked) return;
+            if (!moved && Math.hypot(t.clientX - start.x, t.clientY - start.y) < DRAG_THRESHOLD_PX) return;
+            moved = true;
+            this._active.cameraOrientation = applyOrbitDrag(this._active.cameraOrientation, dx, dy);
+            this._render();
+        };
+        const cleanup = () => {
+            window.removeEventListener('touchmove', onMove);
+            window.removeEventListener('touchend', onEnd);
+            window.removeEventListener('touchcancel', cleanup);
+        };
+        const onEnd = (ev: TouchEvent) => {
+            cleanup();
+            if (moved) return;
+            const t = ev.changedTouches[0];
+            if (t) this._onBoardClick({ clientX: t.clientX, clientY: t.clientY });
+        };
+        window.addEventListener('touchmove', onMove, { passive: false });
+        window.addEventListener('touchend', onEnd);
+        window.addEventListener('touchcancel', cleanup);
+    }
+
+    // clientX/clientY only (not the full MouseEvent) - so this is equally callable from a real
+    // mouseup (MouseEvent) or a synthesized point from _onBoardTouchStart's touchend (TouchEvent
+    // has no clientX/clientY of its own, only per-finger Touch objects do).
+    private _onBoardClick(e: { clientX: number; clientY: number }) {
         // Local games used to let any click through unconditionally (every
         // slot was 'local'); now a 'localEngine' slot's turn must not be
         // playable by hand - _isMyTurn() already returns false for it (and
