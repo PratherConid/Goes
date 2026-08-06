@@ -73,7 +73,7 @@ test('two squares sharing one edge glue that edge\'s new boundary nodes into sha
         [1, 0, 0, 0, 1, 0], // h: a, g
     ];
     const pos = [[0, 0], [1, 0], [1.5, 1], [0.5, 1], [1.5, -1], [0.5, -1]];
-    const emb = new Embedding(2, pos, [[1, 0], [0, 1]]);
+    const emb = new Embedding(2, pos, [[1, 0], [0, 1], [0, 0]]);
     const bc: BoardConfig = { N: 6, adj, emb };
     const result = squareForm(bc, 3);
     // 6 original + (4 non-shared boundary/interior nodes per square) + (1 shared a-b midpoint) = 15.
@@ -93,7 +93,7 @@ test('three squares sharing one edge (a "book" of squares) still glue that edge 
     edge(b, g); edge(g, h); edge(h, a);
     edge(b, i); edge(i, j); edge(j, a);
     const pos = [[0, 0], [1, 0], [1.5, 1], [0.5, 1], [1.5, -1], [0.5, -1], [1.5, 2], [0.5, 2]];
-    const emb = new Embedding(2, pos, [[1, 0], [0, 1]]);
+    const emb = new Embedding(2, pos, [[1, 0], [0, 1], [0, 0]]);
     const bc: BoardConfig = { N, adj, emb };
     const result = squareForm(bc, 3);
     // 8 original + (4 non-shared nodes per square x 3 squares) + (1 shared a-b midpoint) = 21.

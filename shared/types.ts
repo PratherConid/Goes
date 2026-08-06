@@ -323,6 +323,16 @@ export class GameConfig {
         };
     }
 
+    // Applies a board-only preset (boardType/boardArgs/boardModifiers, e.g. from
+    // public/board_config/) to this GameConfig in place, leaving every other field (turnList,
+    // players, scoring rules, etc.) untouched - unlike fromJSON(), which builds a whole new
+    // GameConfig from a full preset.
+    adoptJSONBoardCfg(raw: any): void {
+        this.boardType      = raw.boardType;
+        this.boardArgs      = raw.boardArgs;
+        this.boardModifiers = raw.boardModifiers as BoardModifier[];
+    }
+
     static fromJSON(raw: any): GameConfig {
         const players = new Map<number, PlayerInfo>(
             ((raw.players ?? []) as { slot: number; type: PlayerType; name: string; emsim: number; temp: number }[])

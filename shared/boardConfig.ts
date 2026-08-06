@@ -4,41 +4,44 @@ import { findTriangles, findSquares } from './topology.js';
 
 /**
  * A board's node positions in their natural embedding dimension (embDim - 2 for most boards, 3 for
- * cubeLatticeBoard, 4 for hypercubeBoard), plus the linear map (projMat, 2 x embDim) that projects them
- * down to a 2D render position. Kept separate from the 2D render position so that geometric
- * operations that care about real dimensionality (e.g. a convex-hull-based rectify()) can operate on
- * `pos` directly instead of an already-flattened 2D approximation.
+ * cubeLatticeBoard/tetrahedronBoard/dodecahedronBoard/icosahedronBoard, 4 for hypercubeBoard), plus
+ * the linear map (projMat, 3 x embDim) that projects them down to a 3D render position (x, y, z) -
+ * the renderer currently ignores z (see boardLayout(), src/renderer.ts). Kept separate from the
+ * render position so that geometric operations that care about real dimensionality (e.g. a
+ * convex-hull-based rectify()) can operate on `pos` directly instead of an already-flattened
+ * approximation.
  */
-/** Applies a 2 x embDim projMat to a single embDim-length point, returning its 2D projection. */
+/** Applies a 3 x embDim projMat to a single embDim-length point, returning its 3D (x, y, z) projection. */
 export function projectPoint(projMat: number[][], p: number[]): number[] {
     return [
         p.reduce((s, v, k) => s + projMat[0][k] * v, 0),
         p.reduce((s, v, k) => s + projMat[1][k] * v, 0),
+        p.reduce((s, v, k) => s + projMat[2][k] * v, 0),
     ];
 }
 
 export class Embedding {
     embDim: number;
     pos: number[][];       // N x embDim
-    projMat: number[][];   // 2 x embDim - projects natural coords to a 2D render position
+    projMat: number[][];   // 3 x embDim - projects natural coords to a 3D (x, y, z) render position
 
     constructor(embDim: number, pos: number[][], projMat: number[][]) {
         assert(pos.every(p => p.length === embDim), 'Embedding: pos row length must equal embDim');
-        assert(projMat.length === 2 && projMat.every(r => r.length === embDim),
-            'Embedding: projMat must be 2 x embDim');
+        assert(projMat.length === 3 && projMat.every(r => r.length === embDim),
+            'Embedding: projMat must be 3 x embDim');
         this.embDim = embDim;
         this.pos = pos;
         this.projMat = projMat;
     }
 
-    /** The 2D render position: projMat applied to each row of pos. */
+    /** The 3D (x, y, z) render position: projMat applied to each row of pos. */
     project(): number[][] {
         return this.pos.map(p => projectPoint(this.projMat, p));
     }
 }
 
 export interface BoardConfig {
-    emb: Embedding;    // natural-dimension node positions + their 2D projection
+    emb: Embedding;    // natural-dimension node positions + their 3D render projection
     adj: number[][];  // N×N symmetric adjacency matrix, entries 0/1
     N: number;
 }
@@ -47,10 +50,13 @@ function assert(cond: boolean, msg: string): asserts cond {
     if (!cond) throw new Error(`Assertion failed: ${msg}`);
 }
 
-const IDENTITY_2X2 = [[1, 0], [0, 1]];
+// Default projMat for a plain 2D-embedded board: x/y pass straight through, z is always 0 (flat).
+const DEFAULT_2D_PROJMAT = [[1, 0], [0, 1], [0, 0]];
+// Default projMat for a plain 3D-embedded board: x/y/z all pass straight through.
+const DEFAULT_3D_PROJMAT = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
 
 function make(posOrEmb: number[][] | Embedding, adj: number[][]): BoardConfig {
-    const emb = Array.isArray(posOrEmb) ? new Embedding(2, posOrEmb, IDENTITY_2X2) : posOrEmb;
+    const emb = Array.isArray(posOrEmb) ? new Embedding(2, posOrEmb, DEFAULT_2D_PROJMAT) : posOrEmb;
     const N = emb.pos.length;
     assert(adj.length === N && (N === 0 || adj[0].length === N), 'adj dimensions must match pos length');
     for (let i = 0; i < N; i++)
@@ -416,22 +422,21 @@ export function squareForm(bc: BoardConfig, w: number): BoardConfig {
 }
 
 /**
- * The default projMat assigned to a freshly-`product()`-ed board (see below): dims 0 and 1 map
- * straight to x/y (identity - the whole matrix is exactly IDENTITY_2X2 when embDim <= 2), and every
- * pair of dims beyond that alternates contributing a halved-again magnitude to x then y, e.g.
- * embDim=8 gives `[[1, 0, 1/2, 0, 1/4, 0, 1/8, 0], [0, 1, 0, 1/2, 0, 1/4, 0, 1/8]]`. Dim `d`
- * contributes magnitude `2^-floor(d/2)` to x if `d` is even, to y if `d` is odd (which also
- * reproduces the d=0/d=1 identity part with no separate case needed, since `2^-floor(0/2)` and
- * `2^-floor(1/2)` both equal 1).
+ * The default projMat assigned to a freshly-`product()`-ed board (see below): dims 0, 1, 2 map
+ * straight to x, y, z (identity - the whole matrix is exactly DEFAULT_3D_PROJMAT when embDim <= 3),
+ * and every triple of dims beyond that cycles through x/y/z again at a halved-again magnitude, e.g.
+ * embDim=8 gives `[[1, 0, 0, 1/2, 0, 0, 1/4, 0], [0, 1, 0, 0, 1/2, 0, 0, 1/4], [0, 0, 1, 0, 0, 1/2, 0,
+ * 0]]`. Dim `d` contributes magnitude `2^-floor(d/3)` to axis `d % 3` (x, y, or z), which also
+ * reproduces the d=0/1/2 identity part with no separate case needed, since `2^-floor(d/3)` equals 1
+ * for d=0/1/2.
  */
 function defaultProductProjMat(embDim: number): number[][] {
-    const row0 = new Array<number>(embDim).fill(0);
-    const row1 = new Array<number>(embDim).fill(0);
+    const rows = [new Array<number>(embDim).fill(0), new Array<number>(embDim).fill(0), new Array<number>(embDim).fill(0)];
     for (let d = 0; d < embDim; d++) {
-        const mag = 2 ** -Math.floor(d / 2);
-        if (d % 2 === 0) row0[d] = mag; else row1[d] = mag;
+        const mag = 2 ** -Math.floor(d / 3);
+        rows[d % 3][d] = mag;
     }
-    return [row0, row1];
+    return rows;
 }
 
 /**
@@ -477,7 +482,7 @@ export function linearBoard(w: number): BoardConfig {
         adj[i][i + 1] = 1;
         adj[i + 1][i] = 1;
     }
-    return make(new Embedding(1, pos, [[1], [0]]), adj);
+    return make(new Embedding(1, pos, [[1], [0], [0]]), adj);
 }
 
 /** A rectangular board with width `w` and height `h`. Each node is identified by (col, row) where 0 ≤ col < w, 0 ≤ row < h. */
@@ -574,16 +579,13 @@ export function rectangularDiagonalBoard(w: number, h: number, m: number): Board
  */
 export function cubeLatticeBoard(w: number, h: number, d: number): BoardConfig {
     assert(w > 0 && h > 0 && d > 0, `w, h, and d must be positive, got w=${w} h=${h} d=${d}`);
-    // Natural 3D coords (col, row, slice), centered. Rendered via projMat below - chosen so that
-    // projMat . [c', r', s] == the old direct 2D formula [(d*c'+0.8*s)*scale, (d*r'+0.8*s)*scale]
-    // exactly (each slice's w x h grid scaled up by d, then diagonally offset by the slice index).
+    // Natural 3D coords (col, row, slice), centered. Uses the plain DEFAULT_3D_PROJMAT (x/y/z pass
+    // straight through) - the renderer currently ignores z (see boardLayout(), src/renderer.ts).
     const pos: number[][] = [];
     for (let s = 0; s < d; s++)
         for (let r = 0; r < h; r++)
             for (let c = 0; c < w; c++)
                 pos.push([c - (w-1)/2, r - (h-1)/2, s]);
-    const scale = d > 1 ? 1 / 1.2 : 1;
-    const projMat = [[d * scale, 0, 0.8 * scale], [0, d * scale, 0.8 * scale]];
     const N = w * h * d;
     const adj = zeroAdj(N);
     const idx = (r: number, c: number, s: number) => s * h * w + r * w + c;
@@ -595,7 +597,7 @@ export function cubeLatticeBoard(w: number, h: number, d: number): BoardConfig {
                     if (nr<0||nr>=h||nc<0||nc>=w||ns<0||ns>=d) continue;
                     adj[idx(r,c,s)][idx(nr,nc,ns)] = 1;
                 }
-    return make(new Embedding(3, pos, projMat), adj);
+    return make(new Embedding(3, pos, DEFAULT_3D_PROJMAT), adj);
 }
 
 /**
@@ -605,16 +607,16 @@ export function cubeLatticeBoard(w: number, h: number, d: number): BoardConfig {
  */
 export function hypercubeBoard(w: number, h: number, d: number, t: number): BoardConfig {
     assert(w > 0 && h > 0 && d > 0 && t > 0, `w, h, d, and t must be positive, got w=${w} h=${h} d=${d} t=${t}`);
-    // Natural 4D coords (col, row, slice, hyperslice), all centered. projMat below reproduces the
-    // old direct 2D "grid-of-grids" formula exactly: d copies of the w x h grid tiled horizontally
-    // (spacing w+1), t rows of those tiled vertically (spacing h+1).
+    // Natural 4D coords (col, row, slice, hyperslice), all centered. Default projMat: x/y/z (dims
+    // 0/1/2) pass straight through, and the hyperslice (dim 3) nudges all three axes diagonally by
+    // half - the renderer currently ignores z (see boardLayout(), src/renderer.ts).
     const pos: number[][] = [];
     for (let s = 0; s < t; s++)
         for (let u = 0; u < d; u++)
             for (let r = 0; r < h; r++)
                 for (let c = 0; c < w; c++)
                     pos.push([c - (w-1)/2, r - (h-1)/2, u - (d-1)/2, s - (t-1)/2]);
-    const projMat = [[1, 0, w+1, 0], [0, 1, 0, h+1]];
+    const projMat = [[1, 0, 0, 0.5], [0, 1, 0, 0.5], [0, 0, 1, 0.5]];
     const N = w * h * d * t;
     const adj = zeroAdj(N);
     const idx = (r: number, c: number, u: number, s: number) =>
@@ -697,11 +699,7 @@ export function tetrahedronBoard(): BoardConfig {
         for (let j = 0; j < 4; j++)
             if (i !== j) adj[i][j] = 1;
 
-    // Simple axonometric-style projection (matches cubeLatticeBoard/dodecahedronBoard/
-    // icosahedronBoard's own hand-tuned approach for a 3D shape): x/y project straight through, z
-    // nudges diagonally so depth stays visible.
-    const projMat = [[1, 0, 0.4], [0, 1, 0.4]];
-    return make(new Embedding(3, pos, projMat), adj);
+    return make(new Embedding(3, pos, DEFAULT_3D_PROJMAT), adj);
 }
 
 /**
@@ -758,10 +756,7 @@ export function dodecahedronBoard(): BoardConfig {
     for (let sb = 0; sb < 2; sb++) connect(zIdx(0, sb), zIdx(1, sb));
     for (let sa = 0; sa < 2; sa++) connect(wIdx(sa, 0), wIdx(sa, 1));
 
-    // Simple axonometric-style projection (matches cubeLatticeBoard's own hand-tuned approach for a
-    // 3D shape): x/y project straight through, z nudges diagonally so depth stays visible.
-    const projMat = [[1, 0, 0.4], [0, 1, 0.4]];
-    return make(new Embedding(3, pos, projMat), adj);
+    return make(new Embedding(3, pos, DEFAULT_3D_PROJMAT), adj);
 }
 
 /**
@@ -816,11 +811,7 @@ export function icosahedronBoard(): BoardConfig {
                 connect(cIdx(sp, sq), aIdx(free, sp));
             }
 
-    // Simple axonometric-style projection (matches cubeLatticeBoard/dodecahedronBoard's own
-    // hand-tuned approach for a 3D shape): x/y project straight through, z nudges diagonally so
-    // depth stays visible.
-    const projMat = [[1, 0, 0.4], [0, 1, 0.4]];
-    return make(new Embedding(3, pos, projMat), adj);
+    return make(new Embedding(3, pos, DEFAULT_3D_PROJMAT), adj);
 }
 
 /**

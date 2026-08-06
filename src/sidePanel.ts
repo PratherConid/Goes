@@ -16,6 +16,7 @@ export enum SidePanelContent {
     NewGame             = 'newGame',
     GameRecords         = 'gameRecords',
     GamePresetSelection = 'gamePresetSelection',
+    BoardPresetSelection = 'boardPresetSelection',
     ActiveLocalGames    = 'activeLocalGames',
     PendingGames        = 'pendingGames',
     ActiveOnlineGames   = 'activeOnlineGames',
@@ -42,11 +43,12 @@ export const SidePanelHierarchy: Record<SidePanelContent, [SidePanelContent | nu
     [SidePanelContent.Status]:           [SidePanelContent.Home, []],
     [SidePanelContent.CommandReference]: [SidePanelContent.Home, []],
     [SidePanelContent.CurrentGameSetup]: [SidePanelContent.Home, [SidePanelContent.History]],
-    // GamePresetSelection's nav button is likewise rendered by
+    // GamePresetSelection/BoardPresetSelection's nav buttons are likewise rendered by
     // Renderer._refreshSidePanel() - into #new-game-buttons, alongside the
     // Start-new-game action button - not the generic #home-panel slot.
     [SidePanelContent.NewGame]:          [SidePanelContent.Home, [
-        SidePanelContent.GamePresetSelection, SidePanelContent.ConfigureOnlinePlayers,
+        SidePanelContent.GamePresetSelection, SidePanelContent.BoardPresetSelection,
+        SidePanelContent.ConfigureOnlinePlayers,
     ]],
     // GameRecords is a pure hub (like Home) - its own buttons go into the
     // generic #game-records-panel slot itself (see Renderer._refreshSidePanel(),
@@ -56,6 +58,7 @@ export const SidePanelHierarchy: Record<SidePanelContent, [SidePanelContent | nu
         SidePanelContent.ActiveOnlineGames, SidePanelContent.FinishedOnlineGames,
     ]],
     [SidePanelContent.GamePresetSelection]: [SidePanelContent.NewGame, []],
+    [SidePanelContent.BoardPresetSelection]: [SidePanelContent.NewGame, []],
     [SidePanelContent.ActiveLocalGames]:    [SidePanelContent.GameRecords, []],
     [SidePanelContent.PendingGames]:        [SidePanelContent.GameRecords, []],
     [SidePanelContent.ActiveOnlineGames]:   [SidePanelContent.GameRecords, []],
@@ -77,6 +80,7 @@ export const SidePanelTitle: Record<SidePanelContent, string> = {
     [SidePanelContent.NewGame]:          'New Game',
     [SidePanelContent.GameRecords]:      'Game Records',
     [SidePanelContent.GamePresetSelection]: 'Select Game Preset',
+    [SidePanelContent.BoardPresetSelection]: 'Select Board Preset',
     [SidePanelContent.ActiveLocalGames]:    'Active Local Games',
     [SidePanelContent.PendingGames]:        'Pending Games',
     [SidePanelContent.ActiveOnlineGames]:   'Active Online Games',
@@ -130,6 +134,7 @@ export interface SidePanelElements {
     newGamePanel:          HTMLDivElement;
     gameRecordsPanel:      HTMLDivElement;
     gamePresetSelectionPanel: HTMLDivElement;
+    boardPresetSelectionPanel: HTMLDivElement;
     activeLocalGamesPanel:    HTMLDivElement;
     pendingGamesPanel:        HTMLDivElement;
     activeOnlineGamesPanel:   HTMLDivElement;
@@ -158,6 +163,8 @@ export function renderSidePanelChrome(current: SidePanelContent, els: SidePanelE
     els.newGamePanel.style.display             = current === SidePanelContent.NewGame             ? 'block' : 'none';
     els.gameRecordsPanel.style.display         = current === SidePanelContent.GameRecords         ? 'block' : 'none';
     els.gamePresetSelectionPanel.style.display = current === SidePanelContent.GamePresetSelection ? 'block' : 'none';
+    els.boardPresetSelectionPanel.style.display =
+        current === SidePanelContent.BoardPresetSelection ? 'block' : 'none';
     els.activeLocalGamesPanel.style.display    = current === SidePanelContent.ActiveLocalGames    ? 'block' : 'none';
     els.pendingGamesPanel.style.display        = current === SidePanelContent.PendingGames        ? 'block' : 'none';
     els.activeOnlineGamesPanel.style.display   = current === SidePanelContent.ActiveOnlineGames   ? 'block' : 'none';

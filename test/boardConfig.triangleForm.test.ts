@@ -69,7 +69,7 @@ test('two triangles sharing one edge glue that edge\'s new midpoint into a singl
         [1, 1, 0, 0], // c: a, b
         [1, 1, 0, 0], // d: a, b
     ];
-    const emb = new Embedding(2, [[0, 0], [1, 0], [0.5, 1], [0.5, -1]], [[1, 0], [0, 1]]);
+    const emb = new Embedding(2, [[0, 0], [1, 0], [0.5, 1], [0.5, -1]], [[1, 0], [0, 1], [0, 0]]);
     const bc: BoardConfig = { N: 4, adj, emb };
     const result = triangleForm(bc, 3);
     // 4 original + (2 non-shared midpoints per triangle: a-c, b-c, a-d, b-d) + (1 shared a-b midpoint) = 9.
@@ -92,7 +92,7 @@ test('three triangles sharing one edge (a "book" of triangles) still glue that e
         [1, 1, 0, 0, 0],
     ];
     const emb = new Embedding(
-        2, [[0, 0], [1, 0], [0.5, 1], [0.5, -1], [0.5, 2]], [[1, 0], [0, 1]],
+        2, [[0, 0], [1, 0], [0.5, 1], [0.5, -1], [0.5, 2]], [[1, 0], [0, 1], [0, 0]],
     );
     const bc: BoardConfig = { N: 5, adj, emb };
     const result = triangleForm(bc, 3);

@@ -15,21 +15,28 @@ import { JSDOM } from 'jsdom';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const indexHtmlPath = path.join(__dirname, '..', '..', 'index.html');
 const gamePresetsDir = path.join(__dirname, '..', '..', 'public', 'game_presets');
+const boardConfigDir = path.join(__dirname, '..', '..', 'public', 'board_config');
 
-// src/renderer.ts's _loadPresets() calls fetch('/game_presets/<name>.json') at
-// startup. There's no real HTTP server in this environment, and Node's global
-// fetch rejects relative URLs outright, so route just that one path to the
-// real files on disk instead - lets tests exercise real preset data rather
-// than the fetch always failing (caught, but noisy - see _loadPresets()'s
-// per-preset try/catch). Anything else rejects, mirroring a real fetch
-// against an unhandled route.
+// src/renderer.ts's _loadPresets()/_loadBoardConfigs() call fetch('/game_presets/<name>.json')/
+// fetch('/board_config/<name>.json') at startup. There's no real HTTP server in this environment,
+// and Node's global fetch rejects relative URLs outright, so route just those two paths to the
+// real files on disk instead - lets tests exercise real preset data rather than the fetch always
+// failing (caught, but noisy - see _loadPresets()/_loadBoardConfigs()'s per-entry try/catch).
+// Anything else rejects, mirroring a real fetch against an unhandled route.
 function installFetchMock(): void {
     const mockFetch = (async (input: unknown) => {
         const url = typeof input === 'string' ? input : String(input);
-        const match = url.match(/^\/game_presets\/([\w.-]+\.json)$/);
-        if (!match) throw new TypeError(`domSetup's fetch mock has no route for: ${url}`);
-        const body = await fs.promises.readFile(path.join(gamePresetsDir, match[1]), 'utf8');
-        return { ok: true, status: 200, json: async () => JSON.parse(body) };
+        const gameMatch = url.match(/^\/game_presets\/([\w.-]+\.json)$/);
+        if (gameMatch) {
+            const body = await fs.promises.readFile(path.join(gamePresetsDir, gameMatch[1]), 'utf8');
+            return { ok: true, status: 200, json: async () => JSON.parse(body) };
+        }
+        const boardMatch = url.match(/^\/board_config\/([\w.-]+\.json)$/);
+        if (boardMatch) {
+            const body = await fs.promises.readFile(path.join(boardConfigDir, boardMatch[1]), 'utf8');
+            return { ok: true, status: 200, json: async () => JSON.parse(body) };
+        }
+        throw new TypeError(`domSetup's fetch mock has no route for: ${url}`);
     }) as typeof fetch;
     Object.defineProperty(globalThis, 'fetch', { value: mockFetch, configurable: true, writable: true });
 }

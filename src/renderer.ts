@@ -1,7 +1,7 @@
 import { BoardState, MoveType, STONE_MAP } from '@shared/boardState.js';
 import { PlayerInfo, GameConfig, FinishedGame, OnlinePlayerRequest, makeId } from '@shared/types.js';
 import type { BoardView, OnlineStateResponse, PendingGame, ScoreRule, KoRule, TurnInfo, ReplayMove } from '@shared/types.js';
-import type { BoardConfig } from '@shared/boardConfig.js';
+import type { BoardConfig, BoardModifier } from '@shared/boardConfig.js';
 import {
     PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, computeStarPoints, parseModifier, applyModifiers,
     projectPoint, MC_DEFAULT_DIST,
@@ -50,6 +50,20 @@ const _presetDescriptions = new Map([
                           + 'player may place, up to 10 times each'],
     ['3_friend_go',        "Like 3_coin_go, but the 'coin' stone is also friendly (doesn't block anyone's liberties)"],
     ['10_friend_go',       "Like 10_coin_go, but the 'coin' stone is also friendly (doesn't block anyone's liberties)"],
+]);
+
+// Filename stems (under public/board_config/) of the board-only (boardType/boardArgs/
+// boardModifiers) presets loaded at startup into Renderer.boardConfigs - see
+// _loadBoardConfigs() - each paired with a short human-readable description shown in the
+// "Select Board Preset" side panel (see renderGamePresetSelection, sidePanel.ts).
+const _boardConfigDescriptions = new Map([
+    ['rect_3x3',   '3×3 rectangular board'],
+    ['rect_9x9',   '9×9 rectangular board'],
+    ['rect_13x13', '13×13 rectangular board'],
+    ['rect_19x19', '19×19 rectangular board'],
+    ['twsq_7x7x2', '7×7×2 twisted-square board'],
+    ['twsq_3x3x2_es_3_prod_lin_4',
+        '3×3×2 twisted-square board, each edge split into 3, then multiplied by a 4-node line'],
 ]);
 
 
@@ -335,6 +349,9 @@ export class Renderer {
     private popupQueue: PopupInfo[] = [];
     // Loaded at startup from public/game_presets/ (see _loadPresets()); name -> config.
     presets = new Map<string, GameConfig>();
+    // Loaded at startup from public/board_config/ (see _loadBoardConfigs()); name -> raw
+    // {boardType, boardArgs, boardModifiers} JSON, applied via GameConfig.adoptJSONBoardCfg().
+    boardConfigs = new Map<string, { boardType: string; boardArgs: number[]; boardModifiers: BoardModifier[] }>();
     // Per-board-type dimension memory so 'bt' restores custom dimensions on type switch
     boardDimensionForNew: Record<PrescribedBoard, number[]> = {
         [PrescribedBoard.linearBoard]:               [9],
@@ -430,6 +447,7 @@ export class Renderer {
     private newGameButtons:        HTMLDivElement;
     private gameRecordsPanel:      HTMLDivElement;
     private gamePresetSelectionPanel: HTMLDivElement;
+    private boardPresetSelectionPanel: HTMLDivElement;
     private activeLocalGamesPanel:    HTMLDivElement;
     private pendingGamesPanel:        HTMLDivElement;
     private activeOnlineGamesPanel:   HTMLDivElement;
@@ -488,6 +506,8 @@ export class Renderer {
         this.newGameButtons        = document.getElementById('new-game-buttons')         as HTMLDivElement;
         this.gameRecordsPanel      = document.getElementById('game-records-panel')       as HTMLDivElement;
         this.gamePresetSelectionPanel = document.getElementById('game-preset-selection-panel') as HTMLDivElement;
+        this.boardPresetSelectionPanel =
+            document.getElementById('board-preset-selection-panel') as HTMLDivElement;
         this.activeLocalGamesPanel    = document.getElementById('active-local-games-panel')    as HTMLDivElement;
         this.pendingGamesPanel        = document.getElementById('pending-games-panel')         as HTMLDivElement;
         this.activeOnlineGamesPanel   = document.getElementById('active-online-games-panel')   as HTMLDivElement;
@@ -568,6 +588,7 @@ export class Renderer {
             newGamePanel:          this.newGamePanel,
             gameRecordsPanel:      this.gameRecordsPanel,
             gamePresetSelectionPanel: this.gamePresetSelectionPanel,
+            boardPresetSelectionPanel: this.boardPresetSelectionPanel,
             activeLocalGamesPanel:    this.activeLocalGamesPanel,
             pendingGamesPanel:        this.pendingGamesPanel,
             activeOnlineGamesPanel:   this.activeOnlineGamesPanel,
@@ -702,9 +723,31 @@ export class Renderer {
         this.presets = new Map(entries.filter((e): e is readonly [string, GameConfig] => e !== null));
     }
 
+    // Fetches every preset in _boardConfigDescriptions from public/board_config/ and stores its
+    // raw {boardType, boardArgs, boardModifiers} JSON in `boardConfigs`, keyed by filename stem -
+    // same "not awaited by init(), each fails independently" convention as _loadPresets() above,
+    // except the raw JSON is kept as-is (for GameConfig.adoptJSONBoardCfg()) rather than built into
+    // a whole GameConfig, since a board-only preset has none of GameConfig's other required fields.
+    private async _loadBoardConfigs(): Promise<void> {
+        const entries = await Promise.all([..._boardConfigDescriptions.keys()].map(async name => {
+            try {
+                const raw = await fetch(`/board_config/${name}.json`).then(r => r.json());
+                return [name, raw] as const;
+            } catch (e) {
+                console.warn(`Failed to load board config '${name}':`, e);
+                return null;
+            }
+        }));
+        this.boardConfigs = new Map(entries.filter(
+            (e): e is readonly [string, { boardType: string; boardArgs: number[]; boardModifiers: BoardModifier[] }] =>
+                e !== null,
+        ));
+    }
+
     init() {
         this._initCommandsPanel();
         void this._loadPresets().then(() => this._initCommandsPanel());
+        void this._loadBoardConfigs();
         this.mainSvg.addEventListener('click', e => this._onBoardClick(e));
         this.bwEndBtn.addEventListener('click', () => {
             this._active.displayPlyNum = 0;
@@ -917,6 +960,11 @@ export class Renderer {
             if (this.currentSidePanel === SidePanelContent.GamePresetSelection)
                 renderGamePresetSelection(
                     this.gamePresetSelectionPanel, [...this.presets.keys()], name => this._selectPreset(name),
+                );
+            if (this.currentSidePanel === SidePanelContent.BoardPresetSelection)
+                renderGamePresetSelection(
+                    this.boardPresetSelectionPanel, [...this.boardConfigs.keys()],
+                    name => this._selectBoardConfig(name),
                 );
             if (this.currentSidePanel === SidePanelContent.ConfigureOnlinePlayers) this._renderConfigureOnlinePlayers();
         }
@@ -1849,6 +1897,19 @@ export class Renderer {
         if (!p) return;
         this.newCfg = p.copy();
         this.onlinePlayerRequest = new OnlinePlayerRequest();
+        this._navigateSidePanel(SidePanelContent.NewGame);
+    }
+
+    // Called by a Select-Board-Preset button click (see renderGamePresetSelection,
+    // sidePanel.ts) - applies just the board-only fields (boardType/boardArgs/boardModifiers)
+    // onto newCfg in place via GameConfig.adoptJSONBoardCfg(), leaving every other field
+    // (turnList, players, scoring rules, etc.) untouched, then navigates back to New Game to show
+    // the result; silently does nothing for an unknown name, since the button list is always
+    // built from this.boardConfigs' own keys.
+    private _selectBoardConfig(name: string) {
+        const bc = this.boardConfigs.get(name);
+        if (!bc) return;
+        this.newCfg.adoptJSONBoardCfg(bc);
         this._navigateSidePanel(SidePanelContent.NewGame);
     }
 

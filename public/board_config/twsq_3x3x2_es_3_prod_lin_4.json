@@ -1,0 +1,8 @@
+{
+  "boardType": "twsq",
+  "boardArgs": [3, 3, 2],
+  "boardModifiers": [
+    {"kind": "EdgeSplit", "splitN": 3},
+    {"kind": "Prod", "boardType": "line", "boardArgs": [4]}
+  ]
+}
