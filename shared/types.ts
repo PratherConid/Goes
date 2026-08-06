@@ -324,7 +324,7 @@ export class GameConfig {
     }
 
     // Applies a board-only preset (boardType/boardArgs/boardModifiers, e.g. from
-    // public/board_config/) to this GameConfig in place, leaving every other field (turnList,
+    // public/board_presets/) to this GameConfig in place, leaving every other field (turnList,
     // players, scoring rules, etc.) untouched - unlike fromJSON(), which builds a whole new
     // GameConfig from a full preset.
     adoptJSONBoardCfg(raw: any): void {

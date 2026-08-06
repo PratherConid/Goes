@@ -1,0 +1,8 @@
+{
+  "boardType": "regpoly",
+  "boardArgs": [5],
+  "boardModifiers": [
+    {"kind": "EdgeSplit", "splitN": 5},
+    {"kind": "Prod", "boardType": "line", "boardArgs": [6]}
+  ]
+}

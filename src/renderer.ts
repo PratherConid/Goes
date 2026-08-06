@@ -56,7 +56,7 @@ const _presetDescriptions = new Map([
     ['10_friend_go',       "Like 10_coin_go, but the 'coin' stone is also friendly (doesn't block anyone's liberties)"],
 ]);
 
-// Filename stems (under public/board_config/) of the board-only (boardType/boardArgs/
+// Filename stems (under public/board_presets/) of the board-only (boardType/boardArgs/
 // boardModifiers) presets loaded at startup into Renderer.boardConfigs - see
 // _loadBoardConfigs() - each paired with a short human-readable description shown in the
 // "Select Board Preset" side panel (see renderGamePresetSelection, sidePanel.ts).
@@ -68,6 +68,9 @@ const _boardConfigDescriptions = new Map([
     ['twsq_7x7x2', '7×7×2 twisted-square board'],
     ['twsq_3x3x2_es_3_prod_lin_4',
         '3×3×2 twisted-square board, each edge split into 3, then multiplied by a 4-node line'],
+    ['regpoly_5_es_5_prod_lin_6',
+        '5-sided regular polygon board, each edge split into 5, then multiplied by a 6-node line'],
+    ['cublat_2x2x2_sqform_9', '2×2×2 cubical board with every square face subdivided into a 9x9 grid'],
 ]);
 
 
@@ -506,7 +509,7 @@ export class Renderer {
     private popupQueue: PopupInfo[] = [];
     // Loaded at startup from public/game_presets/ (see _loadPresets()); name -> config.
     presets = new Map<string, GameConfig>();
-    // Loaded at startup from public/board_config/ (see _loadBoardConfigs()); name -> raw
+    // Loaded at startup from public/board_presets/ (see _loadBoardConfigs()); name -> raw
     // {boardType, boardArgs, boardModifiers} JSON, applied via GameConfig.adoptJSONBoardCfg().
     boardConfigs = new Map<string, { boardType: string; boardArgs: number[]; boardModifiers: BoardModifier[] }>();
     // Per-board-type dimension memory so 'bt' restores custom dimensions on type switch
@@ -890,7 +893,7 @@ export class Renderer {
         this.presets = new Map(entries.filter((e): e is readonly [string, GameConfig] => e !== null));
     }
 
-    // Fetches every preset in _boardConfigDescriptions from public/board_config/ and stores its
+    // Fetches every preset in _boardConfigDescriptions from public/board_presets/ and stores its
     // raw {boardType, boardArgs, boardModifiers} JSON in `boardConfigs`, keyed by filename stem -
     // same "not awaited by init(), each fails independently" convention as _loadPresets() above,
     // except the raw JSON is kept as-is (for GameConfig.adoptJSONBoardCfg()) rather than built into
@@ -898,7 +901,7 @@ export class Renderer {
     private async _loadBoardConfigs(): Promise<void> {
         const entries = await Promise.all([..._boardConfigDescriptions.keys()].map(async name => {
             try {
-                const raw = await fetch(`/board_config/${name}.json`).then(r => r.json());
+                const raw = await fetch(`/board_presets/${name}.json`).then(r => r.json());
                 return [name, raw] as const;
             } catch (e) {
                 console.warn(`Failed to load board config '${name}':`, e);
@@ -2132,9 +2135,16 @@ export class Renderer {
 
         const { originX, originY, cell, stone_r, pos: vpos } =
             boardLayout(v, this.mainBoardSize, this.mainBoardSize, this._active.viewport.quat);
+        const dmax = vpos.length > 0 ? Math.max(...vpos.map(p => Math.hypot(p[0], p[1], p[2]))) : 0;
+        const board = v.situations[v.plyCount].board;
 
         let bestDist = Infinity, bestId = -1;
         for (let i = 0; i < v.N; i++) {
+            // Faded-out (mostly-transparent) locations don't participate in hit-testing at all -
+            // matches what's visually legible on the board, see computeAlpha()/src/camera.ts.
+            if (computeAlpha(vpos[i][2], dmax, this._active.viewport.fadecfg) < 0.5) continue;
+            // Already-occupied locations can't be played on, so they don't participate either.
+            if (board[i] > 0) continue;
             const [bx, by] = vpos[i];
             const sx = originX + bx * cell, sy = originY - by * cell;
             const dist = Math.hypot(mx - sx, my - sy);

@@ -585,7 +585,7 @@ export function cubeLatticeBoard(w: number, h: number, d: number): BoardConfig {
     for (let s = 0; s < d; s++)
         for (let r = 0; r < h; r++)
             for (let c = 0; c < w; c++)
-                pos.push([c - (w-1)/2, r - (h-1)/2, s]);
+                pos.push([c - (w-1)/2, r - (h-1)/2, s - (d-1)/2]);
     const N = w * h * d;
     const adj = zeroAdj(N);
     const idx = (r: number, c: number, s: number) => s * h * w + r * w + c;
@@ -643,7 +643,7 @@ export function triangularBoard(w: number): BoardConfig {
     const pos: number[][] = [];
     for (let i = 0; i < w; i++) {
         for (let j = 0; j <= i; j++) {
-            pos.push([j - i/2, rowDist * (i + 1 - w / 3)]);
+            pos.push([j - i/2, rowDist * (i - (w-1)/2)]);
         }
     }
     const N = w * (w + 1) / 2;

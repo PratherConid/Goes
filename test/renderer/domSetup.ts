@@ -15,10 +15,10 @@ import { JSDOM } from 'jsdom';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const indexHtmlPath = path.join(__dirname, '..', '..', 'index.html');
 const gamePresetsDir = path.join(__dirname, '..', '..', 'public', 'game_presets');
-const boardConfigDir = path.join(__dirname, '..', '..', 'public', 'board_config');
+const boardConfigDir = path.join(__dirname, '..', '..', 'public', 'board_presets');
 
 // src/renderer.ts's _loadPresets()/_loadBoardConfigs() call fetch('/game_presets/<name>.json')/
-// fetch('/board_config/<name>.json') at startup. There's no real HTTP server in this environment,
+// fetch('/board_presets/<name>.json') at startup. There's no real HTTP server in this environment,
 // and Node's global fetch rejects relative URLs outright, so route just those two paths to the
 // real files on disk instead - lets tests exercise real preset data rather than the fetch always
 // failing (caught, but noisy - see _loadPresets()/_loadBoardConfigs()'s per-entry try/catch).
@@ -31,7 +31,7 @@ function installFetchMock(): void {
             const body = await fs.promises.readFile(path.join(gamePresetsDir, gameMatch[1]), 'utf8');
             return { ok: true, status: 200, json: async () => JSON.parse(body) };
         }
-        const boardMatch = url.match(/^\/board_config\/([\w.-]+\.json)$/);
+        const boardMatch = url.match(/^\/board_presets\/([\w.-]+\.json)$/);
         if (boardMatch) {
             const body = await fs.promises.readFile(path.join(boardConfigDir, boardMatch[1]), 'utf8');
             return { ok: true, status: 200, json: async () => JSON.parse(body) };

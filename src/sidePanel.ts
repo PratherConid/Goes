@@ -205,7 +205,9 @@ export function renderGamePresetSelection(
     for (const name of presetNames) {
         const btn = document.createElement('button');
         btn.className = 'panel-child-btn';
-        btn.textContent = name;
+        // Display only - underscores are replaced with spaces for readability, but onSelect still
+        // gets the raw name (the actual filename stem/map key, e.g. for presets.get()).
+        btn.textContent = name.replace(/_/g, ' ');
         btn.addEventListener('click', () => onSelect(name));
         el.appendChild(btn);
     }
