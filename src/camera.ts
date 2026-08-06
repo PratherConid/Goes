@@ -28,6 +28,17 @@ export function quatNormalize(q: Quaternion): Quaternion {
     return { w: q.w / len, x: q.x / len, y: q.y / len, z: q.z / len };
 }
 
+/**
+ * The inverse of q (q assumed unit-length, so its inverse is just its conjugate: negate the
+ * vector part). cameraOrientation represents the camera's own orientation IN WORLD SPACE (e.g.
+ * applyOrbitDrag derives the camera's world-space right/up axes via quatRotateVector(q, ...)) -
+ * rendering a world point into the camera's view therefore needs this INVERSE rotation, not q
+ * itself (see boardLayout(), src/renderer.ts).
+ */
+export function quatConjugate(q: Quaternion): Quaternion {
+    return { w: q.w, x: -q.x, y: -q.y, z: -q.z };
+}
+
 /** The unit quaternion rotating by `angle` radians around `axis` (need not be pre-normalized). */
 export function quatFromAxisAngle(axis: Vec3, angle: number): Quaternion {
     const len = Math.sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]) || 1;

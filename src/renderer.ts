@@ -12,7 +12,9 @@ import {
     renderGamePresetSelection, currentGameSetupHtml, newGameSetupHtml,
     coloredStoneCircle, fmtTurnList,
 } from './sidePanel.js';
-import { type Quaternion, QUAT_IDENTITY, quatToMat3, applyOrbitDrag, applyRoll } from './camera.js';
+import {
+    type Quaternion, QUAT_IDENTITY, quatToMat3, quatConjugate, applyOrbitDrag, applyRoll,
+} from './camera.js';
 
 // Single persistent WebSocket connection to the main server, shared by the
 // EngineManager (AI proxy) and the online-game commands.
@@ -100,9 +102,13 @@ const DRAG_THRESHOLD_PX = 4;
 //   cell             - pixels per board-coordinate unit
 //   stone_r          - stone radius in pixels (= 0.42 * cell)
 //   pos              - every node's rotated (x, y, z) point, in the same order as view.emb.pos
-//   rotMat           - the 3x3 rotation matrix quatToMat3(cameraOrientation) - see projectPoint()
+//   rotMat           - the 3x3 matrix actually applied to get pos - see projectPoint()
 function boardLayout(view: BoardView, w: number, h: number, cameraOrientation: Quaternion) {
-    const rotMat = quatToMat3(cameraOrientation);
+    // cameraOrientation is the camera's own orientation IN WORLD SPACE (applyOrbitDrag derives the
+    // camera's world-space right/up axes via quatRotateVector(cameraOrientation, ...) - see
+    // src/camera.ts) - rendering a world point into the camera's view needs the INVERSE of that
+    // rotation, not cameraOrientation itself, hence the conjugate here.
+    const rotMat = quatToMat3(quatConjugate(cameraOrientation));
     const pos = view.emb.project().map(p => projectPoint(rotMat, p));
     const xs = pos.map(p => p[0]), ys = pos.map(p => p[1]);
     const xMin = Math.min(...xs), yMin = Math.min(...ys);
