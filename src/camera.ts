@@ -73,8 +73,8 @@ export function quatToMat3(q: Quaternion): number[][] {
 const WORLD_UP: Vec3 = [0, 1, 0];
 // Tuned so a full main-board-width drag (~600px) is about half a turn (pi radians) of yaw.
 const ORBIT_RADIANS_PER_PIXEL = Math.PI / 600;
-// 15 degrees per arrow-key tap.
-const ROLL_STEP_RADIANS = Math.PI / 12;
+// 1.5 degrees per arrow-key tap.
+const ROLL_STEP_RADIANS = Math.PI / 120;
 
 /**
  * Orbit: dx/dy are the drag delta in pixels since the last tick. Yaw rotates around the fixed

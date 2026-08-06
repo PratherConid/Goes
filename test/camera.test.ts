@@ -76,15 +76,15 @@ test('roll leaves the camera\'s own local forward axis (local Z) unchanged - it 
     assertVecClose(forwardAfter, forwardBefore, 'local forward axis is invariant under roll');
 });
 
-test('two 15-degree rolls in the same direction compose into a 30-degree local-Z rotation', () => {
+test('two 1.5-degree rolls in the same direction compose into a 3-degree local-Z rotation', () => {
     const q0 = applyOrbitDrag(QUAT_IDENTITY, 30, 20); // arbitrary starting orientation
     const once = applyRoll(applyRoll(q0, 1), 1);
-    // Rolling twice should match a single 30-degree rotation applied in q0's own local frame -
+    // Rolling twice should match a single 3-degree rotation applied in q0's own local frame -
     // the same LOCAL-frame (right-multiply) composition applyRoll itself uses.
-    const q30 = quatNormalize(quatMultiply(q0, quatFromAxisAngle([0, 0, 1], Math.PI / 6)));
+    const q3 = quatNormalize(quatMultiply(q0, quatFromAxisAngle([0, 0, 1], Math.PI / 60)));
     assertVecClose(
-        [once.w, once.x, once.y, once.z], [q30.w, q30.x, q30.y, q30.z],
-        'two 15deg rolls == one 30deg local-Z rotation',
+        [once.w, once.x, once.y, once.z], [q3.w, q3.x, q3.y, q3.z],
+        'two 1.5deg rolls == one 3deg local-Z rotation',
     );
 });
 
