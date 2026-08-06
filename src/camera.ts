@@ -105,23 +105,27 @@ export function quatToMat3(q: Quaternion): number[][] {
     ];
 }
 
-const WORLD_UP: Vec3 = [0, 1, 0];
 // Tuned so a full main-board-width drag (~600px) is about half a turn (pi radians) of yaw.
 const ORBIT_RADIANS_PER_PIXEL = Math.PI / 600;
 // 1.5 degrees per arrow-key tap.
 const ROLL_STEP_RADIANS = Math.PI / 120;
 
 /**
- * Orbit: dx/dy are the drag delta in pixels since the last tick. Yaw rotates around the fixed
- * world-up axis; pitch rotates around the camera's own *current* local right axis (derived via
- * quatRotateVector) - both axes are expressed in world space, so both compose onto the existing
- * orientation via LEFT-multiplication (yaw * pitch * q), then renormalize to counteract drift.
+ * Orbit: dx/dy are the drag delta in pixels since the last tick. A single combined rotation
+ * (rather than composing a separate yaw-then-pitch quaternion pair) so a diagonal drag is
+ * symmetric in dx/dy instead of depending on an arbitrary composition order. The axis is the
+ * linear combination of the camera's own *current* local up axis (yaw, weighted by dx) and local
+ * right axis (pitch, weighted by dy) - i.e. [-dy, -dx, 0] expressed directly in the camera's own
+ * local frame (x=right, y=up), then rotated into world space via quatRotateVector so it can
+ * compose onto the existing orientation via LEFT-multiplication. Using the camera's own local up
+ * (rather than the fixed world-up) means yaw always turns around the camera's current vertical,
+ * which only coincides with true vertical while the camera is unrolled. Local right/up are always
+ * exactly orthonormal, so this axis's own length is exactly hypot(dx, dy) - matching the angle.
  */
 export function applyOrbitDrag(q: Quaternion, dx: number, dy: number): Quaternion {
-    const qYaw = quatFromAxisAngle(WORLD_UP, -dx * ORBIT_RADIANS_PER_PIXEL);
-    const right = quatRotateVector(q, [1, 0, 0]);
-    const qPitch = quatFromAxisAngle(right, -dy * ORBIT_RADIANS_PER_PIXEL);
-    return quatNormalize(quatMultiply(quatMultiply(qYaw, qPitch), q));
+    const axis = quatRotateVector(q, [-dy, -dx, 0]);
+    const angle = Math.hypot(dx, dy) * ORBIT_RADIANS_PER_PIXEL;
+    return quatNormalize(quatMultiply(quatFromAxisAngle(axis, angle), q));
 }
 
 /**
