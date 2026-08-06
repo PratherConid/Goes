@@ -889,19 +889,9 @@ export class BoardState {
 
     getView(): BoardView {
         const lm = this.lastMove();
-        // Computed fresh (not cached) since emb.projMat can be edited live (see the status panel's
-        // projection-matrix editor) - a cached boardDimension would go stale after such an edit,
-        // leaving boardLayout()'s cell-size/origin math sized to the board's old projected extent.
-        const projected = this.emb.project();
-        const xs = projected.map(p => p[0]), ys = projected.map(p => p[1]);
-        const boardDimension: [[number, number], [number, number]] = [
-            [Math.min(...xs), Math.min(...ys)],
-            [Math.max(...xs), Math.max(...ys)],
-        ];
         return {
             N: this.N,
             emb: this.emb,
-            boardDimension,
             numStones: this.numStones,
             numPlayers: this.numPlayers,
             turnList: this.turnList,

@@ -85,8 +85,12 @@ test('clicking the board places a stone at the clicked node', () => {
     assert.equal(plyNum.textContent, '0/0');
 
     // rectangularBoard(3,3)'s center node sits exactly at board center - see
-    // domSetup.ts's BOARD_PX comment.
-    mainSvg.dispatchEvent(new MouseEvent('click', { clientX: BOARD_PX / 2, clientY: BOARD_PX / 2, bubbles: true }));
+    // domSetup.ts's BOARD_PX comment. A plain click is now mousedown+mouseup with no movement
+    // between them (see Renderer._onBoardMouseDown, src/renderer.ts) - a real 'click' event is no
+    // longer listened to.
+    const clickOpts = { clientX: BOARD_PX / 2, clientY: BOARD_PX / 2, bubbles: true };
+    mainSvg.dispatchEvent(new MouseEvent('mousedown', clickOpts));
+    mainSvg.dispatchEvent(new MouseEvent('mouseup', clickOpts));
 
     assert.equal(plyNum.textContent, '1/1');
 });

@@ -20,8 +20,15 @@ function createRenderer(game: InstanceType<typeof BoardState>) {
     return renderer;
 }
 
+// A plain click is now mousedown+mouseup with no movement between them (see
+// Renderer._onBoardMouseDown, src/renderer.ts) - a real 'click' event is no longer listened to.
+function clickAt(mainSvg: SVGSVGElement, clientX: number, clientY: number) {
+    mainSvg.dispatchEvent(new MouseEvent('mousedown', { clientX, clientY, bubbles: true }));
+    mainSvg.dispatchEvent(new MouseEvent('mouseup', { clientX, clientY, bubbles: true }));
+}
+
 function clickCenter(mainSvg: SVGSVGElement) {
-    mainSvg.dispatchEvent(new MouseEvent('click', { clientX: BOARD_PX / 2, clientY: BOARD_PX / 2, bubbles: true }));
+    clickAt(mainSvg, BOARD_PX / 2, BOARD_PX / 2);
 }
 
 test('two stones both legal at the clicked location: opens the popup with both', () => {
@@ -63,7 +70,7 @@ test('clicking a popup circle places a move with that specific stone', () => {
 
     // Click the SECOND circle (stone 2) to prove the choice is actually threaded through.
     const target = circles[1];
-    mainSvg.dispatchEvent(new MouseEvent('click', { clientX: target.x, clientY: target.y, bubbles: true }));
+    clickAt(mainSvg, target.x, target.y);
 
     assert.equal(renderer.selectingStone, false, 'selection mode should close after choosing');
     assert.equal(plyNum.textContent, '1/1', 'the move should now be committed');
@@ -88,7 +95,7 @@ test('clicking the board away from the popup circles cancels selection without c
     assert.equal(passBtn.disabled, true, 'Pass is disabled while a stone-selection popup is open');
 
     // A click nowhere near any popup circle (top-left corner) cancels the selection.
-    mainSvg.dispatchEvent(new MouseEvent('click', { clientX: 0, clientY: 0, bubbles: true }));
+    clickAt(mainSvg, 0, 0);
     assert.equal(renderer.selectingStone, false, 'a miss click should exit selection mode');
     assert.equal(renderer.pendingPos, null);
     assert.equal(plyNum.textContent, '0/0', 'cancelling must not have committed a move');

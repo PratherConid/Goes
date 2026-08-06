@@ -439,8 +439,7 @@ export interface OnlineStateResponse {
 
 export interface BoardView {
     N: number;
-    emb: Embedding;             // natural-dim node positions + their 2D projection
-    boardDimension: [[number, number], [number, number]];
+    emb: Embedding;             // natural-dim node positions + their 3D projection
     numStones: number;
     numPlayers: number;
     turnList: TurnInfo[];

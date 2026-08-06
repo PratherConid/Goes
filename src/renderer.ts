@@ -12,6 +12,7 @@ import {
     renderGamePresetSelection, currentGameSetupHtml, newGameSetupHtml,
     coloredStoneCircle, fmtTurnList,
 } from './sidePanel.js';
+import { type Quaternion, QUAT_IDENTITY, quatToMat3, applyOrbitDrag, applyRoll } from './camera.js';
 
 // Single persistent WebSocket connection to the main server, shared by the
 // EngineManager (AI proxy) and the online-game commands.
@@ -75,6 +76,10 @@ const COLOR_BOARD   = '#e5b24c';
 // document.createElement('circle') etc. produce non-rendering HTMLUnknownElements.
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
+// Cumulative pixel movement below which a mainSvg mousedown->mouseup is treated as a plain click
+// (place a stone) rather than a camera-orbit drag - see Renderer._onBoardMouseDown().
+const DRAG_THRESHOLD_PX = 4;
+
 // ── layout helper ────────────────────────────────────────────────────────────
 
 // Given a board size w×h, compute how to map board coordinates to screen pixels so that
@@ -82,20 +87,32 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 // +1 reserves one cell's worth of margin, then the overall *0.95 shrink adds a further fixed-
 // proportion margin on top, so the outermost stones are not flush against the edges.
 //
+// cameraOrientation rotates each node's projected (x, y, z) point before the bounding box/cell
+// math below runs, so the board is sized/centered around its actual on-screen (rotated) extent -
+// see src/camera.ts. Also returns `pos` (the already-rotated points, x/y used here, z still
+// unused downstream) and `rotMat` (the 3x3 matrix itself, reused for ad-hoc points like star
+// points) so callers never need to redo this projection themselves.
+//
 // Returns:
 //   originX, originY - screen pixel for board coordinate (0, 0):
 //                      sx = originX + bx * cell
 //                      sy = originY - by * cell  (board y-up → screen y-down)
 //   cell             - pixels per board-coordinate unit
 //   stone_r          - stone radius in pixels (= 0.42 * cell)
-function boardLayout(view: BoardView, w: number, h: number) {
-    const [[xMin, yMin], [xMax, yMax]] = view.boardDimension;
+//   pos              - every node's rotated (x, y, z) point, in the same order as view.emb.pos
+//   rotMat           - the 3x3 rotation matrix quatToMat3(cameraOrientation) - see projectPoint()
+function boardLayout(view: BoardView, w: number, h: number, cameraOrientation: Quaternion) {
+    const rotMat = quatToMat3(cameraOrientation);
+    const pos = view.emb.project().map(p => projectPoint(rotMat, p));
+    const xs = pos.map(p => p[0]), ys = pos.map(p => p[1]);
+    const xMin = Math.min(...xs), yMin = Math.min(...ys);
+    const xMax = Math.max(...xs), yMax = Math.max(...ys);
     const spanX = xMax - xMin || 1, spanY = yMax - yMin || 1;
     const cell = Math.min(w / (spanX + 1), h / (spanY + 1)) * 0.95;
     const stone_r = cell * 0.42;
     const originX = w / 2 - (xMin + xMax) / 2 * cell;
     const originY = h / 2 + (yMin + yMax) / 2 * cell;
-    return { originX, originY, cell, stone_r };
+    return { originX, originY, cell, stone_r, pos, rotMat };
 }
 
 // ── board SVG drawing ────────────────────────────────────────────────────────
@@ -121,10 +138,10 @@ function drawBoardFull(
     legalMoves: (Set<number> | null)[][] | null,
     territoryOwner: number[] | null = null,
     dim = false,
+    cameraOrientation: Quaternion = QUAT_IDENTITY,
 ) {
-    const { originX, originY, cell, stone_r } = boardLayout(view, boardW, boardH);
+    const { originX, originY, cell, stone_r, pos, rotMat } = boardLayout(view, boardW, boardH, cameraOrientation);
     const N = view.N;
-    const pos = view.emb.project();
 
     // grid lines and stones/illegal markers are both dimmed together while
     // selecting a stone, so the whole board reads as "not interactive" - the
@@ -155,9 +172,10 @@ function drawBoardFull(
     // so a stone placed on a star point visually covers the dot, matching real
     // board conventions. computeStarPoints() returns raw (un-projected) natural-space
     // coordinates, same as node positions before emb.project() - so they need the same
-    // projMat applied to stay aligned with the actual (possibly non-identity) projected grid.
+    // projMat AND the same camera rotMat applied to stay aligned with the actual
+    // (possibly non-identity projMat, possibly rotated) projected grid.
     for (const starPoint of computeStarPoints(config)) {
-        const [x, y] = projectPoint(view.emb.projMat, starPoint);
+        const [x, y] = projectPoint(rotMat, projectPoint(view.emb.projMat, starPoint));
         const sx = originX + x * cell, sy = originY - y * cell;
         const c = document.createElementNS(SVG_NS, 'circle');
         c.setAttribute('cx', String(sx));
@@ -167,8 +185,12 @@ function drawBoardFull(
         g.appendChild(c);
     }
 
-    // stones / illegal markers
-    for (let i = 0; i < N; i++) {
+    // stones / illegal markers - drawn back-to-front by depth (z), so nearer stones paint over
+    // farther ones where they visually overlap after camera rotation (SVG has no z-index; later
+    // elements in document order simply render on top of earlier ones - painter's algorithm).
+    // Larger z is nearer the camera (see boardLayout()'s pos, the (x, y, z) point after rotMat).
+    const stoneOrder = Array.from({ length: N }, (_, i) => i).sort((a, b) => pos[a][2] - pos[b][2]);
+    for (const i of stoneOrder) {
         const [x, y] = pos[i];
         const sx = originX + x * cell, sy = originY - y * cell;
         const stone = board[i];
@@ -276,6 +298,9 @@ interface ActiveGame {
     displayPlyNum: number;
     idxShowHistory: number;
     randomEvaled: Record<number, number> | null;
+    // Orbiting camera orientation for this game's board (see src/camera.ts) - ephemeral UI state,
+    // same as displayPlyNum, not persisted/restored beyond this in-memory ActiveGame.
+    cameraOrientation: Quaternion;
 }
 
 // Response shape of REGISTER/LOGIN/FLOGIN: the finished online games the server
@@ -748,7 +773,16 @@ export class Renderer {
         this._initCommandsPanel();
         void this._loadPresets().then(() => this._initCommandsPanel());
         void this._loadBoardConfigs();
-        this.mainSvg.addEventListener('click', e => this._onBoardClick(e));
+        this.mainSvg.addEventListener('mousedown', e => this._onBoardMouseDown(e));
+        // Camera roll (see src/camera.ts) - global so it works regardless of which side-panel node
+        // is focused, but skipped while a text input (cmdInput, the projMat cell editor, etc.) has
+        // focus so it doesn't hijack arrow-key input meant for that field.
+        document.addEventListener('keydown', e => {
+            if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+            if (document.activeElement instanceof HTMLInputElement) return;
+            this._active.cameraOrientation = applyRoll(this._active.cameraOrientation, e.key === 'ArrowLeft' ? 1 : -1);
+            this._render();
+        });
         this.bwEndBtn.addEventListener('click', () => {
             this._active.displayPlyNum = 0;
             this._render();
@@ -1019,7 +1053,7 @@ export class Renderer {
                       this._active.config, size, size,
                       this.showIllegalMoves ? v.history[this._active.displayPlyNum].legalMoves.captures : null,
                       this.showTerritory ? v.history[this._active.displayPlyNum].score.territoryOwner : null,
-                      this.selectingStone);
+                      this.selectingStone, this._active.cameraOrientation);
         if (this.selectingStone) {
             const popup = document.createElementNS(SVG_NS, 'g');
             for (const { stone, x, y, r } of this._stonePopupCircles(v)) {
@@ -1146,7 +1180,10 @@ export class Renderer {
                 bg.setAttribute('height', String(size));
                 bg.setAttribute('fill', COLOR_BOARD);
                 svg.appendChild(bg);
-                drawBoardFull(svg, v, this._active.bs.adj, he.board, this._active.config, size, size, null);
+                drawBoardFull(
+                    svg, v, this._active.bs.adj, he.board, this._active.config, size, size, null,
+                    null, false, this._active.cameraOrientation,
+                );
             });
         }
     }
@@ -1810,6 +1847,31 @@ export class Renderer {
         this.statusPanel.querySelector('#status-projmat-slot')?.replaceWith(projMatEl);
     }
 
+    // Wired to mainSvg's 'mousedown' (init()) - disambiguates a plain click (place a stone, via
+    // _onBoardClick) from a drag (orbit the camera, via applyOrbitDrag/src/camera.ts). Tracks
+    // mousemove/mouseup on `window` (not mainSvg) so a drag that leaves the SVG bounds mid-gesture
+    // still keeps rotating/still resolves cleanly, then removes both listeners on mouseup.
+    private _onBoardMouseDown(e: MouseEvent) {
+        const start = { x: e.clientX, y: e.clientY };
+        let last = { x: e.clientX, y: e.clientY };
+        let moved = false;
+        const onMove = (ev: MouseEvent) => {
+            const dx = ev.clientX - last.x, dy = ev.clientY - last.y;
+            last = { x: ev.clientX, y: ev.clientY };
+            if (!moved && Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < DRAG_THRESHOLD_PX) return;
+            moved = true;
+            this._active.cameraOrientation = applyOrbitDrag(this._active.cameraOrientation, dx, dy);
+            this._render();
+        };
+        const onUp = (ev: MouseEvent) => {
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+            if (!moved) this._onBoardClick(ev);
+        };
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+    }
+
     private _onBoardClick(e: MouseEvent) {
         // Local games used to let any click through unconditionally (every
         // slot was 'local'); now a 'localEngine' slot's turn must not be
@@ -1842,10 +1904,9 @@ export class Renderer {
             return;
         }
 
-        const { originX, originY, cell, stone_r } =
-            boardLayout(v, this.mainBoardSize, this.mainBoardSize);
+        const { originX, originY, cell, stone_r, pos: vpos } =
+            boardLayout(v, this.mainBoardSize, this.mainBoardSize, this._active.cameraOrientation);
 
-        const vpos = v.emb.project();
         let bestDist = Infinity, bestId = -1;
         for (let i = 0; i < v.N; i++) {
             const [bx, by] = vpos[i];
@@ -1965,7 +2026,10 @@ export class Renderer {
     private _registerGame(id: string, bs: BoardState, config: GameConfig): void {
         this.engineManager.cancel();
         this.engineManager.sessionId = null;
-        this.activeGames.set(id, { bs, config, displayPlyNum: 0, idxShowHistory: 0, randomEvaled: null });
+        this.activeGames.set(id, {
+            bs, config, displayPlyNum: 0, idxShowHistory: 0, randomEvaled: null,
+            cameraOrientation: QUAT_IDENTITY,
+        });
         this.activeIdx = id;
     }
 
@@ -2555,7 +2619,7 @@ export class Renderer {
                 const bs = BoardState.fromFinishedGame(fg, bc);
                 this.finishedGames.set('O_' + id, {
                     bs, config: fg.config, displayPlyNum: bs.getView().plyCount,
-                    idxShowHistory: 0, randomEvaled: null,
+                    idxShowHistory: 0, randomEvaled: null, cameraOrientation: QUAT_IDENTITY,
                 });
             } catch (e) { console.error('Failed to reconstruct finished game', id, e); }
         }
