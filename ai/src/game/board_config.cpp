@@ -565,6 +565,20 @@ BoardConfig regular_polygon_board(int n) {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
+// Mirrors shared/boardConfig.ts's starBoard() connectivity exactly (adjacency only - no
+// position/embedding, see board_config.h's own doc comment on this function). Node 0 is the
+// center, nodes 1..n are the outer nodes.
+BoardConfig star_board(int n) {
+    assert(n >= 1 && "n must be at least 1");
+    auto adj = zero_adj(n + 1);
+    for (int k = 1; k <= n; k++) {
+        adj[0][k] = 1;
+        adj[k][0] = 1;
+    }
+    std::vector<std::vector<unsigned>> embed(n + 1); // emb_dim=0
+    return make_bc(std::move(adj), 0u, std::move(embed));
+}
+
 // Mirrors shared/boardConfig.ts's tetrahedronBoard() connectivity exactly (adjacency only - no
 // position/embedding, see board_config.h's own doc comment on this function). 4 faces, each
 // triangular_board(w)-shaped (n_face = w*(w+1)/2 nodes, same left/right/bottom boundary convention
@@ -1050,6 +1064,7 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<int>& 
     if (kind == "hcub")  return hypercube_board(v[0], v[1], v[2], v[3]);
     if (kind == "tri")   return triangular_board(v[0]);
     if (kind == "regpoly") return regular_polygon_board(v[0]);
+    if (kind == "star")  return star_board(v[0]);
     if (kind == "tetra") return tetrahedron_board();
     if (kind == "dodeca") return dodecahedron_board();
     if (kind == "icosa") return icosahedron_board();

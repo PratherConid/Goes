@@ -156,6 +156,12 @@ BoardConfig triangular_board(int w);
 // against emb_dim != 2 in cnn.cpp/unet.cpp) - neither is grid-shaped anyway, so nothing is lost.
 BoardConfig regular_polygon_board(int n);
 
+// A star graph: 1 center node connected to n outer nodes (outer nodes are not connected to each
+// other). Same emb_dim = 0 / empty embed[] approach as regular_polygon_board, for the same reason
+// (the outer nodes sit at angle 2*pi*k/n around the center, irrational for general n - see
+// shared/boardConfig.ts's starBoard() for the coordinates this mirrors, adjacency only).
+BoardConfig star_board(int n);
+
 // A regular tetrahedron: 4 vertices, all mutually adjacent (K4), 6 edges. Same emb_dim = 0 / empty
 // embed[] approach as regular_polygon_board, for the same reason - see shared/boardConfig.ts's
 // tetrahedronBoard() for the coordinates this mirrors, adjacency only. A side-length-w subdivision
@@ -232,7 +238,7 @@ BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("line" | "rect" | "rectd" |
 // "cublat" | "hcub" | "tri" | "regpoly" | "tetra" | "dodeca" | "icosa" | "trihex" |
-// "hex" | "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" - matches
+// "hex" | "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" | "star" - matches
 // shared/types.ts's GameConfig.boardType strings), passing `args` as that
 // builder's positional parameters. Throws std::runtime_error for an unknown
 // kind. Shared by

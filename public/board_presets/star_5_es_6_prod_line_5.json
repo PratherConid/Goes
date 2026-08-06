@@ -1,0 +1,8 @@
+{
+  "boardType": "star",
+  "boardArgs": [5],
+  "boardModifiers": [
+    {"kind": "EdgeSplit", "splitN": 6},
+    {"kind": "Prod", "boardType": "line", "boardArgs": [5]}
+  ]
+}

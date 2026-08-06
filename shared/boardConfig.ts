@@ -683,6 +683,25 @@ export function regularPolygonBoard(n: number): BoardConfig {
 }
 
 /**
+ * A star graph: 1 center node (index 0) connected to `n` outer nodes (indices 1..n), each unit
+ * distance from the center at angle `2*pi*k/n` - outer nodes are not connected to each other.
+ */
+export function starBoard(n: number): BoardConfig {
+    assert(n >= 1, `n must be at least 1, got ${n}`);
+    const pos: number[][] = [[0, 0]];
+    for (let k = 0; k < n; k++) {
+        const theta = (2 * Math.PI * k) / n;
+        pos.push([Math.cos(theta), Math.sin(theta)]);
+    }
+    const adj = zeroAdj(n + 1);
+    for (let k = 1; k <= n; k++) {
+        adj[0][k] = 1;
+        adj[k][0] = 1;
+    }
+    return make(pos, adj);
+}
+
+/**
  * A regular tetrahedron: 4 vertices, all mutually adjacent (K4), 6 unit-length edges. A
  * side-length-w subdivision of its 4 triangular faces is no longer built in here directly - apply
  * the `triangleForm(w)` modifier afterward instead (findTriangles finds exactly its 4 faces on this
@@ -1245,7 +1264,8 @@ export enum PrescribedBoard {
     snubSquareBoard,
     snubSquareTriBoard,
     twistedSquareBoard,
-    glueTwistedSquareBoard
+    glueTwistedSquareBoard,
+    starBoard
 }
 
 export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string, string]> = {
@@ -1285,6 +1305,8 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string
         [3, "twsq", "&lt;w&gt; &lt;h&gt; &lt;g&gt;", "Twisted-square board (g\xD7g squares)"],
     [PrescribedBoard.glueTwistedSquareBoard]:
         [3, "gtsq", "&lt;w&gt; &lt;h&gt; &lt;g&gt;", "Glued-twisted-square board (g\xD7g squares)"],
+    [PrescribedBoard.starBoard]:
+        [1, "star", "&lt;n&gt;", "Star graph: 1 center node connected to n outer nodes"],
 };
 
 export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => BoardConfig> = {
@@ -1305,6 +1327,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.snubSquareTriBoard]:       (...a) => snubSquareTriBoard(a[0], a[1], a[2]),
     [PrescribedBoard.twistedSquareBoard]:       (...a) => twistedSquareBoard(a[0], a[1], a[2]),
     [PrescribedBoard.glueTwistedSquareBoard]:   (...a) => glueTwistedSquareBoard(a[0], a[1], a[2]),
+    [PrescribedBoard.starBoard]:                 (...a) => starBoard(a[0]),
 };
 
 /**

@@ -1,0 +1,7 @@
+{
+  "boardType": "regpoly",
+  "boardArgs": [13],
+  "boardModifiers": [
+    {"kind": "Prod", "boardType": "regpoly", "boardArgs": [13]}
+  ]
+}

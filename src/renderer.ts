@@ -71,6 +71,9 @@ const _boardConfigDescriptions = new Map([
     ['regpoly_5_es_5_prod_lin_6',
         '5-sided regular polygon board, each edge split into 5, then multiplied by a 6-node line'],
     ['cublat_2x2x2_sqform_9', '2×2×2 cubical board with every square face subdivided into a 9x9 grid'],
+    ['regpoly_13_prod_regpoly_13', 'Product of two 13-sided regular polygon boards'],
+    ['star_5_es_6_prod_line_5',
+        '5-armed star board, each edge split into 6, then multiplied by a 5-node line'],
 ]);
 
 
@@ -531,6 +534,7 @@ export class Renderer {
         [PrescribedBoard.snubSquareTriBoard]:       [3, 3, 3],
         [PrescribedBoard.twistedSquareBoard]:       [4, 4, 3],
         [PrescribedBoard.glueTwistedSquareBoard]:   [4, 4, 3],
+        [PrescribedBoard.starBoard]:                 [6],
     };
     nShowHistory = 10;
     currentSidePanel: SidePanelContent = SidePanelContent.Home;
@@ -1269,8 +1273,7 @@ export class Renderer {
         this.wcdBtn.disabled = dpn === v.plyCount;
         this.lockRotationBtn.textContent = this._active.rotationLocked ? 'Unlock' : 'Lock';
         // Disabled while selecting a stone - clicking elsewhere on the board
-        // cancels the popup instead (see _onBoardClick); Pass is no longer
-        // double-purposed as Cancel.
+        // cancels the popup instead (see _onBoardClick).
         this.passBtn.disabled = this.selectingStone
             || dpn !== v.plyCount || !v.passEnabled || !this._isMyTurn();
         this.resignBtn.hidden = this.activeIdx.startsWith('L_');
@@ -2116,8 +2119,7 @@ export class Renderer {
         if (this.selectingStone) {
             // The board itself isn't otherwise clickable while selecting -
             // only the popup circles are - but a click that misses every
-            // circle cancels the selection instead of being ignored, since
-            // Pass is no longer double-purposed as Cancel (see passBtn).
+            // circle cancels the selection instead of being ignored.
             for (const { stone, x, y, r } of this._stonePopupCircles(v)) {
                 if (Math.hypot(mx - x, my - y) < r) {
                     const pos = this.pendingPos!;
