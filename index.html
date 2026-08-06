@@ -156,7 +156,7 @@
       flex-shrink: 0;
     }
 
-    #pass-btn, #withdraw-btn, #wcd-btn, #resign-btn {
+    #pass-btn, #withdraw-btn, #wcd-btn, #reset-viewport-btn, #lock-rotation-btn, #resign-btn {
       height: var(--u);
       padding: 0 calc(var(--u) * 5 / 7);
       border-radius: 4px;
@@ -169,9 +169,15 @@
       align-items: center;
       justify-content: center;
     }
-    #pass-btn:disabled, #withdraw-btn:disabled, #wcd-btn:disabled, #resign-btn:disabled {
+    #pass-btn:disabled, #withdraw-btn:disabled, #wcd-btn:disabled,
+    #reset-viewport-btn:disabled, #lock-rotation-btn:disabled, #resign-btn:disabled {
       background: #b5a99e;
       cursor: default;
+    }
+    /* Fixed width (sized for "Unlock", the longer of its two labels) so toggling the label
+       doesn't shift the layout of the buttons after it. */
+    #lock-rotation-btn {
+      width: calc(var(--u) * 2.4);
     }
     /* Same gotcha as .panel-mode-btn[hidden] below: the hidden attribute's
        UA-stylesheet display:none loses to this file's own #resign-btn
@@ -515,6 +521,8 @@
         <button id="pass-btn">Pass</button>
         <button id="withdraw-btn">Withdraw</button>
         <button id="wcd-btn">WCD</button>
+        <button id="reset-viewport-btn">Reset View</button>
+        <button id="lock-rotation-btn">Lock</button>
         <button id="resign-btn" hidden>Resign</button>
       </div>
       <div id="ctrl-bar-bottom">

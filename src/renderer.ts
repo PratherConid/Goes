@@ -372,6 +372,9 @@ interface ActiveGame {
     // Orbiting camera orientation for this game's board (see src/camera.ts) - ephemeral UI state,
     // same as displayPlyNum, not persisted/restored beyond this in-memory ActiveGame.
     cameraOrientation: Quaternion;
+    // When true, _onBoardMouseDown ignores drags (no camera orbit) - toggled by the
+    // #lock-rotation-btn control-bar button.
+    rotationLocked: boolean;
 }
 
 // Response shape of REGISTER/LOGIN/FLOGIN: the finished online games the server
@@ -513,6 +516,8 @@ export class Renderer {
     private resignBtn:    HTMLButtonElement;
     private withdrawBtn:  HTMLButtonElement;
     private wcdBtn:       HTMLButtonElement;
+    private resetViewportBtn: HTMLButtonElement;
+    private lockRotationBtn:  HTMLButtonElement;
     private bwEndBtn:     HTMLButtonElement;
     private bw10Btn:      HTMLButtonElement;
     private bwBtn:        HTMLButtonElement;
@@ -572,6 +577,8 @@ export class Renderer {
         this.resignBtn    = document.getElementById('resign-btn')      as HTMLButtonElement;
         this.withdrawBtn  = document.getElementById('withdraw-btn')    as HTMLButtonElement;
         this.wcdBtn       = document.getElementById('wcd-btn')         as HTMLButtonElement;
+        this.resetViewportBtn = document.getElementById('reset-viewport-btn') as HTMLButtonElement;
+        this.lockRotationBtn  = document.getElementById('lock-rotation-btn')  as HTMLButtonElement;
         this.bwEndBtn     = document.getElementById('bwend-btn')      as HTMLButtonElement;
         this.bw10Btn      = document.getElementById('bw10-btn')       as HTMLButtonElement;
         this.bwBtn        = document.getElementById('bw-btn')         as HTMLButtonElement;
@@ -888,6 +895,14 @@ export class Renderer {
         // 'w'/'wcd' branches so the guards live in exactly one place.
         this.withdrawBtn.addEventListener('click', () => { this._withdrawMove(1); this._render(); });
         this.wcdBtn.addEventListener('click', () => { this._withdrawToCurrentDisplay(); this._render(); });
+        this.resetViewportBtn.addEventListener('click', () => {
+            this._active.cameraOrientation = QUAT_IDENTITY;
+            this._render();
+        });
+        this.lockRotationBtn.addEventListener('click', () => {
+            this._active.rotationLocked = !this._active.rotationLocked;
+            this._render();
+        });
         this.cmdInput.addEventListener('keydown', e => {
             if (e.key === 'Enter') { this._parseCommand(this.cmdInput.value.trim()); this.cmdInput.value = ''; this._render(); }
         });
@@ -1185,6 +1200,7 @@ export class Renderer {
         // wcd withdraws down to the displayed ply - a no-op once dpn already
         // equals plyCount (nothing ahead of the display position left to cut).
         this.wcdBtn.disabled = dpn === v.plyCount;
+        this.lockRotationBtn.textContent = this._active.rotationLocked ? 'Unlock' : 'Lock';
         // Disabled while selecting a stone - clicking elsewhere on the board
         // cancels the popup instead (see _onBoardClick); Pass is no longer
         // double-purposed as Cancel.
@@ -1921,7 +1937,9 @@ export class Renderer {
     // Wired to mainSvg's 'mousedown' (init()) - disambiguates a plain click (place a stone, via
     // _onBoardClick) from a drag (orbit the camera, via applyOrbitDrag/src/camera.ts). Tracks
     // mousemove/mouseup on `window` (not mainSvg) so a drag that leaves the SVG bounds mid-gesture
-    // still keeps rotating/still resolves cleanly, then removes both listeners on mouseup.
+    // still keeps rotating/still resolves cleanly, then removes both listeners on mouseup. While
+    // rotationLocked, onMove is a no-op - moved never becomes true, so any drag just resolves as a
+    // plain click at the mouseup position, same as before drag-to-orbit existed.
     private _onBoardMouseDown(e: MouseEvent) {
         const start = { x: e.clientX, y: e.clientY };
         let last = { x: e.clientX, y: e.clientY };
@@ -1929,6 +1947,7 @@ export class Renderer {
         const onMove = (ev: MouseEvent) => {
             const dx = ev.clientX - last.x, dy = ev.clientY - last.y;
             last = { x: ev.clientX, y: ev.clientY };
+            if (this._active.rotationLocked) return;
             if (!moved && Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < DRAG_THRESHOLD_PX) return;
             moved = true;
             this._active.cameraOrientation = applyOrbitDrag(this._active.cameraOrientation, dx, dy);
@@ -2099,7 +2118,7 @@ export class Renderer {
         this.engineManager.sessionId = null;
         this.activeGames.set(id, {
             bs, config, displayPlyNum: 0, idxShowHistory: 0, randomEvaled: null,
-            cameraOrientation: QUAT_IDENTITY,
+            cameraOrientation: QUAT_IDENTITY, rotationLocked: false,
         });
         this.activeIdx = id;
     }
@@ -2691,6 +2710,7 @@ export class Renderer {
                 this.finishedGames.set('O_' + id, {
                     bs, config: fg.config, displayPlyNum: bs.getView().plyCount,
                     idxShowHistory: 0, randomEvaled: null, cameraOrientation: QUAT_IDENTITY,
+                    rotationLocked: false,
                 });
             } catch (e) { console.error('Failed to reconstruct finished game', id, e); }
         }
