@@ -105,13 +105,11 @@ const STONE_RADIUS_FACTOR = 0.42;
 
 // ── layout helper ────────────────────────────────────────────────────────────
 
-// Given a board size w×h, compute how to map board coordinates to screen pixels. Unlike the old
-// per-render bounding-box auto-fit this replaced, the board is no longer re-centered/re-scaled to
-// fit w×h on every call - viewport.scale (pixels per natural-coordinate unit) is computed once,
-// when a game is first rendered (see Renderer._renderMainBoard()'s lazy-init check and
-// computeInitialScale() below), then held fixed until explicitly changed (the 'scale' command) -
-// so the board's on-screen size stays stable as the camera orbits, and only w×h's own center
-// (not any bounding box) is used for placement.
+// Given a board size w×h, compute how to map board coordinates to screen pixels.
+// viewport.scale is a render-area-independent ratio (see its own doc comment, src/camera.ts);
+// multiplying by min(w, h) converts it to actual pixels for this call's own box, so the same
+// Viewport renders at the correct relative size in both the main board and the smaller
+// history-panel thumbnails.
 //
 // viewport.quat rotates each node's projected (x, y, z) point before the scale is applied below,
 // so the board is sized/positioned around its actual on-screen (rotated) extent - see
@@ -124,7 +122,7 @@ const STONE_RADIUS_FACTOR = 0.42;
 //   originX, originY - screen pixel for board coordinate (0, 0), i.e. w/2, h/2:
 //                      sx = originX + bx * cell
 //                      sy = originY - by * cell  (board y-up → screen y-down)
-//   cell             - pixels per board-coordinate unit (= viewport.scale)
+//   cell             - pixels per board-coordinate unit (= viewport.scale * min(w, h))
 //   stone_r          - stone radius in pixels (= STONE_RADIUS_FACTOR * cell)
 //   pos              - every node's rotated (x, y, z) point, in the same order as view.emb.pos
 //   rotMat           - the 3x3 matrix actually applied to get pos - see projectPoint()
@@ -148,27 +146,19 @@ function boardLayout(view: BoardView, w: number, h: number, viewport: Viewport) 
     // rotation, not viewport.quat itself, hence the conjugate here.
     const rotMat = quatToMat3(quatConjugate(viewport.quat));
     const pos = focusPos.map(p => projectPoint(rotMat, p));
-    const cell = viewport.scale;
+    const cell = viewport.scale * Math.min(w, h);
     const stone_r = cell * STONE_RADIUS_FACTOR;
     const originX = w / 2;
     const originY = h / 2;
     return { originX, originY, cell, stone_r, pos, rotMat, dmax };
 }
 
-// Computes viewport.scale for a freshly-loaded game (see Renderer._renderMainBoard()'s lazy-init
-// check, the only caller) - boardLayout() above no longer auto-fits on every render, so this picks
-// a sensible starting scale once, using the DEFAULT camera (identity rotation, focus at the
-// origin, default distToFocus/aperture - i.e. before any of the user's own orbit/focus/perspective
-// adjustments), so the board starts out fitting comfortably in a w×h box regardless of how the
-// camera is adjusted afterward.
-//
-// For every node, takes the larger of its rotated |x|/|y| (each already perspective-scaled - see
-// computePerspectiveScale()) plus that same node's own perspective-scaled stone radius (the actual
-// pixel extent a stone drawn there would reach, using STONE_RADIUS_FACTOR - the same natural-unit
-// radius drawBoardFull() itself uses) - the single largest such extent across the whole board is
-// then scaled to exactly touch half of w×h's shorter side. A node behind the (default) camera
-// (computePerspectiveScale() returns null) doesn't participate, same as it wouldn't be drawn.
-function computeInitialScale(view: BoardView, w: number, h: number): number {
+// Computes a game's initial viewport.scale, using the default camera (identity rotation, focus at
+// the origin, default distToFocus/aperture). For every node, takes the larger of its rotated
+// |x|/|y| (perspective-scaled) plus its own perspective-scaled stone radius; 1/(2*maxExtent) is
+// the ratio at which the largest such extent touches half of a unit-sized box, *0.9 for a small
+// margin. Render-area-independent (see boardLayout()'s own doc comment) - no w×h needed.
+function computeInitialScale(view: BoardView): number {
     const viewport = defaultViewport();
     const rawPos = view.emb.project();
     const dmax = rawPos.length > 0 ? Math.max(...rawPos.map(p => Math.hypot(p[0], p[1], p[2]))) : 0;
@@ -183,8 +173,7 @@ function computeInitialScale(view: BoardView, w: number, h: number): number {
         const extent = Math.max(Math.abs(x * scale), Math.abs(y * scale)) + STONE_RADIUS_FACTOR * scale;
         maxExtent = Math.max(maxExtent, extent);
     }
-    const halfBox = Math.min(w, h) / 2;
-    return maxExtent > 0 ? halfBox / maxExtent : 1;
+    return maxExtent > 0 ? (1 / (2 * maxExtent)) * 0.9 : 1;
 }
 
 // ── board SVG drawing ────────────────────────────────────────────────────────
@@ -1267,11 +1256,9 @@ export class Renderer {
         this.mainBoardSize = size;
         this.mainSvg.setAttribute('width', String(size));
         this.mainSvg.setAttribute('height', String(size));
-        // viewport.scale's sentinel (0, see its own doc comment, src/camera.ts) means this game has
-        // never been rendered before - now that the canvas' real pixel size is known, compute its
-        // one-time initial scale.
+        // 0 means viewport.scale hasn't been computed yet (see its own doc comment, src/camera.ts).
         if (this._active.viewport.scale <= 0) {
-            this._active.viewport.scale = computeInitialScale(v, size, size);
+            this._active.viewport.scale = computeInitialScale(v);
         }
 
         while (this.mainSvg.firstChild) this.mainSvg.removeChild(this.mainSvg.firstChild);
@@ -1457,9 +1444,7 @@ export class Renderer {
                 'Set the camera\'s distance from the focus point (in units of dmax); must be &gt; 0')}
             ${row('aperture &lt;num&gt;',
                 'Set the camera\'s field of view in degrees; must be between 0 and 120')}
-            ${row('scale &lt;num&gt;',
-                'Set pixels per board-coordinate unit directly, overriding the board\'s one-time '
-                + 'initial-fit scale; must be &gt; 0')}
+            ${row('scale &lt;num&gt;', 'Set the board\'s render-area-independent size ratio; must be &gt; 0')}
             ${head('New Game Setup')}
             ${row('preset &lt;name&gt;',      'Use the specified preset (see Game Presets, below, for available names)')}
             ${row('fpo',                      'Toggle forced-pass-only for new games')}

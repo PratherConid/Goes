@@ -31,14 +31,10 @@ export interface Viewport {
     // The camera's full field-of-view angle, in degrees (0 < aperture < 120 - see the 'aperture'
     // command, Renderer._parseCommand). Used by computePerspectiveScale, below.
     aperture: number;
-    // Pixels per natural-coordinate unit (replaces the old per-render bounding-box auto-fit - see
-    // boardLayout()'s own doc comment, src/renderer.ts). Computed once, when a game is first
-    // rendered (see Renderer._renderMainBoard()'s own lazy-init check), then held fixed - only the
-    // 'scale' command (Renderer._parseCommand) changes it afterward, so the board's on-screen size
-    // no longer auto-adjusts as the camera orbits/zooms. 0 is a sentinel meaning "not yet computed"
-    // (scale must be > 0 otherwise - see the 'scale' command); defaultViewport() below can't compute
-    // a real value itself, since that needs the actual board geometry and canvas pixel size,
-    // neither of which it has access to.
+    // A render-area-independent size ratio - boardLayout() (src/renderer.ts) multiplies it by
+    // min(w, h) of whatever box is being rendered into. Computed once per game (see the 'scale'
+    // command, Renderer._parseCommand, to change it afterward). 0 is a sentinel meaning "not yet
+    // computed" (must be > 0 otherwise).
     scale: number;
 }
 
