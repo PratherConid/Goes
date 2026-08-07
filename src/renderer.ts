@@ -13,7 +13,7 @@ import {
     coloredStoneCircle, fmtTurnList,
 } from './sidePanel.js';
 import {
-    type Quaternion, type Viewport, QUAT_IDENTITY, defaultViewport, computeAlpha,
+    type Viewport, QUAT_IDENTITY, defaultViewport, computeAlpha,
     quatToMat3, quatConjugate, applyOrbitDrag, applyRoll,
 } from './camera.js';
 
@@ -110,11 +110,12 @@ const STONE_RADIUS_FACTOR = 0.42;
 // +1 reserves one cell's worth of margin, then the overall *0.95 shrink adds a further fixed-
 // proportion margin on top, so the outermost stones are not flush against the edges.
 //
-// cameraOrientation rotates each node's projected (x, y, z) point before the bounding box/cell
-// math below runs, so the board is sized/centered around its actual on-screen (rotated) extent -
-// see src/camera.ts. Also returns `pos` (the already-rotated points, x/y used here, z still
-// unused downstream) and `rotMat` (the 3x3 matrix itself, reused for ad-hoc points like star
-// points) so callers never need to redo this projection themselves.
+// viewport.quat rotates each node's projected (x, y, z) point before the bounding box/cell math
+// below runs, so the board is sized/centered around its actual on-screen (rotated) extent - see
+// src/camera.ts. Also returns `pos` (the already-rotated points, x/y used here, z still unused
+// downstream), `rotMat` (the 3x3 matrix itself, reused for ad-hoc points like star points), and
+// `dmax` (see computeAlpha()'s own doc comment) so callers never need to redo this projection or
+// dmax computation themselves.
 //
 // Returns:
 //   originX, originY - screen pixel for board coordinate (0, 0):
@@ -124,13 +125,26 @@ const STONE_RADIUS_FACTOR = 0.42;
 //   stone_r          - stone radius in pixels (= STONE_RADIUS_FACTOR * cell)
 //   pos              - every node's rotated (x, y, z) point, in the same order as view.emb.pos
 //   rotMat           - the 3x3 matrix actually applied to get pos - see projectPoint()
-function boardLayout(view: BoardView, w: number, h: number, cameraOrientation: Quaternion) {
-    // cameraOrientation is the camera's own orientation IN WORLD SPACE (applyOrbitDrag derives the
-    // camera's world-space right/up axes via quatRotateVector(cameraOrientation, ...) - see
+//   dmax             - the board's own max raw-point distance from the origin (rotation- and
+//                      focus-invariant - see computeAlpha()'s own doc comment)
+function boardLayout(view: BoardView, w: number, h: number, viewport: Viewport) {
+    const rawPos = view.emb.project();
+    // dmax must be measured from the RAW (untranslated, unrotated) points - it's the board's own
+    // fixed size scale, unrelated to where the camera currently looks (see Focus's doc comment,
+    // src/camera.ts) or is oriented. 0 for an empty board (Math.max() of nothing is -Infinity, not
+    // a usable dmax).
+    const dmax = rawPos.length > 0 ? Math.max(...rawPos.map(p => Math.hypot(p[0], p[1], p[2]))) : 0;
+    // Subtracting focus*dmax from every point BEFORE rotating recenters the scene on the focus
+    // point - the camera's rotation is always centered on/facing world (0, 0, 0), so translating
+    // the focus point there first makes the camera continue orbiting around and looking at it,
+    // exactly as it always did around the true origin when focus is [0, 0, 0].
+    const focusPos = rawPos.map(p => p.map((v, k) => v - viewport.focus[k] * dmax));
+    // viewport.quat is the camera's own orientation IN WORLD SPACE (applyOrbitDrag derives the
+    // camera's world-space right/up axes via quatRotateVector(viewport.quat, ...) - see
     // src/camera.ts) - rendering a world point into the camera's view needs the INVERSE of that
-    // rotation, not cameraOrientation itself, hence the conjugate here.
-    const rotMat = quatToMat3(quatConjugate(cameraOrientation));
-    const pos = view.emb.project().map(p => projectPoint(rotMat, p));
+    // rotation, not viewport.quat itself, hence the conjugate here.
+    const rotMat = quatToMat3(quatConjugate(viewport.quat));
+    const pos = focusPos.map(p => projectPoint(rotMat, p));
     const xs = pos.map(p => p[0]), ys = pos.map(p => p[1]);
     const xMin = Math.min(...xs), yMin = Math.min(...ys);
     const xMax = Math.max(...xs), yMax = Math.max(...ys);
@@ -139,7 +153,7 @@ function boardLayout(view: BoardView, w: number, h: number, cameraOrientation: Q
     const stone_r = cell * STONE_RADIUS_FACTOR;
     const originX = w / 2 - (xMin + xMax) / 2 * cell;
     const originY = h / 2 + (yMin + yMax) / 2 * cell;
-    return { originX, originY, cell, stone_r, pos, rotMat };
+    return { originX, originY, cell, stone_r, pos, rotMat, dmax };
 }
 
 // ── board SVG drawing ────────────────────────────────────────────────────────
@@ -276,13 +290,8 @@ function drawBoardFull(
     dim = false,
     viewport: Viewport = defaultViewport(),
 ) {
-    const { originX, originY, cell, stone_r, pos, rotMat } = boardLayout(view, boardW, boardH, viewport.quat);
+    const { originX, originY, cell, stone_r, pos, rotMat, dmax } = boardLayout(view, boardW, boardH, viewport);
     const N = view.N;
-    // dmax (see computeAlpha(), src/camera.ts) is rotation-invariant (a rotation never changes a
-    // point's distance from the origin), so it's the same whether measured from `pos` (rotated) or
-    // the board's own raw natural-space points - computed here from `pos` since that's already at
-    // hand. 0 for an empty board (Math.max() of nothing is -Infinity, not a usable dmax).
-    const dmax = pos.length > 0 ? Math.max(...pos.map(p => Math.hypot(p[0], p[1], p[2]))) : 0;
     const alphaOf = (depth: number) => computeAlpha(depth, dmax, viewport.fadecfg);
 
     // grid lines and stones/illegal markers are both dimmed together while
@@ -977,6 +986,7 @@ export class Renderer {
         this.wcdBtn.addEventListener('click', () => { this._withdrawToCurrentDisplay(); this._render(); });
         this.resetViewportBtn.addEventListener('click', () => {
             this._active.viewport.quat = QUAT_IDENTITY;
+            this._active.viewport.focus = [0, 0, 0];
             this._render();
         });
         this.lockRotationBtn.addEventListener('click', () => {
@@ -1377,6 +1387,12 @@ export class Renderer {
             ${row('h &lt;n&gt;', 'Show n entries in the history panel')}
             ${row('stt',         'Toggle territory display in the main board area')}
             ${row('simv',        'Toggle illegal move markers on the main board')}
+            ${row('tlv',         'Toggle lock view: lock/unlock camera rotation on the main board')}
+            ${row('rsv',
+                'Reset view: reset the main board camera to its default orientation and focus (0 0 0)')}
+            ${row('focus &lt;x&gt; &lt;y&gt; &lt;z&gt;',
+                'Set the point (in units of dmax along each render axis) the camera looks at/orbits '
+                + 'around, instead of the origin')}
             ${head('New Game Setup')}
             ${row('preset &lt;name&gt;',      'Use the specified preset (see Game Presets, below, for available names)')}
             ${row('fpo',                      'Toggle forced-pass-only for new games')}
@@ -2151,9 +2167,8 @@ export class Renderer {
             return;
         }
 
-        const { originX, originY, cell, stone_r, pos: vpos } =
-            boardLayout(v, this.mainBoardSize, this.mainBoardSize, this._active.viewport.quat);
-        const dmax = vpos.length > 0 ? Math.max(...vpos.map(p => Math.hypot(p[0], p[1], p[2]))) : 0;
+        const { originX, originY, cell, stone_r, pos: vpos, dmax } =
+            boardLayout(v, this.mainBoardSize, this.mainBoardSize, this._active.viewport);
         const board = v.situations[v.plyCount].board;
 
         let bestDist = Infinity, bestId = -1;
@@ -2467,6 +2482,19 @@ export class Renderer {
         else if (cmd === 'af')   this.autoForced = !this.autoForced;
         else if (cmd === 'stt')  this.showTerritory = !this.showTerritory;
         else if (cmd === 'simv') this.showIllegalMoves = !this.showIllegalMoves;
+        else if (cmd === 'tlv')  this._active.rotationLocked = !this._active.rotationLocked;
+        else if (cmd === 'rsv') {
+            this._active.viewport.quat = QUAT_IDENTITY;
+            this._active.viewport.focus = [0, 0, 0];
+        }
+        else if (cmd === 'focus') {
+            const nums = parts.slice(1, 4).map(Number);
+            if (nums.length !== 3 || nums.some(n => !Number.isFinite(n))) {
+                this._setCmdOutput('Usage: focus <num> <num> <num>');
+                return;
+            }
+            this._active.viewport.focus = nums as [number, number, number];
+        }
         else if (cmd === 'bt') {
             if (!parts[1]) { this._setCmdOutput('Usage: bt <board-type>'); return; }
             if (!_cmdToBoard.has(parts[1])) { this._setCmdOutput(`Unknown board type: ${parts[1]}`); return; }

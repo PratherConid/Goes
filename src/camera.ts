@@ -12,13 +12,21 @@ export const QUAT_IDENTITY: Quaternion = { w: 1, x: 0, y: 0, z: 0 };
 // further depth past that point - 0 disables fading entirely (alpha always 1).
 export interface FadingConfig { init: number; rate: number; }
 
-export interface Viewport { quat: Quaternion; fadecfg: FadingConfig; }
+// The natural-space point (in units of dmax - see computeAlpha's own doc comment - along each of
+// the board's x/y/z render axes, before camera rotation) the camera looks at, instead of the
+// origin: boardLayout() (src/renderer.ts) subtracts focus*dmax from every point's raw projected
+// coordinates before applying the camera's rotation, so the camera continues orbiting around and
+// facing this point exactly as it always did around the origin. [0, 0, 0] (the default) recovers
+// the original "always looks at the origin" behavior.
+export type Focus = [number, number, number];
+
+export interface Viewport { quat: Quaternion; fadecfg: FadingConfig; focus: Focus; }
 
 // A fresh object per call (not a shared constant) - each ActiveGame needs its own independent
 // Viewport, since fi/fr (Renderer._parseCommand) mutate fadecfg's fields in place; sharing one
 // instance across games would leak one game's fade settings into every other game.
 export function defaultViewport(): Viewport {
-    return { quat: QUAT_IDENTITY, fadecfg: { init: 0.0, rate: 0.8 } };
+    return { quat: QUAT_IDENTITY, fadecfg: { init: 0.0, rate: 0.8 }, focus: [0, 0, 0] };
 }
 
 /**
