@@ -214,6 +214,13 @@ export class OnlinePlayerRequest {
     }
 }
 
+// Deep-clones a single BoardModifier - a plain `{ ...m }` alone would still share Prod/BeginProd's
+// own nested boardArgs array between the original and the clone, so mutating one's boardArgs would
+// bleed into the other. Used (via .map()) by both GameConfig.copy() and adoptJSONBoardCfg() below.
+function cloneBoardModifier(m: BoardModifier): BoardModifier {
+    return 'boardArgs' in m ? { ...m, boardArgs: [...m.boardArgs] } : { ...m };
+}
+
 export class GameConfig {
     boardType: string;
     boardArgs: number[];
@@ -286,7 +293,7 @@ export class GameConfig {
         return new GameConfig(
             this.boardType,
             [...this.boardArgs],
-            [...this.boardModifiers],
+            this.boardModifiers.map(cloneBoardModifier),
             this.numStones,
             this.numPlayers,
             this.turnList.map(t => ({ ...t, stones: [...t.stones], protected: [...t.protected], friendly: [...t.friendly] })),
@@ -326,11 +333,16 @@ export class GameConfig {
     // Applies a board-only preset (boardType/boardArgs/boardModifiers, e.g. from
     // public/board_presets/) to this GameConfig in place, leaving every other field (turnList,
     // players, scoring rules, etc.) untouched - unlike fromJSON(), which builds a whole new
-    // GameConfig from a full preset.
+    // GameConfig from a full preset. Copies boardArgs/boardModifiers (same convention as copy(),
+    // below) rather than aliasing raw's own arrays - raw is Renderer.boardConfigs' cached preset
+    // object (see src/renderer.ts's _loadBoardConfigs()), reused across every load of that preset,
+    // and boardArgs/boardModifiers both get mutated in place elsewhere (dimension-editing UI,
+    // the 'mod'/'endprod' commands) - aliasing would corrupt the cached preset for the rest of the
+    // session after the first such edit.
     adoptJSONBoardCfg(raw: any): void {
         this.boardType      = raw.boardType;
-        this.boardArgs      = raw.boardArgs;
-        this.boardModifiers = raw.boardModifiers as BoardModifier[];
+        this.boardArgs      = [...raw.boardArgs];
+        this.boardModifiers = (raw.boardModifiers as BoardModifier[]).map(cloneBoardModifier);
     }
 
     static fromJSON(raw: any): GameConfig {
