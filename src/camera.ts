@@ -20,13 +20,36 @@ export interface FadingConfig { init: number; rate: number; }
 // the original "always looks at the origin" behavior.
 export type Focus = [number, number, number];
 
-export interface Viewport { quat: Quaternion; fadecfg: FadingConfig; focus: Focus; }
+export interface Viewport {
+    quat: Quaternion;
+    fadecfg: FadingConfig;
+    focus: Focus;
+    // The camera's distance from the focus point (Focus, above), in units of dmax - actual
+    // distance is distToFocus*dmax (see computePerspectiveScale). Must be > 0 (see the 'dtf'
+    // command, Renderer._parseCommand).
+    distToFocus: number;
+    // The camera's full field-of-view angle, in degrees (0 < aperture < 120 - see the 'aperture'
+    // command, Renderer._parseCommand). Used by computePerspectiveScale, below.
+    aperture: number;
+    // Pixels per natural-coordinate unit (replaces the old per-render bounding-box auto-fit - see
+    // boardLayout()'s own doc comment, src/renderer.ts). Computed once, when a game is first
+    // rendered (see Renderer._renderMainBoard()'s own lazy-init check), then held fixed - only the
+    // 'scale' command (Renderer._parseCommand) changes it afterward, so the board's on-screen size
+    // no longer auto-adjusts as the camera orbits/zooms. 0 is a sentinel meaning "not yet computed"
+    // (scale must be > 0 otherwise - see the 'scale' command); defaultViewport() below can't compute
+    // a real value itself, since that needs the actual board geometry and canvas pixel size,
+    // neither of which it has access to.
+    scale: number;
+}
 
 // A fresh object per call (not a shared constant) - each ActiveGame needs its own independent
 // Viewport, since fi/fr (Renderer._parseCommand) mutate fadecfg's fields in place; sharing one
 // instance across games would leak one game's fade settings into every other game.
 export function defaultViewport(): Viewport {
-    return { quat: QUAT_IDENTITY, fadecfg: { init: 0.0, rate: 0.8 }, focus: [0, 0, 0] };
+    return {
+        quat: QUAT_IDENTITY, fadecfg: { init: 0.0, rate: 0.8 }, focus: [0, 0, 0],
+        distToFocus: 3, aperture: 60, scale: 0,
+    };
 }
 
 /**
@@ -47,6 +70,29 @@ export function computeAlpha(depth: number, dmax: number, fadecfg: FadingConfig)
     if (recession <= distInit) return 1;
     const alpha = 1 - (recession - distInit) * fadecfg.rate / dmax;
     return Math.max(0, Math.min(1, alpha));
+}
+
+/**
+ * The perspective scale factor for an object at `depth` (its z after camera rotation/focus
+ * translation - larger is nearer, see boardLayout(), src/renderer.ts) - screen positions and sizes
+ * should be multiplied by this to render perspective instead of the original flat/orthographic
+ * projection. Standard pinhole-camera model: the camera sits at distance
+ * `viewport.distToFocus * dmax` from the focus point (which is world (0, 0, 0) after
+ * boardLayout()'s own focus translation - see Focus's doc comment) along its view axis, with focal
+ * length `f = 1 / tan(aperture/2)` derived from viewport.aperture (the camera's field-of-view
+ * angle) - so an object's actual distance from the camera is
+ * `dist = viewport.distToFocus * dmax - depth`, and its perspective scale is `f / dist`.
+ *
+ * Returns null for an object at or behind the camera (dist <= 0), rather than a degenerate/negative
+ * scale - callers must skip such objects entirely (or, for a grid line, the whole line if either
+ * endpoint returns null), per the project's "objects behind the camera are clamped" rule.
+ */
+export function computePerspectiveScale(depth: number, viewport: Viewport, dmax: number): number | null {
+    const dist = viewport.distToFocus * dmax - depth;
+    if (dist <= 0) return null;
+    const apertureRad = viewport.aperture * Math.PI / 180;
+    const f = 1 / Math.tan(apertureRad / 2);
+    return f / dist;
 }
 
 type Vec3 = [number, number, number];

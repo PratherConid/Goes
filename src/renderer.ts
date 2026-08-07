@@ -13,7 +13,7 @@ import {
     coloredStoneCircle, fmtTurnList,
 } from './sidePanel.js';
 import {
-    type Viewport, QUAT_IDENTITY, defaultViewport, computeAlpha,
+    type Viewport, QUAT_IDENTITY, defaultViewport, computeAlpha, computePerspectiveScale,
     quatToMat3, quatConjugate, applyOrbitDrag, applyRoll,
 } from './camera.js';
 
@@ -105,23 +105,26 @@ const STONE_RADIUS_FACTOR = 0.42;
 
 // ── layout helper ────────────────────────────────────────────────────────────
 
-// Given a board size w×h, compute how to map board coordinates to screen pixels so that
-// the board is centred and as large as possible.
-// +1 reserves one cell's worth of margin, then the overall *0.95 shrink adds a further fixed-
-// proportion margin on top, so the outermost stones are not flush against the edges.
+// Given a board size w×h, compute how to map board coordinates to screen pixels. Unlike the old
+// per-render bounding-box auto-fit this replaced, the board is no longer re-centered/re-scaled to
+// fit w×h on every call - viewport.scale (pixels per natural-coordinate unit) is computed once,
+// when a game is first rendered (see Renderer._renderMainBoard()'s lazy-init check and
+// computeInitialScale() below), then held fixed until explicitly changed (the 'scale' command) -
+// so the board's on-screen size stays stable as the camera orbits, and only w×h's own center
+// (not any bounding box) is used for placement.
 //
-// viewport.quat rotates each node's projected (x, y, z) point before the bounding box/cell math
-// below runs, so the board is sized/centered around its actual on-screen (rotated) extent - see
+// viewport.quat rotates each node's projected (x, y, z) point before the scale is applied below,
+// so the board is sized/positioned around its actual on-screen (rotated) extent - see
 // src/camera.ts. Also returns `pos` (the already-rotated points, x/y used here, z still unused
 // downstream), `rotMat` (the 3x3 matrix itself, reused for ad-hoc points like star points), and
 // `dmax` (see computeAlpha()'s own doc comment) so callers never need to redo this projection or
 // dmax computation themselves.
 //
 // Returns:
-//   originX, originY - screen pixel for board coordinate (0, 0):
+//   originX, originY - screen pixel for board coordinate (0, 0), i.e. w/2, h/2:
 //                      sx = originX + bx * cell
 //                      sy = originY - by * cell  (board y-up → screen y-down)
-//   cell             - pixels per board-coordinate unit
+//   cell             - pixels per board-coordinate unit (= viewport.scale)
 //   stone_r          - stone radius in pixels (= STONE_RADIUS_FACTOR * cell)
 //   pos              - every node's rotated (x, y, z) point, in the same order as view.emb.pos
 //   rotMat           - the 3x3 matrix actually applied to get pos - see projectPoint()
@@ -145,15 +148,43 @@ function boardLayout(view: BoardView, w: number, h: number, viewport: Viewport) 
     // rotation, not viewport.quat itself, hence the conjugate here.
     const rotMat = quatToMat3(quatConjugate(viewport.quat));
     const pos = focusPos.map(p => projectPoint(rotMat, p));
-    const xs = pos.map(p => p[0]), ys = pos.map(p => p[1]);
-    const xMin = Math.min(...xs), yMin = Math.min(...ys);
-    const xMax = Math.max(...xs), yMax = Math.max(...ys);
-    const spanX = xMax - xMin || 1, spanY = yMax - yMin || 1;
-    const cell = Math.min(w / (spanX + 1), h / (spanY + 1)) * 0.95;
+    const cell = viewport.scale;
     const stone_r = cell * STONE_RADIUS_FACTOR;
-    const originX = w / 2 - (xMin + xMax) / 2 * cell;
-    const originY = h / 2 + (yMin + yMax) / 2 * cell;
+    const originX = w / 2;
+    const originY = h / 2;
     return { originX, originY, cell, stone_r, pos, rotMat, dmax };
+}
+
+// Computes viewport.scale for a freshly-loaded game (see Renderer._renderMainBoard()'s lazy-init
+// check, the only caller) - boardLayout() above no longer auto-fits on every render, so this picks
+// a sensible starting scale once, using the DEFAULT camera (identity rotation, focus at the
+// origin, default distToFocus/aperture - i.e. before any of the user's own orbit/focus/perspective
+// adjustments), so the board starts out fitting comfortably in a w×h box regardless of how the
+// camera is adjusted afterward.
+//
+// For every node, takes the larger of its rotated |x|/|y| (each already perspective-scaled - see
+// computePerspectiveScale()) plus that same node's own perspective-scaled stone radius (the actual
+// pixel extent a stone drawn there would reach, using STONE_RADIUS_FACTOR - the same natural-unit
+// radius drawBoardFull() itself uses) - the single largest such extent across the whole board is
+// then scaled to exactly touch half of w×h's shorter side. A node behind the (default) camera
+// (computePerspectiveScale() returns null) doesn't participate, same as it wouldn't be drawn.
+function computeInitialScale(view: BoardView, w: number, h: number): number {
+    const viewport = defaultViewport();
+    const rawPos = view.emb.project();
+    const dmax = rawPos.length > 0 ? Math.max(...rawPos.map(p => Math.hypot(p[0], p[1], p[2]))) : 0;
+    const focusPos = rawPos.map(p => p.map((v, k) => v - viewport.focus[k] * dmax));
+    const rotMat = quatToMat3(quatConjugate(viewport.quat));
+    const pos = focusPos.map(p => projectPoint(rotMat, p));
+
+    let maxExtent = 0;
+    for (const [x, y, z] of pos) {
+        const scale = computePerspectiveScale(z, viewport, dmax);
+        if (scale === null) continue;
+        const extent = Math.max(Math.abs(x * scale), Math.abs(y * scale)) + STONE_RADIUS_FACTOR * scale;
+        maxExtent = Math.max(maxExtent, extent);
+    }
+    const halfBox = Math.min(w, h) / 2;
+    return maxExtent > 0 ? halfBox / maxExtent : 1;
 }
 
 // ── board SVG drawing ────────────────────────────────────────────────────────
@@ -293,6 +324,7 @@ function drawBoardFull(
     const { originX, originY, cell, stone_r, pos, rotMat, dmax } = boardLayout(view, boardW, boardH, viewport);
     const N = view.N;
     const alphaOf = (depth: number) => computeAlpha(depth, dmax, viewport.fadecfg);
+    const scaleOf = (depth: number) => computePerspectiveScale(depth, viewport, dmax);
 
     // grid lines and stones/illegal markers are both dimmed together while
     // selecting a stone, so the whole board reads as "not interactive" - the
@@ -319,16 +351,21 @@ function drawBoardFull(
     // behind both endpoints' own stones rather than poking through the middle of either. Alpha is
     // computed separately per endpoint (its own actual depth, not the line's sort-key depth above),
     // since the two ends can genuinely fade to different amounts - see drawGridLine()'s own comment.
+    // Each endpoint gets its own perspective scale (see computePerspectiveScale(), src/camera.ts);
+    // if either is behind the camera (null), the whole line is skipped rather than drawn with a
+    // degenerate/inverted endpoint.
     let gradientCounter = 0;
     for (let i = 0; i < N; i++) {
         for (let j = i + 1; j < N; j++) {
             if (!adj[i][j]) continue;
             const [x1, y1, z1] = pos[i], [x2, y2, z2] = pos[j];
+            const scale1 = scaleOf(z1), scale2 = scaleOf(z2);
+            if (scale1 === null || scale2 === null) continue;
             items.push({
                 kind: 'gridLine', depth: Math.min(z1, z2),
                 args: [
-                    screenX(x1), screenY(y1), screenX(x2), screenY(y2), alphaOf(z1), alphaOf(z2),
-                    `gradient-${gradientCounter++}`,
+                    screenX(x1 * scale1), screenY(y1 * scale1), screenX(x2 * scale2), screenY(y2 * scale2),
+                    alphaOf(z1), alphaOf(z2), `gradient-${gradientCounter++}`,
                 ],
             });
         }
@@ -336,12 +373,21 @@ function drawBoardFull(
 
     // star points ("hoshi" board markings, rect boards only - computeStarPoints() returns [] for
     // any other boardType). computeStarPoints() returns raw (un-projected) natural-space
-    // coordinates, same as node positions before emb.project() - so they need the same projMat AND
-    // the same camera rotMat applied to stay aligned with the actual (possibly non-identity
-    // projMat, possibly rotated) projected grid.
+    // coordinates, same as node positions before emb.project() - so they need the exact same
+    // pipeline boardLayout() itself runs to produce `pos` (projMat, then the focus translation,
+    // then the camera rotMat) to stay aligned with the actual (possibly non-identity projMat,
+    // possibly focus-shifted/rotated) projected grid. Skipped entirely (like every other item
+    // type) if behind the camera.
     for (const starPoint of computeStarPoints(config)) {
-        const [x, y, z] = projectPoint(rotMat, projectPoint(view.emb.projMat, starPoint));
-        items.push({ kind: 'starPoint', depth: z, args: [screenX(x), screenY(y), cell * 0.09, alphaOf(z)] });
+        const raw = projectPoint(view.emb.projMat, starPoint);
+        const focusPoint = raw.map((v, k) => v - viewport.focus[k] * dmax);
+        const [x, y, z] = projectPoint(rotMat, focusPoint);
+        const scale = scaleOf(z);
+        if (scale === null) continue;
+        items.push({
+            kind: 'starPoint', depth: z,
+            args: [screenX(x * scale), screenY(y * scale), cell * 0.09 * scale, alphaOf(z)],
+        });
     }
 
     // stones / illegal markers - depth offset by +0.1*radius (see DrawItem's own doc comment).
@@ -350,16 +396,19 @@ function drawBoardFull(
     for (let i = 0; i < N; i++) {
         const [x, y, z] = pos[i];
         const depth = z + 0.1 * STONE_RADIUS_FACTOR;
+        const scale = scaleOf(z);
+        if (scale === null) continue;
         const alpha = alphaOf(depth);
         const stone = board[i];
         if (stone > 0) {
             items.push({
                 kind: 'stone', depth,
-                args: [screenX(x), screenY(y), stone_r, STONE_MAP[stone].color, '#333', alpha],
+                args: [screenX(x * scale), screenY(y * scale), stone_r * scale, STONE_MAP[stone].color, '#333', alpha],
             });
         } else if (legalMoves !== null && legalMoves.every(row => row[i] === null)) {
             items.push({
-                kind: 'stone', depth, args: [screenX(x), screenY(y), stone_r, COLOR_ILLEGAL, null, alpha],
+                kind: 'stone', depth,
+                args: [screenX(x * scale), screenY(y * scale), stone_r * scale, COLOR_ILLEGAL, null, alpha],
             });
         }
     }
@@ -371,9 +420,14 @@ function drawBoardFull(
             const owner = territoryOwner[i];
             if (owner <= 0) continue;
             const [x, y, z] = pos[i];
+            const scale = scaleOf(z);
+            if (scale === null) continue;
             items.push({
                 kind: 'territorySquare', depth: z,
-                args: [screenX(x), screenY(y), side, STONE_MAP[owner]?.color ?? '#888', alphaOf(z)],
+                args: [
+                    screenX(x * scale), screenY(y * scale), side * scale,
+                    STONE_MAP[owner]?.color ?? '#888', alphaOf(z),
+                ],
             });
         }
     }
@@ -1213,6 +1267,12 @@ export class Renderer {
         this.mainBoardSize = size;
         this.mainSvg.setAttribute('width', String(size));
         this.mainSvg.setAttribute('height', String(size));
+        // viewport.scale's sentinel (0, see its own doc comment, src/camera.ts) means this game has
+        // never been rendered before - now that the canvas' real pixel size is known, compute its
+        // one-time initial scale.
+        if (this._active.viewport.scale <= 0) {
+            this._active.viewport.scale = computeInitialScale(v, size, size);
+        }
 
         while (this.mainSvg.firstChild) this.mainSvg.removeChild(this.mainSvg.firstChild);
 
@@ -1393,6 +1453,13 @@ export class Renderer {
             ${row('focus &lt;x&gt; &lt;y&gt; &lt;z&gt;',
                 'Set the point (in units of dmax along each render axis) the camera looks at/orbits '
                 + 'around, instead of the origin')}
+            ${row('dtf &lt;num&gt;',
+                'Set the camera\'s distance from the focus point (in units of dmax); must be &gt; 0')}
+            ${row('aperture &lt;num&gt;',
+                'Set the camera\'s field of view in degrees; must be between 0 and 120')}
+            ${row('scale &lt;num&gt;',
+                'Set pixels per board-coordinate unit directly, overriding the board\'s one-time '
+                + 'initial-fit scale; must be &gt; 0')}
             ${head('New Game Setup')}
             ${row('preset &lt;name&gt;',      'Use the specified preset (see Game Presets, below, for available names)')}
             ${row('fpo',                      'Toggle forced-pass-only for new games')}
@@ -2171,19 +2238,24 @@ export class Renderer {
             boardLayout(v, this.mainBoardSize, this.mainBoardSize, this._active.viewport);
         const board = v.situations[v.plyCount].board;
 
-        let bestDist = Infinity, bestId = -1;
+        let bestDist = Infinity, bestId = -1, bestScale = 1;
         for (let i = 0; i < v.N; i++) {
             // Faded-out (mostly-transparent) locations don't participate in hit-testing at all -
             // matches what's visually legible on the board, see computeAlpha()/src/camera.ts.
             if (computeAlpha(vpos[i][2], dmax, this._active.viewport.fadecfg) < 0.5) continue;
             // Already-occupied locations can't be played on, so they don't participate either.
             if (board[i] > 0) continue;
+            // Same z drawBoardFull() scales a stone at this location by - kept consistent so
+            // hit-testing matches what's actually drawn.
+            const scale = computePerspectiveScale(vpos[i][2], this._active.viewport, dmax);
+            // Behind the camera (or exactly at it) - not rendered, so not clickable either.
+            if (scale === null) continue;
             const [bx, by] = vpos[i];
-            const sx = originX + bx * cell, sy = originY - by * cell;
+            const sx = originX + bx * scale * cell, sy = originY - by * scale * cell;
             const dist = Math.hypot(mx - sx, my - sy);
-            if (dist < bestDist) { bestDist = dist; bestId = i; }
+            if (dist < bestDist) { bestDist = dist; bestId = i; bestScale = scale; }
         }
-        if (bestId >= 0 && bestDist < stone_r * 1.3) {
+        if (bestId >= 0 && bestDist < stone_r * bestScale * 1.3) {
             if (this._active.displayPlyNum !== v.plyCount) return;
             const legalStones = [...v.history[v.plyCount].legalMoves.legalsForLocation[bestId]];
             if (legalStones.length === 0) {
@@ -2494,6 +2566,30 @@ export class Renderer {
                 return;
             }
             this._active.viewport.focus = nums as [number, number, number];
+        }
+        else if (cmd === 'dtf') {
+            const v = parseFloat(parts[1]);
+            if (!Number.isFinite(v) || v <= 0) {
+                this._setCmdOutput('Usage: dtf <num>  (must be > 0)');
+                return;
+            }
+            this._active.viewport.distToFocus = v;
+        }
+        else if (cmd === 'aperture') {
+            const v = parseFloat(parts[1]);
+            if (!Number.isFinite(v) || v <= 0 || v >= 120) {
+                this._setCmdOutput('Usage: aperture <num>  (degrees, 0 < aperture < 120)');
+                return;
+            }
+            this._active.viewport.aperture = v;
+        }
+        else if (cmd === 'scale') {
+            const v = parseFloat(parts[1]);
+            if (!Number.isFinite(v) || v <= 0) {
+                this._setCmdOutput('Usage: scale <num>  (must be > 0)');
+                return;
+            }
+            this._active.viewport.scale = v;
         }
         else if (cmd === 'bt') {
             if (!parts[1]) { this._setCmdOutput('Usage: bt <board-type>'); return; }
