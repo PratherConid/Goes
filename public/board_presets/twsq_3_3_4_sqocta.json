@@ -1,0 +1,7 @@
+{
+  "boardType": "twsq",
+  "boardArgs": [3, 3, 4],
+  "boardModifiers": [
+    {"kind": "SqOctarize"}
+  ]
+}

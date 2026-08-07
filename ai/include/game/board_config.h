@@ -73,6 +73,21 @@ BoardConfig square_form(const BoardConfig& bc, int w);
 // adjacency-only here, same reasoning as those two functions' own doc comments.
 BoardConfig global_centralize(const BoardConfig& bc);
 
+// Replaces every square (4 distinct vertices forming a cycle with no diagonal edges - see
+// topology.h's find_squares, same squares square_form finds) with an octahedron: two new "apex"
+// nodes, one on each side of the square, each connected to all 4 of that square's corners - the
+// square's own 4-cycle edges (already present, untouched) become the octahedron's equatorial ring,
+// and the two apexes are NOT connected to each other (antipodal, like octahedron_board's own apex
+// pairs - see that function's doc comment for why a plain square graph plus two such apex nodes is
+// exactly an octahedron's edge set). Mirrors shared/boardConfig.ts's sqOctarize() connectivity
+// exactly, but (like triangle_form/square_form/global_centralize above) always produces an
+// emb_dim = 0 board regardless of bc's own embedding: the TS side gives each apex a real position
+// on a genuinely new dimension, offset by the (generally irrational, since it's a Euclidean
+// distance) average corner-to-barycenter distance - there is no exact-integer equivalent here, and
+// C++ never renders anyway (see BoardConfig's own fields, board_config.h's top comment), so nothing
+// is lost by dropping to adjacency-only.
+BoardConfig sq_octarize(const BoardConfig& bc);
+
 // The Cartesian (box) product of two board configs: N = bc1.N * bc2.N, one new node per pair (i, j)
 // (i from bc1, j from bc2), at the concatenated position embed[i] followed by embed[j] (emb_dim =
 // bc1.emb_dim + bc2.emb_dim - both stay exact integers here, unlike merge_close/rectify, since
@@ -90,7 +105,7 @@ BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2);
 // (training/self_play.cpp) instead.
 enum class ModifierKind {
     Rectify, EdgeSplit, MergeClose, TriangleForm, SquareForm, Prod, BeginProd, EndProd,
-    GlobalCentralize
+    GlobalCentralize, SqOctarize
 };
 struct BoardModifier {
     ModifierKind kind;
@@ -111,7 +126,7 @@ struct BoardModifier {
 };
 
 // Applies modifier to bc, dispatching to rectify / edge_split / merge_close / triangle_form /
-// square_form / product / global_centralize (Prod builds a fresh board from its own board_type/board_args via
+// square_form / product / global_centralize / sq_octarize (Prod builds a fresh board from its own board_type/board_args via
 // build_board_config, then multiplies it into bc - a one-shot immediate product, unlike
 // BeginProd/EndProd below). Does NOT accept
 // BeginProd/EndProd - those have no meaning applied to a single board in isolation (BeginProd starts

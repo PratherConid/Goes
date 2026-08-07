@@ -384,6 +384,33 @@ BoardConfig global_centralize(const BoardConfig& bc) {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
+BoardConfig sq_octarize(const BoardConfig& bc) {
+    int N = bc.N;
+    auto squares = find_squares(bc.adj); // each {A, B, C, D} in cycle order
+
+    int total_n = N + (int)squares.size() * 2;
+    auto adj = zero_adj(total_n);
+    for (int i = 0; i < N; i++)
+        for (int j = i + 1; j < N; j++) {
+            if (!bc.adj[i][j]) continue;
+            adj[i][j] = 1;
+            adj[j][i] = 1;
+        }
+
+    for (int s = 0; s < (int)squares.size(); s++) {
+        int top = N + s * 2, bottom = top + 1;
+        for (int c : squares[s]) {
+            adj[c][top] = 1;
+            adj[top][c] = 1;
+            adj[c][bottom] = 1;
+            adj[bottom][c] = 1;
+        }
+    }
+
+    std::vector<std::vector<unsigned>> embed(total_n); // emb_dim=0 - see board_config.h's doc comment
+    return make_bc(std::move(adj), 0u, std::move(embed));
+}
+
 BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2) {
     int N1 = bc1.N, N2 = bc2.N;
     unsigned emb_dim = bc1.emb_dim + bc2.emb_dim;
@@ -420,6 +447,7 @@ BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier)
         case ModifierKind::Prod:
             return product(bc, build_board_config(modifier.board_type, modifier.board_args));
         case ModifierKind::GlobalCentralize: return global_centralize(bc);
+        case ModifierKind::SqOctarize: return sq_octarize(bc);
         case ModifierKind::BeginProd:
         case ModifierKind::EndProd:
             throw std::runtime_error(

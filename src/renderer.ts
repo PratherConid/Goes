@@ -80,6 +80,8 @@ const _boardConfigDescriptions = new Map([
     ['dodeca_gcent_triform_6',
         'Regular dodecahedron with a central hub node, each resulting triangle replaced by a '
         + 'side-length-6 triangular board'],
+    ['twsq_3_3_4_sqocta',
+        '3×3×4 twisted-square board with every square replaced by an octahedron along a new dimension'],
 ]);
 
 
@@ -1462,6 +1464,10 @@ export class Renderer {
             ${row('gcent',
                 'GlobalCentralize: add one new node at the barycenter of every existing node, connected '
                 + 'to all of them')}
+            ${row('sqocta',
+                'SqOctarize: add a new dimension, then replace every square (4-cycle with no diagonal '
+                + 'edges) with an octahedron - two new apex nodes, one on each side along the new '
+                + "dimension, each connected to that square's 4 corners")}
         </table>`;
     }
 

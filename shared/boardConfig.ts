@@ -451,13 +451,13 @@ export function globalCentralize(bc: BoardConfig): BoardConfig {
 }
 
 /**
- * The default projMat assigned to a freshly-`product()`-ed board (see below): dims 0, 1, 2 map
- * straight to x, y, z (identity - the whole matrix is exactly DEFAULT_3D_PROJMAT when embDim <= 3),
- * and every triple of dims beyond that cycles through x/y/z again at a halved-again magnitude, e.g.
- * embDim=8 gives `[[1, 0, 0, 1/2, 0, 0, 1/4, 0], [0, 1, 0, 0, 1/2, 0, 0, 1/4], [0, 0, 1, 0, 0, 1/2, 0,
- * 0]]`. Dim `d` contributes magnitude `2^-floor(d/3)` to axis `d % 3` (x, y, or z), which also
- * reproduces the d=0/1/2 identity part with no separate case needed, since `2^-floor(d/3)` equals 1
- * for d=0/1/2.
+ * The default projMat assigned to a freshly-`product()`-ed or `sqOctarize()`-d board (see below):
+ * dims 0, 1, 2 map straight to x, y, z (identity - the whole matrix is exactly DEFAULT_3D_PROJMAT
+ * when embDim <= 3), and every triple of dims beyond that cycles through x/y/z again at a
+ * halved-again magnitude, e.g. embDim=8 gives `[[1, 0, 0, 1/2, 0, 0, 1/4, 0], [0, 1, 0, 0, 1/2, 0,
+ * 0, 1/4], [0, 0, 1, 0, 0, 1/2, 0, 0]]`. Dim `d` contributes magnitude `2^-floor(d/3)` to axis
+ * `d % 3` (x, y, or z), which also reproduces the d=0/1/2 identity part with no separate case
+ * needed, since `2^-floor(d/3)` equals 1 for d=0/1/2.
  */
 function defaultProductProjMat(embDim: number): number[][] {
     const rows = [new Array<number>(embDim).fill(0), new Array<number>(embDim).fill(0), new Array<number>(embDim).fill(0)];
@@ -466,6 +466,65 @@ function defaultProductProjMat(embDim: number): number[][] {
         rows[d % 3][d] = mag;
     }
     return rows;
+}
+
+/**
+ * Adds one new dimension to `bc`'s embedding, then replaces every square (4-cycle with no diagonal
+ * edges - see topology.ts's `findSquares`, same squares `squareForm` finds) with an octahedron: two
+ * new "apex" nodes, one on each side of the square along the new dimension, each connected to all 4
+ * of that square's corners - the square's own 4-cycle edges (already present, untouched) become the
+ * octahedron's equatorial ring, and the two apexes are NOT connected to each other (antipodal, same
+ * as `octahedronBoard()`'s own apex pairs - a plain square graph plus two such apex nodes is exactly
+ * an octahedron's edge set, see that function's doc comment).
+ *
+ * Each apex sits, in the original `embDim` dimensions, at its square's barycenter (the
+ * component-wise average of its 4 corners), and at +-`dist` along the new dimension, where `dist`
+ * is the average distance from each of the square's 4 corners to that same barycenter (the exact
+ * circumradius for a geometrically regular square, since all 4 corners are then equidistant from
+ * it - averaging just keeps this well-defined for a square whose corners aren't quite equidistant
+ * from their own barycenter).
+ *
+ * Uses a fresh default projMat (`defaultProductProjMat`, shared with `product()`) rather than
+ * `bc.emb.projMat`, since the extra dimension has no meaning in the old projMat.
+ */
+export function sqOctarize(bc: BoardConfig): BoardConfig {
+    const N = bc.N;
+    const embDim = bc.emb.embDim;
+    const newEmbDim = embDim + 1;
+    const squares = findSquares(bc.adj); // each [A, B, C, D] in cycle order
+
+    const pos: number[][] = bc.emb.pos.map(p => [...p, 0]);
+    const adj = zeroAdj(N + squares.length * 2);
+    for (let i = 0; i < N; i++)
+        for (let j = i + 1; j < N; j++) {
+            if (!bc.adj[i][j]) continue;
+            adj[i][j] = 1;
+            adj[j][i] = 1;
+        }
+
+    for (let s = 0; s < squares.length; s++) {
+        const corners = squares[s];
+        const barycenter = new Array(embDim).fill(0);
+        for (const idx of corners)
+            for (let k = 0; k < embDim; k++) barycenter[k] += bc.emb.pos[idx][k] / 4;
+        let dist = 0;
+        for (const idx of corners) {
+            const diff = bc.emb.pos[idx].map((v, k) => v - barycenter[k]);
+            dist += Math.hypot(...diff) / 4;
+        }
+
+        const top = N + s * 2, bottom = top + 1;
+        pos[top] = [...barycenter, dist];
+        pos[bottom] = [...barycenter, -dist];
+        for (const idx of corners) {
+            adj[idx][top] = 1;
+            adj[top][idx] = 1;
+            adj[idx][bottom] = 1;
+            adj[bottom][idx] = 1;
+        }
+    }
+
+    return make(new Embedding(newEmbDim, pos, defaultProductProjMat(newEmbDim)), adj);
 }
 
 /**
@@ -1416,7 +1475,8 @@ export type BoardModifier =
     | { kind: 'Prod'; boardType: string; boardArgs: number[] }
     | { kind: 'BeginProd'; boardType: string; boardArgs: number[] }
     | { kind: 'EndProd' }
-    | { kind: 'GlobalCentralize' };
+    | { kind: 'GlobalCentralize' }
+    | { kind: 'SqOctarize' };
 
 /** mc's default `dist` when called with no argument - see parseModifier and renderer.ts's command reference panel. */
 export const MC_DEFAULT_DIST = 0.01;
@@ -1445,9 +1505,10 @@ function parseBoardTypeArgs(cmdName: string, args: string[]): { boardType: strin
 
 /**
  * Parses a BoardModifier from its command name ('rect', 'es', 'mc', 'triform', 'sqform', 'prod',
- * 'beginprod', 'endprod', 'gcent') and string args - see applyModifier/applyModifiers. mc's arg is optional: with none,
- * `dist` defaults to MC_DEFAULT_DIST. prod/beginprod's first arg is a board-type command name and
- * the rest are that type's own positional dimension args - see parseBoardTypeArgs.
+ * 'beginprod', 'endprod', 'gcent', 'sqocta') and string args - see applyModifier/applyModifiers.
+ * mc's arg is optional: with none, `dist` defaults to MC_DEFAULT_DIST. prod/beginprod's first arg
+ * is a board-type command name and the rest are that type's own positional dimension args - see
+ * parseBoardTypeArgs.
  */
 export function parseModifier(name: string, args: string[]): BoardModifier {
     if (name === 'rect') {
@@ -1457,6 +1518,10 @@ export function parseModifier(name: string, args: string[]): BoardModifier {
     if (name === 'gcent') {
         assert(args.length === 0, `gcent takes no arguments, got ${args.length}`);
         return { kind: 'GlobalCentralize' };
+    }
+    if (name === 'sqocta') {
+        assert(args.length === 0, `sqocta takes no arguments, got ${args.length}`);
+        return { kind: 'SqOctarize' };
     }
     if (name === 'es') {
         assert(args.length === 1, `es takes exactly 1 argument (splitN), got ${args.length}`);
@@ -1499,8 +1564,9 @@ export function parseModifier(name: string, args: string[]): BoardModifier {
 
 /**
  * Applies `modifier` to `bc`, dispatching to `rectify` / `edgeSplit` / `mergeClose` /
- * `triangleForm` / `squareForm` / `product` / `globalCentralize` (Prod builds a fresh board from
- * its own boardType/boardArgs via buildPrescribedBoard, then multiplies it into `bc`). Does NOT
+ * `triangleForm` / `squareForm` / `product` / `globalCentralize` / `sqOctarize` (Prod builds a
+ * fresh board from its own boardType/boardArgs via buildPrescribedBoard, then multiplies it into
+ * `bc`). Does NOT
  * accept BeginProd/EndProd - those have no meaning applied to a
  * single board in isolation (BeginProd starts a whole new board for applyModifiers to build up
  * separately - potentially with further modifiers of its own before the product happens, unlike
@@ -1517,6 +1583,7 @@ export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardCo
         case 'SquareForm': return squareForm(bc, modifier.w);
         case 'Prod': return product(bc, buildPrescribedBoard(modifier.boardType, modifier.boardArgs));
         case 'GlobalCentralize': return globalCentralize(bc);
+        case 'SqOctarize': return sqOctarize(bc);
         case 'BeginProd':
         case 'EndProd':
             throw new Error(`applyModifier: ${modifier.kind} must be applied via applyModifiers, not directly`);
