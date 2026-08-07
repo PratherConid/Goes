@@ -984,14 +984,21 @@ export class Renderer {
         void this._loadPresets().then(() => this._initCommandsPanel());
         void this._loadBoardConfigs();
         this.mainSvg.addEventListener('pointerdown', e => this._onBoardPointerDown(e));
-        // Camera roll (see src/camera.ts) - global so it works regardless of which side-panel node
-        // is focused, but skipped while a text input (cmdInput, the projMat cell editor, etc.) has
-        // focus so it doesn't hijack arrow-key input meant for that field.
+        // Camera roll (left/right) and scale (up/down, same 1.02 multiply/divide as the status
+        // panel's own Scale textbox - see src/camera.ts) - global so they work regardless of which
+        // side-panel node is focused, but skipped while a text input (cmdInput, the projMat cell
+        // editor, etc.) has focus so they don't hijack arrow-key input meant for that field.
         document.addEventListener('keydown', e => {
-            if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+            if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
             if (document.activeElement instanceof HTMLInputElement) return;
-            this._active.viewport.quat = applyRoll(this._active.viewport.quat, e.key === 'ArrowLeft' ? 1 : -1);
-            this._render();
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                this._active.viewport.quat = applyRoll(this._active.viewport.quat, e.key === 'ArrowLeft' ? 1 : -1);
+                this._render();
+            } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                e.preventDefault();
+                this._active.viewport.scale *= e.key === 'ArrowUp' ? 1.02 : 1 / 1.02;
+                this._render();
+            }
         });
         this.bwEndBtn.addEventListener('click', () => {
             this._active.displayPlyNum = 0;
@@ -2027,6 +2034,11 @@ export class Renderer {
             <div id="status-projmat-slot"></div>
             <div><b>Fading Init:</b> <span id="status-fadeinit-slot"></span></div>
             <div><b>Fading Rate:</b> <span id="status-faderate-slot"></span></div>
+            <div><b>Focus:</b>
+                <span id="status-focusx-slot"></span><span id="status-focusy-slot"></span><span id="status-focusz-slot"></span>
+            </div>
+            <div><b>Scale:</b> <span id="status-scale-slot"></span></div>
+            <div><b>Aperture:</b> <span id="status-aperture-slot"></span></div>
         `;
 
         // The login prompt's button needs a click listener, so it's built
@@ -2089,38 +2101,53 @@ export class Renderer {
         }
         this.statusPanel.querySelector('#status-projmat-slot')?.replaceWith(projMatEl);
 
-        // Fading Init/Rate editors: single-value versions of the projection-matrix editor above -
-        // same textbox styling, same Enter-to-commit/ArrowUp-ArrowDown-to-nudge behavior, but each
-        // edits one scalar field of the live game's viewport.fadecfg (see computeAlpha(),
-        // src/camera.ts) directly instead of a matrix cell.
-        const fadecfg = this._active.viewport.fadecfg;
-        const makeScalarBox = (slotId: string, key: 'init' | 'rate') => {
+        // Single-value editors: single-value versions of the projection-matrix editor above - same
+        // textbox styling, same Enter-to-commit behavior. ArrowUp/ArrowDown nudges via `step`
+        // (added by default; scale below instead multiplies/divides, so it passes its own step).
+        const makeScalarBox = (
+            slotId: string, get: () => number, set: (v: number) => void,
+            step: (current: number, direction: 1 | -1) => number =
+                (current, direction) => Math.round((current + direction * 0.05) * 100) / 100,
+        ) => {
             const box = document.createElement('input');
             box.type = 'text';
             box.id = `${slotId}-input`;
             box.className = 'status-projmat-input';
-            box.value = String(fadecfg[key]);
+            box.value = String(get());
             const refocus = () => this.statusPanel.querySelector<HTMLInputElement>(`#${box.id}`)?.focus();
             box.addEventListener('keydown', e => {
                 if (e.key === 'Enter') {
                     const val = Number(box.value);
-                    if (!Number.isFinite(val)) { box.value = String(fadecfg[key]); return; }
-                    fadecfg[key] = val;
+                    if (!Number.isFinite(val)) { box.value = String(get()); return; }
+                    set(val);
                     this._render();
                     refocus();
                 } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
                     e.preventDefault();
-                    const delta = e.key === 'ArrowUp' ? 0.05 : -0.05;
-                    fadecfg[key] = Math.round((fadecfg[key] + delta) * 100) / 100;
-                    box.value = String(fadecfg[key]);
+                    set(step(get(), e.key === 'ArrowUp' ? 1 : -1));
+                    box.value = String(get());
                     this._render();
                     refocus();
                 }
             });
             this.statusPanel.querySelector(`#${slotId}`)?.replaceWith(box);
         };
-        makeScalarBox('status-fadeinit-slot', 'init');
-        makeScalarBox('status-faderate-slot', 'rate');
+        const fadecfg = this._active.viewport.fadecfg;
+        makeScalarBox('status-fadeinit-slot', () => fadecfg.init, v => { fadecfg.init = v; });
+        makeScalarBox('status-faderate-slot', () => fadecfg.rate, v => { fadecfg.rate = v; });
+
+        const viewport = this._active.viewport;
+        makeScalarBox('status-focusx-slot', () => viewport.focus[0], v => { viewport.focus[0] = v; });
+        makeScalarBox('status-focusy-slot', () => viewport.focus[1], v => { viewport.focus[1] = v; });
+        makeScalarBox('status-focusz-slot', () => viewport.focus[2], v => { viewport.focus[2] = v; });
+        makeScalarBox('status-aperture-slot', () => viewport.aperture, v => { viewport.aperture = v; });
+        // Multiplies/divides by 1.02 per arrow-key tap instead of the default fixed +-0.05 step -
+        // scale spans a much wider, non-linear range (see its own doc comment, src/camera.ts), and
+        // no rounding, since scale can be far smaller than the default step's 2dp precision.
+        makeScalarBox(
+            'status-scale-slot', () => viewport.scale, v => { viewport.scale = v; },
+            (current, direction) => current * (direction === 1 ? 1.02 : 1 / 1.02),
+        );
     }
 
     // Wired to mainSvg's 'pointerdown' (init()) - disambiguates a plain click (place a stone, via

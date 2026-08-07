@@ -128,6 +128,7 @@ export function setupDom(): void {
         navigator: dom.window.navigator,
         HTMLElement: dom.window.HTMLElement,
         HTMLButtonElement: dom.window.HTMLButtonElement,
+        HTMLInputElement: dom.window.HTMLInputElement,
         Event: dom.window.Event,
         MouseEvent: dom.window.MouseEvent,
         KeyboardEvent: dom.window.KeyboardEvent,
