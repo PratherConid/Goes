@@ -155,8 +155,8 @@ function boardLayout(view: BoardView, w: number, h: number, viewport: Viewport) 
 
 // Computes a game's initial viewport.scale, using the default camera (identity rotation, focus at
 // the origin, default distToFocus/aperture). For every node, takes the larger of its rotated
-// |x|/|y| (perspective-scaled) plus its own perspective-scaled stone radius; 1/(2*maxExtent) is
-// the ratio at which the largest such extent touches half of a unit-sized box, *0.9 for a small
+// |x|/|y| (perspective-scaled) plus a margin equal to its own perspective scale; 1/(2*maxExtent)
+// is the ratio at which the largest such extent touches half of a unit-sized box, *0.9 for a small
 // margin. Render-area-independent (see boardLayout()'s own doc comment) - no w×h needed.
 function computeInitialScale(view: BoardView): number {
     const viewport = defaultViewport();
@@ -170,7 +170,7 @@ function computeInitialScale(view: BoardView): number {
     for (const [x, y, z] of pos) {
         const scale = computePerspectiveScale(z, viewport, dmax);
         if (scale === null) continue;
-        const extent = Math.max(Math.abs(x * scale), Math.abs(y * scale)) + STONE_RADIUS_FACTOR * scale;
+        const extent = Math.max(Math.abs(x * scale), Math.abs(y * scale)) + scale;
         maxExtent = Math.max(maxExtent, extent);
     }
     return maxExtent > 0 ? (1 / (2 * maxExtent)) * 0.9 : 1;
