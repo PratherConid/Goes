@@ -313,6 +313,7 @@ function drawBoardFull(
     territoryOwner: number[] | null = null,
     dim = false,
     viewport: Viewport = defaultViewport(),
+    nextGradientId: () => number,
 ) {
     const { originX, originY, cell, stone_r, pos, rotMat, dmax } = boardLayout(view, boardW, boardH, viewport);
     const N = view.N;
@@ -327,8 +328,9 @@ function drawBoardFull(
     if (dim) g.setAttribute('opacity', '0.5');
     parent.appendChild(g);
     // Holds the <linearGradient> defs drawGridLine() creates for lines whose two endpoints fade to
-    // different alphas - id'd gradient-<i>, unique within this call (stale ones from the previous
-    // render are already gone, since the caller clears `parent`'s children before calling this).
+    // different alphas - id'd via nextGradientId() (never reused across calls, see its own doc
+    // comment - Renderer.nextGradientId); stale ones from the previous render are already gone,
+    // since the caller clears `parent`'s children before calling this.
     const defs = document.createElementNS(SVG_NS, 'defs') as unknown as SVGDefsElement;
     g.appendChild(defs);
 
@@ -347,7 +349,6 @@ function drawBoardFull(
     // Each endpoint gets its own perspective scale (see computePerspectiveScale(), src/camera.ts);
     // if either is behind the camera (null), the whole line is skipped rather than drawn with a
     // degenerate/inverted endpoint.
-    let gradientCounter = 0;
     for (let i = 0; i < N; i++) {
         for (let j = i + 1; j < N; j++) {
             if (!adj[i][j]) continue;
@@ -358,7 +359,7 @@ function drawBoardFull(
                 kind: 'gridLine', depth: Math.min(z1, z2),
                 args: [
                     screenX(x1 * scale1), screenY(y1 * scale1), screenX(x2 * scale2), screenY(y2 * scale2),
-                    alphaOf(z1), alphaOf(z2), `gradient-${gradientCounter++}`,
+                    alphaOf(z1), alphaOf(z2), `gradient-${nextGradientId()}`,
                 ],
             });
         }
@@ -647,6 +648,12 @@ export class Renderer {
     // Tears down the currently-tracked pointer's drag/click listeners without firing a click -
     // set/cleared by _onBoardPointerDown, called when a second pointer interrupts the gesture.
     private _abortBoardDrag: (() => void) | null = null;
+    // Next id drawBoardFull() hands drawGridLine() for a faded grid line's <linearGradient> (see
+    // its own comment) - SVG ids are unique per-document, not per-<svg>, and drawBoardFull() is
+    // called separately for the main board and each history-panel thumbnail, so this must never
+    // reset per call. Grows monotonically for the life of the Renderer; harmless (old gradients
+    // are discarded, not accumulated, each render).
+    private nextGradientId = 0;
     private histBoards:   HTMLDivElement;
     private passBtn:       HTMLButtonElement;
     private resignBtn:    HTMLButtonElement;
@@ -1287,7 +1294,7 @@ export class Renderer {
                       this._active.config, size, size,
                       this.showIllegalMoves ? v.history[this._active.displayPlyNum].legalMoves.captures : null,
                       this.showTerritory ? v.history[this._active.displayPlyNum].score.territoryOwner : null,
-                      this.selectingStone, this._active.viewport);
+                      this.selectingStone, this._active.viewport, () => this.nextGradientId++);
         if (this.selectingStone) {
             const popup = document.createElementNS(SVG_NS, 'g');
             for (const { stone, x, y, r } of this._stonePopupCircles(v)) {
@@ -1416,7 +1423,7 @@ export class Renderer {
                 svg.appendChild(bg);
                 drawBoardFull(
                     svg, v, this._active.bs.adj, he.board, this._active.config, size, size, null,
-                    null, false, this._active.viewport,
+                    null, false, this._active.viewport, () => this.nextGradientId++,
                 );
             });
         }
@@ -2194,7 +2201,10 @@ export class Renderer {
             moved = true;
             if (this._active.rotationLocked) return;
             this._active.viewport.quat = applyOrbitDrag(this._active.viewport.quat, dx, dy);
-            this._render();
+            // Only the main board itself needs to move every tick of a drag - control bar/history
+            // panel/side panel state doesn't depend on camera orientation, so a full _render() here
+            // would waste work rebuilding all of that on every pointermove.
+            this._renderMainBoard(this._active.bs.getView());
         };
         const cleanup = () => {
             this.mainSvg.removeEventListener('pointermove', onMove);
@@ -2202,6 +2212,10 @@ export class Renderer {
             this.mainSvg.removeEventListener('pointercancel', onCancel);
             if (this._abortBoardDrag === cleanup) this._abortBoardDrag = null;
             this._activePointerId = null;
+            // Drag ticks only re-rendered the main board (see onMove) - catch up the history
+            // panel/control bar/side panel whenever this pointer interaction ends (release,
+            // cancel, or getting aborted by a new pointerdown).
+            this._render();
         };
         this._abortBoardDrag = cleanup;
         const onCancel = (ev: PointerEvent) => {
