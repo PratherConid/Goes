@@ -1,0 +1,10 @@
+{
+  "boardType": "octa",
+  "boardArgs": [],
+  "boardModifiers": [
+    {"kind": "TriangleForm", "w": 4},
+    {"kind": "SquareForm", "w": 4},
+    {"kind": "TriangleForm", "w": 4},
+    {"kind": "Scale", "factor": 0.33}
+  ]
+}

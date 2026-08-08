@@ -82,6 +82,10 @@ const _boardConfigDescriptions = new Map([
         + 'side-length-6 triangular board'],
     ['twsq_3_3_4_sqocta',
         '3×3×4 twisted-square board with every square replaced by an octahedron along a new dimension'],
+    ['octa_triform_4_sqform_4_triform_4',
+        'Regular octahedron, each triangular face subdivided (side length 4), any resulting squares '
+        + 'subdivided too (side length 4), subdivided into triangles again (side length 4), then '
+        + 'scaled down by 0.33'],
 ]);
 
 
@@ -1543,6 +1547,7 @@ export class Renderer {
                 'SqOctarize: add a new dimension, then replace every square (4-cycle with no diagonal '
                 + 'edges) with an octahedron - two new apex nodes, one on each side along the new '
                 + "dimension, each connected to that square's 4 corners")}
+            ${row('scale &lt;num&gt;', 'Scale: multiply every node\'s natural-dimension position by num')}
         </table>`;
     }
 

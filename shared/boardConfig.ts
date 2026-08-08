@@ -527,6 +527,12 @@ export function sqOctarize(bc: BoardConfig): BoardConfig {
     return make(new Embedding(newEmbDim, pos, defaultProductProjMat(newEmbDim)), adj);
 }
 
+/** Multiplies every node's natural-dimension position by `factor` - adjacency/embDim/projMat untouched. */
+export function scaleBoard(bc: BoardConfig, factor: number): BoardConfig {
+    const pos = bc.emb.pos.map(p => p.map(v => v * factor));
+    return make(new Embedding(bc.emb.embDim, pos, bc.emb.projMat), bc.adj);
+}
+
 /**
  * The Cartesian (box) product of two board configs: N = `bc1.N * bc2.N`, one new node per pair
  * `(i, j)` (`i` from `bc1`, `j` from `bc2`), at the concatenated natural position
@@ -1476,7 +1482,8 @@ export type BoardModifier =
     | { kind: 'BeginProd'; boardType: string; boardArgs: number[] }
     | { kind: 'EndProd' }
     | { kind: 'GlobalCentralize' }
-    | { kind: 'SqOctarize' };
+    | { kind: 'SqOctarize' }
+    | { kind: 'Scale'; factor: number };
 
 /** mc's default `dist` when called with no argument - see parseModifier and renderer.ts's command reference panel. */
 export const MC_DEFAULT_DIST = 0.01;
@@ -1505,7 +1512,7 @@ function parseBoardTypeArgs(cmdName: string, args: string[]): { boardType: strin
 
 /**
  * Parses a BoardModifier from its command name ('rect', 'es', 'mc', 'triform', 'sqform', 'prod',
- * 'beginprod', 'endprod', 'gcent', 'sqocta') and string args - see applyModifier/applyModifiers.
+ * 'beginprod', 'endprod', 'gcent', 'sqocta', 'scale') and string args - see applyModifier/applyModifiers.
  * mc's arg is optional: with none, `dist` defaults to MC_DEFAULT_DIST. prod/beginprod's first arg
  * is a board-type command name and the rest are that type's own positional dimension args - see
  * parseBoardTypeArgs.
@@ -1522,6 +1529,12 @@ export function parseModifier(name: string, args: string[]): BoardModifier {
     if (name === 'sqocta') {
         assert(args.length === 0, `sqocta takes no arguments, got ${args.length}`);
         return { kind: 'SqOctarize' };
+    }
+    if (name === 'scale') {
+        assert(args.length === 1, `scale takes exactly 1 argument (factor), got ${args.length}`);
+        const factor = Number(args[0]);
+        assert(Number.isFinite(factor), `scale: factor must be a number, got "${args[0]}"`);
+        return { kind: 'Scale', factor };
     }
     if (name === 'es') {
         assert(args.length === 1, `es takes exactly 1 argument (splitN), got ${args.length}`);
@@ -1564,9 +1577,9 @@ export function parseModifier(name: string, args: string[]): BoardModifier {
 
 /**
  * Applies `modifier` to `bc`, dispatching to `rectify` / `edgeSplit` / `mergeClose` /
- * `triangleForm` / `squareForm` / `product` / `globalCentralize` / `sqOctarize` (Prod builds a
- * fresh board from its own boardType/boardArgs via buildPrescribedBoard, then multiplies it into
- * `bc`). Does NOT
+ * `triangleForm` / `squareForm` / `product` / `globalCentralize` / `sqOctarize` / `scaleBoard`
+ * (Prod builds a fresh board from its own boardType/boardArgs via buildPrescribedBoard, then
+ * multiplies it into `bc`). Does NOT
  * accept BeginProd/EndProd - those have no meaning applied to a
  * single board in isolation (BeginProd starts a whole new board for applyModifiers to build up
  * separately - potentially with further modifiers of its own before the product happens, unlike
@@ -1584,6 +1597,7 @@ export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardCo
         case 'Prod': return product(bc, buildPrescribedBoard(modifier.boardType, modifier.boardArgs));
         case 'GlobalCentralize': return globalCentralize(bc);
         case 'SqOctarize': return sqOctarize(bc);
+        case 'Scale': return scaleBoard(bc, modifier.factor);
         case 'BeginProd':
         case 'EndProd':
             throw new Error(`applyModifier: ${modifier.kind} must be applied via applyModifiers, not directly`);

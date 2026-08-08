@@ -411,6 +411,10 @@ BoardConfig sq_octarize(const BoardConfig& bc) {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
+BoardConfig scale_board(const BoardConfig& bc, double /*factor*/) {
+    return bc;
+}
+
 BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2) {
     int N1 = bc1.N, N2 = bc2.N;
     unsigned emb_dim = bc1.emb_dim + bc2.emb_dim;
@@ -448,6 +452,7 @@ BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier)
             return product(bc, build_board_config(modifier.board_type, modifier.board_args));
         case ModifierKind::GlobalCentralize: return global_centralize(bc);
         case ModifierKind::SqOctarize: return sq_octarize(bc);
+        case ModifierKind::Scale: return scale_board(bc, modifier.dist);
         case ModifierKind::BeginProd:
         case ModifierKind::EndProd:
             throw std::runtime_error(

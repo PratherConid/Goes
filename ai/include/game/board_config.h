@@ -88,6 +88,12 @@ BoardConfig global_centralize(const BoardConfig& bc);
 // is lost by dropping to adjacency-only.
 BoardConfig sq_octarize(const BoardConfig& bc);
 
+// A no-op: mirrors shared/boardConfig.ts's scaleBoard() in name only. embed[] coordinates here must
+// stay exact integers (see merge_close's own doc comment) and are otherwise unrelated to gameplay -
+// C++ never renders (see BoardConfig's own fields, board_config.h's top comment) - so multiplying
+// them by an arbitrary factor would only lose precision for no benefit. Returns bc unchanged.
+BoardConfig scale_board(const BoardConfig& bc, double factor);
+
 // The Cartesian (box) product of two board configs: N = bc1.N * bc2.N, one new node per pair (i, j)
 // (i from bc1, j from bc2), at the concatenated position embed[i] followed by embed[j] (emb_dim =
 // bc1.emb_dim + bc2.emb_dim - both stay exact integers here, unlike merge_close/rectify, since
@@ -105,7 +111,7 @@ BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2);
 // (training/self_play.cpp) instead.
 enum class ModifierKind {
     Rectify, EdgeSplit, MergeClose, TriangleForm, SquareForm, Prod, BeginProd, EndProd,
-    GlobalCentralize, SqOctarize
+    GlobalCentralize, SqOctarize, Scale
 };
 struct BoardModifier {
     ModifierKind kind;
@@ -113,7 +119,9 @@ struct BoardModifier {
     // are "one plain int argument" modifiers, same as Prod/BeginProd already share board_type/
     // board_args below.
     int split_n = 0;         // meaningful when kind == ModifierKind::EdgeSplit / TriangleForm/SquareForm
-    double dist = 0.0;             // only meaningful when kind == ModifierKind::MergeClose
+    // dist is reused for Scale's own single double parameter (its factor) - both are "one plain
+    // double argument" modifiers.
+    double dist = 0.0;             // meaningful when kind == ModifierKind::MergeClose / Scale
     std::string board_type;        // only meaningful when kind == ModifierKind::Prod / BeginProd
     std::vector<int> board_args;   // only meaningful when kind == ModifierKind::Prod / BeginProd
 
@@ -126,9 +134,9 @@ struct BoardModifier {
 };
 
 // Applies modifier to bc, dispatching to rectify / edge_split / merge_close / triangle_form /
-// square_form / product / global_centralize / sq_octarize (Prod builds a fresh board from its own board_type/board_args via
-// build_board_config, then multiplies it into bc - a one-shot immediate product, unlike
-// BeginProd/EndProd below). Does NOT accept
+// square_form / product / global_centralize / sq_octarize / scale_board (Prod builds a fresh
+// board from its own board_type/board_args via build_board_config, then multiplies it into bc -
+// a one-shot immediate product, unlike BeginProd/EndProd below). Does NOT accept
 // BeginProd/EndProd - those have no meaning applied to a single board in isolation (BeginProd starts
 // a whole new board for apply_modifiers to build up separately - potentially with further modifiers
 // of its own before the product happens - and EndProd's product() needs that suspended outer board

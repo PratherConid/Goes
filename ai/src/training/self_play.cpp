@@ -74,6 +74,7 @@ nlohmann::json GameConfig::to_json() const {
             case ModifierKind::EndProd:    mj["kind"] = "EndProd"; break;
             case ModifierKind::GlobalCentralize: mj["kind"] = "GlobalCentralize"; break;
             case ModifierKind::SqOctarize: mj["kind"] = "SqOctarize"; break;
+            case ModifierKind::Scale: mj["kind"] = "Scale"; mj["factor"] = m.dist; break;
         }
         bm.push_back(std::move(mj));
     }
@@ -193,6 +194,8 @@ static std::vector<BoardModifier> parse_board_modifiers(const json& j) {
         else if (kind == "EndProd") out.push_back({ModifierKind::EndProd});
         else if (kind == "GlobalCentralize") out.push_back({ModifierKind::GlobalCentralize});
         else if (kind == "SqOctarize") out.push_back({ModifierKind::SqOctarize});
+        else if (kind == "Scale")
+            out.push_back({ModifierKind::Scale, 0, m["factor"].get<double>()});
         else throw std::runtime_error("Unknown board modifier kind: " + kind);
     }
     return out;
