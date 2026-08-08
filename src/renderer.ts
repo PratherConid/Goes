@@ -90,7 +90,7 @@ const _boardConfigDescriptions = new Map([
 
 
 const COLOR_GRID    = '#000000';
-const COLOR_ILLEGAL = '#ca9d44';
+const COLOR_ILLEGAL = '#ba9347';
 const COLOR_BOARD   = '#e5b24c';
 
 // SVG elements must be created via createElementNS with this namespace -
@@ -2946,14 +2946,24 @@ export class Renderer {
             }
             this._active.displayPlyNum = this._active.bs.situations.length - 1;
             this._maybeFinish(this.activeIdx);
-            this._render();
-            if (this.selfPlay) this.selfPlayTimer = requestAnimationFrame(tick);
+            if (this.selfPlay) {
+                // Still running - only the board itself and the ply/turn info in the control bar
+                // change each tick; history/side panel catch up in one full _render() once
+                // self-play actually stops (below, and _stopSelfPlay()).
+                const v = this._active.bs.getView();
+                this._renderMainBoard(v);
+                this._renderControlBar(v);
+                this.selfPlayTimer = requestAnimationFrame(tick);
+            } else {
+                this._render();
+            }
         };
         this.selfPlayTimer = requestAnimationFrame(tick);
     }
 
     private _stopSelfPlay() {
         if (this.selfPlayTimer !== null) { cancelAnimationFrame(this.selfPlayTimer); this.selfPlayTimer = null; }
+        this._render();
     }
 
     // ── Online multiplayer ────────────────────────────────────────────────────
