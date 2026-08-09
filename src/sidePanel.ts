@@ -54,7 +54,7 @@ export const SidePanelHierarchy: Record<SidePanelContent, [SidePanelContent | nu
     // generic #game-records-panel slot itself (see Renderer._refreshSidePanel(),
     // same pattern as #home-panel), since it has no other content of its own.
     [SidePanelContent.GameRecords]:      [SidePanelContent.Home, [
-        SidePanelContent.ActiveLocalGames, SidePanelContent.PendingGames,
+        SidePanelContent.PendingGames, SidePanelContent.ActiveLocalGames,
         SidePanelContent.ActiveOnlineGames, SidePanelContent.FinishedOnlineGames,
     ]],
     [SidePanelContent.GamePresetSelection]: [SidePanelContent.NewGame, []],
@@ -249,8 +249,11 @@ export const fmtMap = (map: Record<number, Set<number>>, players: Map<number, Pl
 // among all of them at move time via the stone-selection popup - see
 // selectingStone), then who plays it - same convention as fmtMap, but
 // sourced from turnList's own player field (turn order/ownership)
-// rather than stoneToPlayerMap (scoring).
-export const fmtTurnList = (turnList: TurnInfo[], players: Map<number, PlayerInfo>) =>
+// rather than stoneToPlayerMap (scoring). winners (finished-game record entries only -
+// null everywhere else) marks each winning player with ♚.
+export const fmtTurnList = (
+    turnList: TurnInfo[], players: Map<number, PlayerInfo>, winners: number[] | null = null,
+) =>
     turnList
         .map(({ player, stones, protected: prot, friendly }) => {
             const offeredStones = stones
@@ -269,7 +272,8 @@ export const fmtTurnList = (turnList: TurnInfo[], players: Map<number, PlayerInf
             const friendSuffix = friendlyStones.length > 0
                 ? `&nbsp;🤝${friendlyStones.map(coloredStoneDot).join('')}`
                 : '';
-            return `${stoneIcons}&nbsp;${fmtPlayerString(players, player)}${protSuffix}${friendSuffix}`;
+            const crownSuffix = winners?.includes(player) ? ' &#9818;' : '';
+            return `${stoneIcons}&nbsp;${fmtPlayerString(players, player)}${crownSuffix}${protSuffix}${friendSuffix}`;
         })
         .join('&nbsp;'.repeat(5));
 // Renders e.g. "⬤ P1:5  P2:2   ⬤ P2:3" (two spaces between players,

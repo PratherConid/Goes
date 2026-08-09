@@ -1597,8 +1597,8 @@ export class Renderer {
     // record reads consistently with the rest of the UI; truncated with an
     // ellipsis rather than wrapping (see the 'truncate-line' CSS class) since
     // a long turn list would otherwise push the game ID off-screen.
-    private _fmtGameRecordLabel(id: string, config: GameConfig): string {
-        return `${fmtTurnList(config.turnList, config.players)}${'&emsp;'.repeat(2)}[${id}]`;
+    private _fmtGameRecordLabel(id: string, config: GameConfig, winners: number[] | null = null): string {
+        return `${fmtTurnList(config.turnList, config.players, winners)}${'&emsp;'.repeat(2)}[${id}]`;
     }
 
     private _renderActiveLocalGames() {
@@ -1615,8 +1615,10 @@ export class Renderer {
 
     private _renderFinishedOnlineGames() {
         const ids = [...this.finishedGames.keys()].filter(k => k.startsWith('O_'));
-        this._renderGameButtons(this.finishedOnlineGamesPanel, ids,
-            id => this._fmtGameRecordLabel(id.slice(2), this.finishedGames.get(id)!.config));
+        this._renderGameButtons(this.finishedOnlineGamesPanel, ids, id => {
+            const ag = this.finishedGames.get(id)!;
+            return this._fmtGameRecordLabel(id.slice(2), ag.config, ag.bs.getView().winners);
+        });
     }
 
     // Builds the Account side-panel node's content: a username/password
