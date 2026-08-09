@@ -18,9 +18,10 @@ interface ServerPendingGame extends PendingGame {
     fixed: boolean;
     // The set of invited usernames who have declined so far - see
     // respondToInvite()'s doc comment for how this interacts with
-    // unrespondedInvited. A non-empty set means the game is doomed; set
-    // membership is also used to skip a redundant game/invite-failed push
-    // to invitees who already know they declined (see notify below).
+    // unrespondedInvited. A non-empty set means the game is doomed; empty-vs-
+    // non-empty (not membership) is what respondToInvite() checks to decide
+    // whether a given decline is the first one (the one that triggers
+    // notify).
     refused: Set<string>;
     // username -> every slot that user was invited to and hasn't yet
     // responded to (as a whole - see respondToInvite()). Keying by username
@@ -165,34 +166,31 @@ export class OnlineGameManager {
     // hold more than one invited slot in the same game), mirroring
     // acceptJoin()'s ownership check below.
     //
-    // A decline doesn't tear the pending game down immediately - it only
-    // adds `userName` to `refused`, so other invitees who haven't responded
-    // yet still get a normal accept/decline experience rather than a raw
-    // 404. The game is only actually torn down once unrespondedInvited is
-    // empty (everyone has responded, one way or another) - at that point
-    // `notify` covers everyone who needs to know: current observers
-    // (creator + anyone already accepted/joined) plus every username still
-    // referenced in config.players (declined/never-seated invitees are
-    // deliberately left in place rather than removed - see below - so
-    // they're included too), except that anyone already present in
-    // `refused` is filtered back out of `notify` - they declined it
-    // themselves and already got `{status:'cancelled'}` synchronously, so a
-    // game/invite-failed push to them would be redundant.
+    // The FIRST decline for a game notifies everyone else immediately (the game is doomed the
+    // moment any required invitee refuses, regardless of who else hasn't answered yet) - `notify`
+    // covers current observers (creator + anyone already accepted/joined) plus every username
+    // still referenced in config.players (declined/never-seated invitees are deliberately left in
+    // place rather than removed - see below - so they're included too), minus the decliner
+    // themselves (they already know). A later decline or too-late accept doesn't repeat this -
+    // `notify` is only returned on the first one (isFirstDecline).
     //
-    // Once `refused` is non-empty, a further accept can no longer actually
-    // seat anyone (the game is doomed regardless) - it throws instead, so
-    // the caller gets a specific message rather than silently joining a
-    // dead game. If that response happens to be the one that empties
-    // unrespondedInvited, the resulting `notify` pushes are attached to the
-    // thrown Error's `pushes` property - see wsServer.ts's dispatch catch,
-    // which forwards them exactly like a normal Handled result would.
+    // The pending game record itself is NOT torn down on that first decline - it stays around so
+    // stragglers who haven't responded yet still get a normal accept/decline experience (a
+    // specific "already refused" rejection for accept, see below) rather than a raw 404. It's only
+    // actually deleted once unrespondedInvited is empty (everyone has responded, one way or
+    // another), which may happen on this same call (single-invitee games, or the last straggler's
+    // own response) or later.
     //
-    // config.players is intentionally never mutated for a decline/too-late
-    // accept - the slot simply stays 'pendingInvitedOnline' forever, which
-    // is harmless since the pending game itself is torn down once every
-    // invite is accounted for anyway.
+    // Once `refused` is non-empty, a further accept can no longer actually seat anyone (the game
+    // is doomed regardless) - it throws instead, so the caller gets a specific message rather than
+    // silently joining a dead game. No `notify`/pushes are attached to that throw - notification
+    // already happened on the first decline, so a late accept never needs to trigger it again.
+    //
+    // config.players is intentionally never mutated for a decline/too-late accept - the slot
+    // simply stays 'pendingInvitedOnline' forever, which is harmless since the pending game itself
+    // is torn down once every invite is accounted for anyway.
     respondToInvite(id: string, userName: string, accept: boolean):
-        { status: 'waiting' | 'playing' } | { status: 'cancelled'; notify: string[] } {
+        { status: 'waiting' | 'playing' } | { status: 'declined'; notify?: string[] } {
         const pending = this.pendingGames.get(id);
         if (!pending) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
         const slots = pending.unrespondedInvited.get(userName);
@@ -208,27 +206,20 @@ export class OnlineGameManager {
 
         // Decline, or an accept arriving after some OTHER invitee already
         // declined - either way userName's slot(s) are never seated.
+        const isFirstDecline = !accept && pending.refused.size === 0;
         if (!accept) pending.refused.add(userName);
 
-        let notify: string[] | undefined;
-        if (pending.unrespondedInvited.size === 0) {
-            notify = [...new Set([...pending.observers, ...[...pending.config.players.values()].map(pi => pi.name)])]
-                .filter(name => !pending.refused.has(name));
-            this.pendingGames.delete(id);
-        }
+        if (pending.unrespondedInvited.size === 0) this.pendingGames.delete(id);
 
         if (accept)  // only reachable here when the game was already refused
             throw Object.assign(
-                new Error(`Game ${id} already refused by another invited player`),
-                {
-                    statusCode: 409,
-                    pushes: (notify ?? []).map(name => ({
-                        to: name, type: 'game/invite-failed',
-                        payload: { id, message: `Creation of invited online game ${id} failed due to user refusal` },
-                    })),
-                },
+                new Error(`Game ${id} already refused by another invited player`), { statusCode: 409 },
             );
-        return { status: 'cancelled', notify: notify ?? [] };
+
+        if (!isFirstDecline) return { status: 'declined' };
+        const notify = [...new Set([...pending.observers, ...[...pending.config.players.values()].map(pi => pi.name)])]
+            .filter(name => name !== userName);
+        return { status: 'declined', notify };
     }
 
     private _pendingSlots(config: GameConfig): number[] {

@@ -415,7 +415,7 @@ test('invite + refuse cancels the game and notifies everyone involved', async ()
 
     const aliceFailed = new Promise<any>(resolve => alice.onEvent('game/invite-failed', resolve));
     const respond = await bob.req<{ status: string }>('game/invite-respond', { id, accept: false });
-    assert.equal(respond.status, 'cancelled');
+    assert.equal(respond.status, 'declined');
 
     const failedMsg = await aliceFailed;
     assert.equal(failedMsg.id, id);
@@ -431,8 +431,8 @@ test('invite + refuse cancels the game and notifies everyone involved', async ()
 });
 
 test(
-    'a multi-invite decline waits for every invitee before cancelling, and a too-late accept is '
-    + 'rejected with a specific message',
+    'a decline notifies every other invitee immediately, but the game stays open until everyone '
+    + 'has responded, and a too-late accept is rejected with a specific message',
     async () => {
     const alice = await registerAndLogin('olga');
     const bob = await registerAndLogin('peter');
@@ -448,25 +448,27 @@ test(
     });
     await Promise.all([bobInvite, carolInvite]);
 
-    const aliceFailedEvents: any[] = [];
-    alice.onEvent('game/invite-failed', m => aliceFailedEvents.push(m));
-
+    const aliceFailed = new Promise<any>(resolve => alice.onEvent('game/invite-failed', resolve));
+    const carolFailed = new Promise<any>(resolve => carol.onEvent('game/invite-failed', resolve));
     const bobFailedEvents: any[] = [];
     bob.onEvent('game/invite-failed', m => bobFailedEvents.push(m));
 
     const bobRespond = await bob.req<{ status: string }>('game/invite-respond', { id, accept: false });
-    assert.equal(bobRespond.status, 'cancelled');
+    assert.equal(bobRespond.status, 'declined');
 
-    // Carol hasn't responded yet - the game must not be torn down/notified
-    // to alice yet (only the first of two invitees has declined).
-    await new Promise(r => setImmediate(r));
-    assert.equal(aliceFailedEvents.length, 0);
+    // Both alice (the creator) and carol (the other, still-unresponded invitee) are notified
+    // right away - the game is doomed the moment any required invitee refuses, regardless of who
+    // else hasn't answered yet. Bob already knows he declined - no redundant push to him.
+    const [aliceFailedMsg, carolFailedMsg] = await Promise.all([aliceFailed, carolFailed]);
+    assert.equal(aliceFailedMsg.id, id);
+    assert.equal(carolFailedMsg.id, id);
+    assert.equal(bobFailedEvents.length, 0);
 
-    // Carol tries to accept, too late - the game was already refused by bob.
-    // She never actually gets seated, and gets a specific message instead of
-    // a raw 404 - this is also the response that finally tears the game down
-    // and notifies alice.
-    const aliceFailed = new Promise<any>(resolve => alice.onEvent('game/invite-failed', resolve));
+    // The pending game record itself isn't torn down yet - carol can still respond. Her accept is
+    // still rejected (the game is doomed), but with a specific message, not a raw 404 - and it
+    // doesn't trigger a second round of game/invite-failed pushes (already sent above).
+    const secondAliceFailedEvents: any[] = [];
+    alice.onEvent('game/invite-failed', m => secondAliceFailedEvents.push(m));
     await assert.rejects(
         carol.req('game/invite-respond', { id, accept: true }),
         (e: any) => {
@@ -475,17 +477,11 @@ test(
             return true;
         },
     );
-    const failedMsg = await aliceFailed;
-    assert.equal(failedMsg.id, id);
-    // Bob already knows he declined (his own game/invite-respond call
-    // already got {status:'cancelled'}) - he shouldn't get a redundant
-    // game/invite-failed push. alice's push above arriving is proof the
-    // same notify computation already ran, so if bob's were coming, it
-    // would already be here too.
-    assert.equal(bobFailedEvents.length, 0);
+    await new Promise(r => setImmediate(r));
+    assert.equal(secondAliceFailedEvents.length, 0);
 
-    // Fully torn down now - a further response 404s, matching the
-    // single-invite case above.
+    // Now that everyone (bob and carol) has responded, the game is fully torn down - a further
+    // response 404s.
     await assert.rejects(
         bob.req('game/invite-respond', { id, accept: true }),
         (e: any) => { assert.equal(e.statusCode, 404); return true; },

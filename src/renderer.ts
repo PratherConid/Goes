@@ -1142,10 +1142,7 @@ export class Renderer {
             this._advancePopupQueue();
         });
         conn.onEvent('game/invite-failed', (msg: { id: string; message: string }) => {
-            this.pendingGames.delete(msg.id);
-            this.popupQueue.push({ kind: 'create-failed', message: msg.message });
-            this._advancePopupQueue();
-            this._render();
+            this._handleInviteFailed(msg.id, msg.message);
         });
         // After a (re)connect, re-subscribe to every active/pending online game so the
         // server re-binds our slot. The reply carries full state for catchup sync.
@@ -1650,6 +1647,7 @@ export class Renderer {
         this.accountPanel.innerHTML = '';
         if (this.userName) {
             const nameLine = document.createElement('div');
+            nameLine.className = 'account-name-line';
             nameLine.innerHTML = `<b>Username:</b> ${this.userName}`;
             const logoutBtn = document.createElement('button');
             logoutBtn.className = 'panel-child-btn';
@@ -1668,6 +1666,7 @@ export class Renderer {
         form.className = 'account-form';
 
         const userLabel = document.createElement('div');
+        userLabel.className = 'account-label';
         userLabel.innerHTML = '<b>Username</b>';
         const userInput = document.createElement('input');
         userInput.type = 'text';
@@ -1675,6 +1674,7 @@ export class Renderer {
         userInput.autocomplete = 'username';
 
         const passLabel = document.createElement('div');
+        passLabel.className = 'account-label';
         passLabel.innerHTML = '<b>Password</b>';
         const passInput = document.createElement('input');
         passInput.type = 'password';
@@ -2092,9 +2092,35 @@ export class Renderer {
         this._render();
     }
 
+    // Drops any 'invite' popup for game `id` - currently showing or still queued (relevant when
+    // this fires for someone ELSE'S decline while this client still has its own unanswered invite
+    // popup for the same game) - removes the game from pendingGames, and queues the "invite
+    // failed" popup in its place. Called both from the game/invite-failed broadcast handler
+    // (everyone except whoever declined) and directly by _respondToInvite() below (the decliner
+    // self-reports the same outcome, since the server never echoes this event back to them).
+    private _handleInviteFailed(id: string, message: string) {
+        if (this.currentPopup?.kind === 'invite' && this.currentPopup.id === id) this.currentPopup = null;
+        this.popupQueue = this.popupQueue.filter(p => !(p.kind === 'invite' && p.id === id));
+        this.pendingGames.delete(id);
+        this.popupQueue.push({ kind: 'create-failed', message });
+        this._advancePopupQueue();
+        this._render();
+    }
+
     private async _respondToInvite(id: string, accept: boolean) {
+        if (!accept) {
+            // Self-report the decline outcome immediately, without waiting on the round trip
+            // below - the server never echoes game/invite-failed back to the decliner (see
+            // wsServer.ts's 'game/invite-respond' case), so the client simulates the same
+            // handling every OTHER observer gets from that broadcast.
+            this._handleInviteFailed(id, `You declined the invite to game ${id}`);
+            try {
+                await conn.request('game/invite-respond', { id, accept: false }).promise;
+            } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); }
+            return;
+        }
         try {
-            await conn.request('game/invite-respond', { id, accept }).promise;
+            await conn.request('game/invite-respond', { id, accept: true }).promise;
         } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); }
         this._dismissPopup();
     }

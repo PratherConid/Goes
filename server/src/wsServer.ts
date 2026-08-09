@@ -266,10 +266,10 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                 const id = msg['id'] as string;
                 const accept = msg['accept'] as boolean;
                 const result = onlineGameManager.respondToInvite(id, userName, accept);
-                if (result.status === 'cancelled') {
+                if (result.status === 'declined') {
                     return {
                         results: [{ data: { status: result.status } }],
-                        pushes: result.notify.map(name => ({
+                        pushes: (result.notify ?? []).map(name => ({
                             to: name,
                             type: 'game/invite-failed',
                             payload: { id, message: `Creation of invited online game ${id} failed due to user refusal` },
