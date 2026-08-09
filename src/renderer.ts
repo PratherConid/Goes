@@ -1711,6 +1711,17 @@ export class Renderer {
     private _renderChatPanel(): void {
         this.chatPanel.innerHTML = '';
 
+        // Same "Game ID"/"Turn list" lines as the Status panel's own template - Game ID and turn
+        // list never change while a game is active, so (unlike the log below) this needs no
+        // separate refresh mechanism.
+        const info = document.createElement('div');
+        info.className = 'chat-game-info';
+        info.innerHTML = `
+            <div><b>Game ID:</b> ${this.activeIdx.slice(2)}</div>
+            <div><b>Turn list:</b> ${fmtTurnList(this._active.config.turnList, this._active.config.players)}</div>
+        `;
+        this.chatPanel.appendChild(info);
+
         const log = document.createElement('div');
         log.id = 'chat-log';
         this.chatPanel.appendChild(log);
