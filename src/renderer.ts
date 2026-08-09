@@ -1583,6 +1583,7 @@ export class Renderer {
     // below. Caller is responsible for re-rendering afterward.
     private _switchToGame(id: string) {
         this.engineManager.cancel();
+        this._cancelSelfPlay();
         this.activeIdx = id;
     }
 
@@ -2536,6 +2537,7 @@ export class Renderer {
 
     private _registerGame(id: string, bs: BoardState, config: GameConfig, chat: ChatMessage[] = []): void {
         this.engineManager.cancel();
+        this._cancelSelfPlay();
         this.engineManager.sessionId = null;
         this.activeGames.set(id, {
             bs, config, displayPlyNum: 0, idxShowHistory: 0, randomEvaled: null,
@@ -2673,6 +2675,7 @@ export class Renderer {
             const id = parts[1].startsWith('L_') ? parts[1] : 'L_' + parts[1];
             if (!this.activeGames.has(id)) { this._setCmdOutput(`Local game not found: ${id}`); return; }
             this.engineManager.cancel();
+            this._cancelSelfPlay();
             this.activeIdx = id;
         }
         else if (cmd === 'swo') {
@@ -2681,6 +2684,7 @@ export class Renderer {
             const id = 'O_' + raw.toUpperCase();
             if (!this.activeGames.has(id)) { this._setCmdOutput(`Online game not found: ${raw.toUpperCase()}`); return; }
             this.engineManager.cancel();
+            this._cancelSelfPlay();
             this.activeIdx = id;
         }
         else if (cmd === 'swf') {
@@ -2691,6 +2695,7 @@ export class Renderer {
                 this._setCmdOutput(`Finished online game not found: ${raw.toUpperCase()}`); return;
             }
             this.engineManager.cancel();
+            this._cancelSelfPlay();
             this.activeIdx = id;
         }
         else if (cmd === 'em') {
@@ -2715,6 +2720,7 @@ export class Renderer {
             this.emTemperature = t;
         }
         else if (cmd === 's') {
+            if (this.activeIdx.startsWith('O_')) { this._setCmdOutput('Self play is disabled in online mode'); return; }
             this.selfPlay = !this.selfPlay;
             if (this.selfPlay) this._startSelfPlay();
             else this._stopSelfPlay();
@@ -3103,6 +3109,16 @@ export class Renderer {
     private _stopSelfPlay() {
         if (this.selfPlayTimer !== null) { cancelAnimationFrame(this.selfPlayTimer); this.selfPlayTimer = null; }
         this._render();
+    }
+
+    // Stops self-play if it's running - called everywhere activeIdx switches, alongside the
+    // existing engineManager.cancel() call. Self-play's tick() operates on whatever this._active
+    // currently is, not a captured reference to the game it started on, so switching away while
+    // it's running would otherwise keep mutating whichever game gets switched to.
+    private _cancelSelfPlay(): void {
+        if (!this.selfPlay) return;
+        this.selfPlay = false;
+        this._stopSelfPlay();
     }
 
     // ── Online multiplayer ────────────────────────────────────────────────────
