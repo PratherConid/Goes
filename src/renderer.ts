@@ -525,6 +525,7 @@ interface LoginResponse {
 // content/buttons.
 type PopupInfo =
     | { kind: 'invite'; id: string; from: string }
+    | { kind: 'withdraw-request'; id: string; from: string; numWithdrawn: number }
     | { kind: 'create-failed'; message: string }
     | { kind: 'login-prompt' }
     | { kind: 'confirm'; message: string; onYes: () => void; onNo: () => void };
@@ -1143,6 +1144,16 @@ export class Renderer {
         });
         conn.onEvent('game/invite-failed', (msg: { id: string; message: string }) => {
             this._handleInviteFailed(msg.id, msg.message);
+        });
+        conn.onEvent('game/withdraw-proposed', (msg: { id: string; from: string; numWithdrawn: number }) => {
+            this.popupQueue.push({ kind: 'withdraw-request', id: msg.id, from: msg.from, numWithdrawn: msg.numWithdrawn });
+            this._advancePopupQueue();
+        });
+        conn.onEvent('game/withdraw-failed', (msg: { id: string; message: string }) => {
+            this._handleWithdrawFailed(msg.id, msg.message);
+        });
+        conn.onEvent('game/withdraw', (msg: { id: string; toPly: number; numWithdrawn: number }) => {
+            this._handleOnlineWithdraw(msg.id, msg.toPly);
         });
         // After a (re)connect, re-subscribe to every active/pending online game so the
         // server re-binds our slot. The reply carries full state for catchup sync.
@@ -2043,6 +2054,18 @@ export class Renderer {
             refuseBtn.textContent = 'Refuse';
             refuseBtn.addEventListener('click', () => void this._respondToInvite(id, false));
             btnRow.append(acceptBtn, refuseBtn);
+        } else if (this.currentPopup.kind === 'withdraw-request') {
+            const { id, from, numWithdrawn } = this.currentPopup;
+            text.textContent = `${from} wants to withdraw ${numWithdrawn} move(s). Agree?`;
+            const agreeBtn = document.createElement('button');
+            agreeBtn.className = 'panel-child-btn';
+            agreeBtn.textContent = 'Agree';
+            agreeBtn.addEventListener('click', () => void this._respondToWithdraw(id, true));
+            const declineBtn = document.createElement('button');
+            declineBtn.className = 'panel-child-btn';
+            declineBtn.textContent = 'Decline';
+            declineBtn.addEventListener('click', () => void this._respondToWithdraw(id, false));
+            btnRow.append(agreeBtn, declineBtn);
         } else if (this.currentPopup.kind === 'confirm') {
             const { message, onYes, onNo } = this.currentPopup;
             text.textContent = message;
@@ -2123,6 +2146,42 @@ export class Renderer {
             await conn.request('game/invite-respond', { id, accept: true }).promise;
         } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); }
         this._dismissPopup();
+    }
+
+    // Drops any 'withdraw-request' popup for game `id` (currently showing or still queued) and
+    // shows the failure message in its place - called from the game/withdraw-failed broadcast
+    // handler, reaching every voter except whoever declined (see respondToWithdraw()'s own
+    // comment on the server side).
+    private _handleWithdrawFailed(id: string, message: string) {
+        if (this.currentPopup?.kind === 'withdraw-request' && this.currentPopup.id === id) this.currentPopup = null;
+        this.popupQueue = this.popupQueue.filter(p => !(p.kind === 'withdraw-request' && p.id === id));
+        this.popupQueue.push({ kind: 'create-failed', message });
+        this._advancePopupQueue();
+        this._render();
+    }
+
+    private async _respondToWithdraw(id: string, accept: boolean) {
+        if (!accept) this._dismissPopup();
+        try {
+            await conn.request('game/withdraw-respond', { id, accept }).promise;
+        } catch (e: any) { this._setCmdOutput(`Error: ${e.message}`); }
+        if (accept) this._dismissPopup();
+    }
+
+    // Sends a withdraw proposal to the server (toPly omitted = "my own last move", the Withdraw
+    // button; toPly given = an explicit target, the WCD button). Surfaces a "cannot start" error
+    // via the same generic create-failed popup used elsewhere for one-shot request failures.
+    private async _requestWithdraw(toPly?: number) {
+        const id = this.activeIdx.slice(2);
+        try {
+            const result = await conn.request<{ status: string }>(
+                'game/withdraw-request', toPly === undefined ? { id } : { id, toPly },
+            ).promise;
+            if (result.status === 'pending') this._setCmdOutput('Withdraw request sent - waiting for other players.');
+        } catch (e: any) {
+            this.popupQueue.push({ kind: 'create-failed', message: e.message });
+            this._advancePopupQueue();
+        }
     }
 
     // Not clickable (see _renderGameButtons's doc comment) - just a read-only
@@ -2583,10 +2642,10 @@ export class Renderer {
     // 'w' command and the Withdraw button, so the online/finished-game
     // guards live in exactly one place.
     private _withdrawMove(n: number) {
-        if (this.activeIdx.startsWith('O_')) { this._setCmdOutput('Cannot withdraw moves in online games'); return; }
         if (this.finishedGames.has(this.activeIdx)) {
             this._setCmdOutput('Cannot withdraw moves from a finished game'); return;
         }
+        if (this.activeIdx.startsWith('O_')) { void this._requestWithdraw(); return; }
         this.engineManager.cancel();
         this.engineManager.sessionId = null;
         for (let i = 0; i < n; i++) this._active.bs.withdrawMove();
@@ -2596,10 +2655,10 @@ export class Renderer {
     // Withdraws down to the currently displayed ply - shared by the 'wcd'
     // command and the WCD button.
     private _withdrawToCurrentDisplay() {
-        if (this.activeIdx.startsWith('O_')) { this._setCmdOutput('Cannot withdraw moves in online games'); return; }
         if (this.finishedGames.has(this.activeIdx)) {
             this._setCmdOutput('Cannot withdraw moves from a finished game'); return;
         }
+        if (this.activeIdx.startsWith('O_')) { void this._requestWithdraw(this._active.displayPlyNum); return; }
         this.engineManager.cancel();
         this.engineManager.sessionId = null;
         const n = this._active.bs.situations.length - 1 - this._active.displayPlyNum;
@@ -3319,6 +3378,13 @@ export class Renderer {
             ag.randomEvaled = null;
 
             if (isActive) this._notifyTurn(ag, wasGameOver);
+        } else if (state.moves.length < plyCount) {
+            // A withdrawal happened while this client was disconnected - rewind to match.
+            ag.bs.withdrawTo(state.moves.length);
+            ag.bs.advanceResigned();
+            ag.displayPlyNum = Math.min(ag.displayPlyNum, ag.bs.situations.length - 1);
+            ag.randomEvaled = null;
+            if (isActive) this._notifyTurn(ag, wasGameOver);
         }
         // Full authoritative resync from the server's chat log - unlike moves (which need
         // incremental apply to preserve displayPlyNum/viewport bookkeeping), chat has no such
@@ -3357,6 +3423,21 @@ export class Renderer {
         for (const slot of slots) ag.bs.resign(slot);
         ag.bs.advanceResigned();
         this._maybeFinish('O_' + id);
+        const isActive = 'O_' + id === this.activeIdx;
+        if (isActive) {
+            this._notifyTurn(ag, wasGameOver);
+            this._render();
+        }
+    }
+
+    private _handleOnlineWithdraw(id: string, toPly: number) {
+        const ag = this._findGame('O_' + id);
+        if (!ag) return;
+        const wasGameOver = ag.bs.gameOver();
+        ag.bs.withdrawTo(toPly);
+        ag.bs.advanceResigned();
+        ag.displayPlyNum = Math.min(ag.displayPlyNum, ag.bs.situations.length - 1);
+        ag.randomEvaled = null;
         const isActive = 'O_' + id === this.activeIdx;
         if (isActive) {
             this._notifyTurn(ag, wasGameOver);

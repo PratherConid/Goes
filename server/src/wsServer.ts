@@ -17,6 +17,9 @@ import { loadGameRecordStore } from './gameRecordStore.js';
 //                   { kind:'event', type:'game/resign', id, slots }          (push)
 //                   { kind:'event', type:'game/invite', id, from }           (push, personalized - to one invited user)
 //                   { kind:'event', type:'game/invite-failed', id, message } (push, personalized - to everyone involved)
+//                   { kind:'event', type:'game/withdraw-proposed', id, from, numWithdrawn } (push, personalized)
+//                   { kind:'event', type:'game/withdraw-failed', id, message }    (push, personalized)
+//                   { kind:'event', type:'game/withdraw', id, toPly, numWithdrawn } (push, broadcast)
 //                   { kind:'event', type:'game/engine-error', id, message }  (push)
 //                   { kind:'event', type:'game/chatmessage', id, player, time, content } (push)
 //
@@ -321,6 +324,62 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                     results: [{ data: { ok: true }, broadcast: { id, type: 'game/resign', payload: { slots: [slot] } } }],
                     engineGame: id,
                 };
+            }
+            case 'game/withdraw-request': {
+                const userName = wsToUser.get(ws);
+                if (!userName) throw Object.assign(new Error('Not logged in'), { statusCode: 401 });
+                const id = msg['id'] as string;
+                requirePositions(id, ws);
+                const toPly = typeof msg['toPly'] === 'number' ? msg['toPly'] as number : undefined;
+                const result = onlineGameManager.requestWithdraw(id, userName, toPly);
+                if (result.status === 'applied') {
+                    return {
+                        results: [{
+                            data: { status: 'applied', numWithdrawn: result.numWithdrawn },
+                            broadcast: {
+                                id, type: 'game/withdraw',
+                                payload: { toPly: result.toPly, numWithdrawn: result.numWithdrawn },
+                            },
+                        }],
+                        engineGame: id,
+                    };
+                }
+                return {
+                    results: [{ data: { status: 'pending', numWithdrawn: result.numWithdrawn } }],
+                    pushes: result.notify.map(name => ({
+                        to: name, type: 'game/withdraw-proposed',
+                        payload: { id, from: userName, numWithdrawn: result.numWithdrawn },
+                    })),
+                };
+            }
+            case 'game/withdraw-respond': {
+                const userName = wsToUser.get(ws);
+                if (!userName) throw Object.assign(new Error('Not logged in'), { statusCode: 401 });
+                const id = msg['id'] as string;
+                const accept = msg['accept'] as boolean;
+                const result = onlineGameManager.respondToWithdraw(id, userName, accept);
+                if (result.status === 'applied') {
+                    return {
+                        results: [{
+                            data: { status: 'applied' },
+                            broadcast: {
+                                id, type: 'game/withdraw',
+                                payload: { toPly: result.toPly, numWithdrawn: result.numWithdrawn },
+                            },
+                        }],
+                        engineGame: id,
+                    };
+                }
+                if (result.status === 'declined') {
+                    return {
+                        results: [{ data: { status: 'declined' } }],
+                        pushes: (result.notify ?? []).map(name => ({
+                            to: name, type: 'game/withdraw-failed',
+                            payload: { id, message: `Withdraw request for game ${id} was declined` },
+                        })),
+                    };
+                }
+                return { results: [{ data: { status: 'waiting' } }] };
             }
             case 'game/sendchat': {
                 const id = msg['id'] as string;

@@ -32,6 +32,16 @@ interface ServerPendingGame extends PendingGame {
     unrespondedInvited: Map<string, number[]>;
 }
 
+// A pending withdrawal vote on an active game - see requestWithdraw()/respondToWithdraw(). Mirrors
+// ServerPendingGame's refused/unrespondedInvited shape.
+interface WithdrawRequest {
+    moveIndex: number;              // ply to withdraw to (situations index right before this move)
+    numWithdrawn: number;           // moveInfos().length - moveIndex at request time, for the popup text
+    requestedBy: string;
+    unresponded: Map<string, number[]>;   // username -> owned slots, mirrors unrespondedInvited
+    refused: Set<string>;
+}
+
 export interface OnlineGame {
     id: string;
     config: GameConfig;
@@ -39,6 +49,7 @@ export interface OnlineGame {
     engineSessions: Map<number, string>;   // slot → AI session ID for serverEngine slots
     observers: Set<string>;                // all connected usernames; used for broadcasting
     chat: ChatMessage[];
+    withdrawRequest: WithdrawRequest | null;
 }
 
 const MAX_CHAT_LENGTH = 2000;
@@ -70,6 +81,7 @@ export class OnlineGameManager {
                 const boardState = BoardState.fromFinishedGame(finishedGame, bc);
                 this.finishedGames.set(id, {
                     id, config: finishedGame.config, boardState, engineSessions: new Map(), observers, chat,
+                    withdrawRequest: null,
                 });
             } catch (e) {
                 console.warn('[onlineGameManager] failed to reconstruct finished game', id, e);
@@ -254,7 +266,7 @@ export class OnlineGameManager {
         this.activeGames.set(pending.id, {
             id: pending.id, config: pending.config,
             boardState, engineSessions: new Map(), observers: pending.observers,
-            chat: [],
+            chat: [], withdrawRequest: null,
         });
     }
 
@@ -340,6 +352,8 @@ export class OnlineGameManager {
         const game = this.activeGames.get(id);
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
         if (game.boardState.gameOver()) throw Object.assign(new Error('Game is not in progress'), { statusCode: 409 });
+        if (game.withdrawRequest)
+            throw Object.assign(new Error('A withdraw request is in progress'), { statusCode: 409 });
         if (game.boardState.getView().plyCount !== clientIdx)
             throw Object.assign(new Error('Move index mismatch'), { statusCode: 409 });
         if (!positions.includes(game.boardState.nextTurn.player))
@@ -353,7 +367,7 @@ export class OnlineGameManager {
     // Returns the slot that should move next if it is a serverEngine slot; null otherwise.
     getEngineSlot(id: string): number | null {
         const game = this.activeGames.get(id);
-        if (!game || game.boardState.gameOver()) return null;
+        if (!game || game.boardState.gameOver() || game.withdrawRequest) return null;
         const slot = game.boardState.nextTurn.player;
         const pi = game.config.players.get(slot);
         return (pi?.type === 'serverEngine') ? slot : null;
@@ -401,6 +415,8 @@ export class OnlineGameManager {
         const game = this.activeGames.get(id);
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
         if (game.boardState.gameOver()) throw Object.assign(new Error('Game is not in progress'), { statusCode: 409 });
+        if (game.withdrawRequest)
+            throw Object.assign(new Error('A withdraw request is in progress'), { statusCode: 409 });
         const { turnList } = game.config;
         const posSet = new Set(positions);
         const resignedSet = new Set(game.boardState.resignedPlayers);
@@ -415,6 +431,99 @@ export class OnlineGameManager {
         game.boardState.advanceResigned();
         this._maybeFinish(game);
         return slot;
+    }
+
+    // Finds userName's last move (scanning moveInfos() backwards for a ply whose mover is one of
+    // userName's slots) when toPly is omitted (the Withdraw button); otherwise validates the
+    // explicit toPly (the WCD button - not required to be a move userName made). Builds
+    // `unresponded` from every 'client'-type slot except userName and any slot(s) already fully
+    // resigned - mirrors createGame()'s unrespondedInvited construction. Applies immediately (no
+    // voting needed) if that leaves nobody to ask.
+    requestWithdraw(id: string, userName: string, toPly?: number):
+        | { status: 'applied'; toPly: number; numWithdrawn: number }
+        | { status: 'pending'; numWithdrawn: number; notify: string[] } {
+        const game = this.activeGames.get(id);
+        if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
+        if (game.withdrawRequest)
+            throw Object.assign(
+                new Error('Cannot start withdraw request: another withdraw request in progress'), { statusCode: 409 },
+            );
+
+        const moves = game.boardState.moveInfos();
+        let moveIndex: number;
+        if (toPly !== undefined) {
+            if (!Number.isInteger(toPly) || toPly < 0 || toPly >= moves.length)
+                throw Object.assign(new Error('Invalid withdraw target'), { statusCode: 400 });
+            moveIndex = toPly;
+        } else {
+            const { turnList } = game.config;
+            const positions = this.getPositions(id, userName);
+            let found: number | null = null;
+            for (let i = moves.length - 1; i >= 0; i--) {
+                if (positions.includes(turnList[i % turnList.length].player)) { found = i; break; }
+            }
+            if (found === null)
+                throw Object.assign(
+                    new Error('Cannot withdraw your move when you have not made any moves'), { statusCode: 409 },
+                );
+            moveIndex = found;
+        }
+
+        const numWithdrawn = moves.length - moveIndex;
+        const resignedSet = new Set(game.boardState.resignedPlayers);
+        const unresponded = new Map<string, number[]>();
+        for (const [slot, pi] of game.config.players) {
+            if (pi.type !== 'client' || pi.name === userName || resignedSet.has(slot)) continue;
+            unresponded.set(pi.name, [...(unresponded.get(pi.name) ?? []), slot]);
+        }
+
+        if (unresponded.size === 0) {
+            game.boardState.withdrawTo(moveIndex);
+            game.boardState.advanceResigned();
+            this._maybeFinish(game);
+            return { status: 'applied', toPly: moveIndex, numWithdrawn };
+        }
+        game.withdrawRequest = { moveIndex, numWithdrawn, requestedBy: userName, unresponded, refused: new Set() };
+        return { status: 'pending', numWithdrawn, notify: [...unresponded.keys()] };
+    }
+
+    // The withdraw-vote counterpart to respondToInvite() - same first-decline-notifies-everyone /
+    // torn-down-once-everyone-has-responded shape (see that method's own comment for the reasoning).
+    respondToWithdraw(id: string, userName: string, accept: boolean):
+        | { status: 'waiting' }
+        | { status: 'applied'; toPly: number; numWithdrawn: number }
+        | { status: 'declined'; notify?: string[] } {
+        const game = this.activeGames.get(id);
+        if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
+        const wr = game.withdrawRequest;
+        if (!wr) throw Object.assign(new Error('No withdraw request in progress'), { statusCode: 404 });
+        const slots = wr.unresponded.get(userName);
+        if (!slots)
+            throw Object.assign(new Error('No pending withdraw request for you to respond to'), { statusCode: 403 });
+        wr.unresponded.delete(userName);
+
+        if (accept && wr.refused.size === 0) {
+            if (wr.unresponded.size === 0) {
+                game.boardState.withdrawTo(wr.moveIndex);
+                game.boardState.advanceResigned();
+                const { moveIndex, numWithdrawn } = wr;
+                game.withdrawRequest = null;
+                this._maybeFinish(game);
+                return { status: 'applied', toPly: moveIndex, numWithdrawn };
+            }
+            return { status: 'waiting' };
+        }
+
+        const isFirstDecline = !accept && wr.refused.size === 0;
+        if (!accept) wr.refused.add(userName);
+        if (wr.unresponded.size === 0) game.withdrawRequest = null;
+
+        if (accept)  // only reachable when some other voter already declined
+            throw Object.assign(new Error(`Withdraw request for game ${id} already declined`), { statusCode: 409 });
+
+        if (!isFirstDecline) return { status: 'declined' };
+        const notify = [...game.observers].filter(name => name !== userName);
+        return { status: 'declined', notify };
     }
 
     // In-progress-only, like applyMove/resign - but _maybeFinish() moves a game out of

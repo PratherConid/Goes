@@ -812,6 +812,30 @@ export class BoardState {
 
     // Withdraw one move. Fields are updated immediately.
     withdrawMove() {
+        this._withdrawMoveInternal();
+    }
+
+    // Withdraws every move after `targetPly`, back to the position exactly as it was before that
+    // ply was played (situations[targetPly]) - a no-op if targetPly is already the tip or out of
+    // range. Unlike withdrawMove() (which leaves resignation strictly alone - see its own
+    // comment), any resignation recorded on one of the withdrawn plies is re-keyed onto
+    // targetPly itself rather than discarded, so it survives fromFinishedGame()'s ply-keyed
+    // replay loop. Callers MUST call advanceResigned() afterward: accumulating a resignation onto
+    // targetPly can make it that (now-resigned) player's turn there, and they were never
+    // auto-passed at that point in real time.
+    withdrawTo(targetPly: number): void {
+        if (targetPly < 0 || targetPly >= this.situations.length - 1) return;
+        const accumulated = new Set<number>(this.resigns.get(targetPly) ?? []);
+        for (const [ply, players] of [...this.resigns.entries()]) {
+            if (ply <= targetPly) continue;
+            for (const p of players) accumulated.add(p);
+            this.resigns.delete(ply);
+        }
+        if (accumulated.size > 0) this.resigns.set(targetPly, [...accumulated]);
+        while (this.situations.length - 1 > targetPly) this._withdrawMoveInternal();
+    }
+
+    private _withdrawMoveInternal() {
         if (this.situations.length <= 1) return;
         const sit = this.situations[this.situations.length - 1];
         this.situations.pop();

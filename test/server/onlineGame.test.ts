@@ -31,6 +31,34 @@ function passOnlyConfig() {
     };
 }
 
+// Unlike passOnlyConfig, real placements are legal (allowSuicide sidesteps liberty/capture
+// bookkeeping entirely, so any empty cell is always a legal placement) - needed for the withdraw
+// tests below, which need several distinct real moves (not just passes) to withdraw between.
+function realTwoPlayerConfig() {
+    return {
+        boardType: 'rect', boardArgs: [3, 3], boardModifiers: [], numStones: 2, numPlayers: 2,
+        turnList: [
+            { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
+            { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
+        ],
+        stoneToPlayerMap: { 1: [1], 2: [2] },
+        forcedPassOnly: false, scoreRule: 'area', allowSuicide: true,
+    };
+}
+
+function realThreePlayerConfig() {
+    return {
+        boardType: 'rect', boardArgs: [5, 5], boardModifiers: [], numStones: 3, numPlayers: 3,
+        turnList: [
+            { player: 1, stones: [1, 0, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },
+            { player: 2, stones: [0, 1, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },
+            { player: 3, stones: [0, 0, 1], protected: [0, 0, 0], friendly: [0, 0, 0] },
+        ],
+        stoneToPlayerMap: { 1: [1], 2: [2], 3: [3] },
+        forcedPassOnly: false, scoreRule: 'area', allowSuicide: true,
+    };
+}
+
 // Builds a fixed-order OnlinePlayerRequest wire payload from [slot, {type, name}] entries.
 function fixedRequest(entries: [number, { type: string; name: string }][]) {
     return {
@@ -516,6 +544,190 @@ test('inviting the same user into two slots resolves both from one response, wit
     const respond = await bob.req<{ status: string }>('game/invite-respond', { id, accept: true });
     assert.equal(respond.status, 'playing');   // both slots resolved by this one response
     await aliceStart;
+
+    await alice.close();
+    await bob.close();
+});
+
+test('a withdraw request applies once every remaining player agrees, broadcasting game/withdraw to everyone', async () => {
+    const alice = await registerAndLogin('aaron');
+    const bob = await registerAndLogin('bella');
+    const carol = await registerAndLogin('cindy');
+
+    const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
+        config: realThreePlayerConfig(),
+        onlinePlayerRequest: fixedRequest([
+            [1, { type: 'local', name: '' }], [2, { type: 'client', name: 'bella' }], [3, { type: 'client', name: 'cindy' }],
+        ]),
+    });
+    assert.equal(status, 'playing');
+    await alice.req('game/subscribe', { id, position: 1 });
+    await bob.req('game/subscribe', { id, position: 2 });
+    await carol.req('game/subscribe', { id, position: 3 });
+
+    await alice.req('game/move', { id, moveIndex: 0, clientIdx: 0 });
+    await bob.req('game/move', { id, moveIndex: 2, clientIdx: 1 });
+    await carol.req('game/move', { id, moveIndex: 4, clientIdx: 2 });
+    await alice.req('game/move', { id, moveIndex: 10, clientIdx: 3 });
+    // alice's last move is at ply index 3 - the Withdraw button auto-detects it, so this withdraws
+    // just that one move (numWithdrawn: 1).
+
+    const bobProposed = new Promise<any>(resolve => bob.onEvent('game/withdraw-proposed', resolve));
+    const carolProposed = new Promise<any>(resolve => carol.onEvent('game/withdraw-proposed', resolve));
+    const result = await alice.req<{ status: string; numWithdrawn: number }>('game/withdraw-request', { id });
+    assert.equal(result.status, 'pending');
+    assert.equal(result.numWithdrawn, 1);
+
+    const [bobMsg, carolMsg] = await Promise.all([bobProposed, carolProposed]);
+    assert.equal(bobMsg.from, 'aaron');
+    assert.equal(bobMsg.numWithdrawn, 1);
+    assert.equal(carolMsg.numWithdrawn, 1);
+
+    const aliceWithdraw = new Promise<any>(resolve => alice.onEvent('game/withdraw', resolve));
+    const carolWithdraw = new Promise<any>(resolve => carol.onEvent('game/withdraw', resolve));
+    const bobRespond = await bob.req<{ status: string }>('game/withdraw-respond', { id, accept: true });
+    assert.equal(bobRespond.status, 'waiting');   // carol hasn't responded yet
+    const carolRespond = await carol.req<{ status: string }>('game/withdraw-respond', { id, accept: true });
+    assert.equal(carolRespond.status, 'applied');   // carol was the last vote needed
+
+    const [aliceMsg, carolWMsg] = await Promise.all([aliceWithdraw, carolWithdraw]);
+    assert.equal(aliceMsg.toPly, 3);
+    assert.equal(aliceMsg.numWithdrawn, 1);
+    assert.deepEqual(aliceMsg, carolWMsg);
+
+    const state = await alice.req<{ state: { moves: unknown[] } }>('game/subscribe', { id, position: 1 });
+    assert.equal(state.state.moves.length, 3);
+
+    await alice.close();
+    await bob.close();
+    await carol.close();
+});
+
+test('a decline notifies everyone else, leaves the game unmodified, and a too-late accept gets a specific error', async () => {
+    const alice = await registerAndLogin('dexter');
+    const bob = await registerAndLogin('elena');
+    const carol = await registerAndLogin('felix');
+
+    const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
+        config: realThreePlayerConfig(),
+        onlinePlayerRequest: fixedRequest([
+            [1, { type: 'local', name: '' }], [2, { type: 'client', name: 'elena' }], [3, { type: 'client', name: 'felix' }],
+        ]),
+    });
+    assert.equal(status, 'playing');
+    await alice.req('game/subscribe', { id, position: 1 });
+    await bob.req('game/subscribe', { id, position: 2 });
+    await carol.req('game/subscribe', { id, position: 3 });
+
+    await alice.req('game/move', { id, moveIndex: 0, clientIdx: 0 });
+    await bob.req('game/move', { id, moveIndex: 2, clientIdx: 1 });
+    await carol.req('game/move', { id, moveIndex: 4, clientIdx: 2 });
+    await alice.req('game/move', { id, moveIndex: 10, clientIdx: 3 });
+    await alice.req('game/withdraw-request', { id });
+
+    const aliceFailed = new Promise<any>(resolve => alice.onEvent('game/withdraw-failed', resolve));
+    const carolFailed = new Promise<any>(resolve => carol.onEvent('game/withdraw-failed', resolve));
+    const bobRespond = await bob.req<{ status: string }>('game/withdraw-respond', { id, accept: false });
+    assert.equal(bobRespond.status, 'declined');
+
+    const [aliceMsg, carolMsg] = await Promise.all([aliceFailed, carolFailed]);
+    assert.equal(aliceMsg.id, id);
+    assert.equal(carolMsg.id, id);
+
+    const state = await alice.req<{ state: { moves: unknown[] } }>('game/subscribe', { id, position: 1 });
+    assert.equal(state.state.moves.length, 4, 'a declined withdrawal leaves the move list untouched');
+
+    // The withdraw request record itself isn't torn down yet - carol can still respond, but her
+    // accept is rejected (the request is doomed), with a specific message rather than a raw 404.
+    await assert.rejects(
+        carol.req('game/withdraw-respond', { id, accept: true }),
+        (e: any) => { assert.match(e.message, /already declined/); assert.equal(e.statusCode, 409); return true; },
+    );
+
+    // Everyone (bob and carol) has now responded, so the request is fully torn down - a further
+    // response 404s.
+    await assert.rejects(
+        carol.req('game/withdraw-respond', { id, accept: false }),
+        (e: any) => { assert.equal(e.statusCode, 404); return true; },
+    );
+
+    await alice.close();
+    await bob.close();
+    await carol.close();
+});
+
+test('requesting withdrawal with no prior moves gets a specific error', async () => {
+    const alice = await registerAndLogin('gabriel');
+    const bob = await registerAndLogin('hannah');
+    const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
+        config: realTwoPlayerConfig(),
+        onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'client', name: 'hannah' }]]),
+    });
+    assert.equal(status, 'playing');
+
+    await assert.rejects(
+        alice.req('game/withdraw-request', { id }),
+        (e: any) => {
+            assert.equal(e.message, 'Cannot withdraw your move when you have not made any moves');
+            assert.equal(e.statusCode, 409);
+            return true;
+        },
+    );
+
+    await alice.close();
+    await bob.close();
+});
+
+test('a second withdraw request while one is already pending is rejected', async () => {
+    const alice = await registerAndLogin('isabel');
+    const bob = await registerAndLogin('jasper');
+    const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
+        config: realTwoPlayerConfig(),
+        onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'client', name: 'jasper' }]]),
+    });
+    assert.equal(status, 'playing');
+    await alice.req('game/move', { id, moveIndex: 0, clientIdx: 0 });
+
+    const first = await alice.req<{ status: string }>('game/withdraw-request', { id });
+    assert.equal(first.status, 'pending');
+
+    await assert.rejects(
+        alice.req('game/withdraw-request', { id }),
+        (e: any) => {
+            assert.equal(e.message, 'Cannot start withdraw request: another withdraw request in progress');
+            assert.equal(e.statusCode, 409);
+            return true;
+        },
+    );
+
+    await alice.close();
+    await bob.close();
+});
+
+test('game/move and game/resign are rejected while a withdraw vote is pending, and the lock lifts once resolved', async () => {
+    const alice = await registerAndLogin('kara');
+    const bob = await registerAndLogin('liam');
+    const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
+        config: realTwoPlayerConfig(),
+        onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'client', name: 'liam' }]]),
+    });
+    assert.equal(status, 'playing');
+    await alice.req('game/move', { id, moveIndex: 0, clientIdx: 0 });
+
+    const req = await alice.req<{ status: string }>('game/withdraw-request', { id });
+    assert.equal(req.status, 'pending');
+
+    const lockedError = (e: any) => {
+        assert.match(e.message, /withdraw request is in progress/); assert.equal(e.statusCode, 409); return true;
+    };
+    await assert.rejects(bob.req('game/move', { id, moveIndex: 1, clientIdx: 1 }), lockedError);
+    await assert.rejects(bob.req('game/resign', { id }), lockedError);
+
+    // bob accepts - the withdrawal applies (restoring the pre-alice-move state, so it's still
+    // alice's turn) and the lock lifts, so normal play resumes.
+    const applied = await bob.req<{ status: string }>('game/withdraw-respond', { id, accept: true });
+    assert.equal(applied.status, 'applied');
+    await alice.req('game/move', { id, moveIndex: 1, clientIdx: 0 });
 
     await alice.close();
     await bob.close();
