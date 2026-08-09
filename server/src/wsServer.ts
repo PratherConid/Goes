@@ -18,7 +18,7 @@ import { loadGameRecordStore } from './gameRecordStore.js';
 //                   { kind:'event', type:'game/invite', id, from }           (push, personalized - to one invited user)
 //                   { kind:'event', type:'game/invite-failed', id, message } (push, personalized - to everyone involved)
 //                   { kind:'event', type:'game/engine-error', id, message }  (push)
-//                   { kind:'event', type:'chat/message', id, player, time, content } (push)
+//                   { kind:'event', type:'game/chatmessage', id, player, time, content } (push)
 //
 // While waiting, game/pending-games is broadcast after every join so clients see
 // who has joined. After a game starts only the minimal change is forwarded.
@@ -144,9 +144,9 @@ export function attachWebSocket(server: Server, dataDir: string): void {
 
     // JSON-safe {id, finishedGame} list for a successful REGISTER/LOGIN/FLOGIN response,
     // so the client can populate its own finishedGames without having watched them live.
-    function buildFinishedGamesPayload(name: string): { id: string; finishedGame: unknown }[] {
+    function buildFinishedGamesPayload(name: string): { id: string; finishedGame: unknown; chat: unknown }[] {
         return onlineGameManager.getFinishedGamesFor(name)
-            .map(({ id, finishedGame }) => ({ id, finishedGame: finishedGame.toJSON() }));
+            .map(({ id, finishedGame, chat }) => ({ id, finishedGame: finishedGame.toJSON(), chat }));
     }
 
     // Dispatch one request; returns the ack data (+ optional broadcast), or throws { statusCode }.
@@ -322,14 +322,14 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                     engineGame: id,
                 };
             }
-            case 'chat/send': {
+            case 'game/sendchat': {
                 const id = msg['id'] as string;
                 const content = (msg['content'] as string) ?? '';
                 const positions = requirePositions(id, ws);   // already throws 403 if empty
                 const player = positions[0];
                 const chatMsg = onlineGameManager.sendChat(id, player, content);
                 return {
-                    results: [{ data: { ok: true }, broadcast: { id, type: 'chat/message', payload: chatMsg } }],
+                    results: [{ data: { ok: true }, broadcast: { id, type: 'game/chatmessage', payload: chatMsg } }],
                 };
             }
             case 'game/subscribe': {

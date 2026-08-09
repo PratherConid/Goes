@@ -131,7 +131,7 @@ test('game/resign ends a 2-player game and broadcasts the resigned slot to both 
     await bob.close();
 });
 
-test('chat/send broadcasts to both observers, is seeded via game/subscribe, and rejects non-players', async () => {
+test('game/sendchat broadcasts to both observers, is seeded via game/subscribe, and rejects non-players', async () => {
     const alice = await registerAndLogin('tina');
     const bob = await registerAndLogin('ursula');
 
@@ -143,8 +143,8 @@ test('chat/send broadcasts to both observers, is seeded via game/subscribe, and 
     await alice.req('game/subscribe', { id, position: 1 });
     await bob.req('game/subscribe', { id, position: 2 });
 
-    const bobChat = new Promise(resolve => bob.onEvent('chat/message', resolve));
-    await alice.req('chat/send', { id, content: '  hello  ' });
+    const bobChat = new Promise(resolve => bob.onEvent('game/chatmessage', resolve));
+    await alice.req('game/sendchat', { id, content: '  hello  ' });
     const chatMsg: any = await bobChat;
     assert.equal(chatMsg.player, 1);
     assert.equal(chatMsg.content, 'hello');   // trimmed server-side
@@ -157,11 +157,58 @@ test('chat/send broadcasts to both observers, is seeded via game/subscribe, and 
 
     // A connection that owns no slot in the game (pure non-player) is rejected.
     const carol = await registerAndLogin('victor');
-    await assert.rejects(carol.req('chat/send', { id, content: 'nope' }));
+    await assert.rejects(carol.req('game/sendchat', { id, content: 'nope' }));
 
     await alice.close();
     await bob.close();
     await carol.close();
+});
+
+test('game/sendchat is rejected once the game has finished', async () => {
+    const alice = await registerAndLogin('wendy');
+    const bob = await registerAndLogin('xavier');
+
+    const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
+        config: passOnlyConfig(),
+        onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'client', name: 'xavier' }]]),
+    });
+    assert.equal(status, 'playing');
+
+    await alice.req('game/resign', { id });   // ends the game
+
+    await assert.rejects(
+        alice.req('game/sendchat', { id, content: 'gg' }),
+        /Cannot send messages in a finished game/,
+    );
+
+    await alice.close();
+    await bob.close();
+});
+
+test("a finished game's chat is included in a fresh LOGIN response", async () => {
+    const alice = await registerAndLogin('yolanda');
+    const bob = await registerAndLogin('zach');
+
+    const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
+        config: passOnlyConfig(),
+        onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'client', name: 'zach' }]]),
+    });
+    assert.equal(status, 'playing');
+
+    await alice.req('game/sendchat', { id, content: 'well played' });
+    await alice.req('game/resign', { id });   // ends the game
+
+    await alice.close();
+    const aliceAgain = await connect(server.url);
+    const login = await aliceAgain.req<
+        { finishedGames: { id: string; chat: { player: number; content: string }[] }[] }
+    >('LOGIN', { name: 'yolanda', password: 'pw' });
+    const record = login.finishedGames.find(g => g.id === id);
+    assert.ok(record, 'finished game should be present in the LOGIN response');
+    assert.deepEqual(record!.chat.map(c => c.content), ['well played']);
+
+    await aliceAgain.close();
+    await bob.close();
 });
 
 test('a finished game survives a real server restart and shows up in a fresh LOGIN', async () => {

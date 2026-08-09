@@ -61,15 +61,14 @@ export class OnlineGameManager {
 
     constructor(gameRecordState: GameRecordStoreState) {
         this.gameRecordState = gameRecordState;
-        for (const { id, finishedGame, observers } of gameRecordState.loadedRecords) {
+        for (const { id, finishedGame, observers, chat } of gameRecordState.loadedRecords) {
             try {
                 const fn = boardTypeToFn.get(finishedGame.config.boardType);
                 if (!fn) throw new Error(`Unknown board type: ${finishedGame.config.boardType}`);
                 const bc = applyModifiers(fn(...finishedGame.config.boardArgs), finishedGame.config.boardModifiers);
                 const boardState = BoardState.fromFinishedGame(finishedGame, bc);
                 this.finishedGames.set(id, {
-                    id, config: finishedGame.config, boardState, engineSessions: new Map(), observers,
-                    chat: [],
+                    id, config: finishedGame.config, boardState, engineSessions: new Map(), observers, chat,
                 });
             } catch (e) {
                 console.warn('[onlineGameManager] failed to reconstruct finished game', id, e);
@@ -93,7 +92,7 @@ export class OnlineGameManager {
             game.config, game.boardState.moveInfos().map(m => ({ pos: m.pos, stone: m.stone })),
             new Map(game.boardState.resigns),
         );
-        void recordFinishedGame(this.gameRecordState, game.id, finishedGame, game.observers).catch(e =>
+        void recordFinishedGame(this.gameRecordState, game.id, finishedGame, game.observers, game.chat).catch(e =>
             console.error('[onlineGameManager] failed to record finished game', game.id, e));
     }
 
@@ -309,15 +308,17 @@ export class OnlineGameManager {
     // Returns {id, finishedGame} for every finished game `userName` observed - sent
     // to the client at login so it can populate its own finishedGames without
     // having watched those games live.
-    getFinishedGamesFor(userName: string): { id: string; finishedGame: FinishedGame }[] {
-        const result: { id: string; finishedGame: FinishedGame }[] = [];
+    getFinishedGamesFor(userName: string): { id: string; finishedGame: FinishedGame; chat: ChatMessage[] }[] {
+        const result: { id: string; finishedGame: FinishedGame; chat: ChatMessage[] }[] = [];
         for (const id of getFinishedGames(this.gameRecordState, userName)) {
             const game = this.finishedGames.get(id);
             if (!game) continue;   // shouldn't happen, but don't crash on a bookkeeping mismatch
-            result.push({ id, finishedGame: new FinishedGame(
-                game.config, game.boardState.moveInfos().map(m => ({ pos: m.pos, stone: m.stone })),
-                new Map(game.boardState.resigns),
-            ) });
+            result.push({
+                id, chat: game.chat, finishedGame: new FinishedGame(
+                    game.config, game.boardState.moveInfos().map(m => ({ pos: m.pos, stone: m.stone })),
+                    new Map(game.boardState.resigns),
+                ),
+            });
         }
         return result;
     }
@@ -425,12 +426,18 @@ export class OnlineGameManager {
         return slot;
     }
 
-    // Unlike applyMove/resign, allows a FINISHED game (chat is social, not a game action - people
-    // should be able to keep chatting after the game ends). `player` is already authorized by the
-    // caller (wsServer.ts's 'chat/send' case, via the same requirePositions() move/resign use).
+    // In-progress-only, like applyMove/resign - but _maybeFinish() moves a game out of
+    // activeGames the instant it's over, so activeGames.get(id) alone can't tell "finished" apart
+    // from "never existed"; check finishedGames too, for a more specific error message.
+    // `player` is already authorized by the caller (wsServer.ts's 'game/sendchat' case, via the
+    // same requirePositions() move/resign use).
     sendChat(id: string, player: number, content: string): ChatMessage {
-        const game = this.activeGames.get(id) ?? this.finishedGames.get(id);
-        if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
+        const game = this.activeGames.get(id);
+        if (!game) {
+            if (this.finishedGames.has(id))
+                throw Object.assign(new Error('Cannot send messages in a finished game'), { statusCode: 409 });
+            throw Object.assign(new Error('Game not found'), { statusCode: 404 });
+        }
         const trimmed = content.trim().slice(0, MAX_CHAT_LENGTH);
         if (!trimmed) throw Object.assign(new Error('Chat message cannot be empty'), { statusCode: 400 });
         const msg: ChatMessage = { player, time: Date.now(), content: trimmed };

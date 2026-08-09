@@ -508,8 +508,8 @@ interface ActiveGame {
     rotationLocked: boolean;
     // Chat log for this game - append-only, oldest first (chronological storage order);
     // _refreshChatLog() reverses only at render time (newest first). Local games update this
-    // directly on Send; online games only ever push here from a server chat/message broadcast
-    // (see conn.onEvent('chat/message', ...) in init()), never optimistically on send.
+    // directly on Send; online games only ever push here from a server game/chatmessage broadcast
+    // (see conn.onEvent('game/chatmessage', ...) in init()), never optimistically on send.
     chat: ChatMessage[];
 }
 
@@ -517,7 +517,7 @@ interface ActiveGame {
 // has recorded this user as an observer of (see _addFinishedGames).
 interface LoginResponse {
     name: string;
-    finishedGames: { id: string; finishedGame: any }[];
+    finishedGames: { id: string; finishedGame: any; chat: ChatMessage[] }[];
 }
 
 // One entry in Renderer's popup queue (see currentPopup/popupQueue) - a
@@ -1131,7 +1131,7 @@ export class Renderer {
         conn.onEvent('game/resign', (msg: { id: string; slots: number[] }) => {
             this._handleOnlineResign(msg.id, msg.slots);
         });
-        conn.onEvent('chat/message', (msg: { id: string; player: number; time: number; content: string }) => {
+        conn.onEvent('game/chatmessage', (msg: { id: string; player: number; time: number; content: string }) => {
             this._handleChatMessage(msg.id, msg.player, msg.time, msg.content);
         });
         conn.onEvent('game/engine-error', (msg: { id: string; message: string }) => {
@@ -1707,7 +1707,7 @@ export class Renderer {
     // _refreshSidePanel()'s call site for why this must NOT run on every _render() tick.
     // Delegates the actual message list to _refreshChatLog(), also called on its own whenever
     // this._active.chat changes without a full re-navigation (a local send, or an incoming
-    // chat/message broadcast for the active game).
+    // game/chatmessage broadcast for the active game).
     private _renderChatPanel(): void {
         this.chatPanel.innerHTML = '';
 
@@ -1745,7 +1745,7 @@ export class Renderer {
     }
 
     // Rebuilds just #chat-log's contents from this._active.chat - safe to call often (local send,
-    // incoming chat/message broadcast) since it never touches #chat-input-row/the textarea,
+    // incoming game/chatmessage broadcast) since it never touches #chat-input-row/the textarea,
     // unlike _renderChatPanel() above. No-ops if the Chat panel hasn't been navigated to yet this
     // session (no #chat-log in the DOM).
     // Chat-specific player label - unlike fmtPlayerString (sidePanel.ts), drops the "(Pn)" slot
@@ -1777,8 +1777,9 @@ export class Renderer {
     }
 
     // Local games update `chat` directly; online games send to the server and wait for the
-    // chat/message broadcast to update state (see conn.onEvent('chat/message', ...) in init()) -
-    // mirrors _resign()/_submitOnlineMove()'s existing 'L_' prefix check elsewhere in this file.
+    // game/chatmessage broadcast to update state (see conn.onEvent('game/chatmessage', ...) in
+    // init()) - mirrors _resign()/_submitOnlineMove()'s existing 'L_' prefix check elsewhere in
+    // this file.
     private _sendChat(textarea: HTMLTextAreaElement): void {
         const content = textarea.value.trim();
         if (!content) return;
@@ -1798,7 +1799,7 @@ export class Renderer {
         }
 
         const id = this.activeIdx.slice(2);
-        conn.request('chat/send', { id, content }).promise
+        conn.request('game/sendchat', { id, content }).promise
             .then(() => { textarea.value = ''; })
             .catch((e: any) => this._setCmdOutput(`Chat failed: ${e.message}`));
     }
@@ -3155,8 +3156,8 @@ export class Renderer {
     // full BoardState via the shared replay logic, and stores it in finishedGames -
     // the same reconstruction path the server itself uses to rebuild finishedGames
     // at startup (see BoardState.fromFinishedGame()).
-    private _addFinishedGames(entries: { id: string; finishedGame: any }[]): void {
-        for (const { id, finishedGame: raw } of entries) {
+    private _addFinishedGames(entries: { id: string; finishedGame: any; chat: ChatMessage[] }[]): void {
+        for (const { id, finishedGame: raw, chat } of entries) {
             try {
                 const fg = FinishedGame.fromJSON(raw);
                 const boardEntry = _cmdToBoard.get(fg.config.boardType);
@@ -3166,11 +3167,7 @@ export class Renderer {
                 this.finishedGames.set('O_' + id, {
                     bs, config: fg.config, displayPlyNum: bs.getView().plyCount,
                     idxShowHistory: 0, randomEvaled: null, viewport: defaultViewport(),
-                    rotationLocked: false,
-                    // Not part of FinishedGame's JSON persistence (see server/src/
-                    // onlineGameManager.ts) - out of scope, so a finished game's chat
-                    // doesn't survive a server restart or a fresh login on a new client.
-                    chat: [],
+                    rotationLocked: false, chat,
                 });
             } catch (e) { console.error('Failed to reconstruct finished game', id, e); }
         }

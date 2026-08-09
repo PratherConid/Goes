@@ -98,14 +98,14 @@ test("it is not alice's turn once the opponent's slot is next", async () => {
     assert.equal(passBtn.disabled, true);
 });
 
-test('sending a chat message online round-trips through chat/message, not optimistically', async () => {
+test('sending a chat message online round-trips through game/chatmessage, not optimistically', async () => {
     document.querySelector<HTMLButtonElement>('#status-chat-btn')!.click();
 
     const textarea = document.getElementById('chat-input') as HTMLTextAreaElement;
     textarea.value = 'hi there';
     document.querySelector<HTMLButtonElement>('#chat-input-row button')!.click();
 
-    const reqMsg = ws.lastSentRequest('chat/send');
+    const reqMsg = ws.lastSentRequest('game/sendchat');
     assert.equal(reqMsg['content'], 'hi there');
     assert.equal('player' in reqMsg, false);   // server derives the player, client never sends it
 
@@ -114,7 +114,7 @@ test('sending a chat message online round-trips through chat/message, not optimi
 
     ws.simulateMessage({ kind: 'res', reqId: reqMsg['reqId'], ok: true, data: { ok: true } });
     ws.simulateMessage({
-        kind: 'event', type: 'chat/message', id: 'GAME2', player: 1, time: Date.now(), content: 'hi there',
+        kind: 'event', type: 'game/chatmessage', id: 'GAME2', player: 1, time: Date.now(), content: 'hi there',
     });
     await tick();
 

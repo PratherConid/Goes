@@ -10,11 +10,13 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { FinishedGame } from '@shared/types.js';
+import type { ChatMessage } from '@shared/types.js';
 
 export interface LoadedRecord {
     id: string;
     finishedGame: FinishedGame;
     observers: Set<string>;
+    chat: ChatMessage[];
 }
 
 export interface GameRecordStoreState {
@@ -51,7 +53,10 @@ export function loadGameRecordStore(dataDir: string): GameRecordStoreState {
                     continue;
                 }
                 const observers = new Set<string>(raw.observers);
-                loadedRecords.push({ id: raw.id, finishedGame: FinishedGame.fromJSON(raw.finishedGame), observers });
+                loadedRecords.push({
+                    id: raw.id, finishedGame: FinishedGame.fromJSON(raw.finishedGame), observers,
+                    chat: raw.chat as ChatMessage[],
+                });
                 addToIndex(finishedGamesByUser, raw.id, observers);
             } catch {
                 console.warn('[gameRecordStore] malformed game record line (bad JSON):', trimmed);
@@ -66,8 +71,9 @@ export function loadGameRecordStore(dataDir: string): GameRecordStoreState {
 // phantom in-memory-only entry.
 export async function recordFinishedGame(
     state: GameRecordStoreState, id: string, finishedGame: FinishedGame, observers: Set<string>,
+    chat: ChatMessage[],
 ): Promise<void> {
-    const record = { id, finishedGame: finishedGame.toJSON(), observers: [...observers] };
+    const record = { id, finishedGame: finishedGame.toJSON(), observers: [...observers], chat };
     await fs.promises.appendFile(state.filePath, JSON.stringify(record) + '\n');
     addToIndex(state.finishedGamesByUser, id, observers);
 }
