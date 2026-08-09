@@ -506,10 +506,10 @@ interface ActiveGame {
     // When true, _onBoardPointerDown ignores drags (no camera orbit) - toggled by the
     // #lock-rotation-btn control-bar button.
     rotationLocked: boolean;
-    // Chat log for this game - append-only, oldest first (chronological storage order);
-    // _refreshChatLog() reverses only at render time (newest first). Local games update this
-    // directly on Send; online games only ever push here from a server game/chatmessage broadcast
-    // (see conn.onEvent('game/chatmessage', ...) in init()), never optimistically on send.
+    // Chat log for this game - append-only, oldest first, same order _refreshChatLog() renders
+    // in (newest at the bottom, auto-scrolled into view). Local games update this directly on
+    // Send; online games only ever push here from a server game/chatmessage broadcast (see
+    // conn.onEvent('game/chatmessage', ...) in init()), never optimistically on send.
     chat: ChatMessage[];
 }
 
@@ -1774,9 +1774,9 @@ export class Renderer {
         const log = this.chatPanel.querySelector<HTMLDivElement>('#chat-log');
         if (!log) return;
         log.innerHTML = '';
-        // Newest first (reverse chronological) - storage order (this._active.chat) stays
-        // append-only/oldest-first; only the render pass reverses it.
-        for (const { player, content } of [...this._active.chat].reverse()) {
+        // Oldest first (chronological, matches this._active.chat's own storage order) - newest
+        // ends up at the bottom, then the scrollTop assignment below brings it into view.
+        for (const { player, content } of this._active.chat) {
             const entry = document.createElement('div');
             entry.className = 'chat-entry';
             // _chatPlayerLabel's return value is plain text (Unicode symbols or a bare name),
@@ -1786,6 +1786,7 @@ export class Renderer {
             entry.textContent = `${this._chatPlayerLabel(player)}: ${content}`;
             log.appendChild(entry);
         }
+        log.scrollTop = log.scrollHeight;
     }
 
     // Local games update `chat` directly; online games send to the server and wait for the
@@ -1834,7 +1835,7 @@ export class Renderer {
     private _buildStartLocalGameBtn(): HTMLButtonElement {
         const btn = document.createElement('button');
         btn.className = 'panel-child-btn';
-        btn.textContent = 'Start New Local Game';
+        btn.textContent = 'New Local Game';
         btn.addEventListener('click', () => {
             // Deferred to onStarted - _createLocalGame() may show a
             // confirm popup first (invited players in Configure Players),
@@ -1858,7 +1859,7 @@ export class Renderer {
     private _buildStartOnlineGameBtn(): HTMLButtonElement {
         const btn = document.createElement('button');
         btn.className = 'panel-child-btn';
-        btn.textContent = 'Start New Online Game';
+        btn.textContent = 'New Online Game';
         btn.addEventListener('click', () => {
             this.panelMode = this._screenIsSmall() ? 'hidden' : 'locked';
             this._applyPanelMode();
@@ -1941,16 +1942,17 @@ export class Renderer {
         };
 
         if (req.fixed) {
-            // One grid, numPlayers rows x 5 columns (Slot/status/Local/Engine/Invite/Clear)
-            // - a plain flow of 6N (+1 per open invite row) children in
-            // row-major order, laid out by .colp-grid's grid-template-columns
-            // (CSS), rather than one wrapping row div per slot.
-            const grid = document.createElement('div');
-            grid.className = 'colp-grid';
+            // One bordered box per slot - a label line ("Slot <n>: <status>") above a button row
+            // (Local/Engine/Invite/Clear), plus an optional third line (the invite textbox) while
+            // that slot's Invite is open.
             for (let slot = 1; slot <= this.newCfg.numPlayers; slot++) {
                 const pi = req.fixedOrder.get(slot);
-                const slotLabel = document.createElement('span');
-                slotLabel.textContent = `Slot ${slot}: ${fmtStatus(pi)}`;
+                const box = document.createElement('div');
+                box.className = 'colp-slot';
+
+                const slotLabel = document.createElement('div');
+                slotLabel.className = 'colp-slot-label';
+                slotLabel.innerHTML = `<b>Slot ${slot}:</b> ${fmtStatus(pi)}`;
 
                 const localBtn  = mkBtn('status-login-btn', 'Local',
                     () => req.fixedOrder.set(slot, new PlayerInfo('local', this.userName ?? 'Player')));
@@ -1963,16 +1965,21 @@ export class Renderer {
                 });
                 const clearBtn  = mkBtn('status-login-btn', 'Clear',  () => req.fixedOrder.delete(slot));
 
-                grid.append(slotLabel, localBtn, engineBtn, inviteBtn, clearBtn);
+                const slotBtnRow = document.createElement('div');
+                slotBtnRow.className = 'btn-row';
+                slotBtnRow.append(localBtn, engineBtn, inviteBtn, clearBtn);
+
+                box.append(slotLabel, slotBtnRow);
                 if (this.inviteInputTarget === slot)
-                    grid.appendChild(buildInviteRow(
+                    box.appendChild(buildInviteRow(
                         name => req.fixedOrder.set(slot, new PlayerInfo('pendingInvitedOnline', name)),
                     ));
+                this.configureOnlinePlayersPanel.appendChild(box);
             }
-            this.configureOnlinePlayersPanel.appendChild(grid);
         } else {
             const listLine = document.createElement('div');
-            listLine.innerHTML = `List of Players: ${req.randomOrder
+            listLine.className = 'colp-list-line';
+            listLine.innerHTML = `<b>List of Players:</b> ${req.randomOrder
                 .map(pi => pi.type === 'local' ? 'Local' : pi.type === 'serverEngine' ? 'Engine' : `${pi.name} (invited)`)
                 .join('&nbsp;'.repeat(3))}`;
             this.configureOnlinePlayersPanel.appendChild(listLine);

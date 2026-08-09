@@ -8,8 +8,11 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     /* Suppresses the double-tap-to-zoom gesture on rapid taps (mobile
-       browsers), without disabling pinch-zoom elsewhere on the page. */
-    button { touch-action: manipulation; }
+       browsers), without disabling pinch-zoom elsewhere on the page.
+       font-family: buttons don't inherit the page's font by default (a
+       browser UA-stylesheet quirk) - without this they'd render in
+       whatever system UI font the browser picks, not body's Calibri. */
+    button { touch-action: manipulation; font-family: inherit; }
 
     /* ── side-panel layout modes (see #panel-mode-bar) ──────────────────
        No class on <body> = "locked": today's default docked layout, flex
@@ -167,7 +170,7 @@
       border-radius: 4px;
       border: none;
       background: #5c442e;
-      font-size: calc(var(--u) / 2);
+      font-size: calc(var(--u) / 1.8);
       color: #fff;
       cursor: pointer;
       display: flex;
@@ -196,7 +199,7 @@
       border-radius: 4px;
       background: #5c442e;
       color: #fff;
-      font-size: calc(var(--u) / 2);
+      font-size: calc(var(--u) / 1.8);
       cursor: pointer;
       display: flex;
       align-items: center;
@@ -216,7 +219,7 @@
       border-radius: 4px;
       background: #5c442e;
       color: #fff;
-      font-size: calc(var(--u) / 2);
+      font-size: calc(var(--u) / 1.8);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -274,7 +277,7 @@
       background: #c29765;
       color: #000;
       cursor: pointer;
-      font-size: 14px;
+      font-size: 16px;
       text-align: left;
     }
     @media (hover: hover) and (pointer: fine) {
@@ -301,7 +304,7 @@
       background: #c29765;
       color: #000;
       cursor: pointer;
-      font-size: 14px;
+      font-size: 16px;
     }
     @media (hover: hover) and (pointer: fine) {
       .status-login-btn:hover { background: #d6a76f; }
@@ -437,24 +440,87 @@
       line-height: 1.8;
     }
 
-    .colp-grid {
-      display: grid;
-      grid-template-columns: auto auto auto auto auto;
-      align-items: center;
-      column-gap: 8px;
+    /* Same thumb/track treatment as #chat-log's scrollbar, but matching #side-panel's own
+       background (#b0895c) - neither #commands-panel nor the group above sets its own. */
+    #commands-panel,
+    #home-panel, #status-panel, #current-game-setup-panel, #new-game-panel, #game-records-panel,
+    #game-preset-selection-panel, #board-preset-selection-panel, #active-local-games-panel,
+    #pending-games-panel, #active-online-games-panel, #finished-online-games-panel, #account-panel,
+    #configure-online-players-panel {
+      scrollbar-width: thin;
+      scrollbar-color: #5c442e #b0895c;
     }
-    .colp-grid > * {
-      padding: 4px 0;
+    #commands-panel::-webkit-scrollbar,
+    #home-panel::-webkit-scrollbar, #status-panel::-webkit-scrollbar,
+    #current-game-setup-panel::-webkit-scrollbar, #new-game-panel::-webkit-scrollbar,
+    #game-records-panel::-webkit-scrollbar, #game-preset-selection-panel::-webkit-scrollbar,
+    #board-preset-selection-panel::-webkit-scrollbar, #active-local-games-panel::-webkit-scrollbar,
+    #pending-games-panel::-webkit-scrollbar, #active-online-games-panel::-webkit-scrollbar,
+    #finished-online-games-panel::-webkit-scrollbar, #account-panel::-webkit-scrollbar,
+    #configure-online-players-panel::-webkit-scrollbar {
+      width: 10px;
+    }
+    #commands-panel::-webkit-scrollbar-track,
+    #home-panel::-webkit-scrollbar-track, #status-panel::-webkit-scrollbar-track,
+    #current-game-setup-panel::-webkit-scrollbar-track, #new-game-panel::-webkit-scrollbar-track,
+    #game-records-panel::-webkit-scrollbar-track, #game-preset-selection-panel::-webkit-scrollbar-track,
+    #board-preset-selection-panel::-webkit-scrollbar-track, #active-local-games-panel::-webkit-scrollbar-track,
+    #pending-games-panel::-webkit-scrollbar-track, #active-online-games-panel::-webkit-scrollbar-track,
+    #finished-online-games-panel::-webkit-scrollbar-track, #account-panel::-webkit-scrollbar-track,
+    #configure-online-players-panel::-webkit-scrollbar-track {
+      background: #b0895c;
+    }
+    #commands-panel::-webkit-scrollbar-thumb,
+    #home-panel::-webkit-scrollbar-thumb, #status-panel::-webkit-scrollbar-thumb,
+    #current-game-setup-panel::-webkit-scrollbar-thumb, #new-game-panel::-webkit-scrollbar-thumb,
+    #game-records-panel::-webkit-scrollbar-thumb, #game-preset-selection-panel::-webkit-scrollbar-thumb,
+    #board-preset-selection-panel::-webkit-scrollbar-thumb, #active-local-games-panel::-webkit-scrollbar-thumb,
+    #pending-games-panel::-webkit-scrollbar-thumb, #active-online-games-panel::-webkit-scrollbar-thumb,
+    #finished-online-games-panel::-webkit-scrollbar-thumb, #account-panel::-webkit-scrollbar-thumb,
+    #configure-online-players-panel::-webkit-scrollbar-thumb {
+      background: #5c442e;
+      border-radius: 3px;
+    }
+
+    /* One bordered box per slot (Fixed Order mode) - a label line above a button row, and an
+       optional third line (the invite textbox) while that slot's Invite is open. */
+    .colp-slot {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      border: 1px solid #5c442e;
+      border-radius: 6px;
+      padding: 8px 10px;
+      margin: 6px 0;
+    }
+    .colp-slot-label {
+      font-size: 16px;
     }
 
     .colp-invite-row {
-      grid-column: 1 / -1;
       display: flex;
       align-items: center;
       gap: 8px;
       padding: 4px 0;
     }
     .colp-invite-row .account-input { flex: 1 1 0; }
+
+    /* Same font-size/border as .panel-child-btn (the Add Local/Add Engine/... buttons right
+       below it), but keeps the panel's own background rather than the buttons' #c29765, and a
+       smaller vertical padding since it holds one line of plain text, not a clickable button.
+       margin-top/bottom match .panel-child-btn's own (6px each) - the toggle button above and
+       the first button inside .btn-row below both carry that same 6px margin themselves
+       (#configure-online-players-panel is a flex column, so sibling margins don't collapse),
+       so matching it here keeps every gap in the stack equal instead of some being single (6px)
+       and others doubled (12px). */
+    .colp-list-line {
+      font-size: 16px;
+      border: 1px solid #5c442e;
+      border-radius: 6px;
+      padding: 4px 10px;
+      margin-top: 6px;
+      margin-bottom: 6px;
+    }
 
     .chat-game-info {
       flex-shrink: 0;
@@ -465,9 +531,28 @@
     #chat-log {
       flex: 1 1 0;
       overflow-y: auto;
+      box-sizing: border-box;
+      margin: 8px 12px;
       padding: 12px;
       font-size: 14px;
       line-height: 1.6;
+      /* Same look as .account-input (the chat textbox) - not an input itself, just visually
+         matched to it. */
+      background: #c29765;
+      border: 1px solid #5c442e;
+      border-radius: 3px;
+      scrollbar-width: thin;
+      scrollbar-color: #5c442e #c29765;
+    }
+    #chat-log::-webkit-scrollbar {
+      width: 10px;
+    }
+    #chat-log::-webkit-scrollbar-track {
+      background: #c29765;
+    }
+    #chat-log::-webkit-scrollbar-thumb {
+      background: #5c442e;
+      border-radius: 3px;
     }
     .chat-entry {
       padding: 3px 0;
@@ -537,6 +622,39 @@
       flex: 1 1 0;
       width: auto;
       text-align: center;
+    }
+    /* .status-login-btn's own margin-left: 6px (meant for sitting inline next to text, e.g. the
+       Log in/Chat/Send buttons) is wrong inside a button row - .btn-row's own gap already spaces
+       buttons apart. Stretched to fill the row the same way .panel-child-btn does above, and
+       given taller vertical padding (.status-login-btn's own 2px was sized for a small inline
+       button, not a full-width row button - it looked visibly shorter than .panel-child-btn
+       otherwise); also applied to the Confirm button in an invite row (.colp-invite-row) below. */
+    .btn-row .status-login-btn,
+    .colp-invite-row .status-login-btn {
+      padding: 4px 10px;
+    }
+    .btn-row .status-login-btn {
+      flex: 1 1 0;
+      width: auto;
+      margin-left: 0;
+      text-align: center;
+    }
+    /* Game/Board Preset Selection: buttons shrink to their own text width and wrap into a packed
+       "chip" layout - flex-direction: row + flex-wrap: wrap overrides the shared panel rule's
+       flex-direction: column (which stacks every item on its own line no matter how narrow it
+       is - column direction has no concept of two items sharing a line). align-content keeps
+       wrapped rows packed at the top instead of stretching to fill the panel's height; gap
+       spaces buttons both within and between rows, so each button's own margin is zeroed to
+       avoid stacking on top of it. */
+    #game-preset-selection-panel, #board-preset-selection-panel {
+      flex-direction: row;
+      flex-wrap: wrap;
+      align-content: flex-start;
+      gap: 8px;
+    }
+    #game-preset-selection-panel .panel-child-btn, #board-preset-selection-panel .panel-child-btn {
+      width: auto;
+      margin: 0;
     }
     #new-game-buttons {
       flex-shrink: 0;

@@ -103,6 +103,8 @@ export const SidePanelTitle: Record<SidePanelContent, string> = {
 // for any node not listed here.
 export const SidePanelButtonLabel: Partial<Record<SidePanelContent, string>> = {
     [SidePanelContent.History]: 'Game History',
+    [SidePanelContent.GamePresetSelection]: 'Game Preset',
+    [SidePanelContent.BoardPresetSelection]: 'Board Preset',
 };
 
 // Parent of `current`, or null if it's Home (VOID - no parent to go up to).
@@ -170,15 +172,15 @@ export function renderSidePanelChrome(current: SidePanelContent, els: SidePanelE
     els.currentGameSetupPanel.style.display    = current === SidePanelContent.CurrentGameSetup    ? 'block' : 'none';
     els.newGamePanel.style.display             = current === SidePanelContent.NewGame             ? 'block' : 'none';
     els.gameRecordsPanel.style.display         = current === SidePanelContent.GameRecords         ? 'block' : 'none';
-    els.gamePresetSelectionPanel.style.display = current === SidePanelContent.GamePresetSelection ? 'block' : 'none';
+    els.gamePresetSelectionPanel.style.display = current === SidePanelContent.GamePresetSelection ? 'flex' : 'none';
     els.boardPresetSelectionPanel.style.display =
-        current === SidePanelContent.BoardPresetSelection ? 'block' : 'none';
+        current === SidePanelContent.BoardPresetSelection ? 'flex' : 'none';
     els.activeLocalGamesPanel.style.display    = current === SidePanelContent.ActiveLocalGames    ? 'block' : 'none';
     els.pendingGamesPanel.style.display        = current === SidePanelContent.PendingGames        ? 'block' : 'none';
     els.activeOnlineGamesPanel.style.display   = current === SidePanelContent.ActiveOnlineGames   ? 'block' : 'none';
     els.finishedOnlineGamesPanel.style.display = current === SidePanelContent.FinishedOnlineGames ? 'block' : 'none';
     els.accountPanel.style.display             = current === SidePanelContent.Account             ? 'block' : 'none';
-    els.configureOnlinePlayersPanel.style.display = current === SidePanelContent.ConfigureOnlinePlayers ? 'block' : 'none';
+    els.configureOnlinePlayersPanel.style.display = current === SidePanelContent.ConfigureOnlinePlayers ? 'flex' : 'none';
 }
 
 // Builds one full-width nav button per entry in `children` (dataset.child =
