@@ -131,6 +131,39 @@ test('game/resign ends a 2-player game and broadcasts the resigned slot to both 
     await bob.close();
 });
 
+test('chat/send broadcasts to both observers, is seeded via game/subscribe, and rejects non-players', async () => {
+    const alice = await registerAndLogin('tina');
+    const bob = await registerAndLogin('ursula');
+
+    const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
+        config: passOnlyConfig(),
+        onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'client', name: 'ursula' }]]),
+    });
+    assert.equal(status, 'playing');
+    await alice.req('game/subscribe', { id, position: 1 });
+    await bob.req('game/subscribe', { id, position: 2 });
+
+    const bobChat = new Promise(resolve => bob.onEvent('chat/message', resolve));
+    await alice.req('chat/send', { id, content: '  hello  ' });
+    const chatMsg: any = await bobChat;
+    assert.equal(chatMsg.player, 1);
+    assert.equal(chatMsg.content, 'hello');   // trimmed server-side
+
+    // A late subscriber (e.g. reconnect) sees the chat log via game/subscribe.
+    const state = await bob.req<{ state: { chat: { player: number; content: string }[] } }>(
+        'game/subscribe', { id, position: 2 },
+    );
+    assert.deepEqual(state.state.chat, [{ player: 1, time: chatMsg.time, content: 'hello' }]);
+
+    // A connection that owns no slot in the game (pure non-player) is rejected.
+    const carol = await registerAndLogin('victor');
+    await assert.rejects(carol.req('chat/send', { id, content: 'nope' }));
+
+    await alice.close();
+    await bob.close();
+    await carol.close();
+});
+
 test('a finished game survives a real server restart and shows up in a fresh LOGIN', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'goes-test-restart-'));
     const first = await startTestServerProcess(dataDir);

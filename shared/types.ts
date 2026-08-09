@@ -373,6 +373,10 @@ export class GameConfig {
 // OnlineStateResponse). A pass has both fields null.
 export interface ReplayMove { pos: number | null; stone: number | null; }
 
+// One chat entry (see ActiveGame.chat/OnlineGame.chat) - time is epoch ms (Date.now()), stored
+// but never displayed (see Renderer._refreshChatLog()).
+export interface ChatMessage { player: number; time: number; content: string; }
+
 // Minimal, principled record of a finished game: just enough to deterministically
 // reconstruct the final BoardState by replay (see BoardState.fromFinishedGame()),
 // rather than persisting a full point-in-time snapshot of derived state.
@@ -447,6 +451,7 @@ export interface OnlineStateResponse {
     moves: ReplayMove[];
     winners: number[] | null;
     resignedPlayers: number[];
+    chat: ChatMessage[];
 }
 
 export interface BoardView {

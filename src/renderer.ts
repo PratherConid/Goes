@@ -1,6 +1,8 @@
 import { BoardState, MoveType, STONE_MAP } from '@shared/boardState.js';
 import { PlayerInfo, GameConfig, FinishedGame, OnlinePlayerRequest, makeId } from '@shared/types.js';
-import type { BoardView, OnlineStateResponse, PendingGame, ScoreRule, KoRule, TurnInfo, ReplayMove } from '@shared/types.js';
+import type {
+    BoardView, OnlineStateResponse, PendingGame, ScoreRule, KoRule, TurnInfo, ReplayMove, ChatMessage,
+} from '@shared/types.js';
 import type { BoardConfig, BoardModifier } from '@shared/boardConfig.js';
 import {
     PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, computeStarPoints, parseModifier, applyModifiers,
@@ -504,6 +506,11 @@ interface ActiveGame {
     // When true, _onBoardPointerDown ignores drags (no camera orbit) - toggled by the
     // #lock-rotation-btn control-bar button.
     rotationLocked: boolean;
+    // Chat log for this game - append-only, oldest first (chronological storage order);
+    // _refreshChatLog() reverses only at render time (newest first). Local games update this
+    // directly on Send; online games only ever push here from a server chat/message broadcast
+    // (see conn.onEvent('chat/message', ...) in init()), never optimistically on send.
+    chat: ChatMessage[];
 }
 
 // Response shape of REGISTER/LOGIN/FLOGIN: the finished online games the server
@@ -672,6 +679,7 @@ export class Renderer {
     private cmdInput:     HTMLInputElement;
     private cmdOutput:    HTMLDivElement;
     private statusPanel:   HTMLDivElement;
+    private chatPanel:     HTMLDivElement;
     private commandsPanel: HTMLDivElement;
     private historyPanel:  HTMLDivElement;
     private panelDockBtn: HTMLButtonElement;
@@ -733,6 +741,7 @@ export class Renderer {
         this.cmdInput     = document.getElementById('cmd-input')      as HTMLInputElement;
         this.cmdOutput    = document.getElementById('cmd-output')     as HTMLDivElement;
         this.statusPanel   = document.getElementById('status-panel')    as HTMLDivElement;
+        this.chatPanel     = document.getElementById('chat-panel')      as HTMLDivElement;
         this.commandsPanel = document.getElementById('commands-panel')  as HTMLDivElement;
         this.historyPanel  = document.getElementById('history-panel')   as HTMLDivElement;
         this.panelDockBtn = document.getElementById('panel-dock-btn') as HTMLButtonElement;
@@ -829,6 +838,7 @@ export class Renderer {
             homePanel:             this.homePanel,
             historyPanel:         this.historyPanel,
             statusPanel:          this.statusPanel,
+            chatPanel:             this.chatPanel,
             commandsPanel:        this.commandsPanel,
             currentGameSetupPanel: this.currentGameSetupPanel,
             newGamePanel:          this.newGamePanel,
@@ -887,6 +897,12 @@ export class Renderer {
         // Log In/Log Out button handlers call this method directly once the
         // login state actually changes, so the view still updates promptly.
         if (this.currentSidePanel === SidePanelContent.Account) this._renderAccountPanel();
+
+        // Like Account just above, Chat holds persistent input state (the in-progress,
+        // not-yet-sent message in the textarea) that an unrelated _render() (e.g. self-play's
+        // requestAnimationFrame loop, a window resize, or any other game event) must not wipe
+        // out - so it's built once here, on navigation, not from _render()'s per-frame dispatch.
+        if (this.currentSidePanel === SidePanelContent.Chat) this._renderChatPanel();
 
         // Keep the Home/Back/Forward buttons' enabled state in sync - runs
         // after every navigation path (_navigateSidePanel()/_sidePanelBack()/
@@ -1114,6 +1130,9 @@ export class Renderer {
         });
         conn.onEvent('game/resign', (msg: { id: string; slots: number[] }) => {
             this._handleOnlineResign(msg.id, msg.slots);
+        });
+        conn.onEvent('chat/message', (msg: { id: string; player: number; time: number; content: string }) => {
+            this._handleChatMessage(msg.id, msg.player, msg.time, msg.content);
         });
         conn.onEvent('game/engine-error', (msg: { id: string; message: string }) => {
             this._setCmdOutput(`Engine error in game ${msg.id}: ${msg.message}`);
@@ -1684,6 +1703,106 @@ export class Renderer {
         this.accountPanel.append(form, btnRow);
     }
 
+    // Builds the Chat panel's static structure once per navigation into it - see
+    // _refreshSidePanel()'s call site for why this must NOT run on every _render() tick.
+    // Delegates the actual message list to _refreshChatLog(), also called on its own whenever
+    // this._active.chat changes without a full re-navigation (a local send, or an incoming
+    // chat/message broadcast for the active game).
+    private _renderChatPanel(): void {
+        this.chatPanel.innerHTML = '';
+
+        const log = document.createElement('div');
+        log.id = 'chat-log';
+        this.chatPanel.appendChild(log);
+
+        const row = document.createElement('div');
+        row.id = 'chat-input-row';
+        row.className = 'colp-invite-row';
+
+        const textarea = document.createElement('textarea');
+        textarea.id = 'chat-input';
+        textarea.className = 'account-input';
+        textarea.rows = 4;
+        textarea.placeholder = 'Type a message…';
+        // Plain Enter sends (matches the cmd-input console's own Enter-to-submit convention);
+        // Shift+Enter still inserts a newline for a genuinely multi-line message.
+        textarea.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                this._sendChat(textarea);
+            }
+        });
+
+        const sendBtn = document.createElement('button');
+        sendBtn.className = 'status-login-btn';
+        sendBtn.textContent = 'Send';
+        sendBtn.addEventListener('click', () => this._sendChat(textarea));
+
+        row.append(textarea, sendBtn);
+        this.chatPanel.appendChild(row);
+
+        this._refreshChatLog();
+    }
+
+    // Rebuilds just #chat-log's contents from this._active.chat - safe to call often (local send,
+    // incoming chat/message broadcast) since it never touches #chat-input-row/the textarea,
+    // unlike _renderChatPanel() above. No-ops if the Chat panel hasn't been navigated to yet this
+    // session (no #chat-log in the DOM).
+    // Chat-specific player label - unlike fmtPlayerString (sidePanel.ts), drops the "(Pn)" slot
+    // suffix and wraps just the name/symbol in parens, e.g. "(alice)"/"(⌂)"/"(⚙)".
+    private _chatPlayerLabel(playerNum: number): string {
+        const pi = this._active.config.players.get(playerNum);
+        if (!pi) return `(P${playerNum})`;
+        if (pi.type === 'local') return '(⌂)';
+        if (pi.type === 'serverEngine' || pi.type === 'localEngine') return '(⚙)';
+        return `(${pi.name})`;
+    }
+
+    private _refreshChatLog(): void {
+        const log = this.chatPanel.querySelector<HTMLDivElement>('#chat-log');
+        if (!log) return;
+        log.innerHTML = '';
+        // Newest first (reverse chronological) - storage order (this._active.chat) stays
+        // append-only/oldest-first; only the render pass reverses it.
+        for (const { player, content } of [...this._active.chat].reverse()) {
+            const entry = document.createElement('div');
+            entry.className = 'chat-entry';
+            // _chatPlayerLabel's return value is plain text (Unicode symbols or a bare name),
+            // never HTML markup, so the whole entry (formatted player + ':' + the
+            // 100%-untrusted, free-typed `content`) can go through one .textContent assignment -
+            // it can never be parsed as markup.
+            entry.textContent = `${this._chatPlayerLabel(player)}: ${content}`;
+            log.appendChild(entry);
+        }
+    }
+
+    // Local games update `chat` directly; online games send to the server and wait for the
+    // chat/message broadcast to update state (see conn.onEvent('chat/message', ...) in init()) -
+    // mirrors _resign()/_submitOnlineMove()'s existing 'L_' prefix check elsewhere in this file.
+    private _sendChat(textarea: HTMLTextAreaElement): void {
+        const content = textarea.value.trim();
+        if (!content) return;
+
+        if (this.activeIdx.startsWith('L_')) {
+            const players = this._active.config.players;
+            const localSlot = [...players.entries()]
+                .sort(([a], [b]) => a - b)
+                .find(([, pi]) => pi.type === 'local')?.[0];
+            // Fallback: an all-AI self-play game being spectated has no 'local' slot at all -
+            // attribute the message to whoever's turn it is.
+            const player = localSlot ?? this._active.bs.getView().nextTurn.player;
+            this._active.chat.push({ player, time: Date.now(), content });
+            textarea.value = '';
+            this._refreshChatLog();
+            return;
+        }
+
+        const id = this.activeIdx.slice(2);
+        conn.request('chat/send', { id, content }).promise
+            .then(() => { textarea.value = ''; })
+            .catch((e: any) => this._setCmdOutput(`Chat failed: ${e.message}`));
+    }
+
     // Same action as the 'newo' command (_parseCommand) - creates an online
     // game from the current newCfg/onlinePlayerRequest; _createOnlineGame()
     // already handles the not-logged-in/error cases (via _setCmdOutput) and
@@ -2036,6 +2155,7 @@ export class Renderer {
             <div><b>Captures:</b> ${captureLine}</div>
             <div><b>Ply:</b> ${v.plyCount}</div>
             <div><b>Stones placed:</b> ${fmtPlaceCnt(v.history[v.history.length - 1].playerStonePlaceCnt)}</div>
+            <div><b>Game chat:</b> <button id="status-chat-btn" class="status-login-btn">View Chat</button></div>
             <div><b>AI engine:</b> ${this.aiEngineReady ? 'ready' : 'unavailable'}</div>
             <div><b>Engine sims per move:</b> ${this.emNumSims ?? 'default'}</div>
             <div><b>Engine temperature:</b> ${this.emTemperature}</div>
@@ -2066,6 +2186,11 @@ export class Renderer {
             loginBtn.addEventListener('click', () => this._navigateSidePanel(SidePanelContent.Account));
             this.statusPanel.querySelector('#status-login-btn-slot')?.replaceWith(loginBtn);
         }
+
+        // Whole innerHTML is torn down and rebuilt every call - listeners need re-attaching each
+        // time, same reason the login button's own is re-attached above.
+        this.statusPanel.querySelector('#status-chat-btn')
+            ?.addEventListener('click', () => this._navigateSidePanel(SidePanelContent.Chat));
 
         // Projection matrix editor: one textbox per entry (2 rows x embDim columns), built via
         // DOM API for the same reason the login button above is - each box needs its own Enter-key
@@ -2397,12 +2522,12 @@ export class Renderer {
         this._advancePopupQueue();
     }
 
-    private _registerGame(id: string, bs: BoardState, config: GameConfig): void {
+    private _registerGame(id: string, bs: BoardState, config: GameConfig, chat: ChatMessage[] = []): void {
         this.engineManager.cancel();
         this.engineManager.sessionId = null;
         this.activeGames.set(id, {
             bs, config, displayPlyNum: 0, idxShowHistory: 0, randomEvaled: null,
-            viewport: defaultViewport(), rotationLocked: false,
+            viewport: defaultViewport(), rotationLocked: false, chat,
         });
         this.activeIdx = id;
     }
@@ -3042,6 +3167,10 @@ export class Renderer {
                     bs, config: fg.config, displayPlyNum: bs.getView().plyCount,
                     idxShowHistory: 0, randomEvaled: null, viewport: defaultViewport(),
                     rotationLocked: false,
+                    // Not part of FinishedGame's JSON persistence (see server/src/
+                    // onlineGameManager.ts) - out of scope, so a finished game's chat
+                    // doesn't survive a server restart or a fresh login on a new client.
+                    chat: [],
                 });
             } catch (e) { console.error('Failed to reconstruct finished game', id, e); }
         }
@@ -3091,7 +3220,7 @@ export class Renderer {
     }
 
     // Promote a pending game to active once it starts.
-    private _activatePendingGame(id: string, config: GameConfig) {
+    private _activatePendingGame(id: string, config: GameConfig, chat: ChatMessage[] = []) {
         const boardEntry = _cmdToBoard.get(config.boardType);
         if (!boardEntry) { this._setCmdOutput(`Unknown board type: ${config.boardType}`); return; }
         const bc = applyModifiers(boardEntry.fn(...config.boardArgs), config.boardModifiers);
@@ -3102,7 +3231,7 @@ export class Renderer {
             config.maxPlies, new Array(bc.N).fill(0), bc,
         );
         this.pendingGames.delete(id);
-        this._registerGame('O_' + id, bs, config);
+        this._registerGame('O_' + id, bs, config, chat);
         const localEntries = [...this._active.config.players.entries()].filter(([, pi]) => pi.name === this.userName);
         this._setCmdOutput(`Game started! You are player(s) ${localEntries.map(([s, pi]) => `${s} (${pi.name})`).join(', ')}`);
         // This is the actual "an online game started" moment (as opposed to
@@ -3134,9 +3263,17 @@ export class Renderer {
 
             if (isActive) this._notifyTurn(ag, wasGameOver);
         }
+        // Full authoritative resync from the server's chat log - unlike moves (which need
+        // incremental apply to preserve displayPlyNum/viewport bookkeeping), chat has no such
+        // per-message side effects, so a plain overwrite is simplest and correct for both a
+        // freshly-seeded game and one catching up on a reconnect.
+        ag.chat = state.chat;
         this._maybeFinish('O_' + id);
 
-        if (isActive) this._render();
+        if (isActive) {
+            if (this.currentSidePanel === SidePanelContent.Chat) this._refreshChatLog();
+            this._render();
+        }
     }
 
     private _handleOnlineMove(id: string, moveIndex: number | null, stone: number | null) {
@@ -3168,6 +3305,19 @@ export class Renderer {
             this._notifyTurn(ag, wasGameOver);
             this._render();
         }
+    }
+
+    private _handleChatMessage(id: string, player: number, time: number, content: string): void {
+        // _findGame checks both activeGames and finishedGames - chat isn't gated on the game
+        // still being in progress (see sendChat()'s own comment, server-side).
+        const ag = this._findGame('O_' + id);
+        if (!ag) return;
+        ag.chat.push({ player, time, content });
+        const isActive = 'O_' + id === this.activeIdx;
+        // Narrower than _handleOnlineMove/_handleOnlineResign's isActive-only gate: also require
+        // the Chat panel to actually be showing, so a chat message for the active game never
+        // touches #chat-log (or risks the textarea) while some other side-panel node is current.
+        if (isActive && this.currentSidePanel === SidePanelContent.Chat) this._refreshChatLog();
     }
 
     private _notifyTurn(ag: ActiveGame, wasGameOver: boolean) {

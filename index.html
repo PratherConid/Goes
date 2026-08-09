@@ -334,7 +334,7 @@
     #home-panel, #history-panel, #status-panel, #current-game-setup-panel, #new-game-panel,
     #game-records-panel, #game-preset-selection-panel, #board-preset-selection-panel,
     #active-local-games-panel, #pending-games-panel, #active-online-games-panel,
-    #finished-online-games-panel, #account-panel, #configure-online-players-panel {
+    #finished-online-games-panel, #account-panel, #configure-online-players-panel, #chat-panel {
       flex: 1 1 0;
       display: flex;
       flex-direction: column;
@@ -456,6 +456,32 @@
     }
     .colp-invite-row .account-input { flex: 1 1 0; }
 
+    #chat-log {
+      flex: 1 1 0;
+      overflow-y: auto;
+      padding: 12px;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .chat-entry {
+      padding: 3px 0;
+    }
+    #chat-input-row {
+      flex-shrink: 0;
+      align-items: center;
+      padding: 8px 12px;
+    }
+    #chat-input-row button {
+      /* 1.5x .status-login-btn's normal height (2px 10px padding + 1px border around a 14px
+         line) - padding alone is scaled up so the button grows without distorting its text. */
+      padding-top: 7px;
+      padding-bottom: 7px;
+    }
+    #chat-input {
+      resize: vertical;
+      font-family: inherit;
+    }
+
     .account-form {
       display: grid;
       grid-template-columns: auto 1fr;
@@ -565,6 +591,7 @@
       </div>
     </div>
     <div id="status-panel" style="display:none"></div>
+    <div id="chat-panel" style="display:none"></div>
     <div id="commands-panel" style="display:none"></div>
     <div id="current-game-setup-panel" style="display:none">
       <div id="current-game-setup-details"></div>

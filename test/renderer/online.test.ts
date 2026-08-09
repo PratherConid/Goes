@@ -97,3 +97,26 @@ test("it is not alice's turn once the opponent's slot is next", async () => {
     // turnList stones=[1,2] -> slot 1 (bob) moves first: not alice's turn.
     assert.equal(passBtn.disabled, true);
 });
+
+test('sending a chat message online round-trips through chat/message, not optimistically', async () => {
+    document.querySelector<HTMLButtonElement>('#status-chat-btn')!.click();
+
+    const textarea = document.getElementById('chat-input') as HTMLTextAreaElement;
+    textarea.value = 'hi there';
+    document.querySelector<HTMLButtonElement>('#chat-input-row button')!.click();
+
+    const reqMsg = ws.lastSentRequest('chat/send');
+    assert.equal(reqMsg['content'], 'hi there');
+    assert.equal('player' in reqMsg, false);   // server derives the player, client never sends it
+
+    // Not yet in the log - only the server's broadcast adds it.
+    assert.doesNotMatch(document.getElementById('chat-log')!.textContent ?? '', /hi there/);
+
+    ws.simulateMessage({ kind: 'res', reqId: reqMsg['reqId'], ok: true, data: { ok: true } });
+    ws.simulateMessage({
+        kind: 'event', type: 'chat/message', id: 'GAME2', player: 1, time: Date.now(), content: 'hi there',
+    });
+    await tick();
+
+    assert.match(document.getElementById('chat-log')!.textContent ?? '', /hi there/);
+});

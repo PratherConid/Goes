@@ -95,3 +95,19 @@ test('clicking the board places a stone at the clicked node', () => {
 
     assert.equal(plyNum.textContent, '1/1');
 });
+
+test('sending a chat message in a local game updates the panel directly, no server round trip', () => {
+    createRenderer();
+    (document.querySelector('#home-panel button[data-child="status"]') as HTMLButtonElement).click();
+    document.querySelector<HTMLButtonElement>('#status-chat-btn')!.click();
+
+    const textarea = document.getElementById('chat-input') as HTMLTextAreaElement;
+    textarea.value = 'gg';
+    document.querySelector<HTMLButtonElement>('#chat-input-row button')!.click();
+
+    // Every slot in a fresh local game defaults to type 'local' (see Renderer's constructor) -
+    // _chatPlayerLabel renders that as (⌂), and _sendChat picks the lowest-numbered such slot
+    // as the sender.
+    assert.match(document.getElementById('chat-log')!.textContent ?? '', /\(⌂\): gg/);
+    assert.equal(textarea.value, '');
+});

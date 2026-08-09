@@ -18,6 +18,7 @@ import { loadGameRecordStore } from './gameRecordStore.js';
 //                   { kind:'event', type:'game/invite', id, from }           (push, personalized - to one invited user)
 //                   { kind:'event', type:'game/invite-failed', id, message } (push, personalized - to everyone involved)
 //                   { kind:'event', type:'game/engine-error', id, message }  (push)
+//                   { kind:'event', type:'chat/message', id, player, time, content } (push)
 //
 // While waiting, game/pending-games is broadcast after every join so clients see
 // who has joined. After a game starts only the minimal change is forwarded.
@@ -319,6 +320,16 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                 return {
                     results: [{ data: { ok: true }, broadcast: { id, type: 'game/resign', payload: { slots: [slot] } } }],
                     engineGame: id,
+                };
+            }
+            case 'chat/send': {
+                const id = msg['id'] as string;
+                const content = (msg['content'] as string) ?? '';
+                const positions = requirePositions(id, ws);   // already throws 403 if empty
+                const player = positions[0];
+                const chatMsg = onlineGameManager.sendChat(id, player, content);
+                return {
+                    results: [{ data: { ok: true }, broadcast: { id, type: 'chat/message', payload: chatMsg } }],
                 };
             }
             case 'game/subscribe': {

@@ -11,6 +11,7 @@ export enum SidePanelContent {
     Home                = 'home',
     History             = 'history',
     Status              = 'status',
+    Chat                = 'chat',
     CommandReference    = 'commandReference',
     CurrentGameSetup    = 'currentGameSetup',
     NewGame             = 'newGame',
@@ -41,6 +42,10 @@ export const SidePanelHierarchy: Record<SidePanelContent, [SidePanelContent | nu
     // content.
     [SidePanelContent.History]:          [SidePanelContent.CurrentGameSetup, []],
     [SidePanelContent.Status]:           [SidePanelContent.Home, []],
+    // Chat's nav button lives inside Status's own template (Renderer._renderStatus()), not the
+    // generic childButtons() mechanism - same reason History's parent is CurrentGameSetup rather
+    // than Home.
+    [SidePanelContent.Chat]:              [SidePanelContent.Status, []],
     [SidePanelContent.CommandReference]: [SidePanelContent.Home, []],
     [SidePanelContent.CurrentGameSetup]: [SidePanelContent.Home, [SidePanelContent.History]],
     // GamePresetSelection/BoardPresetSelection's nav buttons are likewise rendered by
@@ -75,6 +80,7 @@ export const SidePanelTitle: Record<SidePanelContent, string> = {
     [SidePanelContent.Home]:             'Home',
     [SidePanelContent.History]:          'History Of Current Game',
     [SidePanelContent.Status]:           'Status',
+    [SidePanelContent.Chat]:             'Chat',
     [SidePanelContent.CommandReference]: 'Command Reference',
     [SidePanelContent.CurrentGameSetup]: 'Current Game Info',
     [SidePanelContent.NewGame]:          'New Game',
@@ -129,6 +135,7 @@ export interface SidePanelElements {
     homePanel:             HTMLDivElement;
     historyPanel:          HTMLDivElement;
     statusPanel:           HTMLDivElement;
+    chatPanel:             HTMLDivElement;
     commandsPanel:         HTMLDivElement;
     currentGameSetupPanel: HTMLDivElement;
     newGamePanel:          HTMLDivElement;
@@ -158,6 +165,7 @@ export function renderSidePanelChrome(current: SidePanelContent, els: SidePanelE
     els.homePanel.style.display                = current === SidePanelContent.Home                ? 'block' : 'none';
     els.historyPanel.style.display             = current === SidePanelContent.History             ? 'flex'  : 'none';
     els.statusPanel.style.display              = current === SidePanelContent.Status              ? 'block' : 'none';
+    els.chatPanel.style.display                 = current === SidePanelContent.Chat                ? 'flex'  : 'none';
     els.commandsPanel.style.display            = current === SidePanelContent.CommandReference    ? 'block' : 'none';
     els.currentGameSetupPanel.style.display    = current === SidePanelContent.CurrentGameSetup    ? 'block' : 'none';
     els.newGamePanel.style.display             = current === SidePanelContent.NewGame             ? 'block' : 'none';

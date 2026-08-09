@@ -2,7 +2,7 @@ import { BoardState } from '@shared/boardState.js';
 import { PrescribedBoardMap, PrescribedBoardFns, PrescribedBoard, applyModifiers } from '@shared/boardConfig.js';
 import type { BoardConfig } from '@shared/boardConfig.js';
 import { PlayerInfo, GameConfig, FinishedGame, OnlinePlayerRequest, makeId } from '@shared/types.js';
-import type { OnlineStateResponse, PendingGame, ReplayMove } from '@shared/types.js';
+import type { OnlineStateResponse, PendingGame, ReplayMove, ChatMessage } from '@shared/types.js';
 import { recordFinishedGame, getFinishedGames } from './gameRecordStore.js';
 import type { GameRecordStoreState } from './gameRecordStore.js';
 
@@ -37,7 +37,10 @@ export interface OnlineGame {
     boardState: BoardState;
     engineSessions: Map<number, string>;   // slot → AI session ID for serverEngine slots
     observers: Set<string>;                // all connected usernames; used for broadcasting
+    chat: ChatMessage[];
 }
+
+const MAX_CHAT_LENGTH = 2000;
 
 const boardTypeToFn = new Map<string, (...args: number[]) => BoardConfig>();
 for (const key of Object.keys(PrescribedBoardMap)) {
@@ -66,6 +69,7 @@ export class OnlineGameManager {
                 const boardState = BoardState.fromFinishedGame(finishedGame, bc);
                 this.finishedGames.set(id, {
                     id, config: finishedGame.config, boardState, engineSessions: new Map(), observers,
+                    chat: [],
                 });
             } catch (e) {
                 console.warn('[onlineGameManager] failed to reconstruct finished game', id, e);
@@ -260,6 +264,7 @@ export class OnlineGameManager {
         this.activeGames.set(pending.id, {
             id: pending.id, config: pending.config,
             boardState, engineSessions: new Map(), observers: pending.observers,
+            chat: [],
         });
     }
 
@@ -321,7 +326,7 @@ export class OnlineGameManager {
     getState(id: string): OnlineStateResponse {
         const pending = this.pendingGames.get(id);
         if (pending) {
-            return { status: 'waiting', moves: [], winners: [], resignedPlayers: [] };
+            return { status: 'waiting', moves: [], winners: [], resignedPlayers: [], chat: [] };
         }
         const game = this.activeGames.get(id) ?? this.finishedGames.get(id);
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
@@ -331,6 +336,7 @@ export class OnlineGameManager {
             moves: game.boardState.moveInfos().map(m => ({ pos: m.pos, stone: m.stone })),
             winners: v.winners,
             resignedPlayers: v.resignedPlayers,
+            chat: game.chat,
         };
     }
 
@@ -417,5 +423,18 @@ export class OnlineGameManager {
         game.boardState.advanceResigned();
         this._maybeFinish(game);
         return slot;
+    }
+
+    // Unlike applyMove/resign, allows a FINISHED game (chat is social, not a game action - people
+    // should be able to keep chatting after the game ends). `player` is already authorized by the
+    // caller (wsServer.ts's 'chat/send' case, via the same requirePositions() move/resign use).
+    sendChat(id: string, player: number, content: string): ChatMessage {
+        const game = this.activeGames.get(id) ?? this.finishedGames.get(id);
+        if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
+        const trimmed = content.trim().slice(0, MAX_CHAT_LENGTH);
+        if (!trimmed) throw Object.assign(new Error('Chat message cannot be empty'), { statusCode: 400 });
+        const msg: ChatMessage = { player, time: Date.now(), content: trimmed };
+        game.chat.push(msg);
+        return msg;
     }
 }
