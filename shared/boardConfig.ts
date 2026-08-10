@@ -890,24 +890,22 @@ function regularSimplexCoords(dim: number): number[][] {
 }
 
 /**
- * The Sierpinski dim-simplex (gasket) of order `n`: n=0 is a single node at the origin; n=1 is a
- * unit-edge regular dim-simplex (dim+1 mutually-adjacent nodes, see regularSimplexCoords); for n>1,
- * dim+1 copies of order n-1 (each half the linear size) sit at the corners of the outer simplex and
- * are glued at their touching edge-midpoints - see sierpinskiRec for the recursive construction. For
- * dim=1 there is no "hole" to remove (a 1-simplex's only subdivision is its own 2 halves), so this
- * degenerates to a plain, fully-subdivided line of 2^(n-1)+1 nodes - not a fractal at all.
+ * The Sierpinski dim-simplex (gasket) of order `n` (n >= 1): n=1 is a unit-edge regular dim-simplex
+ * (dim+1 mutually-adjacent nodes, see regularSimplexCoords); for n>1, dim+1 copies of order n-1
+ * (each half the linear size) sit at the corners of the outer simplex and are glued at their
+ * touching edge-midpoints - see sierpinskiRec for the recursive construction. For dim=1 there is no
+ * "hole" to remove (a 1-simplex's only subdivision is its own 2 halves), so this degenerates to a
+ * plain, fully-subdivided line of 2^(n-1)+1 nodes - not a fractal at all.
  *
  * The outer simplex is placed symmetric about the origin (regularSimplexCoords' own convention),
  * and since the recursive rule above is itself symmetric under the outer simplex's own (dim+1)!
  * vertex-relabeling symmetry group (relabeling corners and rebuilding reproduces the exact same
  * node-position set), the resulting node set's own centroid always lands exactly on the origin too,
- * for every n - not just the n=0/n=1 base cases.
+ * for every n - not just the n=1 base case.
  */
 export function sierpinskiSimplex(dim: number, n: number): BoardConfig {
     assert(Number.isInteger(dim) && dim >= 1, `dim must be a positive integer, got ${dim}`);
-    assert(Number.isInteger(n) && n >= 0, `n must be a non-negative integer, got ${n}`);
-    if (n === 0)
-        return make(new Embedding(dim, [new Array(dim).fill(0)], defaultProductProjMat(dim)), zeroAdj(1));
+    assert(Number.isInteger(n) && n >= 1, `n must be a positive integer, got ${n}`);
 
     const scale = 2 ** (n - 1); // unit-edge at n=1, doubling per level
     const corners = regularSimplexCoords(dim).map(p => p.map(v => v * scale));

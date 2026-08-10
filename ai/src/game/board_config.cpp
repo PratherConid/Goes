@@ -696,8 +696,7 @@ sierpinski_rec(int n, const std::vector<std::vector<unsigned>>& corners) {
 // since `side` only ever appears as a power of 2 above the n=1 base case.
 BoardConfig sierpinski_simplex_board(int dim, int n) {
     assert(dim >= 1 && "dim must be at least 1");
-    assert(n >= 0 && "n must be non-negative");
-    if (n == 0) return make_bc(zero_adj(1), static_cast<unsigned>(dim), { std::vector<unsigned>(dim, 0u) });
+    assert(n >= 1 && "n must be at least 1");
 
     unsigned side = 1u << (n - 1);
     std::vector<std::vector<unsigned>> corners(dim + 1, std::vector<unsigned>(dim, 0u));

@@ -179,9 +179,9 @@ BoardConfig hypercube_board(int w, int h, int d, int t);
 // A triangular board with side length w.
 BoardConfig triangular_board(int w);
 
-// Mirrors shared/boardConfig.ts's sierpinskiSimplex()/sierpinskiRec()/mergeBoards() (n=0: single
-// node; n=1: unit dim-simplex; n>1: dim+1 copies of n-1 glued at touching corners via the same
-// dim+1-way merge - see the .cpp file's merge_boards/sierpinski_rec), with one simplification: the
+// Mirrors shared/boardConfig.ts's sierpinskiSimplex()/sierpinskiRec()/mergeBoards() (n >= 1; n=1:
+// unit dim-simplex; n>1: dim+1 copies of n-1 glued at touching corners via the same dim+1-way
+// merge - see the .cpp file's merge_boards/sierpinski_rec), with one simplification: the
 // TS side's regularSimplexCoords() is real-valued and centroid-at-origin (irrational for dim >= 2 -
 // no exact-integer analog, since BoardConfig::embed here is exact-integer only, see merge_close's
 // own doc comment), so this instead places corner 0 at the origin and corner k (1 <= k <= dim) at
