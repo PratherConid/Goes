@@ -2158,6 +2158,12 @@ export class Renderer {
         this.popupQueue.push({ kind: 'create-failed', message });
         this._advancePopupQueue();
         this._render();
+        // Ack the failure back to the server, the same way the decliner's own _respondToWithdraw
+        // does - the request is already known-doomed, and this client would otherwise never send
+        // a response at all (its popup is gone, replaced by the message above), leaving it stuck
+        // in unresponded forever and the game locked (see respondToWithdraw()'s own comment).
+        // A no-op 403/404 for the original requestor and anyone who already responded.
+        void conn.request('game/withdraw-respond', { id, accept: false }).promise.catch(() => {});
     }
 
     private async _respondToWithdraw(id: string, accept: boolean) {
@@ -2177,7 +2183,9 @@ export class Renderer {
             const result = await conn.request<{ status: string }>(
                 'game/withdraw-request', toPly === undefined ? { id } : { id, toPly },
             ).promise;
-            if (result.status === 'pending') this._setCmdOutput('Withdraw request sent - waiting for other players.');
+            if (result.status === 'pending') {
+                this._setCmdOutput('Withdrawal request sent - waiting for other players.');
+            }
         } catch (e: any) {
             this.popupQueue.push({ kind: 'create-failed', message: e.message });
             this._advancePopupQueue();

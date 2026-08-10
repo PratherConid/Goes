@@ -353,7 +353,7 @@ export class OnlineGameManager {
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
         if (game.boardState.gameOver()) throw Object.assign(new Error('Game is not in progress'), { statusCode: 409 });
         if (game.withdrawRequest)
-            throw Object.assign(new Error('A withdraw request is in progress'), { statusCode: 409 });
+            throw Object.assign(new Error('A withdrawal request is in progress'), { statusCode: 409 });
         if (game.boardState.getView().plyCount !== clientIdx)
             throw Object.assign(new Error('Move index mismatch'), { statusCode: 409 });
         if (!positions.includes(game.boardState.nextTurn.player))
@@ -416,7 +416,7 @@ export class OnlineGameManager {
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
         if (game.boardState.gameOver()) throw Object.assign(new Error('Game is not in progress'), { statusCode: 409 });
         if (game.withdrawRequest)
-            throw Object.assign(new Error('A withdraw request is in progress'), { statusCode: 409 });
+            throw Object.assign(new Error('A withdrawal request is in progress'), { statusCode: 409 });
         const { turnList } = game.config;
         const posSet = new Set(positions);
         const resignedSet = new Set(game.boardState.resignedPlayers);
@@ -446,7 +446,8 @@ export class OnlineGameManager {
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
         if (game.withdrawRequest)
             throw Object.assign(
-                new Error('Cannot start withdraw request: another withdraw request in progress'), { statusCode: 409 },
+                new Error('Cannot start withdrawal request: another withdrawal request in progress'),
+                { statusCode: 409 },
             );
 
         const moves = game.boardState.moveInfos();
@@ -496,10 +497,12 @@ export class OnlineGameManager {
         const game = this.activeGames.get(id);
         if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
         const wr = game.withdrawRequest;
-        if (!wr) throw Object.assign(new Error('No withdraw request in progress'), { statusCode: 404 });
+        if (!wr) throw Object.assign(new Error('No withdrawal request in progress'), { statusCode: 404 });
         const slots = wr.unresponded.get(userName);
         if (!slots)
-            throw Object.assign(new Error('No pending withdraw request for you to respond to'), { statusCode: 403 });
+            throw Object.assign(
+                new Error('No pending withdrawal request for you to respond to'), { statusCode: 403 },
+            );
         wr.unresponded.delete(userName);
 
         if (accept && wr.refused.size === 0) {
@@ -519,7 +522,9 @@ export class OnlineGameManager {
         if (wr.unresponded.size === 0) game.withdrawRequest = null;
 
         if (accept)  // only reachable when some other voter already declined
-            throw Object.assign(new Error(`Withdraw request for game ${id} already declined`), { statusCode: 409 });
+            throw Object.assign(
+                new Error(`Withdrawal request for game ${id} already declined`), { statusCode: 409 },
+            );
 
         if (!isFirstDecline) return { status: 'declined' };
         const notify = [...game.observers].filter(name => name !== userName);

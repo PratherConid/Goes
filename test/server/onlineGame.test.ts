@@ -694,7 +694,7 @@ test('a second withdraw request while one is already pending is rejected', async
     await assert.rejects(
         alice.req('game/withdraw-request', { id }),
         (e: any) => {
-            assert.equal(e.message, 'Cannot start withdraw request: another withdraw request in progress');
+            assert.equal(e.message, 'Cannot start withdrawal request: another withdrawal request in progress');
             assert.equal(e.statusCode, 409);
             return true;
         },
@@ -718,7 +718,7 @@ test('game/move and game/resign are rejected while a withdraw vote is pending, a
     assert.equal(req.status, 'pending');
 
     const lockedError = (e: any) => {
-        assert.match(e.message, /withdraw request is in progress/); assert.equal(e.statusCode, 409); return true;
+        assert.match(e.message, /withdrawal request is in progress/); assert.equal(e.statusCode, 409); return true;
     };
     await assert.rejects(bob.req('game/move', { id, moveIndex: 1, clientIdx: 1 }), lockedError);
     await assert.rejects(bob.req('game/resign', { id }), lockedError);

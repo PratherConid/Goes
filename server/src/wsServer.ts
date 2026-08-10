@@ -375,7 +375,7 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                         results: [{ data: { status: 'declined' } }],
                         pushes: (result.notify ?? []).map(name => ({
                             to: name, type: 'game/withdraw-failed',
-                            payload: { id, message: `Withdraw request for game ${id} was declined` },
+                            payload: { id, message: `Withdrawal request for game ${id} was declined` },
                         })),
                     };
                 }

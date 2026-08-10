@@ -120,3 +120,28 @@ test('sending a chat message online round-trips through game/chatmessage, not op
 
     assert.match(document.getElementById('chat-log')!.textContent ?? '', /hi there/);
 });
+
+test('a withdraw-proposed popup that fails via someone else declining is auto-acked back to the server', async () => {
+    // Regression test: a straggler who received game/withdraw-proposed but never got to click
+    // Agree/Decline (their popup gets replaced by the failure message below) must still tell the
+    // server it's been informed - otherwise the server's unresponded bookkeeping (and the
+    // game-lock it holds) never drains, since this client would otherwise send nothing at all.
+    ws.simulateMessage({ kind: 'event', type: 'game/withdraw-proposed', id: 'GAME2', from: 'bob', numWithdrawn: 1 });
+    await tick();
+    assert.match(document.querySelector('.popup-box')!.textContent ?? '', /wants to withdraw 1 move/);
+
+    ws.simulateMessage({
+        kind: 'event', type: 'game/withdraw-failed', id: 'GAME2',
+        message: 'Withdrawal request for game GAME2 was declined',
+    });
+    await tick();
+
+    // The stale withdraw-request popup is gone, replaced by the failure message.
+    assert.doesNotMatch(document.querySelector('.popup-box')!.textContent ?? '', /wants to withdraw/);
+    assert.match(document.querySelector('.popup-box')!.textContent ?? '', /was declined/);
+
+    // The client acked the failure back to the server on its own, without any user click.
+    const ackMsg = ws.lastSentRequest('game/withdraw-respond');
+    assert.equal(ackMsg['id'], 'GAME2');
+    assert.equal(ackMsg['accept'], false);
+});
