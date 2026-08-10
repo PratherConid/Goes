@@ -796,6 +796,102 @@ export function starBoard(n: number): BoardConfig {
 }
 
 /**
+ * Combines two boards into one, additionally identifying each `(idxIn1, idxIn2)` pair in `merges`
+ * as the same node (the merged node keeps `b1`'s position - callers are expected to only merge
+ * pairs whose positions already coincide, e.g. two recursive `sierpinskiTriangle` sub-copies
+ * sharing a corner). Returns the combined board plus maps from each input board's own indices to
+ * their new indices in the combined board - needed by callers that must keep tracking specific
+ * nodes (like sierpinskiTriangle's own outer corners) across further merges.
+ */
+function mergeBoards(
+    b1: { pos: number[][]; adj: number[][] }, b2: { pos: number[][]; adj: number[][] }, merges: [number, number][],
+): { pos: number[][]; adj: number[][]; map1: number[]; map2: number[] } {
+    const map1 = b1.pos.map((_, i) => i);
+    const map2to1 = new Map(merges.map(([i1, i2]) => [i2, i1]));
+    const pos = [...b1.pos];
+    const map2: number[] = [];
+    for (let i = 0; i < b2.pos.length; i++) {
+        const target = map2to1.get(i);
+        if (target !== undefined) { map2.push(target); continue; }
+        map2.push(pos.length);
+        pos.push(b2.pos[i]);
+    }
+    const adj = zeroAdj(pos.length);
+    for (let i = 0; i < b1.pos.length; i++)
+        for (let j = 0; j < b1.pos.length; j++)
+            if (b1.adj[i][j]) adj[map1[i]][map1[j]] = 1;
+    for (let i = 0; i < b2.pos.length; i++)
+        for (let j = 0; j < b2.pos.length; j++)
+            if (b2.adj[i][j]) adj[map2[i]][map2[j]] = 1;
+    return { pos, adj, map1, map2 };
+}
+
+/**
+ * Recursive core of sierpinskiTriangle(): builds the order-`n` gasket (n >= 1) directly on the
+ * given `[P0, P1, P2]` corner positions. n=1 is the literal 3-node triangle; n>1 recurses into 3
+ * order-(n-1) copies placed on the "near-corner" half-scale sub-triangles (near P0/P1/P2
+ * respectively) and glues each touching pair at their shared edge-midpoint corner - the classic
+ * middle-sub-triangle "hole" is simply never built at all, unlike triangleForm's full 4-way
+ * subdivision. Returns the built board plus the (possibly-merged) node indices of its own 3
+ * corners, in P0/P1/P2 order, so an outer recursive call can glue onto them in turn.
+ */
+function sierpinskiRec(n: number, corners: number[][]): { pos: number[][]; adj: number[][]; corners: number[] } {
+    const [P0, P1, P2] = corners;
+    if (n === 1) {
+        const adj = zeroAdj(3);
+        for (const [a, b] of [[0, 1], [0, 2], [1, 2]]) { adj[a][b] = 1; adj[b][a] = 1; }
+        return { pos: [P0, P1, P2], adj, corners: [0, 1, 2] };
+    }
+    const mid = (a: number[], b: number[]) => a.map((v, k) => (v + b[k]) / 2);
+    const M01 = mid(P0, P1), M02 = mid(P0, P2), M12 = mid(P1, P2);
+    const sub0 = sierpinskiRec(n - 1, [P0, M01, M02]);
+    const sub1 = sierpinskiRec(n - 1, [M01, P1, M12]);
+    const sub2 = sierpinskiRec(n - 1, [M02, M12, P2]);
+
+    const m01 = mergeBoards(sub0, sub1, [[sub0.corners[1], sub1.corners[0]]]);
+    const m012 = mergeBoards(
+        m01, sub2,
+        [[m01.map1[sub0.corners[2]], sub2.corners[0]], [m01.map2[sub1.corners[2]], sub2.corners[1]]],
+    );
+
+    return {
+        pos: m012.pos, adj: m012.adj,
+        corners: [
+            m012.map1[m01.map1[sub0.corners[0]]],
+            m012.map1[m01.map2[sub1.corners[1]]],
+            m012.map2[sub2.corners[2]],
+        ],
+    };
+}
+
+/**
+ * The Sierpinski triangle (gasket) of order `n`: n=0 is a single node at the origin; n=1 is a
+ * unit-side equilateral triangle (3 mutually-adjacent nodes, same circumradius/orientation
+ * convention as regularPolygonBoard(3)); for n>1, three copies of order n-1 (each half the linear
+ * size) sit at the corners of the outer triangle and are glued at their touching edge-midpoints -
+ * see sierpinskiRec for the recursive construction.
+ *
+ * The outer triangle is placed symmetric about the origin (same convention as regularPolygonBoard),
+ * and since the recursive rule above is itself symmetric under the outer triangle's 3-fold
+ * rotation (relabeling P0/P1/P2 cyclically and rebuilding reproduces the exact same node-position
+ * set), the resulting node set's own centroid always lands exactly on the origin too, for every n -
+ * not just the n=0/n=1 base cases.
+ */
+export function sierpinskiTriangle(n: number): BoardConfig {
+    assert(Number.isInteger(n) && n >= 0, `n must be a non-negative integer, got ${n}`);
+    if (n === 0) return make(new Embedding(2, [[0, 0]], DEFAULT_2D_PROJMAT), zeroAdj(1));
+
+    const r = (1 / Math.sqrt(3)) * 2 ** (n - 1); // circumradius: unit-side at n=1, doubling per level
+    const corners: number[][] = [0, 1, 2].map(k => {
+        const theta = (2 * Math.PI * k) / 3;
+        return [r * Math.cos(theta), r * Math.sin(theta)];
+    });
+
+    const built = sierpinskiRec(n, corners);
+    return make(new Embedding(2, built.pos, DEFAULT_2D_PROJMAT), built.adj);
+}
+
+/**
  * A regular tetrahedron: 4 vertices, all mutually adjacent (K4), 6 unit-length edges. A
  * side-length-w subdivision of its 4 triangular faces is no longer built in here directly - apply
  * the `triangleForm(w)` modifier afterward instead (findTriangles finds exactly its 4 faces on this
@@ -1383,7 +1479,8 @@ export enum PrescribedBoard {
     twistedSquareBoard,
     glueTwistedSquareBoard,
     starBoard,
-    octahedronBoard
+    octahedronBoard,
+    sierpinskiTriangle
 }
 
 export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string, string]> = {
@@ -1427,6 +1524,8 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string
         [1, "star", "&lt;n&gt;", "Star graph: 1 center node connected to n outer nodes"],
     [PrescribedBoard.octahedronBoard]:
         [0, "octa", "", "Regular octahedron (6 vertices, 8 triangular faces, unit-length edges)"],
+    [PrescribedBoard.sierpinskiTriangle]:
+        [1, "sier", "&lt;n&gt;", "Sierpinski triangle (gasket) of order n"],
 };
 
 export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => BoardConfig> = {
@@ -1449,6 +1548,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.glueTwistedSquareBoard]:   (...a) => glueTwistedSquareBoard(a[0], a[1], a[2]),
     [PrescribedBoard.starBoard]:                 (...a) => starBoard(a[0]),
     [PrescribedBoard.octahedronBoard]:          () => octahedronBoard(),
+    [PrescribedBoard.sierpinskiTriangle]:       (...a) => sierpinskiTriangle(a[0]),
 };
 
 /**

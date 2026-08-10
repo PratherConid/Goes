@@ -606,6 +606,86 @@ BoardConfig triangular_board(int w) {
     return make_bc(std::move(adj), 2u, std::move(pos));
 }
 
+// Mirrors shared/boardConfig.ts's mergeBoards() - a separate helper from the pre-existing
+// quotient_board above because that one operates on a single already-combined board plus a merge
+// list, not two still-separate ones. Returns (pos, adj, map1, map2).
+static std::tuple<std::vector<std::vector<unsigned>>, std::vector<std::vector<int>>,
+                   std::vector<int>, std::vector<int>>
+merge_boards(const std::vector<std::vector<unsigned>>& pos1, const std::vector<std::vector<int>>& adj1,
+             const std::vector<std::vector<unsigned>>& pos2, const std::vector<std::vector<int>>& adj2,
+             const std::vector<std::pair<int,int>>& merges) {
+    std::vector<int> map1(pos1.size());
+    std::iota(map1.begin(), map1.end(), 0);
+    std::map<int, int> map2to1;
+    for (auto [i1, i2] : merges) map2to1[i2] = i1;
+
+    std::vector<std::vector<unsigned>> pos = pos1;
+    std::vector<int> map2;
+    for (size_t i = 0; i < pos2.size(); i++) {
+        auto it = map2to1.find(static_cast<int>(i));
+        if (it != map2to1.end()) { map2.push_back(it->second); continue; }
+        map2.push_back(static_cast<int>(pos.size()));
+        pos.push_back(pos2[i]);
+    }
+
+    auto adj = zero_adj(static_cast<int>(pos.size()));
+    for (size_t i = 0; i < pos1.size(); i++)
+        for (size_t j = 0; j < pos1.size(); j++)
+            if (adj1[i][j]) adj[map1[i]][map1[j]] = 1;
+    for (size_t i = 0; i < pos2.size(); i++)
+        for (size_t j = 0; j < pos2.size(); j++)
+            if (adj2[i][j]) adj[map2[i]][map2[j]] = 1;
+
+    return { std::move(pos), std::move(adj), std::move(map1), std::move(map2) };
+}
+
+// Mirrors shared/boardConfig.ts's sierpinskiRec(). Returns (pos, adj, corners), corners
+// being the (possibly-merged) node indices of p0/p1/p2 in that order.
+static std::tuple<std::vector<std::vector<unsigned>>, std::vector<std::vector<int>>, std::vector<int>>
+sierpinski_rec(int n, std::vector<unsigned> p0, std::vector<unsigned> p1, std::vector<unsigned> p2) {
+    if (n == 1) {
+        auto adj = zero_adj(3);
+        for (auto [a, b] : std::vector<std::pair<int,int>>{{0, 1}, {0, 2}, {1, 2}}) {
+            adj[a][b] = 1;
+            adj[b][a] = 1;
+        }
+        return { {p0, p1, p2}, adj, {0, 1, 2} };
+    }
+    auto mid = [](const std::vector<unsigned>& a, const std::vector<unsigned>& b) {
+        std::vector<unsigned> m(a.size());
+        for (size_t k = 0; k < a.size(); k++) m[k] = (a[k] + b[k]) / 2;
+        return m;
+    };
+    auto m01 = mid(p0, p1), m02 = mid(p0, p2), m12 = mid(p1, p2);
+    auto [sub0_pos, sub0_adj, sub0_corners] = sierpinski_rec(n - 1, p0, m01, m02);
+    auto [sub1_pos, sub1_adj, sub1_corners] = sierpinski_rec(n - 1, m01, p1, m12);
+    auto [sub2_pos, sub2_adj, sub2_corners] = sierpinski_rec(n - 1, m02, m12, p2);
+
+    auto [m01_pos, m01_adj, m01_map1, m01_map2] = merge_boards(
+        sub0_pos, sub0_adj, sub1_pos, sub1_adj, {{sub0_corners[1], sub1_corners[0]}});
+    auto [m012_pos, m012_adj, m012_map1, m012_map2] = merge_boards(
+        m01_pos, m01_adj, sub2_pos, sub2_adj,
+        {{m01_map1[sub0_corners[2]], sub2_corners[0]}, {m01_map2[sub1_corners[2]], sub2_corners[1]}});
+
+    return {
+        m012_pos, m012_adj,
+        std::vector<int>{
+            m012_map1[m01_map1[sub0_corners[0]]],
+            m012_map1[m01_map2[sub1_corners[1]]],
+            m012_map2[sub2_corners[2]],
+        },
+    };
+}
+
+BoardConfig sierpinski_triangle_board(int n) {
+    assert(n >= 0 && "n must be non-negative");
+    if (n == 0) return make_bc(zero_adj(1), 2u, {{0u, 0u}});
+
+    unsigned side = 1u << (n - 1);
+    auto [pos, adj, corners] = sierpinski_rec(n, {0u, 0u}, {side, 0u}, {side, side});
+    return make_bc(std::move(adj), 2u, std::move(pos));
+}
+
 BoardConfig regular_polygon_board(int n) {
     assert(n >= 3 && "n must be at least 3");
     auto adj = zero_adj(n);
@@ -618,7 +698,7 @@ BoardConfig regular_polygon_board(int n) {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// Mirrors shared/boardConfig.ts's starBoard() connectivity exactly (adjacency only - no
+// Mirrors shared/boardConfig.ts's starBoard() connectivity (adjacency only - no
 // position/embedding, see board_config.h's own doc comment on this function). Node 0 is the
 // center, nodes 1..n are the outer nodes.
 BoardConfig star_board(int n) {
@@ -632,7 +712,7 @@ BoardConfig star_board(int n) {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// Mirrors shared/boardConfig.ts's tetrahedronBoard() connectivity exactly (adjacency only - no
+// Mirrors shared/boardConfig.ts's tetrahedronBoard() connectivity (adjacency only - no
 // position/embedding, see board_config.h's own doc comment on this function). 4 faces, each
 // triangular_board(w)-shaped (n_face = w*(w+1)/2 nodes, same left/right/bottom boundary convention
 // as triangular_board's own row/col indexing), glued along shared tetrahedron edges via
@@ -650,7 +730,7 @@ BoardConfig tetrahedron_board() {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// Mirrors shared/boardConfig.ts's octahedronBoard() connectivity exactly (adjacency only - no
+// Mirrors shared/boardConfig.ts's octahedronBoard() connectivity (adjacency only - no
 // position/embedding, see board_config.h's own doc comment on this function). Vertex 2k and 2k+1
 // are always antipodal pairs, by construction - each vertex connects to every other vertex except
 // its own antipode.
@@ -664,7 +744,7 @@ BoardConfig octahedron_board() {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// Mirrors shared/boardConfig.ts's dodecahedronBoard() connectivity exactly (adjacency only - no
+// Mirrors shared/boardConfig.ts's dodecahedronBoard() connectivity (adjacency only - no
 // position/embedding, see board_config.h's own doc comment on this function).
 BoardConfig dodecahedron_board() {
     auto x_idx = [](int sa, int sb, int sc) { return sa * 4 + sb * 2 + sc; };
@@ -690,7 +770,7 @@ BoardConfig dodecahedron_board() {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// Mirrors shared/boardConfig.ts's icosahedronBoard() connectivity exactly (adjacency only - no
+// Mirrors shared/boardConfig.ts's icosahedronBoard() connectivity (adjacency only - no
 // position/embedding, see board_config.h's own doc comment on this function).
 BoardConfig icosahedron_board() {
     auto a_idx = [](int sp, int sq) { return sp * 2 + sq; };
@@ -930,7 +1010,7 @@ BoardConfig snub_square_board(int w, int h, int g) {
         }
     };
     // glue/tri corner indices per self-cell checkerboard parity and direction (H: dr=0,dc=1;
-    // V: dr=1,dc=0) - mirrors shared/boardConfig.ts's snubSquareBoard CONN table exactly: each
+    // V: dr=1,dc=0) - mirrors shared/boardConfig.ts's snubSquareBoard CONN table: each
     // orthogonal neighbor shares one glued corner plus one new triangle-connecting edge between two
     // of their other corners.
     struct Conn { int glue_self, glue_other, tri_self, tri_other; };
@@ -1070,7 +1150,7 @@ BoardConfig snub_square_tri_board(int w, int h, int g) {
         for (int x = 0; x < w; x++) add_tri_edges(v_base(x, y));
 
     // Gluing: every square-triangle and triangle-triangle edge, merged via a single quotient_board
-    // call - mirrors shared/boardConfig.ts's snubSquareTriBoard exactly.
+    // call - mirrors shared/boardConfig.ts's snubSquareTriBoard.
     std::vector<std::pair<int,int>> inter_conn;
     for (int y = 0; y < h; y++)
         for (int x = 0; x < w - 1; x++) {
@@ -1130,6 +1210,7 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<int>& 
     if (kind == "cublat") return cube_lattice_board(v[0], v[1], v[2]);
     if (kind == "hcub")  return hypercube_board(v[0], v[1], v[2], v[3]);
     if (kind == "tri")   return triangular_board(v[0]);
+    if (kind == "sier")  return sierpinski_triangle_board(v[0]);
     if (kind == "regpoly") return regular_polygon_board(v[0]);
     if (kind == "star")  return star_board(v[0]);
     if (kind == "tetra") return tetrahedron_board();

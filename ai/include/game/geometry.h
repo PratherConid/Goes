@@ -7,7 +7,7 @@
 // original vertex, which pairs are connected by an edge on the surface of their convex hull - this
 // works uniformly in any embedding dimension, unlike a facet-enumeration approach (whose facet
 // triangulations would need to be resolved recursively, dimension by dimension, to recover the true
-// 1-skeleton without introducing spurious "diagonal" edges). Mirrors shared/geometry.ts exactly.
+// 1-skeleton without introducing spurious "diagonal" edges). Mirrors shared/geometry.ts.
 //
 // Unlike the rest of this file's board-construction code, this uses double (not integer)
 // arithmetic with an epsilon tolerance (EPS in the .cpp): the vectors this gets called on are

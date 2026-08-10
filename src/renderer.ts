@@ -79,6 +79,9 @@ const _boardConfigDescriptions = new Map([
     ['regpoly_5_prod_line_2_gcent_triform_7',
         '5-sided regular polygon board multiplied by a 2-node line (a pentagonal prism), plus a '
         + 'central hub node, each resulting triangle replaced by a side-length-7 triangular board'],
+    ['regpoly_5_gcent_prod_line_2_sqform_7',
+        '5-sided regular polygon board with a central hub node, multiplied by a 2-node line, each '
+        + 'resulting square replaced by a side-length-7 square board'],
     ['dodeca_gcent_triform_6',
         'Regular dodecahedron with a central hub node, each resulting triangle replaced by a '
         + 'side-length-6 triangular board'],
@@ -609,6 +612,7 @@ export class Renderer {
         [PrescribedBoard.glueTwistedSquareBoard]:   [4, 4, 3],
         [PrescribedBoard.starBoard]:                 [6],
         [PrescribedBoard.octahedronBoard]:          [],
+        [PrescribedBoard.sierpinskiTriangle]:       [4],
     };
     nShowHistory = 10;
     currentSidePanel: SidePanelContent = SidePanelContent.Home;
@@ -1245,7 +1249,7 @@ export class Renderer {
         // current node's contents while invisible, mirroring the #main-area
         // skip above; the next _render() after switching back recomputes it.
         if (this.panelMode !== 'hidden') {
-            this._renderHistoryPanel(v);
+            if (this.currentSidePanel === SidePanelContent.History) this._renderHistoryPanel(v);
             if (this.currentSidePanel === SidePanelContent.Status) this._renderStatus(v);
             if (this.currentSidePanel === SidePanelContent.CurrentGameSetup)
                 this.currentGameSetupDetails.innerHTML = currentGameSetupHtml(v, this._active.config.players);

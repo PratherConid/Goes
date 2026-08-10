@@ -15,12 +15,12 @@ using AdjacencyList = std::vector<std::set<int>>;
 AdjacencyList to_adjacency_list(const std::vector<std::vector<int>>& adj);
 
 // Finds every triangle (3 distinct, pairwise-adjacent vertices) in adj, each reported exactly once
-// as {u, v, w} with u < v < w. Mirrors shared/topology.ts's findTriangles() exactly - see its own
-// doc comment for why the increasing-order search both dedupes and stays efficient on sparse graphs.
+// as {u, v, w} with u < v < w. Mirrors shared/topology.ts's findTriangles() - see its own doc
+// comment for why the increasing-order search both dedupes and stays efficient on sparse graphs.
 std::vector<std::array<int, 3>> find_triangles(const std::vector<std::vector<int>>& adj);
 
 // Finds every "square" - 4 distinct vertices a, b, c, d forming a cycle a-b-c-d-a whose two
 // diagonals a-c and b-d are BOTH absent - each reported exactly once as {a, b, c, d} in that cycle
-// order. Mirrors shared/topology.ts's findSquares() exactly - see its own doc comment for the
+// order. Mirrors shared/topology.ts's findSquares() - see its own doc comment for the
 // common-neighbor-pair search and its deduplication rule.
 std::vector<std::array<int, 4>> find_squares(const std::vector<std::vector<int>>& adj);

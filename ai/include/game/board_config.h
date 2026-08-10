@@ -16,7 +16,7 @@ BoardConfig quotient_board(const BoardConfig& bc,
                            const std::vector<std::pair<int,int>>& quot);
 
 // Splits every edge of bc into split_n sub-edges, inserting split_n-1 evenly-spaced new nodes
-// along each original edge. Mirrors shared/boardConfig.ts's edgeSplit() exactly, but computed with
+// along each original edge. Mirrors shared/boardConfig.ts's edgeSplit(), but computed with
 // plain integer arithmetic instead of floats: original embed coordinates are scaled by split_n
 // first, so new node k (1 <= k < split_n) along edge (i, j) is embed[i]*split_n + k*(embed[j] -
 // embed[i]) - always an exact integer, no rounding, since k*(embed[j]-embed[i]) is a multiple of 1
@@ -30,8 +30,8 @@ BoardConfig edge_split(const BoardConfig& bc, int split_n);
 // around a shared original vertex v: normalize each incident edge's direction from v to a unit
 // vector (the one non-integer-exact step in this function - see geometry.h's doc comment for why
 // there's no exact-integer alternative), then connect the pairs joined by an edge on the convex hull
-// of v's directions (see geometry.h's convex_hull_edges). Mirrors shared/boardConfig.ts's rectify()
-// exactly, including its own fix for a scale-mismatch bug (direction vectors are computed against
+// of v's directions (see geometry.h's convex_hull_edges). Mirrors shared/boardConfig.ts's rectify(),
+// including its own fix for a scale-mismatch bug (direction vectors are computed against
 // 2*embed[v], not embed[v] directly, to match the doubled scale of the midpoint positions). Throws if
 // bc.emb_dim == 0 - there are no real coordinates to compute edge directions from.
 BoardConfig rectify(const BoardConfig& bc);
@@ -39,8 +39,8 @@ BoardConfig rectify(const BoardConfig& bc);
 // Merges every pair of nodes whose Euclidean distance (in the natural embedding dimension) is
 // strictly less than dist into a single node, via quotient_board. Closeness is transitive under
 // quotient_board's union-find, so a chain of nodes each within dist of the next all collapse into
-// one node, not just each individual close pair. Mirrors shared/boardConfig.ts's mergeClose()
-// exactly. Unlike edge_split/rectify's own node *positions*, dist and the distance test are
+// one node, not just each individual close pair. Mirrors shared/boardConfig.ts's mergeClose().
+// Unlike edge_split/rectify's own node *positions*, dist and the distance test are
 // floating point - embed coordinates stay exact integers throughout, but there's no exact-integer
 // way to compare an arbitrary real-valued threshold against a Euclidean distance (same reasoning as
 // rectify()'s direction normalization - see geometry.h's doc comment). Throws if bc.emb_dim == 0 -
@@ -50,7 +50,7 @@ BoardConfig merge_close(const BoardConfig& bc, double dist);
 // Replaces every triangle (3 mutually-adjacent, distinct vertices - see topology.h's
 // find_triangles) in bc with a triangular_board(w)-shaped lattice, gluing new corners back to the
 // original vertices and gluing any triangles that share an edge along that shared boundary too.
-// Mirrors shared/boardConfig.ts's triangleForm() exactly, with one difference: the TS version
+// Mirrors shared/boardConfig.ts's triangleForm(), with one difference: the TS version
 // computes real (generally irrational, since it divides by w-1) node positions, but every C++
 // board with a genuine (non-zero) emb_dim is an exact-integer invariant throughout this file, so
 // this always produces an emb_dim = 0 board instead (same reasoning as regular_polygon_board /
@@ -61,11 +61,11 @@ BoardConfig triangle_form(const BoardConfig& bc, int w);
 // Replaces every square (4 distinct vertices forming a cycle with no diagonal edges - see
 // topology.h's find_squares) in bc with a w-by-w grid, the same way triangle_form replaces
 // triangles with triangular_board(w)-shaped lattices - see that function's own doc comment for why
-// this always produces an emb_dim = 0 board. Mirrors shared/boardConfig.ts's squareForm() exactly.
+// this always produces an emb_dim = 0 board. Mirrors shared/boardConfig.ts's squareForm().
 BoardConfig square_form(const BoardConfig& bc, int w);
 
 // Adds one new node connected to every existing node of bc, at the barycenter of bc's existing
-// node positions - mirrors shared/boardConfig.ts's globalCentralize() connectivity exactly, but
+// node positions - mirrors shared/boardConfig.ts's globalCentralize() connectivity, but
 // (like triangle_form/square_form above) always produces an emb_dim = 0 board regardless of bc's
 // own embedding: the barycenter is generally not an exact integer (it divides by N), and even
 // where it happens to be, a hub node adjacent to the *entire* board doesn't fit the local-grid
@@ -79,8 +79,8 @@ BoardConfig global_centralize(const BoardConfig& bc);
 // square's own 4-cycle edges (already present, untouched) become the octahedron's equatorial ring,
 // and the two apexes are NOT connected to each other (antipodal, like octahedron_board's own apex
 // pairs - see that function's doc comment for why a plain square graph plus two such apex nodes is
-// exactly an octahedron's edge set). Mirrors shared/boardConfig.ts's sqOctarize() connectivity
-// exactly, but (like triangle_form/square_form/global_centralize above) always produces an
+// exactly an octahedron's edge set). Mirrors shared/boardConfig.ts's sqOctarize() connectivity,
+// but (like triangle_form/square_form/global_centralize above) always produces an
 // emb_dim = 0 board regardless of bc's own embedding: the TS side gives each apex a real position
 // on a genuinely new dimension, offset by the (generally irrational, since it's a Euclidean
 // distance) average corner-to-barycenter distance - there is no exact-integer equivalent here, and
@@ -100,7 +100,7 @@ BoardConfig scale_board(const BoardConfig& bc, double factor);
 // concatenation needs no arithmetic at all). (i, j) is adjacent to (i2, j2) iff exactly one of:
 // i == i2 and j is adjacent to j2 in bc2, or j == j2 and i is adjacent to i2 in bc1 (the standard
 // graph Cartesian product - e.g. cube_lattice_board(w, h, d) is, up to embedding, the product of three
-// path graphs). Mirrors shared/boardConfig.ts's product() for N/adj/embed exactly; unlike the TS
+// path graphs). Mirrors shared/boardConfig.ts's product() for N/adj/embed; unlike the TS
 // side, there's no projMat to construct here - see BoardConfig's own fields above, C++ never renders.
 BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2);
 
@@ -141,7 +141,7 @@ struct BoardModifier {
 // a whole new board for apply_modifiers to build up separately - potentially with further modifiers
 // of its own before the product happens - and EndProd's product() needs that suspended outer board
 // back too) - see apply_modifiers, the only valid way to apply a modifier list containing them.
-// Mirrors shared/boardConfig.ts's applyModifier() exactly, including this same rejection.
+// Mirrors shared/boardConfig.ts's applyModifier(), including this same rejection.
 BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier);
 
 // Applies every modifier in modifiers, in order, to bc. Most modifiers just transform the "current"
@@ -152,7 +152,7 @@ BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier)
 // transform this new board instead of the outer one; EndProd pops the suspended outer board and
 // replaces "current" with product(outer, current). BeginProd/EndProd pairs may nest. Throws on an
 // EndProd with no matching BeginProd, or if modifiers ends with an unmatched BeginProd. Mirrors
-// shared/boardConfig.ts's applyModifiers() exactly.
+// shared/boardConfig.ts's applyModifiers().
 BoardConfig apply_modifiers(const BoardConfig& bc, const std::vector<BoardModifier>& modifiers);
 
 // A board with w nodes forming a simple line: node i is connected to node i + 1, at position [i]
@@ -178,6 +178,16 @@ BoardConfig hypercube_board(int w, int h, int d, int t);
 
 // A triangular board with side length w.
 BoardConfig triangular_board(int w);
+
+// Mirrors shared/boardConfig.ts's sierpinskiTriangle()/sierpinskiRec()/mergeBoards()
+// (n=0: single node; n=1: unit triangle; n>1: three copies of n-1 glued at touching corners via
+// the same two-board-merge helper - see the .cpp file's merge_boards/sierpinski_rec), with one
+// deviation: the TS side embeds an irrational-trig equilateral triangle centered at the origin,
+// which has no exact-integer analog (see merge_close's own doc comment on this file's
+// exact-integer embed[] invariant) - so this instead uses the same (i, j) triangular-lattice
+// coordinate system as triangular_board, giving a right triangle with legs along j=0 and j=i and
+// minimal edge length 1.
+BoardConfig sierpinski_triangle_board(int n);
 
 // A regular polygon with n edges (a simple n-cycle graph), n >= 3. Unlike every other board type
 // here, a unit-edge-length regular n-gon has no exact-integer Cartesian embedding for general n
@@ -277,8 +287,8 @@ BoardConfig glue_twisted_square_board(int w, int h, int g);
 BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("line" | "rect" | "rectd" |
-// "cublat" | "hcub" | "tri" | "regpoly" | "tetra" | "octa" | "dodeca" | "icosa" | "trihex" |
-// "hex" | "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" | "star" - matches
+// "cublat" | "hcub" | "tri" | "sier" | "regpoly" | "tetra" | "octa" | "dodeca" | "icosa" |
+// "trihex" | "hex" | "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" | "star" - matches
 // shared/types.ts's GameConfig.boardType strings), passing `args` as that
 // builder's positional parameters. Throws std::runtime_error for an unknown
 // kind. Shared by
