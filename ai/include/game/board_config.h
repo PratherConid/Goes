@@ -179,15 +179,14 @@ BoardConfig hypercube_board(int w, int h, int d, int t);
 // A triangular board with side length w.
 BoardConfig triangular_board(int w);
 
-// Mirrors shared/boardConfig.ts's sierpinskiTriangle()/sierpinskiRec()/mergeBoards()
-// (n=0: single node; n=1: unit triangle; n>1: three copies of n-1 glued at touching corners via
-// the same two-board-merge helper - see the .cpp file's merge_boards/sierpinski_rec), with one
-// deviation: the TS side embeds an irrational-trig equilateral triangle centered at the origin,
-// which has no exact-integer analog (see merge_close's own doc comment on this file's
-// exact-integer embed[] invariant) - so this instead uses the same (i, j) triangular-lattice
-// coordinate system as triangular_board, giving a right triangle with legs along j=0 and j=i and
-// minimal edge length 1.
-BoardConfig sierpinski_triangle_board(int n);
+// Mirrors shared/boardConfig.ts's sierpinskiSimplex()/sierpinskiRec()/mergeBoards() (n=0: single
+// node; n=1: unit dim-simplex; n>1: dim+1 copies of n-1 glued at touching corners via the same
+// dim+1-way merge - see the .cpp file's merge_boards/sierpinski_rec), with one simplification: the
+// TS side's regularSimplexCoords() is real-valued and centroid-at-origin (irrational for dim >= 2 -
+// no exact-integer analog, since BoardConfig::embed here is exact-integer only, see merge_close's
+// own doc comment), so this instead places corner 0 at the origin and corner k (1 <= k <= dim) at
+// a standard basis vector scaled by its own side length (see the .cpp file's own comment).
+BoardConfig sierpinski_simplex_board(int dim, int n);
 
 // A regular polygon with n edges (a simple n-cycle graph), n >= 3. Unlike every other board type
 // here, a unit-edge-length regular n-gon has no exact-integer Cartesian embedding for general n

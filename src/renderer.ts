@@ -91,6 +91,7 @@ const _boardConfigDescriptions = new Map([
         'Regular octahedron, each triangular face subdivided (side length 4), any resulting squares '
         + 'subdivided too (side length 4), subdivided into triangles again (side length 4), then '
         + 'scaled down by 0.33'],
+    ['sier_3_5', 'Order-5 Sierpinski tetrahedron (3-dimensional Sierpinski gasket)'],
 ]);
 
 
@@ -612,7 +613,7 @@ export class Renderer {
         [PrescribedBoard.glueTwistedSquareBoard]:   [4, 4, 3],
         [PrescribedBoard.starBoard]:                 [6],
         [PrescribedBoard.octahedronBoard]:          [],
-        [PrescribedBoard.sierpinskiTriangle]:       [4],
+        [PrescribedBoard.sierpinskiSimplex]:        [2, 4],
     };
     nShowHistory = 10;
     currentSidePanel: SidePanelContent = SidePanelContent.Home;
@@ -2289,6 +2290,7 @@ export class Renderer {
                 <span id="status-focusx-slot"></span><span id="status-focusy-slot"></span><span id="status-focusz-slot"></span>
             </div>
             <div><b>Scale:</b> <span id="status-scale-slot"></span></div>
+            <div><b>Distance:</b> <span id="status-distToFocus-slot"></span></div>
             <div><b>Aperture:</b> <span id="status-aperture-slot"></span></div>
         `;
 
@@ -2400,9 +2402,13 @@ export class Renderer {
         // Multiplies/divides by 1.02 per arrow-key tap instead of the default fixed +-0.05 step -
         // scale spans a much wider, non-linear range (see its own doc comment, src/camera.ts), and
         // no rounding, since scale can be far smaller than the default step's 2dp precision.
+        const multiplicativeStep = (current: number, direction: 1 | -1) => current * (direction === 1 ? 1.02 : 1 / 1.02);
+        makeScalarBox('status-scale-slot', () => viewport.scale, v => { viewport.scale = v; }, multiplicativeStep);
+        // distToFocus (like scale) must stay positive and spans a similarly wide range - same
+        // multiplicative step as scale, not the default fixed +-0.05.
         makeScalarBox(
-            'status-scale-slot', () => viewport.scale, v => { viewport.scale = v; },
-            (current, direction) => current * (direction === 1 ? 1.02 : 1 / 1.02),
+            'status-distToFocus-slot', () => viewport.distToFocus, v => { viewport.distToFocus = v; },
+            multiplicativeStep,
         );
     }
 

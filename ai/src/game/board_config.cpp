@@ -639,51 +639,73 @@ merge_boards(const std::vector<std::vector<unsigned>>& pos1, const std::vector<s
     return { std::move(pos), std::move(adj), std::move(map1), std::move(map2) };
 }
 
-// Mirrors shared/boardConfig.ts's sierpinskiRec(). Returns (pos, adj, corners), corners
-// being the (possibly-merged) node indices of p0/p1/p2 in that order.
+// Mirrors shared/boardConfig.ts's sierpinskiRec(), generalized from 3 fixed corners to dim+1 (same
+// as the TS side's own generalization). Returns (pos, adj, corners), corners being the
+// (possibly-merged) node index of each entry of `corners` (length dim+1), in the same order.
 static std::tuple<std::vector<std::vector<unsigned>>, std::vector<std::vector<int>>, std::vector<int>>
-sierpinski_rec(int n, std::vector<unsigned> p0, std::vector<unsigned> p1, std::vector<unsigned> p2) {
+sierpinski_rec(int n, const std::vector<std::vector<unsigned>>& corners) {
+    int k = static_cast<int>(corners.size()); // dim + 1
     if (n == 1) {
-        auto adj = zero_adj(3);
-        for (auto [a, b] : std::vector<std::pair<int,int>>{{0, 1}, {0, 2}, {1, 2}}) {
-            adj[a][b] = 1;
-            adj[b][a] = 1;
-        }
-        return { {p0, p1, p2}, adj, {0, 1, 2} };
+        auto adj = zero_adj(k);
+        for (int i = 0; i < k; i++)
+            for (int j = i + 1; j < k; j++) { adj[i][j] = 1; adj[j][i] = 1; }
+        std::vector<int> ids(k);
+        std::iota(ids.begin(), ids.end(), 0);
+        return { corners, adj, ids };
     }
     auto mid = [](const std::vector<unsigned>& a, const std::vector<unsigned>& b) {
         std::vector<unsigned> m(a.size());
-        for (size_t k = 0; k < a.size(); k++) m[k] = (a[k] + b[k]) / 2;
+        for (size_t d = 0; d < a.size(); d++) m[d] = (a[d] + b[d]) / 2;
         return m;
     };
-    auto m01 = mid(p0, p1), m02 = mid(p0, p2), m12 = mid(p1, p2);
-    auto [sub0_pos, sub0_adj, sub0_corners] = sierpinski_rec(n - 1, p0, m01, m02);
-    auto [sub1_pos, sub1_adj, sub1_corners] = sierpinski_rec(n - 1, m01, p1, m12);
-    auto [sub2_pos, sub2_adj, sub2_corners] = sierpinski_rec(n - 1, m02, m12, p2);
 
-    auto [m01_pos, m01_adj, m01_map1, m01_map2] = merge_boards(
-        sub0_pos, sub0_adj, sub1_pos, sub1_adj, {{sub0_corners[1], sub1_corners[0]}});
-    auto [m012_pos, m012_adj, m012_map1, m012_map2] = merge_boards(
-        m01_pos, m01_adj, sub2_pos, sub2_adj,
-        {{m01_map1[sub0_corners[2]], sub2_corners[0]}, {m01_map2[sub1_corners[2]], sub2_corners[1]}});
+    std::vector<std::tuple<std::vector<std::vector<unsigned>>, std::vector<std::vector<int>>, std::vector<int>>> subs;
+    for (int k_ = 0; k_ < k; k_++) {
+        std::vector<std::vector<unsigned>> sub_corners(k);
+        for (int p = 0; p < k; p++) sub_corners[p] = (p == k_) ? corners[k_] : mid(corners[k_], corners[p]);
+        subs.push_back(sierpinski_rec(n - 1, sub_corners));
+    }
 
-    return {
-        m012_pos, m012_adj,
-        std::vector<int>{
-            m012_map1[m01_map1[sub0_corners[0]]],
-            m012_map1[m01_map2[sub1_corners[1]]],
-            m012_map2[sub2_corners[2]],
-        },
-    };
+    auto [combined_pos, combined_adj, tracked0] = subs[0];
+    std::vector<std::vector<int>> tracked = { tracked0 };
+    for (int k_ = 1; k_ < k; k_++) {
+        auto [sub_pos, sub_adj, sub_corners] = subs[k_];
+        std::vector<std::pair<int,int>> merges;
+        for (int a = 0; a < k_; a++) merges.push_back({ tracked[a][k_], sub_corners[a] });
+        auto [m_pos, m_adj, m_map1, m_map2] = merge_boards(combined_pos, combined_adj, sub_pos, sub_adj, merges);
+        combined_pos = m_pos;
+        combined_adj = m_adj;
+        for (int a = 0; a < k_; a++)
+            for (auto& idx : tracked[a]) idx = m_map1[idx];
+        std::vector<int> new_tracked(k);
+        for (int p = 0; p < k; p++) new_tracked[p] = m_map2[sub_corners[p]];
+        tracked.push_back(new_tracked);
+    }
+
+    std::vector<int> outer_corners(k);
+    for (int k_ = 0; k_ < k; k_++) outer_corners[k_] = tracked[k_][k_];
+    return { combined_pos, combined_adj, outer_corners };
 }
 
-BoardConfig sierpinski_triangle_board(int n) {
+// Mirrors shared/boardConfig.ts's sierpinskiSimplex(), with one simplification the TS side doesn't
+// have: BoardConfig::embed is exact-integer only, so rather than port sierpinskiSimplex's real-
+// valued, centroid-at-origin regularSimplexCoords() (irrational for dim >= 2), this instead places
+// corner 0 of the outer side-`side` simplex at the origin and corner k (1 <= k <= dim) at `side`
+// times the k-th standard basis vector - dim+1 affinely-independent corners with minimal edge
+// length `side` (corner 0 to any other corner). Recursive midpoints stay exact integers throughout
+// since `side` only ever appears as a power of 2 above the n=1 base case.
+BoardConfig sierpinski_simplex_board(int dim, int n) {
+    assert(dim >= 1 && "dim must be at least 1");
     assert(n >= 0 && "n must be non-negative");
-    if (n == 0) return make_bc(zero_adj(1), 2u, {{0u, 0u}});
+    if (n == 0) return make_bc(zero_adj(1), static_cast<unsigned>(dim), { std::vector<unsigned>(dim, 0u) });
 
     unsigned side = 1u << (n - 1);
-    auto [pos, adj, corners] = sierpinski_rec(n, {0u, 0u}, {side, 0u}, {side, side});
-    return make_bc(std::move(adj), 2u, std::move(pos));
+    std::vector<std::vector<unsigned>> corners(dim + 1, std::vector<unsigned>(dim, 0u));
+    for (int k = 1; k <= dim; k++) corners[k][k - 1] = side;
+
+    auto [pos, adj, outer_corners] = sierpinski_rec(n, corners);
+    (void)outer_corners; // only needed by recursive callers, same as the TS top-level driver
+    return make_bc(std::move(adj), static_cast<unsigned>(dim), std::move(pos));
 }
 
 BoardConfig regular_polygon_board(int n) {
@@ -1210,7 +1232,7 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<int>& 
     if (kind == "cublat") return cube_lattice_board(v[0], v[1], v[2]);
     if (kind == "hcub")  return hypercube_board(v[0], v[1], v[2], v[3]);
     if (kind == "tri")   return triangular_board(v[0]);
-    if (kind == "sier")  return sierpinski_triangle_board(v[0]);
+    if (kind == "sier")  return sierpinski_simplex_board(v[0], v[1]);
     if (kind == "regpoly") return regular_polygon_board(v[0]);
     if (kind == "star")  return star_board(v[0]);
     if (kind == "tetra") return tetrahedron_board();

@@ -798,10 +798,10 @@ export function starBoard(n: number): BoardConfig {
 /**
  * Combines two boards into one, additionally identifying each `(idxIn1, idxIn2)` pair in `merges`
  * as the same node (the merged node keeps `b1`'s position - callers are expected to only merge
- * pairs whose positions already coincide, e.g. two recursive `sierpinskiTriangle` sub-copies
+ * pairs whose positions already coincide, e.g. two recursive `sierpinskiSimplex` sub-copies
  * sharing a corner). Returns the combined board plus maps from each input board's own indices to
  * their new indices in the combined board - needed by callers that must keep tracking specific
- * nodes (like sierpinskiTriangle's own outer corners) across further merges.
+ * nodes (like sierpinskiSimplex's own outer corners) across further merges.
  */
 function mergeBoards(
     b1: { pos: number[][]; adj: number[][] }, b2: { pos: number[][]; adj: number[][] }, merges: [number, number][],
@@ -827,68 +827,93 @@ function mergeBoards(
 }
 
 /**
- * Recursive core of sierpinskiTriangle(): builds the order-`n` gasket (n >= 1) directly on the
- * given `[P0, P1, P2]` corner positions. n=1 is the literal 3-node triangle; n>1 recurses into 3
- * order-(n-1) copies placed on the "near-corner" half-scale sub-triangles (near P0/P1/P2
- * respectively) and glues each touching pair at their shared edge-midpoint corner - the classic
- * middle-sub-triangle "hole" is simply never built at all, unlike triangleForm's full 4-way
- * subdivision. Returns the built board plus the (possibly-merged) node indices of its own 3
- * corners, in P0/P1/P2 order, so an outer recursive call can glue onto them in turn.
+ * Recursive core of sierpinskiSimplex(): builds the order-`n` gasket (n >= 1) directly on the given
+ * `corners` (length dim+1, one per simplex vertex). n=1 is the literal (dim+1)-node complete graph
+ * (every vertex mutually adjacent); n>1 recurses into dim+1 order-(n-1) copies, one "near" each
+ * vertex k - copy k's own (dim+1) corners are: corners[k] itself at position k, and the midpoint of
+ * corners[k]/corners[j] at every other position j - and glues every pair of copies (a, b) at their
+ * shared edge-midpoint corner (copy a's position b == copy b's position a, both mid(a,b)) - the
+ * "hole" (the sub-simplex that a *full* subdivision would place at the centroid-ward positions) is
+ * simply never built. Returns the built board plus the (possibly-merged) node index of each of its
+ * own dim+1 corners, in the same order as the input `corners`, so an outer recursive call can glue
+ * onto them in turn.
+ *
+ * Generalizes what was 3-corner-special-cased code (P0/P1/P2, sub0/sub1/sub2, two explicit merges)
+ * to dim+1 corners, dim+1 copies, and dim+1 incremental merges - checked to produce the exact same
+ * per-step computation as that special-cased version when corners.length === 3.
  */
 function sierpinskiRec(n: number, corners: number[][]): { pos: number[][]; adj: number[][]; corners: number[] } {
-    const [P0, P1, P2] = corners;
+    const k = corners.length; // dim + 1
     if (n === 1) {
-        const adj = zeroAdj(3);
-        for (const [a, b] of [[0, 1], [0, 2], [1, 2]]) { adj[a][b] = 1; adj[b][a] = 1; }
-        return { pos: [P0, P1, P2], adj, corners: [0, 1, 2] };
+        const adj = zeroAdj(k);
+        for (let i = 0; i < k; i++)
+            for (let j = i + 1; j < k; j++) { adj[i][j] = 1; adj[j][i] = 1; }
+        return { pos: corners.map(p => [...p]), adj, corners: corners.map((_, i) => i) };
     }
-    const mid = (a: number[], b: number[]) => a.map((v, k) => (v + b[k]) / 2);
-    const M01 = mid(P0, P1), M02 = mid(P0, P2), M12 = mid(P1, P2);
-    const sub0 = sierpinskiRec(n - 1, [P0, M01, M02]);
-    const sub1 = sierpinskiRec(n - 1, [M01, P1, M12]);
-    const sub2 = sierpinskiRec(n - 1, [M02, M12, P2]);
+    const mid = (a: number[], b: number[]) => a.map((v, d) => (v + b[d]) / 2);
+    const subs = corners.map((_, k_) =>
+        sierpinskiRec(n - 1, corners.map((c, p) => (p === k_ ? corners[k_] : mid(corners[k_], c)))));
 
-    const m01 = mergeBoards(sub0, sub1, [[sub0.corners[1], sub1.corners[0]]]);
-    const m012 = mergeBoards(
-        m01, sub2,
-        [[m01.map1[sub0.corners[2]], sub2.corners[0]], [m01.map2[sub1.corners[2]], sub2.corners[1]]],
-    );
+    let combined: { pos: number[][]; adj: number[][] } = subs[0];
+    const tracked: number[][] = [subs[0].corners.slice()];
+    for (let k_ = 1; k_ < k; k_++) {
+        const merges: [number, number][] = [];
+        for (let a = 0; a < k_; a++) merges.push([tracked[a][k_], subs[k_].corners[a]]);
+        const m = mergeBoards(combined, subs[k_], merges);
+        combined = { pos: m.pos, adj: m.adj };
+        for (let a = 0; a < k_; a++) tracked[a] = tracked[a].map(idx => m.map1[idx]);
+        tracked.push(subs[k_].corners.map(idx => m.map2[idx]));
+    }
 
-    return {
-        pos: m012.pos, adj: m012.adj,
-        corners: [
-            m012.map1[m01.map1[sub0.corners[0]]],
-            m012.map1[m01.map2[sub1.corners[1]]],
-            m012.map2[sub2.corners[2]],
-        ],
-    };
+    return { pos: combined.pos, adj: combined.adj, corners: tracked.map((t, k_) => t[k_]) };
 }
 
 /**
- * The Sierpinski triangle (gasket) of order `n`: n=0 is a single node at the origin; n=1 is a
- * unit-side equilateral triangle (3 mutually-adjacent nodes, same circumradius/orientation
- * convention as regularPolygonBoard(3)); for n>1, three copies of order n-1 (each half the linear
- * size) sit at the corners of the outer triangle and are glued at their touching edge-midpoints -
- * see sierpinskiRec for the recursive construction.
- *
- * The outer triangle is placed symmetric about the origin (same convention as regularPolygonBoard),
- * and since the recursive rule above is itself symmetric under the outer triangle's 3-fold
- * rotation (relabeling P0/P1/P2 cyclically and rebuilding reproduces the exact same node-position
- * set), the resulting node set's own centroid always lands exactly on the origin too, for every n -
- * not just the n=0/n=1 base cases.
+ * Coordinates of a regular dim-simplex (dim+1 vertices), unit edge length, centroid at the origin,
+ * in R^dim. Recursive: a (dim-1)-simplex (by induction, already unit-edge/centroid-at-origin) forms
+ * the "base" at height 0 on a fresh axis; an apex sits directly above the base's own centroid, at
+ * the height that puts it exactly unit distance from every base vertex (h = sqrt(1 - R^2), where R
+ * is a unit-edge (dim-1)-simplex's own circumradius sqrt((dim-1)/(2*dim)) - so h simplifies to
+ * sqrt((dim+1)/(2*dim))); the whole (dim+1)-point set is then shifted by -h/(dim+1) on that axis so
+ * the overall centroid returns to the origin (every vertex, base or apex, ends up exactly
+ * sqrt(dim/(2*(dim+1))) from it - the standard unit-edge dim-simplex circumradius, confirming the
+ * construction).
  */
-export function sierpinskiTriangle(n: number): BoardConfig {
-    assert(Number.isInteger(n) && n >= 0, `n must be a non-negative integer, got ${n}`);
-    if (n === 0) return make(new Embedding(2, [[0, 0]], DEFAULT_2D_PROJMAT), zeroAdj(1));
+function regularSimplexCoords(dim: number): number[][] {
+    if (dim === 1) return [[-0.5], [0.5]];
+    const base = regularSimplexCoords(dim - 1);
+    const h = Math.sqrt((dim + 1) / (2 * dim));
+    const shift = h / (dim + 1);
+    const points = base.map(p => [...p, -shift]);
+    points.push([...new Array(dim - 1).fill(0), h - shift]);
+    return points;
+}
 
-    const r = (1 / Math.sqrt(3)) * 2 ** (n - 1); // circumradius: unit-side at n=1, doubling per level
-    const corners: number[][] = [0, 1, 2].map(k => {
-        const theta = (2 * Math.PI * k) / 3;
-        return [r * Math.cos(theta), r * Math.sin(theta)];
-    });
+/**
+ * The Sierpinski dim-simplex (gasket) of order `n`: n=0 is a single node at the origin; n=1 is a
+ * unit-edge regular dim-simplex (dim+1 mutually-adjacent nodes, see regularSimplexCoords); for n>1,
+ * dim+1 copies of order n-1 (each half the linear size) sit at the corners of the outer simplex and
+ * are glued at their touching edge-midpoints - see sierpinskiRec for the recursive construction. For
+ * dim=1 there is no "hole" to remove (a 1-simplex's only subdivision is its own 2 halves), so this
+ * degenerates to a plain, fully-subdivided line of 2^(n-1)+1 nodes - not a fractal at all.
+ *
+ * The outer simplex is placed symmetric about the origin (regularSimplexCoords' own convention),
+ * and since the recursive rule above is itself symmetric under the outer simplex's own (dim+1)!
+ * vertex-relabeling symmetry group (relabeling corners and rebuilding reproduces the exact same
+ * node-position set), the resulting node set's own centroid always lands exactly on the origin too,
+ * for every n - not just the n=0/n=1 base cases.
+ */
+export function sierpinskiSimplex(dim: number, n: number): BoardConfig {
+    assert(Number.isInteger(dim) && dim >= 1, `dim must be a positive integer, got ${dim}`);
+    assert(Number.isInteger(n) && n >= 0, `n must be a non-negative integer, got ${n}`);
+    if (n === 0)
+        return make(new Embedding(dim, [new Array(dim).fill(0)], defaultProductProjMat(dim)), zeroAdj(1));
+
+    const scale = 2 ** (n - 1); // unit-edge at n=1, doubling per level
+    const corners = regularSimplexCoords(dim).map(p => p.map(v => v * scale));
 
     const built = sierpinskiRec(n, corners);
-    return make(new Embedding(2, built.pos, DEFAULT_2D_PROJMAT), built.adj);
+    return make(new Embedding(dim, built.pos, defaultProductProjMat(dim)), built.adj);
 }
 
 /**
@@ -1480,7 +1505,7 @@ export enum PrescribedBoard {
     glueTwistedSquareBoard,
     starBoard,
     octahedronBoard,
-    sierpinskiTriangle
+    sierpinskiSimplex
 }
 
 export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string, string]> = {
@@ -1524,8 +1549,8 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string
         [1, "star", "&lt;n&gt;", "Star graph: 1 center node connected to n outer nodes"],
     [PrescribedBoard.octahedronBoard]:
         [0, "octa", "", "Regular octahedron (6 vertices, 8 triangular faces, unit-length edges)"],
-    [PrescribedBoard.sierpinskiTriangle]:
-        [1, "sier", "&lt;n&gt;", "Sierpinski triangle (gasket) of order n"],
+    [PrescribedBoard.sierpinskiSimplex]:
+        [2, "sier", "&lt;dim&gt; &lt;n&gt;", "Sierpinski dim-simplex (gasket) of order n"],
 };
 
 export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => BoardConfig> = {
@@ -1548,7 +1573,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.glueTwistedSquareBoard]:   (...a) => glueTwistedSquareBoard(a[0], a[1], a[2]),
     [PrescribedBoard.starBoard]:                 (...a) => starBoard(a[0]),
     [PrescribedBoard.octahedronBoard]:          () => octahedronBoard(),
-    [PrescribedBoard.sierpinskiTriangle]:       (...a) => sierpinskiTriangle(a[0]),
+    [PrescribedBoard.sierpinskiSimplex]:        (...a) => sierpinskiSimplex(a[0], a[1]),
 };
 
 /**
