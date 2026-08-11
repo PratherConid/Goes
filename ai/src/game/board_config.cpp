@@ -3,6 +3,7 @@
 #include "game/topology.h"
 #include <cassert>
 #include <algorithm>
+#include <array>
 #include <functional>
 #include <numeric>
 #include <cmath>
@@ -837,6 +838,286 @@ BoardConfig icosahedron_board() {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
+// --- dodecahedron_flake_board()/icosahedron_flake_board(): mirrors shared/boardConfig.ts's
+// dodecahedronFlake()/icosahedronFlake() - see board_config.h's own doc comment on
+// dodecahedron_flake_board() for why these never compute or store node positions at all. ---
+
+// Mirrors shared/boardConfig.ts's computeDodecaIcosaFlakeGlue(): for each base edge (i, j),
+// exhaustively finds the unique pair of other base edges - (m1, m2) within the copy at i, (n1, n2)
+// within the copy at j - whose S_i/S_j-transformed endpoints coincide two-for-two (S_i(x) = r*x +
+// c*verts[i]). `verts` here are plain doubles used ONLY as scratch data for this one-time search -
+// unlike BoardConfig::embed elsewhere in this file, they are never required to be exact integers,
+// and are never exposed as a board's own position data (see this section's own top comment).
+static std::vector<std::array<int, 6>> compute_dodeca_icosa_flake_glue(
+    const std::vector<std::vector<double>>& verts, const std::vector<std::pair<int, int>>& edges,
+    double r, double c) {
+    auto dist = [](const std::vector<double>& a, const std::vector<double>& b) {
+        double s = 0.0;
+        for (size_t k = 0; k < a.size(); k++) { double d = a[k] - b[k]; s += d * d; }
+        return std::sqrt(s);
+    };
+    auto transform = [&](int i, int m) {
+        std::vector<double> t(verts[m].size());
+        for (size_t k = 0; k < t.size(); k++) t[k] = r * verts[m][k] + c * verts[i][k];
+        return t;
+    };
+    auto swapped = [](const std::pair<int, int>& e) { return std::pair<int, int>(e.second, e.first); };
+
+    std::vector<std::array<int, 6>> glue;
+    for (const auto& ij : edges) {
+        int i = ij.first, j = ij.second;
+        std::vector<std::array<int, 4>> matches;
+        for (const auto& e1 : edges)
+            for (const auto& mab : { e1, swapped(e1) })
+                for (const auto& e2 : edges)
+                    for (const auto& nab : { e2, swapped(e2) })
+                        if (dist(transform(i, mab.first), transform(j, nab.first)) < 1e-9 &&
+                            dist(transform(i, mab.second), transform(j, nab.second)) < 1e-9)
+                            matches.push_back({ mab.first, mab.second, nab.first, nab.second });
+
+        // Dedupe representations that differ only by swapping (ma,mb)<->(na,nb) together.
+        std::set<std::array<int, 4>> seen;
+        std::vector<std::array<int, 4>> canon;
+        for (const auto& m : matches) {
+            std::array<int, 4> mirror = { m[1], m[0], m[3], m[2] };
+            if (seen.count(m) || seen.count(mirror)) continue;
+            seen.insert(m);
+            canon.push_back(m);
+        }
+        assert(canon.size() == 1 && "expected exactly one glue relation per base edge");
+        glue.push_back({ i, j, canon[0][0], canon[0][1], canon[0][2], canon[0][3] });
+    }
+    return glue;
+}
+
+// Mirrors dodecaFlakeRec()/icosaFlakeRec()'s own object-shaped return value ({ pos, adj, corners,
+// edgeChains }) - minus `pos`, since these two boards track no position at all (see this section's
+// own top comment).
+struct FlakeRecResult {
+    std::vector<std::vector<int>> adj;
+    std::vector<int> corners;
+    std::map<std::pair<int, int>, std::vector<int>> edge_chains;
+};
+
+// Mirrors shared/boardConfig.ts's dodecaFlakeRec()/icosaFlakeRec() - see either's own doc comment
+// for the full recursive construction (structural merge of adjacent sub-copies over their whole
+// shared edge-chain, then this call's own chain(P,Q) built by concatenating subs[P]'s and
+// subs[Q]'s own chain(P,Q)). One deliberate deviation from mirroring TS's own two separate
+// functions: TS needs dodecaFlakeRec/icosaFlakeRec as two functions only because each closes over
+// its own real-valued r/c position transform; with positions dropped entirely (see this section's
+// own top comment), the recursion is purely combinatorial and 100% identical for both shapes once
+// `k` (20 or 12), `edges`, and `glue_map` are parameters - keeping two copies here would just be
+// duplicated code with zero behavioral difference, so this single function serves both
+// dodecahedron_flake_board() and icosahedron_flake_board() below.
+static FlakeRecResult dodeca_icosa_flake_rec(
+    int n, int k, const std::vector<std::pair<int, int>>& edges,
+    const std::map<std::pair<int, int>, std::array<int, 4>>& glue_map) {
+    if (n == 1) {
+        auto adj = zero_adj(k);
+        std::map<std::pair<int, int>, std::vector<int>> chains;
+        for (const auto& e : edges) {
+            adj[e.first][e.second] = 1;
+            adj[e.second][e.first] = 1;
+            chains[e] = { e.first, e.second };
+        }
+        std::vector<int> corners(k);
+        std::iota(corners.begin(), corners.end(), 0);
+        return { std::move(adj), std::move(corners), std::move(chains) };
+    }
+
+    std::vector<FlakeRecResult> subs;
+    for (int k_ = 0; k_ < k; k_++) subs.push_back(dodeca_icosa_flake_rec(n - 1, k, edges, glue_map));
+
+    std::vector<std::vector<int>> combined_adj = subs[0].adj;
+    // full_map[a]: subs[a]'s own local node index -> combined's current (so-far-assembled) node index.
+    std::vector<std::vector<int>> full_map(k);
+    full_map[0].resize(subs[0].adj.size());
+    std::iota(full_map[0].begin(), full_map[0].end(), 0);
+
+    for (int k_ = 1; k_ < k; k_++) {
+        std::vector<std::pair<int, int>> merges;
+        for (int a = 0; a < k_; a++) {
+            int lo = std::min(a, k_), hi = std::max(a, k_);
+            auto it = glue_map.find({ lo, hi });
+            if (it == glue_map.end()) continue; // a and k_ are not adjacent - nothing shared here
+            auto [c1, d1, e1, f1] = it->second;
+            int self_c, self_d, other_e, other_f;
+            if (a == lo) { self_c = c1; self_d = d1; other_e = e1; other_f = f1; }
+            else         { self_c = e1; self_d = f1; other_e = c1; other_f = d1; }
+
+            int self_lo = std::min(self_c, self_d), self_hi = std::max(self_c, self_d);
+            std::vector<int> chain_self = subs[a].edge_chains.at({ self_lo, self_hi });
+            if (self_c > self_d) std::reverse(chain_self.begin(), chain_self.end()); // start at self_c
+            int other_lo = std::min(other_e, other_f), other_hi = std::max(other_e, other_f);
+            std::vector<int> chain_other = subs[k_].edge_chains.at({ other_lo, other_hi });
+            if (other_e > other_f) std::reverse(chain_other.begin(), chain_other.end()); // start at other_e
+
+            for (size_t idx = 0; idx < chain_self.size(); idx++)
+                merges.push_back({ full_map[a][chain_self[idx]], chain_other[idx] });
+        }
+        // merge_boards is (pos, adj)-shaped - pass empty per-node positions (emb_dim=0 convention,
+        // see zero_adj's own callers) since these two boards track no position at all, and discard
+        // its returned pos.
+        std::vector<std::vector<unsigned>> dummy1(combined_adj.size()), dummy2(subs[k_].adj.size());
+        auto [m_pos, m_adj, map1, map2] = merge_boards(dummy1, combined_adj, dummy2, subs[k_].adj, merges);
+        (void)m_pos;
+        combined_adj = std::move(m_adj);
+        for (int a = 0; a < k_; a++)
+            for (auto& idx : full_map[a]) idx = map1[idx];
+        full_map[k_] = map2;
+    }
+
+    std::vector<int> corners_out(k);
+    for (int vtx = 0; vtx < k; vtx++) corners_out[vtx] = full_map[vtx][subs[vtx].corners[vtx]];
+
+    std::map<std::pair<int, int>, std::vector<int>> edge_chains;
+    for (const auto& e : edges) {
+        int P = e.first, Q = e.second;
+        std::vector<int> chain_p = subs[P].edge_chains.at(e);
+        for (auto& idx : chain_p) idx = full_map[P][idx];
+        std::vector<int> chain_q = subs[Q].edge_chains.at(e);
+        for (auto& idx : chain_q) idx = full_map[Q][idx];
+        chain_p.insert(chain_p.end(), chain_q.begin(), chain_q.end());
+        edge_chains[e] = std::move(chain_p);
+    }
+
+    return { std::move(combined_adj), std::move(corners_out), std::move(edge_chains) };
+}
+
+// Vertex/edge/glue data dodecahedron_flake_board() needs - mirrors shared/boardConfig.ts's
+// dodecahedronFlakeData(), minus `verts` in the return (see this section's own top comment for
+// why). Cached in function-local statics since `edges`/`glue` only ever depend on the
+// dodecahedron's own fixed structure and never change.
+struct FlakeEdgeGlueData {
+    std::vector<std::pair<int, int>> edges;
+    std::vector<std::array<int, 6>> glue;
+};
+
+static const FlakeEdgeGlueData& dodecahedron_flake_data() {
+    static FlakeEdgeGlueData data;
+    static bool computed = false;
+    if (computed) return data;
+
+    const double phi = (1.0 + std::sqrt(5.0)) / 2.0;
+    const double scale = phi / 2.0; // normalizes edge length (2/phi at the raw scale above) to exactly 1
+    auto s = [](int bit) { return bit == 0 ? 1.0 : -1.0; };
+    auto x_idx = [](int sa, int sb, int sc) { return sa * 4 + sb * 2 + sc; };
+    auto y_idx = [](int sb, int sc) { return 8 + sb * 2 + sc; };
+    auto z_idx = [](int sa, int sb) { return 12 + sa * 2 + sb; };
+    auto w_idx = [](int sa, int sc) { return 16 + sa * 2 + sc; };
+
+    std::vector<std::vector<double>> verts(20);
+    for (int sa = 0; sa < 2; sa++)
+        for (int sb = 0; sb < 2; sb++)
+            for (int sc = 0; sc < 2; sc++)
+                verts[x_idx(sa, sb, sc)] = { s(sa) * scale, s(sb) * scale, s(sc) * scale };
+    for (int sb = 0; sb < 2; sb++)
+        for (int sc = 0; sc < 2; sc++)
+            verts[y_idx(sb, sc)] = { 0.0, (s(sb) / phi) * scale, s(sc) * phi * scale };
+    for (int sa = 0; sa < 2; sa++)
+        for (int sb = 0; sb < 2; sb++)
+            verts[z_idx(sa, sb)] = { (s(sa) / phi) * scale, s(sb) * phi * scale, 0.0 };
+    for (int sa = 0; sa < 2; sa++)
+        for (int sc = 0; sc < 2; sc++)
+            verts[w_idx(sa, sc)] = { s(sa) * phi * scale, 0.0, (s(sc) / phi) * scale };
+
+    std::vector<std::pair<int, int>> edges;
+    for (int sa = 0; sa < 2; sa++)
+        for (int sb = 0; sb < 2; sb++)
+            for (int sc = 0; sc < 2; sc++) {
+                int x = x_idx(sa, sb, sc);
+                edges.push_back({ x, y_idx(sb, sc) });
+                edges.push_back({ x, z_idx(sa, sb) });
+                edges.push_back({ x, w_idx(sa, sc) });
+            }
+    for (int sc = 0; sc < 2; sc++) edges.push_back({ y_idx(0, sc), y_idx(1, sc) });
+    for (int sb = 0; sb < 2; sb++) edges.push_back({ z_idx(0, sb), z_idx(1, sb) });
+    for (int sa = 0; sa < 2; sa++) edges.push_back({ w_idx(sa, 0), w_idx(sa, 1) });
+
+    const double r = 1.0 / (2.0 + phi);
+    const double c = phi * phi * r;
+    data.edges = std::move(edges);
+    data.glue = compute_dodeca_icosa_flake_glue(verts, data.edges, r, c);
+    computed = true;
+    return data;
+}
+
+// Vertex/edge/glue data icosahedron_flake_board() needs - mirrors shared/boardConfig.ts's
+// icosahedronFlakeData(), same caching/no-`verts`-in-the-return reasoning as
+// dodecahedron_flake_data() above.
+static const FlakeEdgeGlueData& icosahedron_flake_data() {
+    static FlakeEdgeGlueData data;
+    static bool computed = false;
+    if (computed) return data;
+
+    const double phi = (1.0 + std::sqrt(5.0)) / 2.0;
+    const double scale = 0.5; // normalizes edge length (2 at the raw scale above) to exactly 1
+    auto s = [](int bit) { return bit == 0 ? 1.0 : -1.0; };
+    auto a_idx = [](int sp, int sq) { return sp * 2 + sq; };
+    auto b_idx = [](int sp, int sq) { return 4 + sp * 2 + sq; };
+    auto c_idx = [](int sp, int sq) { return 8 + sp * 2 + sq; };
+
+    std::vector<std::vector<double>> verts(12);
+    for (int sp = 0; sp < 2; sp++)
+        for (int sq = 0; sq < 2; sq++) {
+            verts[a_idx(sp, sq)] = { 0.0, s(sp) * scale, s(sq) * phi * scale };
+            verts[b_idx(sp, sq)] = { s(sp) * scale, s(sq) * phi * scale, 0.0 };
+            verts[c_idx(sp, sq)] = { s(sq) * phi * scale, 0.0, s(sp) * scale };
+        }
+
+    auto adj = zero_adj(12);
+    auto connect = [&](int i, int j) { adj[i][j] = 1; adj[j][i] = 1; };
+    for (int sq = 0; sq < 2; sq++) {
+        connect(a_idx(0, sq), a_idx(1, sq));
+        connect(b_idx(0, sq), b_idx(1, sq));
+        connect(c_idx(0, sq), c_idx(1, sq));
+    }
+    for (int sp = 0; sp < 2; sp++)
+        for (int sq = 0; sq < 2; sq++)
+            for (int free = 0; free < 2; free++) {
+                connect(a_idx(sp, sq), b_idx(free, sp));
+                connect(b_idx(sp, sq), c_idx(free, sp));
+                connect(c_idx(sp, sq), a_idx(free, sp));
+            }
+    std::vector<std::pair<int, int>> edges;
+    for (int i = 0; i < 12; i++)
+        for (int j = i + 1; j < 12; j++)
+            if (adj[i][j]) edges.push_back({ i, j });
+
+    const double r = 1.0 / (1.0 + phi);
+    const double c_coef = phi * r;
+    data.edges = std::move(edges);
+    data.glue = compute_dodeca_icosa_flake_glue(verts, data.edges, r, c_coef);
+    computed = true;
+    return data;
+}
+
+// Mirrors shared/boardConfig.ts's dodecahedronFlake() - see board_config.h's own doc comment for
+// the high-level construction (why there's no embedding at all here).
+BoardConfig dodecahedron_flake_board(int n) {
+    assert(n >= 1 && "n must be at least 1");
+    const auto& data = dodecahedron_flake_data();
+    std::map<std::pair<int, int>, std::array<int, 4>> glue_map;
+    for (const auto& g : data.glue) glue_map[{ g[0], g[1] }] = { g[2], g[3], g[4], g[5] };
+
+    auto result = dodeca_icosa_flake_rec(n, 20, data.edges, glue_map);
+    std::vector<std::vector<unsigned>> embed(result.adj.size()); // emb_dim=0
+    return make_bc(std::move(result.adj), 0u, std::move(embed));
+}
+
+// Mirrors shared/boardConfig.ts's icosahedronFlake() - see board_config.h's own doc comment on
+// dodecahedron_flake_board() for the high-level construction, which this shares in full.
+BoardConfig icosahedron_flake_board(int n) {
+    assert(n >= 1 && "n must be at least 1");
+    const auto& data = icosahedron_flake_data();
+    std::map<std::pair<int, int>, std::array<int, 4>> glue_map;
+    for (const auto& g : data.glue) glue_map[{ g[0], g[1] }] = { g[2], g[3], g[4], g[5] };
+
+    auto result = dodeca_icosa_flake_rec(n, 12, data.edges, glue_map);
+    std::vector<std::vector<unsigned>> embed(result.adj.size()); // emb_dim=0
+    return make_bc(std::move(result.adj), 0u, std::move(embed));
+}
+
 BoardConfig triangular_hex_board(int d) {
     assert(d >= 0 && "d must be non-negative");
     std::vector<std::pair<int,int>> coords;
@@ -1258,6 +1539,8 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<int>& 
     if (kind == "ortho") return orthoplex_board(v[0]);
     if (kind == "dodeca") return dodecahedron_board();
     if (kind == "icosa") return icosahedron_board();
+    if (kind == "dodflake") return dodecahedron_flake_board(v[0]);
+    if (kind == "icoflake") return icosahedron_flake_board(v[0]);
     if (kind == "trihex") return triangular_hex_board(v[0]);
     if (kind == "hex")   return hex_board(v[0]);
     if (kind == "hexdel") return trihex_board(v[0]);

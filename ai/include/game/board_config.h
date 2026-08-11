@@ -240,6 +240,23 @@ BoardConfig dodecahedron_board();
 // icosahedronBoard() for the coordinates/connectivity derivation this mirrors, adjacency only.
 BoardConfig icosahedron_board();
 
+// Mirrors shared/boardConfig.ts's dodecahedronFlake() (n >= 1: n=1 is the plain dodecahedron_board()
+// itself; n>1 recurses into 20 order-(n-1) copies, one per vertex, each sharing a full, growing
+// edge - not just a point - with every adjacent copy; see the .cpp file's own comment for the full
+// construction, including the C++ port of computeDodecaIcosaFlakeGlue()). Same emb_dim = 0 / empty
+// embed[] approach as dodecahedron_board() itself (see that function's own doc comment) - but
+// unlike every other board here, this never computes or stores node positions at all, not even
+// internally as scratch data beyond the one-time glue-table search: the TS side's entire
+// construction is built around a real-valued position transform (S_i(x) = r*x + c*verts[i]), which
+// this drops entirely once the glue table itself is known, since the recursive merge only ever
+// needs *which* nodes coincide (integer indices), never *where* they are.
+BoardConfig dodecahedron_flake_board(int n);
+
+// Mirrors shared/boardConfig.ts's icosahedronFlake() - same construction as
+// dodecahedron_flake_board() above (see its own doc comment), just with 12 vertices/30 edges
+// instead of 20 vertices/30 edges.
+BoardConfig icosahedron_flake_board(int n);
+
 // A triangular-lattice board arranged in a hexagon shape, with d layers of triangles surrounding
 // the central point. Not tiled by hexagons - see hex_board below for that. Cells are
 // identified by axial coordinates (q, r) with max(|q|, |r|, |q+r|) <= d, embedded (shifted to
@@ -297,6 +314,7 @@ BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("line" | "rect" | "rectd" |
 // "cublat" | "hcub" | "tri" | "sier" | "regpoly" | "tetra" | "octa" | "ortho" | "dodeca" | "icosa" |
+// "dodflake" | "icoflake" |
 // "trihex" | "hex" | "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" | "star" - matches
 // shared/types.ts's GameConfig.boardType strings), passing `args` as that
 // builder's positional parameters. Throws std::runtime_error for an unknown
