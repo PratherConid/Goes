@@ -265,6 +265,17 @@ BoardConfig icosahedron_flake_board(int n);
 // mirrors dodeca/icosahedron flake's own no-embedding convention rather than octahedron_board()'s.
 BoardConfig octahedron_flake_board(int n);
 
+// Mirrors shared/boardConfig.ts's regularPolygonFlake() - same overall construction as
+// dodecahedron_flake_board() above (see its own doc comment), just with n_sides vertices/edges
+// instead of a fixed shape, so cached per n_sides rather than once (see the .cpp file's own comment
+// on regular_polygon_flake_data()). Unlike dodeca/icosa/octahedron (always merges by whole edge, or
+// - octahedron - transitively equivalent to one), a regular polygon's base edges merge by a whole
+// growing edge when n_sides is a multiple of 4, and by a single non-growing node otherwise (see the
+// .cpp file's own comment on regular_polygon_flake_rc() for the closed-form r/c this forces). No
+// embedding here either, same as regular_polygon_board() itself (also emb_dim=0, for the same
+// inherently-irrational-coordinates reason).
+BoardConfig regular_polygon_flake_board(int n_sides, int order);
+
 // A triangular-lattice board arranged in a hexagon shape, with d layers of triangles surrounding
 // the central point. Not tiled by hexagons - see hex_board below for that. Cells are
 // identified by axial coordinates (q, r) with max(|q|, |r|, |q+r|) <= d, embedded (shifted to
@@ -322,7 +333,7 @@ BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("line" | "rect" | "rectd" |
 // "cublat" | "hcub" | "tri" | "sier" | "regpoly" | "tetra" | "octa" | "ortho" | "dodeca" | "icosa" |
-// "dodflake" | "icoflake" | "octaflake" |
+// "dodflake" | "icoflake" | "octaflake" | "polyflake" |
 // "trihex" | "hex" | "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" | "star" - matches
 // shared/types.ts's GameConfig.boardType strings), passing `args` as that
 // builder's positional parameters. Throws std::runtime_error for an unknown

@@ -1079,6 +1079,34 @@ function computeFlakeGlue(
     return glue;
 }
 
+/**
+ * Exhaustively searches for the "node glue" relationship regularPolygonFlakeData() needs (its own
+ * non-multiple-of-4 case - see that function's own doc comment for what an entry means): for each
+ * base edge `(i, j)`, the unique pair of vertices `(m, p)` - `m` within the copy at `i`, `p` within
+ * the copy at `j` - whose `S_i`/`S_j`-transformed positions coincide. Unlike computeFlakeGlue()'s
+ * own edge-to-edge (2-point) search, this is a single-point search: node-merge copies share exactly
+ * one point per base edge, not a whole growing edge, so there is no second point to match and no
+ * chain to track (see nodeEdgeMergeFlakeRec()'s own doc comment).
+ */
+function computeNodeGlue(
+    verts: number[][], edges: [number, number][], r: number, c: number,
+): [number, number, number, number][] {
+    const dist = (a: number[], b: number[]) => Math.hypot(...a.map((x, k) => x - b[k]));
+    const transform = (i: number, m: number) => verts[m].map((x, k) => r * x + c * verts[i][k]);
+
+    const glue: [number, number, number, number][] = [];
+    for (const [i, j] of edges) {
+        const matches: [number, number][] = [];
+        for (let m = 0; m < verts.length; m++)
+            for (let p = 0; p < verts.length; p++)
+                if (dist(transform(i, m), transform(j, p)) < 1e-9) matches.push([m, p]);
+        assert(matches.length === 1,
+            `computeNodeGlue: expected exactly one node-glue relation for edge (${i},${j}), found ${matches.length}`);
+        glue.push([i, j, ...matches[0]]);
+    }
+    return glue;
+}
+
 let dodecahedronGlueCache: [number, number, number, number, number, number][] | null = null;
 
 function dodecahedronFlakeData(): DodecahedronFlakeData {
@@ -1140,70 +1168,93 @@ export function dodecahedronBoard(): BoardConfig {
 }
 
 /**
- * Recursive core shared by dodecahedronFlake() and icosahedronFlake() - see each one's own doc
- * comment for its own r/c transform. `edges`/`glueMap` are that shape's own *FlakeData()` `edges`/
- * `glue` (the latter turned into a lookup-by-base-edge, both computed once by the caller and
- * threaded through rather than recomputed on every recursive call). Works for any shape whose base
- * graph's own vertices/edges are passed in - only `corners.length` (20 for dodecahedron, 12 for
- * icosahedron) and the edge/glue data differ between the two callers, so one function covers both.
+ * Recursive core shared by dodecahedronFlake(), icosahedronFlake(), octahedronFlake(), and
+ * regularPolygonFlake() - see each one's own doc comment for its own r/c transform. `edges` is that
+ * shape's own base-graph edges; each base edge `(P, Q)` is glued EITHER via `edgeGlueMap` (a whole,
+ * growing shared edge - dodeca/icosa/octahedron's own case, see below) OR via `nodeGlueMap` (a
+ * single shared point, no growth - regularPolygonFlake()'s own non-multiple-of-4 case), never both -
+ * only `corners.length` and the edge/glue data differ between callers, so one function covers all.
  *
- * Alongside `pos`/`adj`/`corners`, also returns `edgeChains`: for every base edge `(P, Q)` with
- * `P < Q`, the ordered list of node indices lying along that edge at THIS call's own recursion depth
- * - length `2^n` (base case: literally `[P, Q]`, length 2). This is pure bookkeeping data for an
- * *outer* caller's own merge step - concatenating two nodes lists here never adds an edge between
- * them; it says nothing about this call's own `adj`.
+ * `edgeGlueMap`/`nodeGlueMap` are that shape's own `*FlakeData()` `edgeGlue`/`nodeGlue` (turned into
+ * lookups-by-base-edge, both computed once by the caller and threaded through rather than
+ * recomputed on every recursive call).
  *
- * Two things consume it, mirroring the fact that 3 of a sub-flake's own edges are exactly the 3
- * edges incident to its own attachment vertex:
+ * Alongside `pos`/`adj`/`corners`, also returns `edgeChains`: for every `edgeGlueMap` base edge
+ * `(P, Q)` with `P < Q` (node-merge edges never get an entry - there is no "chain", just one point),
+ * the ordered list of node indices lying along that edge at THIS call's own recursion depth - length
+ * `2^n` (base case: literally `[P, Q]`, length 2). This is pure bookkeeping data for an *outer*
+ * caller's own merge step - concatenating two nodes lists here never adds an edge between them; it
+ * says nothing about this call's own `adj`.
+ *
+ * Two things consume it, mirroring the fact that 3 (dodeca), 5 (icosa), or 4 (octahedron)/2
+ * (regular-polygon) of a sub-flake's own edges are exactly the edges incident to its own attachment
+ * vertex:
  *  - The structural merge, built as one `merges` list across every base edge and resolved by a
  *    single mergeBoards() call (see that function's own doc comment): unlike a simplex-style flake
- *    (sierpinskiRec, sharing one point per adjacent pair), copies here share every node along a
- *    whole edge, so each base edge `(P, Q)` pairs up `subs[P]`'s own chain for `glueMap`'s `(C, D)`
- *    with `subs[Q]`'s own chain for `(E, F)`, **position by position over the whole chain** (length
+ *    (sierpinskiRec, sharing one point per adjacent pair), an `edgeGlueMap` base edge shares every
+ *    node along a whole edge, so it pairs up `subs[P]`'s own chain for `edgeGlueMap`'s `(C, D)` with
+ *    `subs[Q]`'s own chain for `(E, F)`, **position by position over the whole chain** (length
  *    `2^(n-1)`, since `subs[P]`/`subs[Q]` are themselves order-`(n-1)`) - not just their 2 endpoints.
- *  - This call's own returned `chain(P, Q)`, for an even-outer caller: `subs[P]`'s own chain for
- *    `(P, Q)` is exactly the one of *its* 3 attachment-edges that is `(P, Q)` itself, and likewise
- *    for `subs[Q]` - concatenating those two `(P, Q)`-chains (remapped into this call's own final
- *    node-index space) gives length `2^n`, matching "shared edge length doubles per level" exactly.
+ *    A `nodeGlueMap` base edge instead contributes exactly one merge pair: `subs[P]`'s own corner
+ *    `m` and `subs[Q]`'s own corner `p` (`nodeGlueMap`'s `(m, p)`) - no chain, so no growth with `n`.
+ *  - This call's own returned `chain(P, Q)`, for an even-outer caller (`edgeGlueMap` edges only):
+ *    `subs[P]`'s own chain for `(P, Q)` is exactly the one of *its* own attachment-edges that is
+ *    `(P, Q)` itself, and likewise for `subs[Q]` - concatenating those two `(P, Q)`-chains (remapped
+ *    into this call's own final node-index space) gives length `2^n`, matching "shared edge length
+ *    doubles per level" exactly.
  */
-function edgeMergeFlakeRec(
-    n: number, corners: number[][], r: number, c: number,
-    edges: [number, number][], glueMap: Map<string, [number, number, number, number]>,
+function nodeEdgeMergeFlakeRec(
+    n: number, corners: number[][], r: number, c: number, edges: [number, number][],
+    edgeGlueMap: Map<string, [number, number, number, number]>,
+    nodeGlueMap: Map<string, [number, number]>,
 ): { pos: number[][]; adj: number[][]; corners: number[]; edgeChains: Map<string, number[]> } {
-    const k = corners.length; // 20 for dodecahedron, 12 for icosahedron
+    const k = corners.length; // 20 for dodecahedron, 12 for icosahedron, 6 for octahedron, nSides for regularPolygon
     if (n === 1) {
         const adj = zeroAdj(k);
         const edgeChains = new Map<string, number[]>();
-        for (const [a, b] of edges) { adj[a][b] = 1; adj[b][a] = 1; edgeChains.set(`${a},${b}`, [a, b]); }
+        for (const [a, b] of edges) {
+            adj[a][b] = 1; adj[b][a] = 1;
+            if (edgeGlueMap.has(`${a},${b}`)) edgeChains.set(`${a},${b}`, [a, b]);
+        }
         return { pos: corners.map(p => [...p]), adj, corners: corners.map((_, i) => i), edgeChains };
     }
     const glue = (i: number, x: number[]) => x.map((val, d) => r * val + c * corners[i][d]);
     const subs = corners.map((_, k_) =>
-        edgeMergeFlakeRec(n - 1, corners.map(x => glue(k_, x)), r, c, edges, glueMap));
+        nodeEdgeMergeFlakeRec(n - 1, corners.map(x => glue(k_, x)), r, c, edges, edgeGlueMap, nodeGlueMap));
 
     const merges: [[number, number], [number, number]][] = [];
     for (const [P, Q] of edges) {
-        const [selfC, selfD, otherE, otherF] = glueMap.get(`${P},${Q}`)!;
-        const selfLo = Math.min(selfC, selfD), selfHi = Math.max(selfC, selfD);
-        let chainSelf = subs[P].edgeChains.get(`${selfLo},${selfHi}`)!;
-        if (selfC > selfD) chainSelf = [...chainSelf].reverse(); // orient to start at selfC
-        const otherLo = Math.min(otherE, otherF), otherHi = Math.max(otherE, otherF);
-        let chainOther = subs[Q].edgeChains.get(`${otherLo},${otherHi}`)!;
-        if (otherE > otherF) chainOther = [...chainOther].reverse(); // orient to start at otherE
-        for (let i = 0; i < chainSelf.length; i++) merges.push([[P, chainSelf[i]], [Q, chainOther[i]]]);
+        const eg = edgeGlueMap.get(`${P},${Q}`);
+        if (eg) {
+            const [selfC, selfD, otherE, otherF] = eg;
+            const selfLo = Math.min(selfC, selfD), selfHi = Math.max(selfC, selfD);
+            let chainSelf = subs[P].edgeChains.get(`${selfLo},${selfHi}`)!;
+            if (selfC > selfD) chainSelf = [...chainSelf].reverse(); // orient to start at selfC
+            const otherLo = Math.min(otherE, otherF), otherHi = Math.max(otherE, otherF);
+            let chainOther = subs[Q].edgeChains.get(`${otherLo},${otherHi}`)!;
+            if (otherE > otherF) chainOther = [...chainOther].reverse(); // orient to start at otherE
+            for (let i = 0; i < chainSelf.length; i++) merges.push([[P, chainSelf[i]], [Q, chainOther[i]]]);
+            continue;
+        }
+        const ng = nodeGlueMap.get(`${P},${Q}`);
+        if (ng) {
+            const [m, p] = ng;
+            merges.push([[P, subs[P].corners[m]], [Q, subs[Q].corners[p]]]);
+        }
     }
 
-    const m = mergeBoards(subs, merges);
-    const cornersOut = subs.map((sub, vtx) => m.maps[vtx][sub.corners[vtx]]);
+    const combined = mergeBoards(subs, merges);
+    const cornersOut = subs.map((sub, vtx) => combined.maps[vtx][sub.corners[vtx]]);
 
     const edgeChains = new Map<string, number[]>();
     for (const [P, Q] of edges) {
-        const chainP = subs[P].edgeChains.get(`${P},${Q}`)!.map(idx => m.maps[P][idx]);
-        const chainQ = subs[Q].edgeChains.get(`${P},${Q}`)!.map(idx => m.maps[Q][idx]);
+        if (!edgeGlueMap.has(`${P},${Q}`)) continue;
+        const chainP = subs[P].edgeChains.get(`${P},${Q}`)!.map(idx => combined.maps[P][idx]);
+        const chainQ = subs[Q].edgeChains.get(`${P},${Q}`)!.map(idx => combined.maps[Q][idx]);
         edgeChains.set(`${P},${Q}`, [...chainP, ...chainQ]);
     }
 
-    return { pos: m.pos, adj: m.adj, corners: cornersOut, edgeChains };
+    return { pos: combined.pos, adj: combined.adj, corners: cornersOut, edgeChains };
 }
 
 /**
@@ -1214,8 +1265,8 @@ function edgeMergeFlakeRec(
  * simplex-style flake (sierpinskiSimplex/sierpinskiRec - every pair of adjacent copies sharing a
  * single point), copies here share a full EDGE, growing with recursion depth: for base edge (A, B),
  * the specific edge of the sub-flake at A and edge of the sub-flake at B that coincide are given by
- * `glue`, and edgeMergeFlakeRec's own `edgeChains` tracks the full, growing node list along each edge
- * (see that function's own doc comment for exactly how it's built and consumed).
+ * `glue`, and nodeEdgeMergeFlakeRec's own `edgeChains` tracks the full, growing node list along each
+ * edge (see that function's own doc comment for exactly how it's built and consumed).
  *
  * r and c are fixed by two requirements: (1) leaf-level (deepest, order-1) copies must come out
  * unit edge length, and (2) each `glue` entry's two named edges must actually coincide once
@@ -1237,14 +1288,14 @@ export function dodecahedronFlake(n: number): BoardConfig {
     const c = phi * phi * r;
 
     const { verts, edges, glue } = dodecahedronFlakeData();
-    const glueMap = new Map<string, [number, number, number, number]>(
+    const edgeGlueMap = new Map<string, [number, number, number, number]>(
         glue.map(([ga, gb, gc, gd, ge, gf]) => [`${ga},${gb}`, [gc, gd, ge, gf]]),
     );
 
     const scale = (2 + phi) ** (n - 1);
     const corners = verts.map(p => p.map(x => x * scale));
 
-    const built = edgeMergeFlakeRec(n, corners, r, c, edges, glueMap);
+    const built = nodeEdgeMergeFlakeRec(n, corners, r, c, edges, edgeGlueMap, new Map());
     return make(new Embedding(3, built.pos, DEFAULT_3D_PROJMAT), built.adj);
 }
 
@@ -1350,7 +1401,7 @@ export function icosahedronBoard(): BoardConfig {
  * (icosahedronFlakeData()'s own `verts`/`edges`, unit edge length); n>1 recurses into 12
  * order-(n-1) copies, one attached at each of the 12 vertices, via `S_i(x) = r*x + c*verts[i]` -
  * same r, c, and orientation (no rotation, ever) at every copy and every level - exactly the same
- * scheme as dodecahedronFlake() (both built by the shared edgeMergeFlakeRec() - see its own doc
+ * scheme as dodecahedronFlake() (both built by the shared nodeEdgeMergeFlakeRec() - see its own doc
  * comment for how `edgeChains` grows and is consumed), just with 12 vertices/30 edges
  * (`icosahedronFlakeData()`'s own `glue`) instead of 20 vertices/30 edges.
  *
@@ -1371,14 +1422,14 @@ export function icosahedronFlake(n: number): BoardConfig {
     const c = phi * r;
 
     const { verts, edges, glue } = icosahedronFlakeData();
-    const glueMap = new Map<string, [number, number, number, number]>(
+    const edgeGlueMap = new Map<string, [number, number, number, number]>(
         glue.map(([ga, gb, gc, gd, ge, gf]) => [`${ga},${gb}`, [gc, gd, ge, gf]]),
     );
 
     const scale = (1 + phi) ** (n - 1);
     const corners = verts.map(p => p.map(x => x * scale));
 
-    const built = edgeMergeFlakeRec(n, corners, r, c, edges, glueMap);
+    const built = nodeEdgeMergeFlakeRec(n, corners, r, c, edges, edgeGlueMap, new Map());
     return make(new Embedding(3, built.pos, DEFAULT_3D_PROJMAT), built.adj);
 }
 
@@ -1407,7 +1458,7 @@ interface OctahedronFlakeData {
  * r*(-v_i) + c*v_i = (c-r)*v_i = 0` once `c = r`, for every `i`), but because that coincidence needs
  * no glue entry of its own: it already follows transitively from the 12 real-edge glue relations,
  * since octahedron's real-edge graph (every vertex adjacent to all but its own antipode) connects
- * any two antipodal copies through a third common neighbor - and edgeMergeFlakeRec()'s own
+ * any two antipodal copies through a third common neighbor - and nodeEdgeMergeFlakeRec()'s own
  * mergeBoards() call resolves transitive coincidences like that automatically (see mergeBoards()'s
  * own doc comment), unlike the sequential per-step folding this construction originally used and
  * was rewritten away from for exactly this reason.
@@ -1441,7 +1492,7 @@ function octahedronFlakeData(): OctahedronFlakeData {
  * The "flake" fractal generalization of a regular octahedron - n=1 is the plain octahedron itself
  * (octahedronFlakeData()'s own `verts`/`edges`, unit edge length); n>1 recurses into 6 order-(n-1)
  * copies, one attached at each of the 6 vertices, via `S_i(x) = r*x + c*verts[i]` - the same overall
- * scheme as dodecahedronFlake()/icosahedronFlake(), built by the same shared edgeMergeFlakeRec().
+ * scheme as dodecahedronFlake()/icosahedronFlake(), built by the same shared nodeEdgeMergeFlakeRec().
  *
  * r and c are fixed by the same two requirements as dodecahedronFlake()/icosahedronFlake(): (1)
  * leaf-level copies must come out unit edge length, and (2) each `glue` entry's two named edges must
@@ -1457,15 +1508,132 @@ export function octahedronFlake(n: number): BoardConfig {
     const r = 0.5, c = 0.5;
 
     const { verts, edges, glue } = octahedronFlakeData();
-    const glueMap = new Map<string, [number, number, number, number]>(
+    const edgeGlueMap = new Map<string, [number, number, number, number]>(
         glue.map(([ga, gb, gc, gd, ge, gf]) => [`${ga},${gb}`, [gc, gd, ge, gf]]),
     );
 
     const scale = (1 / r) ** (n - 1);
     const corners = verts.map(p => p.map(x => x * scale));
 
-    const built = edgeMergeFlakeRec(n, corners, r, c, edges, glueMap);
+    const built = nodeEdgeMergeFlakeRec(n, corners, r, c, edges, edgeGlueMap, new Map());
     return make(new Embedding(3, built.pos, DEFAULT_3D_PROJMAT), built.adj);
+}
+
+/**
+ * `r`/`c` for regularPolygonFlake(nSides, ...) - shared by regularPolygonFlakeData() (which needs
+ * them to run computeFlakeGlue()/computeNodeGlue()) and regularPolygonFlake() itself (which needs
+ * them for the actual `S_i(x) = r*x + c*verts[i]` transform), so the derivation lives in one place.
+ *
+ * Fixed by the same two requirements as dodecahedronFlake()/icosahedronFlake()/octahedronFlake():
+ * (1) `S_i(verts[i]) = verts[i]` - a copy's own self vertex stays exactly where the outer polygon's
+ * vertex was, i.e. `r + c = 1` (this is what pins the *absolute* r, c - not just their ratio; the
+ * other three flakes satisfy it too, e.g. octahedron's r=c=1/2); (2) the relevant vertex pair(s) (see
+ * regularPolygonFlakeData()'s own doc comment) must actually coincide once transformed, which pins
+ * `c/r`. For base edge `(0, 1)`, requirement (2)'s coincidence equation `r*(verts[a] - verts[b]) =
+ * c*(verts[1] - verts[0])` - solved as complex numbers, `verts[j] = R*omega^j` - always reduces to
+ * `c/r = sum_{j=-k}^{k} omega^j = 1 + 2*sum_{j=1}^{k} cos(2*pi*j/nSides)` for the appropriate `k`:
+ * `k = nSides/4 - 1` when merging by edge (`a,b` = `1+nSides/4, -nSides/4` - see
+ * regularPolygonFlakeData()'s own doc comment), `k = floor(nSides/4)` when merging by node (`a,b` =
+ * `1+floor(nSides/4), -floor(nSides/4)`) - verified numerically (both this ratio and the resulting
+ * r,c) against an independent mergeClose()-based reference construction, for nSides=3..12 and
+ * order=1..3.
+ */
+function regularPolygonFlakeRC(nSides: number): { r: number; c: number } {
+    const isEdgeMerge = nSides % 4 === 0;
+    const k = isEdgeMerge ? nSides / 4 - 1 : Math.floor(nSides / 4);
+    let cosSum = 0;
+    for (let j = 1; j <= k; j++) cosSum += Math.cos((2 * Math.PI * j) / nSides);
+    const ratio = 1 + 2 * cosSum; // c/r
+    const r = 1 / (1 + ratio), c = ratio / (1 + ratio); // r + c = 1
+    return { r, c };
+}
+
+interface RegularPolygonFlakeData {
+    verts: number[][];
+    edges: [number, number][];
+    // regularPolygonFlake()'s own additional data, ignored by regularPolygonBoard() - exactly one of
+    // edgeGlue/nodeGlue is populated (never both), per nSides % 4 - see regularPolygonFlake()'s own
+    // doc comment for the difference.
+    edgeGlue: [number, number, number, number, number, number][] | null;
+    nodeGlue: [number, number, number, number][] | null;
+}
+
+/**
+ * The vertex/edge data regularPolygonBoard() and regularPolygonFlake() both build on: nSides
+ * unit-edge regular-nSides-gon vertices (`verts`, same construction as regularPolygonBoard() itself)
+ * and their nSides cycle edges (`edges`). Cached per `nSides` (unlike dodeca/icosa/octahedron's own
+ * single-shape caches) since regularPolygonFlake() isn't a fixed shape.
+ *
+ * For base edge `(i, i+1)`, every copy trivially shares the point `S_i(verts[i+1]) =
+ * S_{i+1}(verts[i])` (true for ANY `r+c=1` construction, on any base graph - see octahedronFlake()'s
+ * own doc comment for the same observation) - that alone is a node merge. It upgrades to a genuine
+ * edge merge only when a SECOND, independent point also coincides: copy i's own vertex
+ * `1 + nSides/4` and copy (i+1)'s own vertex `-nSides/4` (i.e. `nSides - nSides/4`) - which only
+ * exist as integer vertex indices when `nSides` is a multiple of 4 (there are exactly 2 edges of a
+ * regular nSides-gon perpendicular to any given edge exactly when 4 | nSides, and this second point
+ * is the far endpoint of one of them - `edgeGlue`, found by computeFlakeGlue()). For nSides not a
+ * multiple of 4, no such second point exists, so the base edge stays a plain node merge - the
+ * nearest analogous point, copy i's own vertex `1 + floor(nSides/4)` and copy (i+1)'s own vertex
+ * `-floor(nSides/4)` (`nodeGlue`, found by computeNodeGlue()), verified (alongside `edgeGlue`'s own
+ * search) to be the actual coincidence computeFlakeGlue()/computeNodeGlue() finds, for every nSides
+ * tested (3..12) - not merely asserted.
+ */
+function regularPolygonFlakeData(nSides: number): RegularPolygonFlakeData {
+    const cached = regularPolygonFlakeDataCache.get(nSides);
+    if (cached) return cached;
+
+    const R = 1 / (2 * Math.sin(Math.PI / nSides)); // matches regularPolygonBoard()'s own unit-edge scale
+    const verts: number[][] = [];
+    for (let k = 0; k < nSides; k++) {
+        const theta = (2 * Math.PI * k) / nSides;
+        verts.push([R * Math.cos(theta), R * Math.sin(theta)]);
+    }
+    const edges: [number, number][] = [];
+    for (let k = 0; k < nSides; k++) {
+        const a = k, b = (k + 1) % nSides;
+        edges.push(a < b ? [a, b] : [b, a]);
+    }
+
+    const { r, c } = regularPolygonFlakeRC(nSides);
+    const data: RegularPolygonFlakeData = nSides % 4 === 0
+        ? { verts, edges, edgeGlue: computeFlakeGlue(verts, edges, r, c), nodeGlue: null }
+        : { verts, edges, edgeGlue: null, nodeGlue: computeNodeGlue(verts, edges, r, c) };
+    regularPolygonFlakeDataCache.set(nSides, data);
+    return data;
+}
+
+const regularPolygonFlakeDataCache = new Map<number, RegularPolygonFlakeData>();
+
+/**
+ * The "flake" fractal generalization of a regular polygon - order=1 is the plain nSides-gon itself
+ * (regularPolygonFlakeData()'s own `verts`/`edges`, unit edge length, same as regularPolygonBoard());
+ * order>1 recurses into nSides order-(order-1) copies, one attached at each of the nSides vertices,
+ * via `S_i(x) = r*x + c*verts[i]` - same r, c, and orientation (no rotation, ever) at every copy and
+ * every level, the same overall scheme as dodecahedronFlake()/icosahedronFlake()/octahedronFlake()
+ * (all built by the shared nodeEdgeMergeFlakeRec()). Unlike those three (always an edge merge, or -
+ * octahedron - always transitively equivalent to one), a regular-polygon flake's base edges merge by
+ * a whole growing EDGE when nSides is a multiple of 4, and by a single, non-growing NODE otherwise -
+ * see regularPolygonFlakeData()'s own doc comment for exactly which point(s) and why, and
+ * regularPolygonFlakeRC()'s own doc comment for how `r`, `c` follow from that.
+ */
+export function regularPolygonFlake(nSides: number, order: number): BoardConfig {
+    assert(Number.isInteger(nSides) && nSides >= 3, `nSides must be an integer at least 3, got ${nSides}`);
+    assert(Number.isInteger(order) && order >= 1, `order must be a positive integer, got ${order}`);
+    const { r, c } = regularPolygonFlakeRC(nSides);
+
+    const { verts, edges, edgeGlue, nodeGlue } = regularPolygonFlakeData(nSides);
+    const edgeGlueMap = new Map<string, [number, number, number, number]>(
+        (edgeGlue ?? []).map(([ga, gb, gc, gd, ge, gf]) => [`${ga},${gb}`, [gc, gd, ge, gf]]),
+    );
+    const nodeGlueMap = new Map<string, [number, number]>(
+        (nodeGlue ?? []).map(([ga, gb, gm, gp]) => [`${ga},${gb}`, [gm, gp]]),
+    );
+
+    const scale = (1 / r) ** (order - 1);
+    const corners = verts.map(p => p.map(x => x * scale));
+
+    const built = nodeEdgeMergeFlakeRec(order, corners, r, c, edges, edgeGlueMap, nodeGlueMap);
+    return make(built.pos, built.adj);
 }
 
 /**
@@ -1928,7 +2096,8 @@ export enum PrescribedBoard {
     orthoplexBoard,
     dodecahedronFlake,
     icosahedronFlake,
-    octahedronFlake
+    octahedronFlake,
+    regularPolygonFlake
 }
 
 // k Number-typed args in a row - shorthand for PrescribedBoardMap's common case below (every board
@@ -1989,6 +2158,9 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [BoardArgType[], string
         [nums(1), "icoflake", "&lt;n&gt;", "Icosahedron flake fractal of order n (n=1 is the plain icosahedron)"],
     [PrescribedBoard.octahedronFlake]:
         [nums(1), "octaflake", "&lt;n&gt;", "Octahedron flake fractal of order n (n=1 is the plain octahedron)"],
+    [PrescribedBoard.regularPolygonFlake]:
+        [nums(2), "polyflake", "&lt;sides&gt; &lt;n&gt;",
+            "Regular polygon flake fractal of order n (n=1 is the plain sides-gon)"],
 };
 
 export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => BoardConfig> = {
@@ -2016,6 +2188,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.dodecahedronFlake]:        (...a) => dodecahedronFlake(a[0]),
     [PrescribedBoard.icosahedronFlake]:         (...a) => icosahedronFlake(a[0]),
     [PrescribedBoard.octahedronFlake]:          (...a) => octahedronFlake(a[0]),
+    [PrescribedBoard.regularPolygonFlake]:      (...a) => regularPolygonFlake(a[0], a[1]),
 };
 
 /**

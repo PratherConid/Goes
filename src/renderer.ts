@@ -623,6 +623,7 @@ export class Renderer {
         [PrescribedBoard.dodecahedronFlake]:        [2],
         [PrescribedBoard.icosahedronFlake]:         [2],
         [PrescribedBoard.octahedronFlake]:          [4],
+        [PrescribedBoard.regularPolygonFlake]:      [6, 2],
     };
     nShowHistory = 10;
     currentSidePanel: SidePanelContent = SidePanelContent.Home;

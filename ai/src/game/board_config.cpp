@@ -616,7 +616,7 @@ BoardConfig triangular_board(int w) {
 }
 
 // A plain (pos, adj) pair - the recursive intermediate form merge_boards()/sierpinski_rec()/
-// edge_merge_flake_rec() all build on before an outermost caller wraps the result into a full
+// node_edge_merge_flake_rec() all build on before an outermost caller wraps the result into a full
 // BoardConfig via make_bc().
 struct RawBoard {
     std::vector<std::vector<unsigned>> pos;
@@ -885,10 +885,10 @@ BoardConfig icosahedron_board() {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// --- dodecahedron_flake_board()/icosahedron_flake_board()/octahedron_flake_board(): mirrors
-// shared/boardConfig.ts's dodecahedronFlake()/icosahedronFlake()/octahedronFlake() - see
-// board_config.h's own doc comment on dodecahedron_flake_board() for why these never compute or
-// store node positions at all. ---
+// --- dodecahedron_flake_board()/icosahedron_flake_board()/octahedron_flake_board()/
+// regular_polygon_flake_board(): mirrors shared/boardConfig.ts's dodecahedronFlake()/
+// icosahedronFlake()/octahedronFlake()/regularPolygonFlake() - see board_config.h's own doc comment
+// on dodecahedron_flake_board() for why these never compute or store node positions at all. ---
 
 // Mirrors shared/boardConfig.ts's computeFlakeGlue(): for each base edge (i, j), exhaustively finds
 // the unique pair of other base edges - (m1, m2) within the copy at i, (n1, n2) within the copy at
@@ -938,6 +938,40 @@ static std::vector<std::array<int, 6>> compute_flake_glue(
     return glue;
 }
 
+// Mirrors shared/boardConfig.ts's computeNodeGlue(): for each base edge (i, j), exhaustively finds
+// the unique pair of vertices (m, p) - m within the copy at i, p within the copy at j - whose
+// S_i/S_j-transformed positions coincide. Unlike compute_flake_glue()'s own edge-to-edge (2-point)
+// search, this is a single-point search - regular_polygon_flake_board()'s own non-multiple-of-4
+// case (see that function's own doc comment): node-merge copies share exactly one point per base
+// edge, not a whole growing edge, so there is no second point to match and no chain to track.
+static std::vector<std::array<int, 4>> compute_node_glue(
+    const std::vector<std::vector<double>>& verts, const std::vector<std::pair<int, int>>& edges,
+    double r, double c) {
+    auto dist = [](const std::vector<double>& a, const std::vector<double>& b) {
+        double s = 0.0;
+        for (size_t k = 0; k < a.size(); k++) { double d = a[k] - b[k]; s += d * d; }
+        return std::sqrt(s);
+    };
+    auto transform = [&](int i, int m) {
+        std::vector<double> t(verts[m].size());
+        for (size_t k = 0; k < t.size(); k++) t[k] = r * verts[m][k] + c * verts[i][k];
+        return t;
+    };
+
+    std::vector<std::array<int, 4>> glue;
+    for (const auto& ij : edges) {
+        int i = ij.first, j = ij.second;
+        std::vector<std::pair<int, int>> matches;
+        for (size_t m = 0; m < verts.size(); m++)
+            for (size_t p = 0; p < verts.size(); p++)
+                if (dist(transform(i, static_cast<int>(m)), transform(j, static_cast<int>(p))) < 1e-9)
+                    matches.push_back({ static_cast<int>(m), static_cast<int>(p) });
+        assert(matches.size() == 1 && "expected exactly one node-glue relation per base edge");
+        glue.push_back({ i, j, matches[0].first, matches[0].second });
+    }
+    return glue;
+}
+
 // Mirrors dodecaFlakeRec()/icosaFlakeRec()'s own object-shaped return value ({ pos, adj, corners,
 // edgeChains }) - minus `pos`, since these two boards track no position at all (see this section's
 // own top comment).
@@ -947,28 +981,34 @@ struct FlakeRecResult {
     std::map<std::pair<int, int>, std::vector<int>> edge_chains;
 };
 
-// Mirrors shared/boardConfig.ts's edgeMergeFlakeRec() - see its own doc comment for the full
-// recursive construction (structural merge of adjacent sub-copies over their whole shared
-// edge-chain, built as one `merges` list across every base edge and resolved by a single
-// merge_boards() call - see that function's own doc comment for why this - rather than folding
-// subs in one at a time - is what makes octahedron_flake_board()'s own transitive antipodal-corner
-// coincidence come out correct; then this call's own chain(P,Q) built by concatenating subs[P]'s
-// and subs[Q]'s own chain(P,Q)). One deliberate deviation from mirroring TS's own two separate
-// functions (edgeMergeFlakeRec is itself already shared TS-side by dodecahedronFlake()/
-// icosahedronFlake()/octahedronFlake() - no deviation there): with positions dropped entirely (see
-// this section's own top comment) the recursion is purely combinatorial, so this single function
-// serves dodecahedron_flake_board(), icosahedron_flake_board(), and octahedron_flake_board() below,
-// parameterized only by `k` (20, 12, or 6), `edges`, and `glue_map`.
-static FlakeRecResult edge_merge_flake_rec(
+// Mirrors shared/boardConfig.ts's nodeEdgeMergeFlakeRec() - see its own doc comment for the full
+// recursive construction. Each base edge `(P, Q)` is glued EITHER via `edge_glue_map` (a whole,
+// growing shared edge - dodeca/icosa/octahedron's own case) OR via `node_glue_map` (a single shared
+// point, no growth - regular_polygon_flake_board()'s own non-multiple-of-4 case), never both. The
+// structural merge is built as one `merges` list across every base edge and resolved by a single
+// merge_boards() call (see that function's own doc comment for why this - rather than folding subs
+// in one at a time - is what makes octahedron_flake_board()'s own transitive antipodal-corner
+// coincidence come out correct); an `edge_glue_map` edge pairs up `subs[P]`'s own chain for `(C, D)`
+// with `subs[Q]`'s own chain for `(E, F)` position-by-position (this call's own `chain(P, Q)`, for
+// an even-outer caller, then concatenates those two), while a `node_glue_map` edge contributes
+// exactly one merge pair (`subs[P]`'s own corner `m`, `subs[Q]`'s own corner `p`) and no chain at
+// all. One deliberate deviation from mirroring TS's own single function (no deviation needed - this
+// is already shared TS-side by all four callers): with positions dropped entirely (see this
+// section's own top comment) the recursion is purely combinatorial, so this single function serves
+// dodecahedron_flake_board(), icosahedron_flake_board(), octahedron_flake_board(), and
+// regular_polygon_flake_board() below, parameterized only by `k`, `edges`, `edge_glue_map`, and
+// `node_glue_map`.
+static FlakeRecResult node_edge_merge_flake_rec(
     int n, int k, const std::vector<std::pair<int, int>>& edges,
-    const std::map<std::pair<int, int>, std::array<int, 4>>& glue_map) {
+    const std::map<std::pair<int, int>, std::array<int, 4>>& edge_glue_map,
+    const std::map<std::pair<int, int>, std::pair<int, int>>& node_glue_map) {
     if (n == 1) {
         auto adj = zero_adj(k);
         std::map<std::pair<int, int>, std::vector<int>> chains;
         for (const auto& e : edges) {
             adj[e.first][e.second] = 1;
             adj[e.second][e.first] = 1;
-            chains[e] = { e.first, e.second };
+            if (edge_glue_map.count(e)) chains[e] = { e.first, e.second };
         }
         std::vector<int> corners(k);
         std::iota(corners.begin(), corners.end(), 0);
@@ -976,22 +1016,32 @@ static FlakeRecResult edge_merge_flake_rec(
     }
 
     std::vector<FlakeRecResult> subs;
-    for (int k_ = 0; k_ < k; k_++) subs.push_back(edge_merge_flake_rec(n - 1, k, edges, glue_map));
+    for (int k_ = 0; k_ < k; k_++)
+        subs.push_back(node_edge_merge_flake_rec(n - 1, k, edges, edge_glue_map, node_glue_map));
 
     std::vector<std::pair<std::pair<int,int>, std::pair<int,int>>> merges;
     for (const auto& e : edges) {
         int p = e.first, q = e.second;
-        auto [self_c, self_d, other_e, other_f] = glue_map.at(e);
+        auto eg = edge_glue_map.find(e);
+        if (eg != edge_glue_map.end()) {
+            auto [self_c, self_d, other_e, other_f] = eg->second;
 
-        int self_lo = std::min(self_c, self_d), self_hi = std::max(self_c, self_d);
-        std::vector<int> chain_self = subs[p].edge_chains.at({ self_lo, self_hi });
-        if (self_c > self_d) std::reverse(chain_self.begin(), chain_self.end()); // start at self_c
-        int other_lo = std::min(other_e, other_f), other_hi = std::max(other_e, other_f);
-        std::vector<int> chain_other = subs[q].edge_chains.at({ other_lo, other_hi });
-        if (other_e > other_f) std::reverse(chain_other.begin(), chain_other.end()); // start at other_e
+            int self_lo = std::min(self_c, self_d), self_hi = std::max(self_c, self_d);
+            std::vector<int> chain_self = subs[p].edge_chains.at({ self_lo, self_hi });
+            if (self_c > self_d) std::reverse(chain_self.begin(), chain_self.end()); // start at self_c
+            int other_lo = std::min(other_e, other_f), other_hi = std::max(other_e, other_f);
+            std::vector<int> chain_other = subs[q].edge_chains.at({ other_lo, other_hi });
+            if (other_e > other_f) std::reverse(chain_other.begin(), chain_other.end()); // start at other_e
 
-        for (size_t idx = 0; idx < chain_self.size(); idx++)
-            merges.push_back({ { p, chain_self[idx] }, { q, chain_other[idx] } });
+            for (size_t idx = 0; idx < chain_self.size(); idx++)
+                merges.push_back({ { p, chain_self[idx] }, { q, chain_other[idx] } });
+            continue;
+        }
+        auto ng = node_glue_map.find(e);
+        if (ng != node_glue_map.end()) {
+            auto [m, np] = ng->second;
+            merges.push_back({ { p, subs[p].corners[m] }, { q, subs[q].corners[np] } });
+        }
     }
 
     // merge_boards is (pos, adj)-shaped - pass empty per-node positions (emb_dim=0 convention, see
@@ -1006,6 +1056,7 @@ static FlakeRecResult edge_merge_flake_rec(
 
     std::map<std::pair<int, int>, std::vector<int>> edge_chains;
     for (const auto& e : edges) {
+        if (!edge_glue_map.count(e)) continue;
         int p = e.first, q = e.second;
         std::vector<int> chain_p = subs[p].edge_chains.at(e);
         for (auto& idx : chain_p) idx = maps[p][idx];
@@ -1136,7 +1187,7 @@ static const FlakeEdgeGlueData& icosahedron_flake_data() {
 // same shared center point, since `S_i(v_{antipode(i)}) = r*(-v_i) + c*v_i = (c-r)*v_i = 0` once
 // `c = r`, for every `i`), but because that coincidence needs no glue entry of its own: it already
 // follows transitively from the 12 real-edge glue relations, resolved automatically by
-// edge_merge_flake_rec()'s own merge_boards() call (see that function's own doc comment).
+// node_edge_merge_flake_rec()'s own merge_boards() call (see that function's own doc comment).
 static const FlakeEdgeGlueData& octahedron_flake_data() {
     static FlakeEdgeGlueData data;
     static bool computed = false;
@@ -1166,10 +1217,10 @@ static const FlakeEdgeGlueData& octahedron_flake_data() {
 BoardConfig dodecahedron_flake_board(int n) {
     assert(n >= 1 && "n must be at least 1");
     const auto& data = dodecahedron_flake_data();
-    std::map<std::pair<int, int>, std::array<int, 4>> glue_map;
-    for (const auto& g : data.glue) glue_map[{ g[0], g[1] }] = { g[2], g[3], g[4], g[5] };
+    std::map<std::pair<int, int>, std::array<int, 4>> edge_glue_map;
+    for (const auto& g : data.glue) edge_glue_map[{ g[0], g[1] }] = { g[2], g[3], g[4], g[5] };
 
-    auto result = edge_merge_flake_rec(n, 20, data.edges, glue_map);
+    auto result = node_edge_merge_flake_rec(n, 20, data.edges, edge_glue_map, {});
     std::vector<std::vector<unsigned>> embed(result.adj.size()); // emb_dim=0
     return make_bc(std::move(result.adj), 0u, std::move(embed));
 }
@@ -1179,10 +1230,10 @@ BoardConfig dodecahedron_flake_board(int n) {
 BoardConfig icosahedron_flake_board(int n) {
     assert(n >= 1 && "n must be at least 1");
     const auto& data = icosahedron_flake_data();
-    std::map<std::pair<int, int>, std::array<int, 4>> glue_map;
-    for (const auto& g : data.glue) glue_map[{ g[0], g[1] }] = { g[2], g[3], g[4], g[5] };
+    std::map<std::pair<int, int>, std::array<int, 4>> edge_glue_map;
+    for (const auto& g : data.glue) edge_glue_map[{ g[0], g[1] }] = { g[2], g[3], g[4], g[5] };
 
-    auto result = edge_merge_flake_rec(n, 12, data.edges, glue_map);
+    auto result = node_edge_merge_flake_rec(n, 12, data.edges, edge_glue_map, {});
     std::vector<std::vector<unsigned>> embed(result.adj.size()); // emb_dim=0
     return make_bc(std::move(result.adj), 0u, std::move(embed));
 }
@@ -1193,10 +1244,83 @@ BoardConfig icosahedron_flake_board(int n) {
 BoardConfig octahedron_flake_board(int n) {
     assert(n >= 1 && "n must be at least 1");
     const auto& data = octahedron_flake_data();
-    std::map<std::pair<int, int>, std::array<int, 4>> glue_map;
-    for (const auto& g : data.glue) glue_map[{ g[0], g[1] }] = { g[2], g[3], g[4], g[5] };
+    std::map<std::pair<int, int>, std::array<int, 4>> edge_glue_map;
+    for (const auto& g : data.glue) edge_glue_map[{ g[0], g[1] }] = { g[2], g[3], g[4], g[5] };
 
-    auto result = edge_merge_flake_rec(n, 6, data.edges, glue_map);
+    auto result = node_edge_merge_flake_rec(n, 6, data.edges, edge_glue_map, {});
+    std::vector<std::vector<unsigned>> embed(result.adj.size()); // emb_dim=0
+    return make_bc(std::move(result.adj), 0u, std::move(embed));
+}
+
+// Mirrors shared/boardConfig.ts's regularPolygonFlakeRC() - see its own doc comment for the full
+// derivation: r+c=1 (a copy's own self vertex stays exactly where the outer polygon's vertex was)
+// plus a closed-form coincidence ratio `c/r = 1 + 2*sum_{j=1}^{k} cos(2*pi*j/n_sides)`, for
+// `k = n_sides/4 - 1` (merge by edge, `n_sides` a multiple of 4) or `k = n_sides/4` truncated
+// (merge by node, otherwise - C++ integer division already floors for positive `n_sides`).
+static std::pair<double, double> regular_polygon_flake_rc(int n_sides) {
+    const double pi = std::acos(-1.0);
+    bool is_edge_merge = n_sides % 4 == 0;
+    int k = is_edge_merge ? n_sides / 4 - 1 : n_sides / 4;
+    double cos_sum = 0.0;
+    for (int j = 1; j <= k; j++) cos_sum += std::cos(2.0 * pi * j / n_sides);
+    double ratio = 1.0 + 2.0 * cos_sum; // c/r
+    double r = 1.0 / (1.0 + ratio), c = ratio / (1.0 + ratio);
+    return { r, c };
+}
+
+// Vertex/edge/glue data regular_polygon_flake_board() needs - mirrors shared/boardConfig.ts's
+// regularPolygonFlakeData(). Cached per `n_sides` (unlike dodeca/icosa/octahedron's own single-shape
+// caches) since regular_polygon_flake_board() isn't a fixed shape. Exactly one of `edge_glue`/
+// `node_glue` is populated (never both), per `n_sides % 4` - see board_config.h's own doc comment on
+// regular_polygon_flake_board() for which point(s) and why.
+struct RegularPolygonFlakeData {
+    std::vector<std::pair<int, int>> edges;
+    std::vector<std::array<int, 6>> edge_glue;
+    std::vector<std::array<int, 4>> node_glue;
+};
+
+static const RegularPolygonFlakeData& regular_polygon_flake_data(int n_sides) {
+    static std::map<int, RegularPolygonFlakeData> cache;
+    auto it = cache.find(n_sides);
+    if (it != cache.end()) return it->second;
+
+    const double pi = std::acos(-1.0);
+    double rad = 1.0 / (2.0 * std::sin(pi / n_sides)); // matches regular_polygon_board()'s own unit-edge scale
+    std::vector<std::vector<double>> verts(n_sides);
+    for (int k = 0; k < n_sides; k++) {
+        double theta = 2.0 * pi * k / n_sides;
+        verts[k] = { rad * std::cos(theta), rad * std::sin(theta) };
+    }
+    std::vector<std::pair<int, int>> edges;
+    for (int k = 0; k < n_sides; k++) {
+        int a = k, b = (k + 1) % n_sides;
+        edges.push_back(a < b ? std::pair<int, int>{ a, b } : std::pair<int, int>{ b, a });
+    }
+
+    auto [r, c] = regular_polygon_flake_rc(n_sides);
+    RegularPolygonFlakeData data;
+    data.edges = edges;
+    if (n_sides % 4 == 0) data.edge_glue = compute_flake_glue(verts, edges, r, c);
+    else data.node_glue = compute_node_glue(verts, edges, r, c);
+
+    auto result = cache.emplace(n_sides, std::move(data));
+    return result.first->second;
+}
+
+// Mirrors shared/boardConfig.ts's regularPolygonFlake() - see board_config.h's own doc comment for
+// the high-level construction (why there's no embedding at all here, same as regular_polygon_board()
+// itself - both have inherently irrational coordinates for most `n_sides`).
+BoardConfig regular_polygon_flake_board(int n_sides, int order) {
+    assert(n_sides >= 3 && "n_sides must be at least 3");
+    assert(order >= 1 && "order must be at least 1");
+    const auto& data = regular_polygon_flake_data(n_sides);
+
+    std::map<std::pair<int, int>, std::array<int, 4>> edge_glue_map;
+    for (const auto& g : data.edge_glue) edge_glue_map[{ g[0], g[1] }] = { g[2], g[3], g[4], g[5] };
+    std::map<std::pair<int, int>, std::pair<int, int>> node_glue_map;
+    for (const auto& g : data.node_glue) node_glue_map[{ g[0], g[1] }] = { g[2], g[3] };
+
+    auto result = node_edge_merge_flake_rec(order, n_sides, data.edges, edge_glue_map, node_glue_map);
     std::vector<std::vector<unsigned>> embed(result.adj.size()); // emb_dim=0
     return make_bc(std::move(result.adj), 0u, std::move(embed));
 }
@@ -1625,6 +1749,7 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<int>& 
     if (kind == "dodflake") return dodecahedron_flake_board(v[0]);
     if (kind == "icoflake") return icosahedron_flake_board(v[0]);
     if (kind == "octaflake") return octahedron_flake_board(v[0]);
+    if (kind == "polyflake") return regular_polygon_flake_board(v[0], v[1]);
     if (kind == "trihex") return triangular_hex_board(v[0]);
     if (kind == "hex")   return hex_board(v[0]);
     if (kind == "hexdel") return trihex_board(v[0]);
