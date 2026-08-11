@@ -496,21 +496,7 @@ BoardConfig linear_board(int w) {
 }
 
 BoardConfig rectangular_board(int w, int h) {
-    assert(w > 0 && h > 0 && "w and h must be positive");
-    std::vector<std::vector<unsigned>> pos;
-    for (unsigned r = 0; r < h; r++)
-        for (unsigned c = 0; c < w; c++)
-            pos.push_back({c, r});
-    auto adj = zero_adj(w * h);
-    const int dirs[4][2] = {{0,1},{1,0},{0,-1},{-1,0}};
-    for (int r = 0; r < h; r++)
-        for (int c = 0; c < w; c++)
-            for (auto& d : dirs) {
-                int nr = r + d[0], nc = c + d[1];
-                if (nr >= 0 && nr < h && nc >= 0 && nc < w)
-                    adj[r*w+c][nr*w+nc] = 1;
-            }
-    return make_bc(std::move(adj), 2u, std::move(pos));
+    return hypercuboid_board(2, {w, h});
 }
 
 BoardConfig rectangular_diagonal_board(int w, int h, int m) {
@@ -536,54 +522,76 @@ BoardConfig rectangular_diagonal_board(int w, int h, int m) {
 }
 
 BoardConfig cube_lattice_board(int w, int h, int d) {
-    assert(w > 0 && h > 0 && d > 0 && "w, h, d must be positive");
-    std::vector<std::vector<unsigned>> pos;
-    for (unsigned s = 0; s < d; s++)
-        for (unsigned r = 0; r < h; r++)
-            for (unsigned c = 0; c < w; c++)
-                pos.push_back({c, r, s});
-    int N = w * h * d;
-    auto adj = zero_adj(N);
-    auto idx = [&](int r, int c, int s) { return s*h*w + r*w + c; };
-    const int dirs[6][3] = {{0,1,0},{1,0,0},{0,-1,0},{-1,0,0},{0,0,1},{0,0,-1}};
-    for (int s = 0; s < d; s++)
-        for (int r = 0; r < h; r++)
-            for (int c = 0; c < w; c++)
-                for (auto& dv : dirs) {
-                    int nr = r+dv[0], nc = c+dv[1], ns = s+dv[2];
-                    if (nr>=0 && nr<h && nc>=0 && nc<w && ns>=0 && ns<d)
-                        adj[idx(r,c,s)][idx(nr,nc,ns)] = 1;
-                }
-    return make_bc(std::move(adj), 3u, std::move(pos));
+    return hypercuboid_board(3, {w, h, d});
 }
 
-BoardConfig hypercube_board(int w, int h, int d, int t) {
-    assert(w > 0 && h > 0 && d > 0 && t > 0 && "w, h, d, t must be positive");
+// Mirrors shared/boardConfig.ts's hypercuboidBoard() exactly: a node survives (occurs on the
+// board) iff at most `meshdim` of its coordinates are strictly interior to their own axis (not 0,
+// not dims[i]-1); surviving nodes keep the plain grid adjacency (connected iff they differ by
+// exactly 1 in exactly one coordinate). Unlike the TS side (which centers positions at the origin
+// via `- (dims[i]-1)/2`), this keeps the plain uncentered [0, dims[i]) integer coordinates - same
+// convention rectangular_board/cube_lattice_board already used before becoming thin wrappers
+// around this function (centering would need exact-half-integer coordinates for an even-sized
+// dimension, which this file's exact-integer embed[] can't represent - see merge_close's own doc
+// comment). See the TS side's own doc comment for what `meshdim` means geometrically (the
+// m-skeleton of the hypercuboid) and its worked examples.
+BoardConfig hypercuboid_board(int meshdim, const std::vector<int>& dims) {
+    assert(!dims.empty() && "dims must have at least 1 entry");
+    for (int d : dims) assert(d > 0 && "every dimension must be positive");
+    assert(meshdim >= 0 && "meshdim must be non-negative");
+    int k = static_cast<int>(dims.size());
+    int full_n = 1;
+    for (int d : dims) full_n *= d;
+
+    std::vector<int> strides(k);
+    strides[0] = 1;
+    for (int i = 1; i < k; i++) strides[i] = strides[i - 1] * dims[i - 1];
+    auto coords_of = [&](int n) {
+        std::vector<int> coords(k);
+        for (int i = 0; i < k; i++) { coords[i] = n % dims[i]; n /= dims[i]; }
+        return coords;
+    };
+    auto full_idx = [&](const std::vector<int>& coords) {
+        int s = 0;
+        for (int i = 0; i < k; i++) s += coords[i] * strides[i];
+        return s;
+    };
+    auto is_interior = [](int c, int dim) { return c > 0 && c < dim - 1; };
+
+    // Only surviving nodes get a board index (compacted, in ascending full-lattice-index order) -
+    // board_idx_of maps a full-lattice index to that compacted index, absent for a culled node.
+    std::map<int, int> board_idx_of;
+    std::vector<std::vector<int>> surviving_coords;
     std::vector<std::vector<unsigned>> pos;
-    for (unsigned s = 0; s < t; s++)
-        for (unsigned u = 0; u < d; u++)
-            for (unsigned r = 0; r < h; r++)
-                for (unsigned c = 0; c < w; c++)
-                    pos.push_back({c, r, u, s});
-    int N = w * h * d * t;
+    for (int n = 0; n < full_n; n++) {
+        auto coords = coords_of(n);
+        int interior_count = 0;
+        for (int i = 0; i < k; i++)
+            if (is_interior(coords[i], dims[i])) interior_count++;
+        if (interior_count > meshdim) continue;
+        board_idx_of[n] = static_cast<int>(surviving_coords.size());
+        surviving_coords.push_back(coords);
+        std::vector<unsigned> p(k);
+        for (int i = 0; i < k; i++) p[i] = static_cast<unsigned>(coords[i]);
+        pos.push_back(std::move(p));
+    }
+    int N = static_cast<int>(surviving_coords.size());
+
     auto adj = zero_adj(N);
-    auto idx = [&](int r, int c, int u, int s) {
-        return ((s*d + u)*h + r)*w + c;
-    };
-    const int dirs[8][4] = {
-        {0,1,0,0},{1,0,0,0},{0,-1,0,0},{-1,0,0,0},
-        {0,0,1,0},{0,0,-1,0},{0,0,0,1},{0,0,0,-1}
-    };
-    for (int s = 0; s < t; s++)
-        for (int u = 0; u < d; u++)
-            for (int r = 0; r < h; r++)
-                for (int c = 0; c < w; c++)
-                    for (auto& dv : dirs) {
-                        int nr=r+dv[0], nc=c+dv[1], nu=u+dv[2], ns=s+dv[3];
-                        if (nr>=0&&nr<h&&nc>=0&&nc<w&&nu>=0&&nu<d&&ns>=0&&ns<t)
-                            adj[idx(r,c,u,s)][idx(nr,nc,nu,ns)] = 1;
-                    }
-    return make_bc(std::move(adj), 4u, std::move(pos));
+    for (int bi = 0; bi < N; bi++) {
+        const auto& coords = surviving_coords[bi];
+        for (int i = 0; i < k; i++)
+            for (int delta : {1, -1}) {
+                int nc = coords[i] + delta;
+                if (nc < 0 || nc >= dims[i]) continue;
+                auto ncoords = coords;
+                ncoords[i] = nc;
+                auto it = board_idx_of.find(full_idx(ncoords));
+                if (it == board_idx_of.end()) continue; // that neighbor didn't survive the meshdim filter
+                adj[bi][it->second] = 1;
+            }
+    }
+    return make_bc(std::move(adj), static_cast<unsigned>(k), std::move(pos));
 }
 
 BoardConfig triangular_board(int w) {
@@ -751,18 +759,29 @@ BoardConfig tetrahedron_board() {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// Mirrors shared/boardConfig.ts's octahedronBoard() connectivity (adjacency only - no
-// position/embedding, see board_config.h's own doc comment on this function). Vertex 2k and 2k+1
-// are always antipodal pairs, by construction - each vertex connects to every other vertex except
-// its own antipode.
 BoardConfig octahedron_board() {
-    auto adj = zero_adj(6);
+    return orthoplex_board(3);
+}
+
+// Mirrors shared/boardConfig.ts's orthoplexBoard(), with one simplification: rather than the TS
+// side's real-valued +-1/sqrt(2) coordinates, this uses only the integer values {0, 1, 2} - vertex
+// 2k (the "+" pole on axis k) has coordinate k = 2, vertex 2k+1 (the "-" pole) has coordinate k =
+// 1, every other coordinate 0; connectivity (every vertex adjacent to every other except its own
+// antipode) is unaffected.
+BoardConfig orthoplex_board(int n) {
+    assert(n >= 1 && "n must be at least 1");
+    int N = 2 * n;
+    std::vector<std::vector<unsigned>> pos(N, std::vector<unsigned>(n, 0u));
+    for (int k = 0; k < n; k++) {
+        pos[2 * k][k] = 2u;
+        pos[2 * k + 1][k] = 1u;
+    }
+    auto adj = zero_adj(N);
     auto antipode = [](int i) { return i % 2 == 0 ? i + 1 : i - 1; };
-    for (int i = 0; i < 6; i++)
-        for (int j = 0; j < 6; j++)
+    for (int i = 0; i < N; i++)
+        for (int j = 0; j < N; j++)
             if (i != j && j != antipode(i)) adj[i][j] = 1;
-    std::vector<std::vector<unsigned>> embed(6); // emb_dim=0
-    return make_bc(std::move(adj), 0u, std::move(embed));
+    return make_bc(std::move(adj), static_cast<unsigned>(n), std::move(pos));
 }
 
 // Mirrors shared/boardConfig.ts's dodecahedronBoard() connectivity (adjacency only - no
@@ -1229,13 +1248,14 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<int>& 
     if (kind == "rect")  return rectangular_board(v[0], v[1]);
     if (kind == "rectd") return rectangular_diagonal_board(v[0], v[1], v[2]);
     if (kind == "cublat") return cube_lattice_board(v[0], v[1], v[2]);
-    if (kind == "hcub")  return hypercube_board(v[0], v[1], v[2], v[3]);
+    if (kind == "hcub")  return hypercuboid_board(v[0], std::vector<int>(v.begin() + 1, v.end()));
     if (kind == "tri")   return triangular_board(v[0]);
     if (kind == "sier")  return sierpinski_simplex_board(v[0], v[1]);
     if (kind == "regpoly") return regular_polygon_board(v[0]);
     if (kind == "star")  return star_board(v[0]);
     if (kind == "tetra") return tetrahedron_board();
     if (kind == "octa") return octahedron_board();
+    if (kind == "ortho") return orthoplex_board(v[0]);
     if (kind == "dodeca") return dodecahedron_board();
     if (kind == "icosa") return icosahedron_board();
     if (kind == "trihex") return triangular_hex_board(v[0]);

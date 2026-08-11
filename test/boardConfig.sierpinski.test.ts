@@ -5,7 +5,9 @@
 // the classic Sierpinski triangle.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sierpinskiSimplex, PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns } from '../shared/boardConfig.ts';
+import {
+    sierpinskiSimplex, PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, BoardArgType,
+} from '../shared/boardConfig.ts';
 
 const EPS = 1e-9;
 function dist(a: number[], b: number[]): number {
@@ -94,9 +96,9 @@ test('rejects a non-positive/non-integer dim, or a non-positive/non-integer n', 
     assert.throws(() => sierpinskiSimplex(2, 1.5));
 });
 
-test('is registered as the "sier" prescribed board type, taking exactly 2 arguments', () => {
-    const [numArgs, cmd] = PrescribedBoardMap[PrescribedBoard.sierpinskiSimplex];
+test('is registered as the "sier" prescribed board type, taking exactly 2 Number arguments', () => {
+    const [argTypes, cmd] = PrescribedBoardMap[PrescribedBoard.sierpinskiSimplex];
     assert.equal(cmd, 'sier');
-    assert.equal(numArgs, 2);
+    assert.deepEqual(argTypes, [BoardArgType.Number, BoardArgType.Number]);
     assert.deepEqual(PrescribedBoardFns[PrescribedBoard.sierpinskiSimplex](2, 3), sierpinskiSimplex(2, 3));
 });

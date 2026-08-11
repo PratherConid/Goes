@@ -5,8 +5,8 @@ import type {
 } from '@shared/types.js';
 import type { BoardConfig, BoardModifier } from '@shared/boardConfig.js';
 import {
-    PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, computeStarPoints, parseModifier, applyModifiers,
-    projectPoint, MC_DEFAULT_DIST,
+    PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, BoardArgType, parseBoardArgToken, computeStarPoints,
+    parseModifier, applyModifiers, projectPoint, MC_DEFAULT_DIST,
 } from '@shared/boardConfig.js';
 import { ServerConnection, type RequestHandle } from './serverConnection.js';
 import {
@@ -25,9 +25,11 @@ const conn = new ServerConnection();
 
 
 const _cmdToBoard = new Map(
-    (Object.entries(PrescribedBoardMap) as [string, [number, string, string, string]][])
-        .map(([k, [numArgs, cmd, argStr, desc]]) =>
-            [cmd, { boardType: Number(k), numArgs, fn: PrescribedBoardFns[Number(k) as PrescribedBoard], argStr, desc }])
+    (Object.entries(PrescribedBoardMap) as [string, [BoardArgType[], string, string, string]][])
+        .map(([k, [argTypes, cmd, argStr, desc]]) =>
+            [cmd, {
+                boardType: Number(k), argTypes, fn: PrescribedBoardFns[Number(k) as PrescribedBoard], argStr, desc,
+            }])
 );
 
 // Filename stems (under public/game_presets/) of the GameConfig JSON presets
@@ -92,6 +94,9 @@ const _boardConfigDescriptions = new Map([
         + 'subdivided too (side length 4), subdivided into triangles again (side length 4), then '
         + 'scaled down by 0.33'],
     ['sier_3_5', 'Order-5 Sierpinski tetrahedron (3-dimensional Sierpinski gasket)'],
+    ['hcub_2_6_6_6_6',
+        '2-skeleton of a 4-dimensional 6×6×6×6 hypercuboid: only the rectangular faces (at least 2 '
+        + 'of the 4 coordinates pinned to an extreme) are meshed, the solid interior is excluded'],
 ]);
 
 
@@ -598,7 +603,7 @@ export class Renderer {
         [PrescribedBoard.rectangularBoard]:         [9, 9],
         [PrescribedBoard.rectangularDiagonalBoard]: [9, 9, 3],
         [PrescribedBoard.cubeLatticeBoard]:         [5, 5, 2],
-        [PrescribedBoard.hypercubeBoard]:           [5, 5, 2, 2],
+        [PrescribedBoard.hypercuboidBoard]:         [4, 5, 5, 2, 2],
         [PrescribedBoard.triangularBoard]:          [13],
         [PrescribedBoard.regularPolygonBoard]:      [6],
         [PrescribedBoard.tetrahedronBoard]:         [],
@@ -614,6 +619,7 @@ export class Renderer {
         [PrescribedBoard.starBoard]:                 [6],
         [PrescribedBoard.octahedronBoard]:          [],
         [PrescribedBoard.sierpinskiSimplex]:        [2, 4],
+        [PrescribedBoard.orthoplexBoard]:           [3],
     };
     nShowHistory = 10;
     currentSidePanel: SidePanelContent = SidePanelContent.Home;
@@ -1500,7 +1506,12 @@ export class Renderer {
             ${row('fpo',                      'Toggle forced-pass-only for new games')}
             ${row('ascd',                     'Toggle allow-suicide for new games')}
             ${row('bt &lt;name&gt',           'Set board type for new game')}
-            ${row('bd &lt;num&gt; &lt;num&gt; …', 'Set board dimension for new game')}
+            ${row(
+                'bd &lt;args…&gt;',
+                'Set board dimension for new game - one argument per the current board type\'s own '
+                + 'slots (see its own usage string above); a variable-dimension type like hcub takes '
+                + 'a single comma-separated list',
+            )}
             ${row('mod &lt;name&gt; &lt;args&gt; …', 'Push a board modifier onto the new-game config (see Board Modifiers)')}
             ${row('pmod [&lt;n&gt;]', 'Pop n modifiers off the end of the new-game modifier list (default 1)')}
             ${row('cmod', 'Clear the new-game modifier list')}
@@ -2885,17 +2896,25 @@ export class Renderer {
             this.newCfg.boardArgs = [...this.boardDimensionForNew[entry.boardType as PrescribedBoard]];
         }
         else if (cmd === 'bd') {
-            if (!parts[1]) { this._setCmdOutput('Usage: bd <num> <num> …'); return; }
-            const nums = parts.slice(1).map(Number);
+            const boardTypeEnum = _cmdToBoard.get(this.newCfg.boardType)!.boardType as PrescribedBoard;
+            const argTypes = PrescribedBoardMap[boardTypeEnum][0];
+            const tokens = parts.slice(1);
+            if (tokens.length !== argTypes.length) {
+                this._setCmdOutput(
+                    `Usage: bd ${argTypes.map(t => t === BoardArgType.Number ? '<num>' : '<num,num,…>').join(' ')}`,
+                );
+                return;
+            }
+            // Each token is parsed per its own declared BoardArgType (see parseBoardArgToken) - an
+            // ordinary Number-typed token yields one value, so this is unaffected for every board
+            // type except hypercuboidBoard's own single CommaSeparatedNumbers token, which can
+            // expand to any number of dimension values - no need to sniff the input's own shape.
+            const nums = argTypes.flatMap((type, i) => parseBoardArgToken(type, tokens[i]));
             if (nums.some(n => !Number.isInteger(n) || n <= 0)) {
                 this._setCmdOutput('bd: all arguments must be positive integers'); return;
             }
-            const boardTypeEnum = _cmdToBoard.get(this.newCfg.boardType)!.boardType as PrescribedBoard;
-            for (const [idx, val] of nums.entries())
-                if (idx < PrescribedBoardMap[boardTypeEnum][0]) {
-                    this.boardDimensionForNew[boardTypeEnum][idx] = val;
-                    this.newCfg.boardArgs[idx] = val;
-                }
+            this.boardDimensionForNew[boardTypeEnum] = nums;
+            this.newCfg.boardArgs = [...nums];
         }
         else if (cmd === 'mod') {
             if (!parts[1]) { this._setCmdOutput('Usage: mod <name> <args…>'); return; }

@@ -159,22 +159,27 @@ BoardConfig apply_modifiers(const BoardConfig& bc, const std::vector<BoardModifi
 // (emb_dim = 1 - unlike rectangular_board(w, 1), the useless constant second dimension is dropped).
 BoardConfig linear_board(int w);
 
-// A rectangular board with width w and height h. Each node is identified by
-// (col, row) where 0 <= col < w, 0 <= row < h.
+// A rectangular board with width w and height h - the meshdim=2 case of hypercuboid_board below
+// (so nothing is ever excluded). Each node is identified by (col, row) where 0 <= col < w,
+// 0 <= row < h.
 BoardConfig rectangular_board(int w, int h);
 
 // A rectangular board with width w and height h where diagonally adjacent nodes
 // are also connected, but only at every m-th square.
 BoardConfig rectangular_diagonal_board(int w, int h, int m);
 
-// A cubical board with width w, height h and depth d. Each node is identified
-// by (col, row, slice) where 0 <= col < w, 0 <= row < h, 0 <= slice < d.
+// A cubical board with width w, height h and depth d - the meshdim=3 case of hypercuboid_board
+// below (so nothing is ever excluded). Each node is identified by (col, row, slice) where
+// 0 <= col < w, 0 <= row < h, 0 <= slice < d.
 BoardConfig cube_lattice_board(int w, int h, int d);
 
-// A hypercubical board with width w, height h, depth d and hyperdepth t. Each
-// node is identified by (col, row, slice, hyperslice) where 0 <= col < w,
-// 0 <= row < h, 0 <= slice < d, 0 <= hyperslice < t.
-BoardConfig hypercube_board(int w, int h, int d, int t);
+// Mirrors shared/boardConfig.ts's hypercuboidBoard() - the meshdim-skeleton of a
+// dims.size()-dimensional hypercuboid with dims[i] points along axis i: a node survives iff at
+// most `meshdim` of its coordinates are strictly interior to their own axis (see the .cpp file's
+// own comment for the full construction and what meshdim means geometrically). rectangular_board
+// (above)/cube_lattice_board (above) are now just this function called with meshdim equal to
+// their own full dimension count and 2/3 dims.
+BoardConfig hypercuboid_board(int meshdim, const std::vector<int>& dims);
 
 // A triangular board with side length w.
 BoardConfig triangular_board(int w);
@@ -212,12 +217,17 @@ BoardConfig star_board(int n);
 // vertices is a triangle.
 BoardConfig tetrahedron_board();
 
-// A regular octahedron: 6 vertices, 12 edges, 8 triangular faces (every vertex degree 4). Same
-// emb_dim = 0 / empty embed[] approach as regular_polygon_board, for the same reason (the raw
-// distance between two non-antipodal vertices is sqrt(2), irrational - see shared/boardConfig.ts's
-// octahedronBoard() for the coordinates/connectivity derivation this mirrors, adjacency only). A
-// side-length-w subdivision of its 8 triangular faces can be applied via triangle_form(w).
+// A regular octahedron: the n=3 case of orthoplex_board() below - 6 vertices, 12 edges, 8
+// triangular faces (every vertex degree 4). A side-length-w subdivision of its 8 triangular faces
+// can be applied via triangle_form(w).
 BoardConfig octahedron_board();
+
+// Mirrors shared/boardConfig.ts's orthoplexBoard(), with one simplification: rather than the TS
+// side's real-valued +-1/sqrt(2) coordinates, this uses only the integer values {0, 1, 2} - vertex
+// 2k (the "+" pole on axis k) has coordinate k = 2, vertex 2k+1 (the "-" pole) has coordinate k =
+// 1, every other coordinate 0; connectivity (every vertex adjacent to every other except its own
+// antipode) is unaffected. n=3 is the regular octahedron (see octahedron_board() above).
+BoardConfig orthoplex_board(int n);
 
 // A regular dodecahedron: 20 vertices, 12 pentagonal faces, 30 edges (every vertex degree 3).
 // Same emb_dim = 0 / empty embed[] approach as regular_polygon_board, for the same reason
@@ -286,7 +296,7 @@ BoardConfig glue_twisted_square_board(int w, int h, int g);
 BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("line" | "rect" | "rectd" |
-// "cublat" | "hcub" | "tri" | "sier" | "regpoly" | "tetra" | "octa" | "dodeca" | "icosa" |
+// "cublat" | "hcub" | "tri" | "sier" | "regpoly" | "tetra" | "octa" | "ortho" | "dodeca" | "icosa" |
 // "trihex" | "hex" | "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" | "star" - matches
 // shared/types.ts's GameConfig.boardType strings), passing `args` as that
 // builder's positional parameters. Throws std::runtime_error for an unknown

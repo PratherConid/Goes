@@ -4,7 +4,8 @@ import { findTriangles, findSquares } from './topology.js';
 
 /**
  * A board's node positions in their natural embedding dimension (embDim - 2 for most boards, 3 for
- * cubeLatticeBoard/tetrahedronBoard/dodecahedronBoard/icosahedronBoard, 4 for hypercubeBoard), plus
+ * cubeLatticeBoard/tetrahedronBoard/dodecahedronBoard/icosahedronBoard, arbitrary for
+ * hypercuboidBoard/sierpinskiSimplex/orthoplexBoard), plus
  * the linear map (projMat, 3 x embDim) that projects them down to a 3D render position (x, y, z) -
  * the renderer currently ignores z (see boardLayout(), src/renderer.ts). Kept separate from the
  * render position so that geometric operations that care about real dimensionality (e.g. a
@@ -581,20 +582,7 @@ export function linearBoard(w: number): BoardConfig {
 
 /** A rectangular board with width `w` and height `h`. Each node is identified by (col, row) where 0 ≤ col < w, 0 ≤ row < h. */
 export function rectangularBoard(w: number, h: number): BoardConfig {
-    assert(w > 0 && h > 0, `w and h must be positive, got w=${w} h=${h}`);
-    const pos: number[][] = [];
-    for (let r = 0; r < h; r++)
-        for (let c = 0; c < w; c++)
-            pos.push([c - (w - 1) / 2, r - (h - 1) / 2]);
-    const adj = zeroAdj(w * h);
-    for (let r = 0; r < h; r++)
-        for (let c = 0; c < w; c++)
-            for (const [dr, dc] of [[0,1],[1,0],[0,-1],[-1,0]]) {
-                const nr = r + dr, nc = c + dc;
-                if (nr < 0 || nr >= h || nc < 0 || nc >= w) continue;
-                adj[r*w+c][nr*w+nc] = 1;
-            }
-    return make(pos, adj);
+    return hypercuboidBoard(2, [w, h]);
 }
 
 /**
@@ -672,62 +660,75 @@ export function rectangularDiagonalBoard(w: number, h: number, m: number): Board
  * (col, row, slice) where 0 ≤ col < w, 0 ≤ row < h, 0 ≤ slice < d.
  */
 export function cubeLatticeBoard(w: number, h: number, d: number): BoardConfig {
-    assert(w > 0 && h > 0 && d > 0, `w, h, and d must be positive, got w=${w} h=${h} d=${d}`);
-    // Natural 3D coords (col, row, slice), centered. Uses the plain DEFAULT_3D_PROJMAT (x/y/z pass
-    // straight through) - the renderer currently ignores z (see boardLayout(), src/renderer.ts).
-    const pos: number[][] = [];
-    for (let s = 0; s < d; s++)
-        for (let r = 0; r < h; r++)
-            for (let c = 0; c < w; c++)
-                pos.push([c - (w-1)/2, r - (h-1)/2, s - (d-1)/2]);
-    const N = w * h * d;
-    const adj = zeroAdj(N);
-    const idx = (r: number, c: number, s: number) => s * h * w + r * w + c;
-    for (let s = 0; s < d; s++)
-        for (let r = 0; r < h; r++)
-            for (let c = 0; c < w; c++)
-                for (const [dr, dc, ds] of [[0,1,0],[1,0,0],[0,-1,0],[-1,0,0],[0,0,1],[0,0,-1]]) {
-                    const nr = r+dr, nc = c+dc, ns = s+ds;
-                    if (nr<0||nr>=h||nc<0||nc>=w||ns<0||ns>=d) continue;
-                    adj[idx(r,c,s)][idx(nr,nc,ns)] = 1;
-                }
-    return make(new Embedding(3, pos, DEFAULT_3D_PROJMAT), adj);
+    return hypercuboidBoard(3, [w, h, d]);
 }
 
 /**
- * A hypercubical board with width `w`, height `h`, depth `d` and hyperdepth `t`. Each node is
- * identified by (col, row, slice, hyperslice) where 0 ≤ col < w, 0 ≤ row < h, 0 ≤ slice < d,
- * 0 ≤ hyperslice < t.
+ * The `meshdim`-skeleton of a `dims.length`-dimensional hypercuboid with `dims[i]` points along
+ * axis `i`: a node survives (occurs on the board) iff at most `meshdim` of its coordinates are
+ * strictly interior to their own axis (i.e. neither 0 nor `dims[i] - 1`) - equivalently, iff it
+ * lies on some axis-aligned face of dimension <= `meshdim`. Surviving nodes keep the plain grid
+ * adjacency (connected iff they differ by exactly 1 in exactly one coordinate); `rectangularBoard`
+ * (below)/`cubeLatticeBoard` (above) are now just this function called with `meshdim` equal to
+ * their own full dimension count (so nothing is ever excluded) and 2/3 dims.
+ *
+ * `meshdim = dims.length` (or higher) keeps everything - the full solid hypercuboid, same as
+ * before this parameter existed. `meshdim = 0` keeps only the `2**dims.length` corners (each
+ * coordinate pinned to an extreme), though at that point they're never adjacent to each other -
+ * corners are only ever unit-step apart from an interior point, and interior points are exactly
+ * what a small meshdim excludes. `meshdim = k - 1` (for `dims.length = k`) is the hollow surface
+ * of the hypercuboid: e.g. a 3D box's own 6 rectangular faces, glued at their shared edges, with
+ * the solid interior excluded - a 4D hypercuboid's `meshdim = 3` gives 8 solid cuboid facets glued
+ * at their shared square faces, and so on.
  */
-export function hypercubeBoard(w: number, h: number, d: number, t: number): BoardConfig {
-    assert(w > 0 && h > 0 && d > 0 && t > 0, `w, h, d, and t must be positive, got w=${w} h=${h} d=${d} t=${t}`);
-    // Natural 4D coords (col, row, slice, hyperslice), all centered. Default projMat: x/y/z (dims
-    // 0/1/2) pass straight through, and the hyperslice (dim 3) nudges all three axes diagonally by
-    // half - the renderer currently ignores z (see boardLayout(), src/renderer.ts).
+export function hypercuboidBoard(meshdim: number, dims: number[]): BoardConfig {
+    assert(dims.length >= 1, `dims must have at least 1 entry, got ${dims.length}`);
+    assert(dims.every(d => d > 0), `every dimension must be positive, got [${dims.join(', ')}]`);
+    assert(Number.isInteger(meshdim) && meshdim >= 0, `meshdim must be a non-negative integer, got ${meshdim}`);
+    const k = dims.length;
+    const fullN = dims.reduce((p, d) => p * d, 1);
+
+    const strides = new Array(k);
+    strides[0] = 1;
+    for (let i = 1; i < k; i++) strides[i] = strides[i - 1] * dims[i - 1];
+    const fullIdx = (coords: number[]) => coords.reduce((s, c, i) => s + c * strides[i], 0);
+    const coordsOf = (n: number) => {
+        const coords = new Array(k);
+        for (let i = 0; i < k; i++) { coords[i] = n % dims[i]; n = Math.floor(n / dims[i]); }
+        return coords;
+    };
+    const isInterior = (c: number, dim: number) => c > 0 && c < dim - 1;
+
+    // Only surviving nodes get a board index (compacted, in ascending full-lattice-index order) -
+    // boardIdxOf maps a full-lattice index to that compacted index, absent for a culled node.
+    const boardIdxOf = new Map<number, number>();
+    const survivingCoords: number[][] = [];
     const pos: number[][] = [];
-    for (let s = 0; s < t; s++)
-        for (let u = 0; u < d; u++)
-            for (let r = 0; r < h; r++)
-                for (let c = 0; c < w; c++)
-                    pos.push([c - (w-1)/2, r - (h-1)/2, u - (d-1)/2, s - (t-1)/2]);
-    const projMat = [[1, 0, 0, 0.5], [0, 1, 0, 0.5], [0, 0, 1, 0.5]];
-    const N = w * h * d * t;
+    for (let n = 0; n < fullN; n++) {
+        const coords = coordsOf(n);
+        const interiorCount = coords.reduce((cnt, c, i) => cnt + (isInterior(c, dims[i]) ? 1 : 0), 0);
+        if (interiorCount > meshdim) continue;
+        boardIdxOf.set(n, survivingCoords.length);
+        survivingCoords.push(coords);
+        pos.push(coords.map((c, i) => c - (dims[i] - 1) / 2));
+    }
+    const N = survivingCoords.length;
+
     const adj = zeroAdj(N);
-    const idx = (r: number, c: number, u: number, s: number) =>
-        ((s * d + u) * h + r) * w + c;
-    const dirs4: [number, number, number, number][] = [
-        [0,1,0,0],[1,0,0,0],[0,-1,0,0],[-1,0,0,0],[0,0,1,0],[0,0,-1,0],[0,0,0,1],[0,0,0,-1],
-    ];
-    for (let s = 0; s < t; s++)
-        for (let u = 0; u < d; u++)
-            for (let r = 0; r < h; r++)
-                for (let c = 0; c < w; c++)
-                    for (const [dr,dc,du,ds] of dirs4) {
-                        const nr=r+dr, nc=c+dc, nu=u+du, ns=s+ds;
-                        if (nr<0||nr>=h||nc<0||nc>=w||nu<0||nu>=d||ns<0||ns>=t) continue;
-                        adj[idx(r,c,u,s)][idx(nr,nc,nu,ns)] = 1;
-                    }
-    return make(new Embedding(4, pos, projMat), adj);
+    for (let bi = 0; bi < N; bi++) {
+        const coords = survivingCoords[bi];
+        for (let i = 0; i < k; i++)
+            for (const delta of [1, -1]) {
+                const nc = coords[i] + delta;
+                if (nc < 0 || nc >= dims[i]) continue;
+                const ncoords = coords.slice();
+                ncoords[i] = nc;
+                const nbi = boardIdxOf.get(fullIdx(ncoords));
+                if (nbi === undefined) continue; // that neighbor didn't survive the meshdim filter
+                adj[bi][nbi] = 1;
+            }
+    }
+    return make(new Embedding(k, pos, defaultProductProjMat(k)), adj);
 }
 
 /** A triangular board with side length `w`. */
@@ -935,26 +936,43 @@ export function tetrahedronBoard(): BoardConfig {
 }
 
 /**
- * A regular octahedron: 6 vertices at (+-1, 0, 0), (0, +-1, 0), (0, 0, +-1) (pre-scaled so edges
- * come out exactly 1 - the raw distance between two non-antipodal vertices is sqrt(2)), 12
- * unit-length edges, 8 triangular faces. Each vertex connects to every other vertex except its own
- * antipode (the one differing only by a sign flip) - vertex `2k` and `2k+1` are always antipodal
- * pairs, by construction. A side-length-w subdivision of its 8 triangular faces can be applied via
- * the `triangleForm(w)` modifier afterward (findTriangles finds exactly its 8 faces).
+ * A regular octahedron: the `n=3` case of `orthoplexBoard()` (see its own doc comment for the
+ * general construction) - 6 vertices, 12 unit-length edges, 8 triangular faces. A side-length-w
+ * subdivision of its 8 triangular faces can be applied via the `triangleForm(w)` modifier
+ * afterward (findTriangles finds exactly its 8 faces).
  */
 export function octahedronBoard(): BoardConfig {
-    const edgeScale = 1 / Math.sqrt(2);
-    const pos: number[][] = [
-        [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
-    ].map(v => v.map(x => x * edgeScale));
+    return orthoplexBoard(3);
+}
 
-    const adj = zeroAdj(6);
+/**
+ * The n-dimensional orthoplex (cross-polytope): 2n vertices at `+-scale` along each axis
+ * (pre-scaled so edges come out exactly 1 - the raw distance between two non-antipodal vertices is
+ * `sqrt(2)`). Each vertex connects to every other vertex except its own antipode (the one
+ * differing only by a sign flip) - vertex `2k` and `2k+1` (the `+-scale` points on axis `k`) are
+ * always antipodal pairs, by construction. `n=1` is the degenerate case of 2 isolated nodes: its
+ * only other vertex is its own antipode, so nothing is left to connect it to. `n=3` is the regular
+ * octahedron (see `octahedronBoard()` above).
+ */
+export function orthoplexBoard(n: number): BoardConfig {
+    assert(n >= 1, `n must be at least 1, got ${n}`);
+    const edgeScale = 1 / Math.sqrt(2);
+    const pos: number[][] = [];
+    for (let k = 0; k < n; k++) {
+        const plus = new Array(n).fill(0), minus = new Array(n).fill(0);
+        plus[k] = edgeScale;
+        minus[k] = -edgeScale;
+        pos.push(plus, minus);
+    }
+
+    const N = 2 * n;
+    const adj = zeroAdj(N);
     const antipode = (i: number) => i % 2 === 0 ? i + 1 : i - 1;
-    for (let i = 0; i < 6; i++)
-        for (let j = 0; j < 6; j++)
+    for (let i = 0; i < N; i++)
+        for (let j = 0; j < N; j++)
             if (i !== j && j !== antipode(i)) adj[i][j] = 1;
 
-    return make(new Embedding(3, pos, DEFAULT_3D_PROJMAT), adj);
+    return make(new Embedding(n, pos, defaultProductProjMat(n)), adj);
 }
 
 /**
@@ -1483,12 +1501,34 @@ export function snubSquareTriBoard(w: number, h: number, g: number): BoardConfig
 }
 
 
+/**
+ * The kind of value a single positional command-line token for a prescribed board type parses
+ * into: `Number` is a plain integer; `CommaSeparatedNumbers` is a comma-joined list of integers
+ * packed into one token - needed for a variable-arity board type (currently only
+ * `hypercuboidBoard`, whose dimension count isn't fixed) - see `parseBoardArgToken`.
+ */
+export enum BoardArgType { Number, CommaSeparatedNumbers }
+
+/**
+ * Parses a single command-line token into the number(s) it represents, per `type` - see
+ * `BoardArgType`'s own doc comment. Shared by `parseBoardTypeArgs` (the `prod`/`beginprod`
+ * modifier syntax) and `src/renderer.ts`'s `'bd'` command, so there is exactly one place that
+ * knows how to interpret a board-arg token - callers never sniff the token's own shape (e.g.
+ * "does it contain a comma") themselves.
+ */
+export function parseBoardArgToken(type: BoardArgType, token: string): number[] {
+    switch (type) {
+        case BoardArgType.Number: return [Number(token)];
+        case BoardArgType.CommaSeparatedNumbers: return token.split(',').map(Number);
+    }
+}
+
 export enum PrescribedBoard {
     linearBoard,
     rectangularBoard,
     rectangularDiagonalBoard,
     cubeLatticeBoard,
-    hypercubeBoard,
+    hypercuboidBoard,
     triangularBoard,
     regularPolygonBoard,
     tetrahedronBoard,
@@ -1503,52 +1543,62 @@ export enum PrescribedBoard {
     glueTwistedSquareBoard,
     starBoard,
     octahedronBoard,
-    sierpinskiSimplex
+    sierpinskiSimplex,
+    orthoplexBoard
 }
 
-export const PrescribedBoardMap: Record<PrescribedBoard, [number, string, string, string]> = {
+// k Number-typed args in a row - shorthand for PrescribedBoardMap's common case below (every board
+// type except hypercuboidBoard, whose own trailing arg is CommaSeparatedNumbers - see its entry).
+const nums = (k: number): BoardArgType[] => new Array(k).fill(BoardArgType.Number);
+
+export const PrescribedBoardMap: Record<PrescribedBoard, [BoardArgType[], string, string, string]> = {
     [PrescribedBoard.linearBoard]:
-        [1, "line", "&lt;w&gt;", "A simple line of w nodes"],
+        [nums(1), "line", "&lt;w&gt;", "A simple line of w nodes"],
     [PrescribedBoard.rectangularBoard]:
-        [2, "rect", "&lt;w&gt; &lt;h&gt;", "Rectangular board"],
+        [nums(2), "rect", "&lt;w&gt; &lt;h&gt;", "Rectangular board"],
     [PrescribedBoard.rectangularDiagonalBoard]:
-        [3, "rectd", "&lt;w&gt; &lt;h&gt; &lt;m&gt;", "Rectangular + diagonal connections every m squares"],
-    [PrescribedBoard.cubeLatticeBoard]:         [3, "cublat", "&lt;w&gt; &lt;h&gt; &lt;d&gt;", "Cubical board"],
-    [PrescribedBoard.hypercubeBoard]:
-        [4, "hcub", "&lt;w&gt; &lt;h&gt; &lt;d&gt; &lt;t&gt;", "Hypercubical board"],
+        [nums(3), "rectd", "&lt;w&gt; &lt;h&gt; &lt;m&gt;", "Rectangular + diagonal connections every m squares"],
+    [PrescribedBoard.cubeLatticeBoard]:
+        [nums(3), "cublat", "&lt;w&gt; &lt;h&gt; &lt;d&gt;", "Cubical board"],
+    [PrescribedBoard.hypercuboidBoard]:
+        [[BoardArgType.Number, BoardArgType.CommaSeparatedNumbers], "hcub", "&lt;meshdim&gt; &lt;w,h,...&gt;",
+            "Hypercuboidal board (meshdim-skeleton: max interior coords a surviving node may have, "
+            + "then a comma-separated list of dimension sizes)"],
     [PrescribedBoard.triangularBoard]:
-        [1, "tri", "&lt;w&gt;", "Triangular board of side w"],
+        [nums(1), "tri", "&lt;w&gt;", "Triangular board of side w"],
     [PrescribedBoard.regularPolygonBoard]:
-        [1, "regpoly", "&lt;n&gt;", "Regular polygon with n unit-length edges"],
+        [nums(1), "regpoly", "&lt;n&gt;", "Regular polygon with n unit-length edges"],
     [PrescribedBoard.tetrahedronBoard]:
-        [0, "tetra", "", "Regular tetrahedron (4 vertices, all mutually adjacent, unit-length edges)"],
+        [nums(0), "tetra", "", "Regular tetrahedron (4 vertices, all mutually adjacent, unit-length edges)"],
     [PrescribedBoard.dodecahedronBoard]:
-        [0, "dodeca", "", "Regular dodecahedron (20 vertices, 12 pentagonal faces, unit-length edges)"],
+        [nums(0), "dodeca", "", "Regular dodecahedron (20 vertices, 12 pentagonal faces, unit-length edges)"],
     [PrescribedBoard.icosahedronBoard]:
-        [0, "icosa", "", "Regular icosahedron (12 vertices, 20 triangular faces, unit-length edges)"],
+        [nums(0), "icosa", "", "Regular icosahedron (12 vertices, 20 triangular faces, unit-length edges)"],
     [PrescribedBoard.triangularHexBoard]:
-        [1, "trihex", "&lt;d&gt;",
+        [nums(1), "trihex", "&lt;d&gt;",
             "Triangular-lattice board in a hexagon shape, with d layers of triangles around the center"],
     [PrescribedBoard.hexBoard]:
-        [1, "hex", "&lt;d&gt;", "Hexagon-tiled board with d layers of hexagons around a center hexagon"],
+        [nums(1), "hex", "&lt;d&gt;", "Hexagon-tiled board with d layers of hexagons around a center hexagon"],
     [PrescribedBoard.trihexBoard]:
-        [1, "hexdel", "&lt;d&gt;",
+        [nums(1), "hexdel", "&lt;d&gt;",
             "Trihexagonal (hexdel) board, d layers of hexagons connected by triangles around a center hexagon"],
     [PrescribedBoard.snubSquareBoard]:
-        [3, "snubsq", "&lt;w&gt; &lt;h&gt; &lt;g&gt;", "Snub square board (g\xD7g squares)"],
+        [nums(3), "snubsq", "&lt;w&gt; &lt;h&gt; &lt;g&gt;", "Snub square board (g\xD7g squares)"],
     [PrescribedBoard.snubSquareTriBoard]:
-        [3, "snubsqtri", "&lt;w&gt; &lt;h&gt; &lt;g&gt;",
+        [nums(3), "snubsqtri", "&lt;w&gt; &lt;h&gt; &lt;g&gt;",
             "Snub square board with the connecting triangles as g\xD7g triangular boards too"],
     [PrescribedBoard.twistedSquareBoard]:
-        [3, "twsq", "&lt;w&gt; &lt;h&gt; &lt;g&gt;", "Twisted-square board (g\xD7g squares)"],
+        [nums(3), "twsq", "&lt;w&gt; &lt;h&gt; &lt;g&gt;", "Twisted-square board (g\xD7g squares)"],
     [PrescribedBoard.glueTwistedSquareBoard]:
-        [3, "gtsq", "&lt;w&gt; &lt;h&gt; &lt;g&gt;", "Glued-twisted-square board (g\xD7g squares)"],
+        [nums(3), "gtsq", "&lt;w&gt; &lt;h&gt; &lt;g&gt;", "Glued-twisted-square board (g\xD7g squares)"],
     [PrescribedBoard.starBoard]:
-        [1, "star", "&lt;n&gt;", "Star graph: 1 center node connected to n outer nodes"],
+        [nums(1), "star", "&lt;n&gt;", "Star graph: 1 center node connected to n outer nodes"],
     [PrescribedBoard.octahedronBoard]:
-        [0, "octa", "", "Regular octahedron (6 vertices, 8 triangular faces, unit-length edges)"],
+        [nums(0), "octa", "", "Regular octahedron (6 vertices, 8 triangular faces, unit-length edges)"],
     [PrescribedBoard.sierpinskiSimplex]:
-        [2, "sier", "&lt;dim&gt; &lt;n&gt;", "Sierpinski dim-simplex (gasket) of order n"],
+        [nums(2), "sier", "&lt;dim&gt; &lt;n&gt;", "Sierpinski dim-simplex (gasket) of order n"],
+    [PrescribedBoard.orthoplexBoard]:
+        [nums(1), "ortho", "&lt;n&gt;", "n-dimensional orthoplex (cross-polytope), unit-length edges"],
 };
 
 export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => BoardConfig> = {
@@ -1556,7 +1606,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.rectangularBoard]:         (...a) => rectangularBoard(a[0], a[1]),
     [PrescribedBoard.rectangularDiagonalBoard]: (...a) => rectangularDiagonalBoard(a[0], a[1], a[2]),
     [PrescribedBoard.cubeLatticeBoard]:         (...a) => cubeLatticeBoard(a[0], a[1], a[2]),
-    [PrescribedBoard.hypercubeBoard]:           (...a) => hypercubeBoard(a[0], a[1], a[2], a[3]),
+    [PrescribedBoard.hypercuboidBoard]:         (...a) => hypercuboidBoard(a[0], a.slice(1)),
     [PrescribedBoard.triangularBoard]:          (...a) => triangularBoard(a[0]),
     [PrescribedBoard.regularPolygonBoard]:      (...a) => regularPolygonBoard(a[0]),
     [PrescribedBoard.tetrahedronBoard]:         () => tetrahedronBoard(),
@@ -1572,6 +1622,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.starBoard]:                 (...a) => starBoard(a[0]),
     [PrescribedBoard.octahedronBoard]:          () => octahedronBoard(),
     [PrescribedBoard.sierpinskiSimplex]:        (...a) => sierpinskiSimplex(a[0], a[1]),
+    [PrescribedBoard.orthoplexBoard]:           (...a) => orthoplexBoard(a[0]),
 };
 
 /**
@@ -1579,7 +1630,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
  * shared by buildPrescribedBoard below and parseModifier's beginprod validation.
  */
 const PRESCRIBED_BOARD_BY_NAME = new Map<string, PrescribedBoard>(
-    (Object.entries(PrescribedBoardMap) as [string, [number, string, string, string]][])
+    (Object.entries(PrescribedBoardMap) as [string, [BoardArgType[], string, string, string]][])
         .map(([k, [, cmd]]) => [cmd, Number(k) as PrescribedBoard]),
 );
 
@@ -1615,19 +1666,22 @@ export const MC_DEFAULT_DIST = 0.01;
  * Parses a board-type command name (e.g. 'rect', 'cublat' - see PrescribedBoardMap) plus its
  * positional dimension args, shared by `prod`/`beginprod`'s parseModifier branches below: the
  * board type is validated eagerly via PRESCRIBED_BOARD_BY_NAME, and its args must number at least
- * PrescribedBoardMap's required count for that type or this throws; extras beyond that count are
- * silently truncated (so e.g. a leftover product-context arg doesn't need to be stripped by the
- * caller).
+ * PrescribedBoardMap's declared arg-type count for that type or this throws; extras beyond that
+ * count are silently truncated (so e.g. a leftover product-context arg doesn't need to be
+ * stripped by the caller). Each token is parsed per its own declared BoardArgType (see
+ * parseBoardArgToken) - an ordinary Number-typed token yields exactly one number, so nothing
+ * changes there; only a CommaSeparatedNumbers-typed token (currently just hypercuboidBoard's) can
+ * expand to more than one.
  */
 function parseBoardTypeArgs(cmdName: string, args: string[]): { boardType: string; boardArgs: number[] } {
     assert(args.length >= 1, `${cmdName} takes at least 1 argument (board type), got ${args.length}`);
     const [boardType, ...argStrs] = args;
     const pb = PRESCRIBED_BOARD_BY_NAME.get(boardType);
     if (pb === undefined) throw new Error(`${cmdName}: unknown board type "${boardType}"`);
-    const requiredArgs = PrescribedBoardMap[pb][0];
-    assert(argStrs.length >= requiredArgs,
-        `${cmdName}: board type "${boardType}" requires ${requiredArgs} argument(s), got ${argStrs.length}`);
-    const boardArgs = argStrs.slice(0, requiredArgs).map(Number);
+    const argTypes = PrescribedBoardMap[pb][0];
+    assert(argStrs.length >= argTypes.length,
+        `${cmdName}: board type "${boardType}" requires ${argTypes.length} argument(s), got ${argStrs.length}`);
+    const boardArgs = argTypes.flatMap((type, i) => parseBoardArgToken(type, argStrs[i]));
     assert(boardArgs.every(n => Number.isInteger(n)),
         `${cmdName}: board args must be integers, got "${argStrs.join(' ')}"`);
     return { boardType, boardArgs };

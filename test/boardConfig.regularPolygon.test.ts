@@ -1,7 +1,9 @@
 // Regression tests for regularPolygonBoard: a regular n-gon with every edge exactly length 1.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { regularPolygonBoard, PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns } from '../shared/boardConfig.ts';
+import {
+    regularPolygonBoard, PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, BoardArgType,
+} from '../shared/boardConfig.ts';
 
 const EPS = 1e-9;
 function dist(a: number[], b: number[]): number {
@@ -45,9 +47,9 @@ test('rejects n < 3', () => {
     assert.throws(() => regularPolygonBoard(0));
 });
 
-test('is registered as the "regpoly" prescribed board type, taking exactly 1 argument', () => {
-    const [numArgs, cmd] = PrescribedBoardMap[PrescribedBoard.regularPolygonBoard];
+test('is registered as the "regpoly" prescribed board type, taking exactly 1 Number argument', () => {
+    const [argTypes, cmd] = PrescribedBoardMap[PrescribedBoard.regularPolygonBoard];
     assert.equal(cmd, 'regpoly');
-    assert.equal(numArgs, 1);
+    assert.deepEqual(argTypes, [BoardArgType.Number]);
     assert.deepEqual(PrescribedBoardFns[PrescribedBoard.regularPolygonBoard](6), regularPolygonBoard(6));
 });

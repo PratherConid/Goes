@@ -63,6 +63,18 @@ test('command input drives newCfg and the New Game panel via the real keydown li
     assert.match(newGameDetails.innerHTML, /Number of players:<\/b> 3/);
 });
 
+test("'bd' with meshdim then a comma-separated dims token sets a variable-dimension board type's " +
+    "whole args list", () => {
+    createRenderer();
+    (document.querySelector('#home-panel button[data-child="newGame"]') as HTMLButtonElement).click();
+
+    runCommand('bt hcub');
+    runCommand('bd 4 5,5,2,2');
+
+    const newGameDetails = document.getElementById('new-game-setup-details') as HTMLDivElement;
+    assert.match(newGameDetails.innerHTML, /Board dimension:<\/b> 4,5,5,2,2/);
+});
+
 test('_startNewGame catches an applyModifiers error and shows it in the command output bar', () => {
     createRenderer();
     const plyNum = document.getElementById('ply-num') as HTMLSpanElement;
