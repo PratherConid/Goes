@@ -797,34 +797,67 @@ export function starBoard(n: number): BoardConfig {
 }
 
 /**
- * Combines two boards into one, additionally identifying each `(idxIn1, idxIn2)` pair in `merges`
- * as the same node (the merged node keeps `b1`'s position - callers are expected to only merge
- * pairs whose positions already coincide, e.g. two recursive `sierpinskiSimplex` sub-copies
- * sharing a corner). Returns the combined board plus maps from each input board's own indices to
- * their new indices in the combined board - needed by callers that must keep tracking specific
- * nodes (like sierpinskiSimplex's own outer corners) across further merges.
+ * Union-Find: given `N` nodes and a list of pairs to merge, returns each node's equivalence-class
+ * index, compressed to a dense `0..M-1` range (`M` = number of distinct classes) in ascending order
+ * of each class's lowest original member. Internal to mergeBoards() (below) - resolves every merge
+ * instruction at once, so a chain like `(0,3)~(1,5)` and `(1,5)~(2,7)` correctly collapses `(0,3)`
+ * and `(2,7)` into the same node too, even though no single instruction names both directly.
+ */
+function unionFindClasses(N: number, pairs: [number, number][]): number[] {
+    const parent = Array.from({ length: N }, (_, i) => i);
+    function find(x: number): number {
+        while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+        return x;
+    }
+    for (const [a, b] of pairs) {
+        const pa = find(a), pb = find(b);
+        if (pa !== pb) parent[pa] = pb;
+    }
+    const roots = Array.from({ length: N }, (_, i) => find(i));
+    const uniqueRoots = [...new Set(roots)].sort((a, b) => a - b);
+    const rootToNew = new Map(uniqueRoots.map((r, i) => [r, i]));
+    return roots.map(r => rootToNew.get(r)!);
+}
+
+/**
+ * Combines a list of boards into one, additionally identifying every `([b1, i1], [b2, i2])` pair in
+ * `merges` (board index, that board's own local node index) as the same node - every merge is
+ * resolved in one batch via unionFindClasses(), not board-by-board, so callers never need to fold
+ * boards in one at a time just to keep every merge target "already placed": a merge between two
+ * boards that haven't been introduced to each other by any other merge is handled exactly like any
+ * other. The merged node keeps whichever input position is encountered first (callers are expected
+ * to only merge pairs whose positions already coincide, e.g. two recursive `sierpinskiSimplex`
+ * sub-copies sharing a corner). Returns the combined board plus, for each input board (in the same
+ * order as `boards`), a map from that board's own local indices to its final index in the combined
+ * board - needed by callers that must keep tracking specific nodes (like sierpinskiSimplex's own
+ * outer corners) across further merges.
  */
 function mergeBoards(
-    b1: { pos: number[][]; adj: number[][] }, b2: { pos: number[][]; adj: number[][] }, merges: [number, number][],
-): { pos: number[][]; adj: number[][]; map1: number[]; map2: number[] } {
-    const map1 = b1.pos.map((_, i) => i);
-    const map2to1 = new Map(merges.map(([i1, i2]) => [i2, i1]));
-    const pos = [...b1.pos];
-    const map2: number[] = [];
-    for (let i = 0; i < b2.pos.length; i++) {
-        const target = map2to1.get(i);
-        if (target !== undefined) { map2.push(target); continue; }
-        map2.push(pos.length);
-        pos.push(b2.pos[i]);
+    boards: { pos: number[][]; adj: number[][] }[], merges: [[number, number], [number, number]][],
+): { pos: number[][]; adj: number[][]; maps: number[][] } {
+    const offset: number[] = new Array(boards.length).fill(0);
+    for (let i = 1; i < boards.length; i++) offset[i] = offset[i - 1] + boards[i - 1].pos.length;
+    const total = boards.reduce((s, b) => s + b.pos.length, 0);
+    const g = (b: number, local: number) => offset[b] + local;
+
+    const nodeToNew = unionFindClasses(total, merges.map(([[b1, i1], [b2, i2]]) => [g(b1, i1), g(b2, i2)]));
+    const newN = total === 0 ? 0 : Math.max(...nodeToNew) + 1;
+
+    const pos: number[][] = new Array(newN);
+    for (let b = 0; b < boards.length; b++)
+        for (let local = 0; local < boards[b].pos.length; local++)
+            pos[nodeToNew[g(b, local)]] = boards[b].pos[local];
+
+    const adj = zeroAdj(newN);
+    for (let b = 0; b < boards.length; b++) {
+        const board = boards[b];
+        for (let i = 0; i < board.pos.length; i++)
+            for (let j = 0; j < board.pos.length; j++)
+                if (board.adj[i][j]) adj[nodeToNew[g(b, i)]][nodeToNew[g(b, j)]] = 1;
     }
-    const adj = zeroAdj(pos.length);
-    for (let i = 0; i < b1.pos.length; i++)
-        for (let j = 0; j < b1.pos.length; j++)
-            if (b1.adj[i][j]) adj[map1[i]][map1[j]] = 1;
-    for (let i = 0; i < b2.pos.length; i++)
-        for (let j = 0; j < b2.pos.length; j++)
-            if (b2.adj[i][j]) adj[map2[i]][map2[j]] = 1;
-    return { pos, adj, map1, map2 };
+
+    const maps = boards.map((board, b) => board.pos.map((_, local) => nodeToNew[g(b, local)]));
+    return { pos, adj, maps };
 }
 
 /**
@@ -855,18 +888,14 @@ function sierpinskiRec(n: number, corners: number[][]): { pos: number[][]; adj: 
     const subs = corners.map((_, k_) =>
         sierpinskiRec(n - 1, corners.map((c, p) => (p === k_ ? corners[k_] : mid(corners[k_], c)))));
 
-    let combined: { pos: number[][]; adj: number[][] } = subs[0];
-    const tracked: number[][] = [subs[0].corners.slice()];
-    for (let k_ = 1; k_ < k; k_++) {
-        const merges: [number, number][] = [];
-        for (let a = 0; a < k_; a++) merges.push([tracked[a][k_], subs[k_].corners[a]]);
-        const m = mergeBoards(combined, subs[k_], merges);
-        combined = { pos: m.pos, adj: m.adj };
-        for (let a = 0; a < k_; a++) tracked[a] = tracked[a].map(idx => m.map1[idx]);
-        tracked.push(subs[k_].corners.map(idx => m.map2[idx]));
-    }
+    const merges: [[number, number], [number, number]][] = [];
+    for (let a = 0; a < k; a++)
+        for (let b = a + 1; b < k; b++) merges.push([[a, subs[a].corners[b]], [b, subs[b].corners[a]]]);
 
-    return { pos: combined.pos, adj: combined.adj, corners: tracked.map((t, k_) => t[k_]) };
+    const m = mergeBoards(subs, merges);
+    const cornersOut = subs.map((sub, k_) => m.maps[k_][sub.corners[k_]]);
+
+    return { pos: m.pos, adj: m.adj, corners: cornersOut };
 }
 
 /**
@@ -1002,7 +1031,7 @@ interface DodecahedronFlakeData {
  * dodecahedronFlake() positions at vertex A that coincides with edge `[E, F]` of the sub-flake it
  * positions at vertex B, once both are transformed by that function's own recursive gluing rule
  * (see its doc comment) - `[C, D]`/`[E, F]` never touch A or B themselves, and there is no simple
- * combinatorial formula for this pairing, so it's found by exhaustive search (computeDodecaIcosaFlakeGlue(),
+ * combinatorial formula for this pairing, so it's found by exhaustive search (computeFlakeGlue(),
  * over all 30x30 candidate base-edge pairs - verified unique and consistent for all 30 base edges),
  * cached in `dodecahedronGlueCache` since it only ever depends on `verts`/`edges` and never changes.
  */
@@ -1013,9 +1042,11 @@ interface DodecahedronFlakeData {
  * copy at `j` - whose `S_i`/`S_j`-transformed endpoints coincide two-for-two. There is no
  * closed-form shortcut for this relation (see dodecahedronFlake()'s own doc comment) - this is
  * exactly the search that originally found it, generalized to run (and be cached) once per shape
- * instead of hand-transcribing its output.
+ * instead of hand-transcribing its output. Also used by octahedronFlakeData() (restricted to
+ * octahedron's own 12 real edges - see its own doc comment for why the 3 antipodal non-edges don't
+ * need a glue entry of their own).
  */
-function computeDodecaIcosaFlakeGlue(
+function computeFlakeGlue(
     verts: number[][], edges: [number, number][], r: number, c: number,
 ): [number, number, number, number, number, number][] {
     const dist = (a: number[], b: number[]) => Math.hypot(...a.map((x, k) => x - b[k]));
@@ -1042,7 +1073,7 @@ function computeDodecaIcosaFlakeGlue(
             canon.push([ma, mb, na, nb]);
         }
         assert(canon.length === 1,
-            `computeDodecaIcosaFlakeGlue: expected exactly one glue relation for edge (${i},${j}), found ${canon.length}`);
+            `computeFlakeGlue: expected exactly one glue relation for edge (${i},${j}), found ${canon.length}`);
         glue.push([i, j, ...canon[0]]);
     }
     return glue;
@@ -1089,7 +1120,7 @@ function dodecahedronFlakeData(): DodecahedronFlakeData {
     if (!dodecahedronGlueCache) {
         const r = 1 / (2 + phi);
         const c = phi * phi * r;
-        dodecahedronGlueCache = computeDodecaIcosaFlakeGlue(verts, edges, r, c);
+        dodecahedronGlueCache = computeFlakeGlue(verts, edges, r, c);
     }
 
     return { verts, edges, glue: dodecahedronGlueCache };
@@ -1109,36 +1140,37 @@ export function dodecahedronBoard(): BoardConfig {
 }
 
 /**
- * Recursive core of dodecahedronFlake() - see its own doc comment for the r/c transform. `edges`
- * and `glueMap` are dodecahedronFlakeData()'s own `edges`/`glue` (the latter turned into a
- * lookup-by-base-edge, both computed once by dodecahedronFlake() and threaded through rather than
- * recomputed on every recursive call).
+ * Recursive core shared by dodecahedronFlake() and icosahedronFlake() - see each one's own doc
+ * comment for its own r/c transform. `edges`/`glueMap` are that shape's own *FlakeData()` `edges`/
+ * `glue` (the latter turned into a lookup-by-base-edge, both computed once by the caller and
+ * threaded through rather than recomputed on every recursive call). Works for any shape whose base
+ * graph's own vertices/edges are passed in - only `corners.length` (20 for dodecahedron, 12 for
+ * icosahedron) and the edge/glue data differ between the two callers, so one function covers both.
  *
- * Alongside `pos`/`adj`/`corners`, also returns `edgeChains`: for every one of the 30 base edges
- * `(P, Q)` with `P < Q`, the ordered list of node indices lying along that edge at THIS call's own
- * recursion depth - length `2^n` (base case: literally `[P, Q]`, length 2). This is pure
- * bookkeeping data for an *outer* caller's own merge step - concatenating two nodes lists here
- * never adds an edge between them; it says nothing about this call's own `adj`.
+ * Alongside `pos`/`adj`/`corners`, also returns `edgeChains`: for every base edge `(P, Q)` with
+ * `P < Q`, the ordered list of node indices lying along that edge at THIS call's own recursion depth
+ * - length `2^n` (base case: literally `[P, Q]`, length 2). This is pure bookkeeping data for an
+ * *outer* caller's own merge step - concatenating two nodes lists here never adds an edge between
+ * them; it says nothing about this call's own `adj`.
  *
  * Two things consume it, mirroring the fact that 3 of a sub-flake's own edges are exactly the 3
  * edges incident to its own attachment vertex:
- *  - The structural merge for adjacent sub-copies `(a, k_)`: unlike a simplex-style flake (sharing
- *    one point per adjacent pair), copies here share every node along a whole edge, so the merge
- *    pairs up `tracked[a]`'s own chain for `glueMap`'s `(C, D)` with `subs[k_]`'s own chain for
- *    `(E, F)`, **position by position over the whole chain** (length `2^(n-1)`, since `subs[a]` and
- *    `subs[k_]` are themselves order-`(n-1)`) - not just their 2 endpoints, which is what an
- *    earlier, incomplete version of this function did (papering over the gap with a final
- *    `mergeClose` pass; no longer needed with this fix).
+ *  - The structural merge, built as one `merges` list across every base edge and resolved by a
+ *    single mergeBoards() call (see that function's own doc comment): unlike a simplex-style flake
+ *    (sierpinskiRec, sharing one point per adjacent pair), copies here share every node along a
+ *    whole edge, so each base edge `(P, Q)` pairs up `subs[P]`'s own chain for `glueMap`'s `(C, D)`
+ *    with `subs[Q]`'s own chain for `(E, F)`, **position by position over the whole chain** (length
+ *    `2^(n-1)`, since `subs[P]`/`subs[Q]` are themselves order-`(n-1)`) - not just their 2 endpoints.
  *  - This call's own returned `chain(P, Q)`, for an even-outer caller: `subs[P]`'s own chain for
  *    `(P, Q)` is exactly the one of *its* 3 attachment-edges that is `(P, Q)` itself, and likewise
  *    for `subs[Q]` - concatenating those two `(P, Q)`-chains (remapped into this call's own final
  *    node-index space) gives length `2^n`, matching "shared edge length doubles per level" exactly.
  */
-function dodecaFlakeRec(
+function edgeMergeFlakeRec(
     n: number, corners: number[][], r: number, c: number,
     edges: [number, number][], glueMap: Map<string, [number, number, number, number]>,
 ): { pos: number[][]; adj: number[][]; corners: number[]; edgeChains: Map<string, number[]> } {
-    const k = corners.length; // 20
+    const k = corners.length; // 20 for dodecahedron, 12 for icosahedron
     if (n === 1) {
         const adj = zeroAdj(k);
         const edgeChains = new Map<string, number[]>();
@@ -1147,48 +1179,31 @@ function dodecaFlakeRec(
     }
     const glue = (i: number, x: number[]) => x.map((val, d) => r * val + c * corners[i][d]);
     const subs = corners.map((_, k_) =>
-        dodecaFlakeRec(n - 1, corners.map(x => glue(k_, x)), r, c, edges, glueMap));
+        edgeMergeFlakeRec(n - 1, corners.map(x => glue(k_, x)), r, c, edges, glueMap));
 
-    let combined: { pos: number[][]; adj: number[][] } = { pos: subs[0].pos, adj: subs[0].adj };
-    // fullMap[a]: subs[a]'s own local node index -> combined's current (so-far-assembled) node index.
-    const fullMap: number[][] = new Array(k);
-    fullMap[0] = subs[0].pos.map((_, i) => i);
-
-    for (let k_ = 1; k_ < k; k_++) {
-        const merges: [number, number][] = [];
-        for (let a = 0; a < k_; a++) {
-            const lo = Math.min(a, k_), hi = Math.max(a, k_);
-            const g = glueMap.get(`${lo},${hi}`);
-            if (!g) continue; // a and k_ are not adjacent - nothing shared between these two copies
-            const [c1, d1, e1, f1] = g;
-            const [selfC, selfD, otherE, otherF] = a === lo ? [c1, d1, e1, f1] : [e1, f1, c1, d1];
-
-            const selfLo = Math.min(selfC, selfD), selfHi = Math.max(selfC, selfD);
-            let chainSelf = subs[a].edgeChains.get(`${selfLo},${selfHi}`)!;
-            if (selfC > selfD) chainSelf = [...chainSelf].reverse(); // orient to start at selfC
-            const otherLo = Math.min(otherE, otherF), otherHi = Math.max(otherE, otherF);
-            let chainOther = subs[k_].edgeChains.get(`${otherLo},${otherHi}`)!;
-            if (otherE > otherF) chainOther = [...chainOther].reverse(); // orient to start at otherE
-
-            for (let i = 0; i < chainSelf.length; i++) merges.push([fullMap[a][chainSelf[i]], chainOther[i]]);
-        }
-        const m = mergeBoards(combined, subs[k_], merges);
-        combined = { pos: m.pos, adj: m.adj };
-        for (let a = 0; a < k_; a++) fullMap[a] = fullMap[a].map(idx => m.map1[idx]);
-        fullMap[k_] = m.map2;
+    const merges: [[number, number], [number, number]][] = [];
+    for (const [P, Q] of edges) {
+        const [selfC, selfD, otherE, otherF] = glueMap.get(`${P},${Q}`)!;
+        const selfLo = Math.min(selfC, selfD), selfHi = Math.max(selfC, selfD);
+        let chainSelf = subs[P].edgeChains.get(`${selfLo},${selfHi}`)!;
+        if (selfC > selfD) chainSelf = [...chainSelf].reverse(); // orient to start at selfC
+        const otherLo = Math.min(otherE, otherF), otherHi = Math.max(otherE, otherF);
+        let chainOther = subs[Q].edgeChains.get(`${otherLo},${otherHi}`)!;
+        if (otherE > otherF) chainOther = [...chainOther].reverse(); // orient to start at otherE
+        for (let i = 0; i < chainSelf.length; i++) merges.push([[P, chainSelf[i]], [Q, chainOther[i]]]);
     }
 
-    const cornersOut: number[] = new Array(k);
-    for (let vtx = 0; vtx < k; vtx++) cornersOut[vtx] = fullMap[vtx][subs[vtx].corners[vtx]];
+    const m = mergeBoards(subs, merges);
+    const cornersOut = subs.map((sub, vtx) => m.maps[vtx][sub.corners[vtx]]);
 
     const edgeChains = new Map<string, number[]>();
     for (const [P, Q] of edges) {
-        const chainP = subs[P].edgeChains.get(`${P},${Q}`)!.map(idx => fullMap[P][idx]);
-        const chainQ = subs[Q].edgeChains.get(`${P},${Q}`)!.map(idx => fullMap[Q][idx]);
+        const chainP = subs[P].edgeChains.get(`${P},${Q}`)!.map(idx => m.maps[P][idx]);
+        const chainQ = subs[Q].edgeChains.get(`${P},${Q}`)!.map(idx => m.maps[Q][idx]);
         edgeChains.set(`${P},${Q}`, [...chainP, ...chainQ]);
     }
 
-    return { pos: combined.pos, adj: combined.adj, corners: cornersOut, edgeChains };
+    return { pos: m.pos, adj: m.adj, corners: cornersOut, edgeChains };
 }
 
 /**
@@ -1199,7 +1214,7 @@ function dodecaFlakeRec(
  * simplex-style flake (sierpinskiSimplex/sierpinskiRec - every pair of adjacent copies sharing a
  * single point), copies here share a full EDGE, growing with recursion depth: for base edge (A, B),
  * the specific edge of the sub-flake at A and edge of the sub-flake at B that coincide are given by
- * `glue`, and dodecaFlakeRec's own `edgeChains` tracks the full, growing node list along each edge
+ * `glue`, and edgeMergeFlakeRec's own `edgeChains` tracks the full, growing node list along each edge
  * (see that function's own doc comment for exactly how it's built and consumed).
  *
  * r and c are fixed by two requirements: (1) leaf-level (deepest, order-1) copies must come out
@@ -1229,7 +1244,7 @@ export function dodecahedronFlake(n: number): BoardConfig {
     const scale = (2 + phi) ** (n - 1);
     const corners = verts.map(p => p.map(x => x * scale));
 
-    const built = dodecaFlakeRec(n, corners, r, c, edges, glueMap);
+    const built = edgeMergeFlakeRec(n, corners, r, c, edges, glueMap);
     return make(new Embedding(3, built.pos, DEFAULT_3D_PROJMAT), built.adj);
 }
 
@@ -1262,7 +1277,7 @@ interface IcosahedronFlakeData {
  * icosahedronFlake() positions at vertex A that coincides with edge `[E, F]` of the sub-flake it
  * positions at vertex B, once both are transformed by that function's own recursive gluing rule
  * (see its doc comment) - `[C, D]`/`[E, F]` never touch A or B themselves, and there is no simple
- * combinatorial formula for this pairing, so it's found by exhaustive search (computeDodecaIcosaFlakeGlue(),
+ * combinatorial formula for this pairing, so it's found by exhaustive search (computeFlakeGlue(),
  * over all 30x30 candidate base-edge pairs - verified unique and consistent for all 30 base edges,
  * and that no non-adjacent vertex pair has any coincidence at all), cached in
  * `icosahedronGlueCache` since it only ever depends on `verts`/`edges` and never changes.
@@ -1311,7 +1326,7 @@ function icosahedronFlakeData(): IcosahedronFlakeData {
     if (!icosahedronGlueCache) {
         const r = 1 / (1 + phi);
         const c = phi * r;
-        icosahedronGlueCache = computeDodecaIcosaFlakeGlue(verts, edges, r, c);
+        icosahedronGlueCache = computeFlakeGlue(verts, edges, r, c);
     }
 
     return { verts, edges, glue: icosahedronGlueCache };
@@ -1331,79 +1346,12 @@ export function icosahedronBoard(): BoardConfig {
 }
 
 /**
- * Recursive core of icosahedronFlake() - see its own doc comment for the r/c transform. `edges` and
- * `glueMap` are icosahedronFlakeData()'s own `edges`/`glue` (the latter turned into a
- * lookup-by-base-edge, both computed once by icosahedronFlake() and threaded through rather than
- * recomputed on every recursive call). Identical in shape to dodecaFlakeRec (see its own doc
- * comment for the full explanation of `edgeChains` - the growing, length-`2^n` per-base-edge node
- * list this returns alongside `pos`/`adj`/`corners`, and how the structural merge for adjacent
- * sub-copies consumes it position-by-position rather than just 2 endpoints), just with k=12
- * sub-copies instead of 20.
- */
-function icosaFlakeRec(
-    n: number, corners: number[][], r: number, c: number,
-    edges: [number, number][], glueMap: Map<string, [number, number, number, number]>,
-): { pos: number[][]; adj: number[][]; corners: number[]; edgeChains: Map<string, number[]> } {
-    const k = corners.length; // 12
-    if (n === 1) {
-        const adj = zeroAdj(k);
-        const edgeChains = new Map<string, number[]>();
-        for (const [a, b] of edges) { adj[a][b] = 1; adj[b][a] = 1; edgeChains.set(`${a},${b}`, [a, b]); }
-        return { pos: corners.map(p => [...p]), adj, corners: corners.map((_, i) => i), edgeChains };
-    }
-    const glue = (i: number, x: number[]) => x.map((val, d) => r * val + c * corners[i][d]);
-    const subs = corners.map((_, k_) =>
-        icosaFlakeRec(n - 1, corners.map(x => glue(k_, x)), r, c, edges, glueMap));
-
-    let combined: { pos: number[][]; adj: number[][] } = { pos: subs[0].pos, adj: subs[0].adj };
-    // fullMap[a]: subs[a]'s own local node index -> combined's current (so-far-assembled) node index.
-    const fullMap: number[][] = new Array(k);
-    fullMap[0] = subs[0].pos.map((_, i) => i);
-
-    for (let k_ = 1; k_ < k; k_++) {
-        const merges: [number, number][] = [];
-        for (let a = 0; a < k_; a++) {
-            const lo = Math.min(a, k_), hi = Math.max(a, k_);
-            const g = glueMap.get(`${lo},${hi}`);
-            if (!g) continue; // a and k_ are not adjacent - nothing shared between these two copies
-            const [c1, d1, e1, f1] = g;
-            const [selfC, selfD, otherE, otherF] = a === lo ? [c1, d1, e1, f1] : [e1, f1, c1, d1];
-
-            const selfLo = Math.min(selfC, selfD), selfHi = Math.max(selfC, selfD);
-            let chainSelf = subs[a].edgeChains.get(`${selfLo},${selfHi}`)!;
-            if (selfC > selfD) chainSelf = [...chainSelf].reverse(); // orient to start at selfC
-            const otherLo = Math.min(otherE, otherF), otherHi = Math.max(otherE, otherF);
-            let chainOther = subs[k_].edgeChains.get(`${otherLo},${otherHi}`)!;
-            if (otherE > otherF) chainOther = [...chainOther].reverse(); // orient to start at otherE
-
-            for (let i = 0; i < chainSelf.length; i++) merges.push([fullMap[a][chainSelf[i]], chainOther[i]]);
-        }
-        const m = mergeBoards(combined, subs[k_], merges);
-        combined = { pos: m.pos, adj: m.adj };
-        for (let a = 0; a < k_; a++) fullMap[a] = fullMap[a].map(idx => m.map1[idx]);
-        fullMap[k_] = m.map2;
-    }
-
-    const cornersOut: number[] = new Array(k);
-    for (let vtx = 0; vtx < k; vtx++) cornersOut[vtx] = fullMap[vtx][subs[vtx].corners[vtx]];
-
-    const edgeChains = new Map<string, number[]>();
-    for (const [P, Q] of edges) {
-        const chainP = subs[P].edgeChains.get(`${P},${Q}`)!.map(idx => fullMap[P][idx]);
-        const chainQ = subs[Q].edgeChains.get(`${P},${Q}`)!.map(idx => fullMap[Q][idx]);
-        edgeChains.set(`${P},${Q}`, [...chainP, ...chainQ]);
-    }
-
-    return { pos: combined.pos, adj: combined.adj, corners: cornersOut, edgeChains };
-}
-
-/**
  * The "flake" fractal generalization of a regular icosahedron - n=1 is the plain icosahedron itself
  * (icosahedronFlakeData()'s own `verts`/`edges`, unit edge length); n>1 recurses into 12
  * order-(n-1) copies, one attached at each of the 12 vertices, via `S_i(x) = r*x + c*verts[i]` -
  * same r, c, and orientation (no rotation, ever) at every copy and every level - exactly the same
- * scheme as dodecahedronFlake() (including how `icosaFlakeRec`'s own `edgeChains` grows and is
- * consumed - see that function's doc comment), just with 12 vertices/30 edges
+ * scheme as dodecahedronFlake() (both built by the shared edgeMergeFlakeRec() - see its own doc
+ * comment for how `edgeChains` grows and is consumed), just with 12 vertices/30 edges
  * (`icosahedronFlakeData()`'s own `glue`) instead of 20 vertices/30 edges.
  *
  * r and c are fixed by the same two requirements as dodecahedronFlake(): (1) leaf-level copies must
@@ -1430,7 +1378,93 @@ export function icosahedronFlake(n: number): BoardConfig {
     const scale = (1 + phi) ** (n - 1);
     const corners = verts.map(p => p.map(x => x * scale));
 
-    const built = icosaFlakeRec(n, corners, r, c, edges, glueMap);
+    const built = edgeMergeFlakeRec(n, corners, r, c, edges, glueMap);
+    return make(new Embedding(3, built.pos, DEFAULT_3D_PROJMAT), built.adj);
+}
+
+interface OctahedronFlakeData {
+    verts: number[][];
+    edges: [number, number][];
+    // octahedronFlake()'s own additional data, ignored by octahedronBoard() (which stays exactly
+    // orthoplexBoard(3)) - see that function's own doc comment for what an entry means.
+    glue: [number, number, number, number, number, number][];
+}
+
+/**
+ * The vertex/edge data octahedronFlake() builds on: the same 6 unit-edge regular-octahedron
+ * vertices/12 edges as orthoplexBoard(3) (octahedronBoard()'s own construction, reproduced here
+ * rather than reused so this function - like DodecahedronFlakeData/IcosahedronFlakeData's own -
+ * owns its own `verts`/`edges`) - vertex `2k`/`2k+1` are the `+-scale` points on axis `k`, and are
+ * each other's antipode; every non-antipodal pair is an edge.
+ *
+ * `glue`: exactly as in DodecahedronFlakeData/IcosahedronFlakeData's own doc comment - for each
+ * base edge `[A, B]`, the edge `[C, D]` of the sub-flake octahedronFlake() positions at vertex A
+ * that coincides with edge `[E, F]` of the sub-flake it positions at vertex B, found the same way
+ * (computeFlakeGlue(), over all 12x12 candidate base-edge pairs), cached in `octahedronGlueCache`.
+ * Unlike dodeca/icosahedron, octahedron's own non-edges (the 3 antipodal pairs) are deliberately
+ * left out of the search entirely - not because they don't coincide (they do: every copy's own
+ * antipodal-attachment corner lands on the same shared center point, since `S_i(v_{antipode(i)}) =
+ * r*(-v_i) + c*v_i = (c-r)*v_i = 0` once `c = r`, for every `i`), but because that coincidence needs
+ * no glue entry of its own: it already follows transitively from the 12 real-edge glue relations,
+ * since octahedron's real-edge graph (every vertex adjacent to all but its own antipode) connects
+ * any two antipodal copies through a third common neighbor - and edgeMergeFlakeRec()'s own
+ * mergeBoards() call resolves transitive coincidences like that automatically (see mergeBoards()'s
+ * own doc comment), unlike the sequential per-step folding this construction originally used and
+ * was rewritten away from for exactly this reason.
+ */
+let octahedronGlueCache: [number, number, number, number, number, number][] | null = null;
+
+function octahedronFlakeData(): OctahedronFlakeData {
+    const edgeScale = 1 / Math.sqrt(2); // matches orthoplexBoard()'s own normalization to unit edge length
+    const verts: number[][] = [];
+    for (let k = 0; k < 3; k++) {
+        const plus = [0, 0, 0], minus = [0, 0, 0];
+        plus[k] = edgeScale;
+        minus[k] = -edgeScale;
+        verts.push(plus, minus);
+    }
+    const antipode = (i: number) => i % 2 === 0 ? i + 1 : i - 1;
+    const edges: [number, number][] = [];
+    for (let i = 0; i < 6; i++)
+        for (let j = i + 1; j < 6; j++)
+            if (j !== antipode(i)) edges.push([i, j]);
+
+    if (!octahedronGlueCache) {
+        const r = 0.5, c = 0.5;
+        octahedronGlueCache = computeFlakeGlue(verts, edges, r, c);
+    }
+
+    return { verts, edges, glue: octahedronGlueCache };
+}
+
+/**
+ * The "flake" fractal generalization of a regular octahedron - n=1 is the plain octahedron itself
+ * (octahedronFlakeData()'s own `verts`/`edges`, unit edge length); n>1 recurses into 6 order-(n-1)
+ * copies, one attached at each of the 6 vertices, via `S_i(x) = r*x + c*verts[i]` - the same overall
+ * scheme as dodecahedronFlake()/icosahedronFlake(), built by the same shared edgeMergeFlakeRec().
+ *
+ * r and c are fixed by the same two requirements as dodecahedronFlake()/icosahedronFlake(): (1)
+ * leaf-level copies must come out unit edge length, and (2) each `glue` entry's two named edges must
+ * actually coincide once transformed. Requirement (2) forces `c = r` here (unlike dodeca/icosa's
+ * `c/r = phi^2`/`phi` - verified numerically: this is the unique ratio producing a consistent edge
+ * match across all 12 base edges), and requirement (1) then fixes `r = c = 1/2` exactly - a plain
+ * midpoint join, `S_i(x) = (x + verts[i]) / 2`. `1/r = 2` is this shape's own levels-grow-by-2 size
+ * relation (verified numerically that circumradius(n+1)/circumradius(n) == 2 exactly, at both
+ * n=1->2 and n=2->3) - the same role `2+phi`/`1+phi` play for dodeca/icosa.
+ */
+export function octahedronFlake(n: number): BoardConfig {
+    assert(Number.isInteger(n) && n >= 1, `n must be a positive integer, got ${n}`);
+    const r = 0.5, c = 0.5;
+
+    const { verts, edges, glue } = octahedronFlakeData();
+    const glueMap = new Map<string, [number, number, number, number]>(
+        glue.map(([ga, gb, gc, gd, ge, gf]) => [`${ga},${gb}`, [gc, gd, ge, gf]]),
+    );
+
+    const scale = (1 / r) ** (n - 1);
+    const corners = verts.map(p => p.map(x => x * scale));
+
+    const built = edgeMergeFlakeRec(n, corners, r, c, edges, glueMap);
     return make(new Embedding(3, built.pos, DEFAULT_3D_PROJMAT), built.adj);
 }
 
@@ -1893,7 +1927,8 @@ export enum PrescribedBoard {
     sierpinskiSimplex,
     orthoplexBoard,
     dodecahedronFlake,
-    icosahedronFlake
+    icosahedronFlake,
+    octahedronFlake
 }
 
 // k Number-typed args in a row - shorthand for PrescribedBoardMap's common case below (every board
@@ -1952,6 +1987,8 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [BoardArgType[], string
         [nums(1), "dodflake", "&lt;n&gt;", "Dodecahedron flake fractal of order n (n=1 is the plain dodecahedron)"],
     [PrescribedBoard.icosahedronFlake]:
         [nums(1), "icoflake", "&lt;n&gt;", "Icosahedron flake fractal of order n (n=1 is the plain icosahedron)"],
+    [PrescribedBoard.octahedronFlake]:
+        [nums(1), "octaflake", "&lt;n&gt;", "Octahedron flake fractal of order n (n=1 is the plain octahedron)"],
 };
 
 export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => BoardConfig> = {
@@ -1978,6 +2015,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.orthoplexBoard]:           (...a) => orthoplexBoard(a[0]),
     [PrescribedBoard.dodecahedronFlake]:        (...a) => dodecahedronFlake(a[0]),
     [PrescribedBoard.icosahedronFlake]:         (...a) => icosahedronFlake(a[0]),
+    [PrescribedBoard.octahedronFlake]:          (...a) => octahedronFlake(a[0]),
 };
 
 /**
