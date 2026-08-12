@@ -981,67 +981,102 @@ struct FlakeRecResult {
     std::map<std::pair<int, int>, std::vector<int>> edge_chains;
 };
 
+// Mirrors shared/boardConfig.ts's growingEdgeLevelUpMap(): derives the standard `edge_level_up_map`
+// for a shape whose growing shared edges are exactly its `edge_glue_map` entries between ADJACENT
+// sub-copies (dodeca/icosa/octahedron/regular_polygon_flake_board()'s own 4n-gon case) - see
+// node_edge_merge_flake_rec()'s own doc comment for the `{{P,P,Q},{Q,P,Q}}` derivation.
+static std::map<std::pair<int, int>, std::vector<std::array<int, 3>>> growing_edge_level_up_map(
+    const std::map<std::pair<int, int>, std::array<int, 4>>& edge_glue_map) {
+    std::map<std::pair<int, int>, std::vector<std::array<int, 3>>> m;
+    for (const auto& [key, unused] : edge_glue_map) {
+        (void)unused;
+        int p = key.first, q = key.second;
+        m[key] = { { p, p, q }, { q, p, q } };
+    }
+    return m;
+}
+
 // Mirrors shared/boardConfig.ts's nodeEdgeMergeFlakeRec() - see its own doc comment for the full
-// recursive construction. Each base edge `(P, Q)` is glued EITHER via `edge_glue_map` (a whole,
-// growing shared edge - dodeca/icosa/octahedron's own case) OR via `node_glue_map` (a single shared
-// point, no growth - regular_polygon_flake_board()'s own non-multiple-of-4 case), never both. The
-// structural merge is built as one `merges` list across every base edge and resolved by a single
-// merge_boards() call (see that function's own doc comment for why this - rather than folding subs
-// in one at a time - is what makes octahedron_flake_board()'s own transitive antipodal-corner
-// coincidence come out correct); an `edge_glue_map` edge pairs up `subs[P]`'s own chain for `(C, D)`
-// with `subs[Q]`'s own chain for `(E, F)` position-by-position (this call's own `chain(P, Q)`, for
-// an even-outer caller, then concatenates those two), while a `node_glue_map` edge contributes
-// exactly one merge pair (`subs[P]`'s own corner `m`, `subs[Q]`'s own corner `p`) and no chain at
-// all. One deliberate deviation from mirroring TS's own single function (no deviation needed - this
-// is already shared TS-side by all four callers): with positions dropped entirely (see this
-// section's own top comment) the recursion is purely combinatorial, so this single function serves
-// dodecahedron_flake_board(), icosahedron_flake_board(), octahedron_flake_board(), and
-// regular_polygon_flake_board() below, parameterized only by `k`, `edges`, `edge_glue_map`, and
-// `node_glue_map`.
+// recursive construction. `num_subs` sub-copies are built each recursion (mirroring
+// shared/boardConfig.ts's `subDescr` list): the first `num_leaf` correspond to leaf vertices (0 ..
+// num_leaf-1, `edges`' own endpoint range) and expose `corners`/`corners_out`; any further entries
+// (num_leaf <= idx < num_subs) are purely auxiliary, with no leaf vertex of their own (e.g.
+// central_regular_polygon_flake_board()'s/central_pentagon_flake_board()'s own central copy) - same
+// split as shared/boardConfig.ts's FractalDescr's own doc comment. `edge_glue_map`/`node_glue_map`
+// key every glued pair `(P, Q)` (sub-copy indices, not necessarily an `edges` member) to EITHER a
+// whole, growing shared edge OR a single shared point, never both: an `edge_glue_map` entry pairs
+// up `subs[P]`'s own chain for `(C, D)` with `subs[Q]`'s own chain for `(E, F)` position-by-
+// position, while a `node_glue_map` entry contributes exactly one merge pair (`subs[P]`'s own
+// corner `m`, `subs[Q]`'s own corner `p`) and no chain at all. The structural merge is built as one
+// `merges` list across every entry of both maps and resolved by a single merge_boards() call (see
+// that function's own doc comment for why this - rather than folding subs in one at a time - is
+// what makes octahedron_flake_board()'s own transitive antipodal-corner coincidence come out
+// correct).
+//
+// `edge_level_up_map` keys a leaf-vertex pair `(A, B)` (always two valid indices below `num_leaf` -
+// NOT a sub-copy-index pair like `edge_glue_map`/`node_glue_map`) to an ordered list of `(sub_idx,
+// a, b)` triples: this shape's own chain for edge `(A, B)`, at ANY recursion order, is the
+// concatenation - in list order - of `subs[sub_idx]`'s own chain for its OWN edge `(a, b)`
+// (oriented to start at `a`). Every shape with a growing shared edge between ADJACENT sub-copies
+// (dodeca/icosa/octahedron/regular_polygon_flake_board()'s own 4n-gon case) sets this via
+// growing_edge_level_up_map() - for exactly those shapes, an `edge_glue_map` key `(P, Q)` doubles as
+// a valid leaf-vertex pair (sub-copy index == leaf-vertex index one-to-one), giving
+// `{{P,P,Q},{Q,P,Q}}` (`subs[P]`'s own `(P,Q)`-chain then `subs[Q]`'s own `(P,Q)`-chain),
+// reproducing this map's own pre-generalization behavior exactly (concatenate `subs[P]`'s and
+// `subs[Q]`'s own same-keyed chain - see git history). central_pentagon_flake_board() is the one
+// shape needing a genuinely different map: its own "corner i to corner i+1" chain exists (same
+// two-segment shape, using the leaf-adjacent indices `i`, `i+1` in place of `P`, `Q`) even though it
+// is never itself an `edge_glue_map` key - it goes entirely unused by the plain (non-central)
+// pentagon flake, which merges its own adjacent copies by a single node instead - only becoming
+// load-bearing once a central copy is added, which glues to it via `edge_glue_map`.
+//
+// One deliberate deviation from mirroring TS's own per-shape functions (no deviation needed - this
+// is already shared TS-side by every caller): with positions dropped entirely (see this section's
+// own top comment) the recursion is purely combinatorial, so this single function serves every flake
+// board below, parameterized only by `num_leaf`, `num_subs`, `edges`, `edge_glue_map`,
+// `node_glue_map`, and `edge_level_up_map`.
 static FlakeRecResult node_edge_merge_flake_rec(
-    int n, int k, const std::vector<std::pair<int, int>>& edges,
+    int n, int num_leaf, int num_subs, const std::vector<std::pair<int, int>>& edges,
     const std::map<std::pair<int, int>, std::array<int, 4>>& edge_glue_map,
-    const std::map<std::pair<int, int>, std::pair<int, int>>& node_glue_map) {
+    const std::map<std::pair<int, int>, std::pair<int, int>>& node_glue_map,
+    const std::map<std::pair<int, int>, std::vector<std::array<int, 3>>>& edge_level_up_map) {
     if (n == 1) {
-        auto adj = zero_adj(k);
-        std::map<std::pair<int, int>, std::vector<int>> chains;
+        auto adj = zero_adj(num_leaf);
         for (const auto& e : edges) {
             adj[e.first][e.second] = 1;
             adj[e.second][e.first] = 1;
-            if (edge_glue_map.count(e)) chains[e] = { e.first, e.second };
         }
-        std::vector<int> corners(k);
+        std::map<std::pair<int, int>, std::vector<int>> chains;
+        for (const auto& [key, segs] : edge_level_up_map) { (void)segs; chains[key] = { key.first, key.second }; }
+        std::vector<int> corners(num_leaf);
         std::iota(corners.begin(), corners.end(), 0);
         return { std::move(adj), std::move(corners), std::move(chains) };
     }
 
     std::vector<FlakeRecResult> subs;
-    for (int k_ = 0; k_ < k; k_++)
-        subs.push_back(node_edge_merge_flake_rec(n - 1, k, edges, edge_glue_map, node_glue_map));
+    for (int s = 0; s < num_subs; s++)
+        subs.push_back(node_edge_merge_flake_rec(
+            n - 1, num_leaf, num_subs, edges, edge_glue_map, node_glue_map, edge_level_up_map));
 
     std::vector<std::pair<std::pair<int,int>, std::pair<int,int>>> merges;
-    for (const auto& e : edges) {
-        int p = e.first, q = e.second;
-        auto eg = edge_glue_map.find(e);
-        if (eg != edge_glue_map.end()) {
-            auto [self_c, self_d, other_e, other_f] = eg->second;
+    for (const auto& [key, eg] : edge_glue_map) {
+        int p = key.first, q = key.second;
+        auto [self_c, self_d, other_e, other_f] = eg;
 
-            int self_lo = std::min(self_c, self_d), self_hi = std::max(self_c, self_d);
-            std::vector<int> chain_self = subs[p].edge_chains.at({ self_lo, self_hi });
-            if (self_c > self_d) std::reverse(chain_self.begin(), chain_self.end()); // start at self_c
-            int other_lo = std::min(other_e, other_f), other_hi = std::max(other_e, other_f);
-            std::vector<int> chain_other = subs[q].edge_chains.at({ other_lo, other_hi });
-            if (other_e > other_f) std::reverse(chain_other.begin(), chain_other.end()); // start at other_e
+        int self_lo = std::min(self_c, self_d), self_hi = std::max(self_c, self_d);
+        std::vector<int> chain_self = subs[p].edge_chains.at({ self_lo, self_hi });
+        if (self_c > self_d) std::reverse(chain_self.begin(), chain_self.end()); // start at self_c
+        int other_lo = std::min(other_e, other_f), other_hi = std::max(other_e, other_f);
+        std::vector<int> chain_other = subs[q].edge_chains.at({ other_lo, other_hi });
+        if (other_e > other_f) std::reverse(chain_other.begin(), chain_other.end()); // start at other_e
 
-            for (size_t idx = 0; idx < chain_self.size(); idx++)
-                merges.push_back({ { p, chain_self[idx] }, { q, chain_other[idx] } });
-            continue;
-        }
-        auto ng = node_glue_map.find(e);
-        if (ng != node_glue_map.end()) {
-            auto [m, np] = ng->second;
-            merges.push_back({ { p, subs[p].corners[m] }, { q, subs[q].corners[np] } });
-        }
+        for (size_t idx = 0; idx < chain_self.size(); idx++)
+            merges.push_back({ { p, chain_self[idx] }, { q, chain_other[idx] } });
+    }
+    for (const auto& [key, ng] : node_glue_map) {
+        int p = key.first, q = key.second;
+        auto [m, np] = ng;
+        merges.push_back({ { p, subs[p].corners[m] }, { q, subs[q].corners[np] } });
     }
 
     // merge_boards is (pos, adj)-shaped - pass empty per-node positions (emb_dim=0 convention, see
@@ -1051,19 +1086,23 @@ static FlakeRecResult node_edge_merge_flake_rec(
     for (auto& s : subs) sub_boards.push_back(RawBoard{ std::vector<std::vector<unsigned>>(s.adj.size()), s.adj });
     auto [combined, maps] = merge_boards(sub_boards, merges);
 
-    std::vector<int> corners_out(k);
-    for (int vtx = 0; vtx < k; vtx++) corners_out[vtx] = maps[vtx][subs[vtx].corners[vtx]];
+    // Only the first num_leaf sub-copies correspond to actual leaf-vertex attachment points (see
+    // this function's own doc comment) - any further entries (e.g. an auxiliary central copy) are
+    // purely internal structure, not exposed as one of this call's own corners.
+    std::vector<int> corners_out(num_leaf);
+    for (int vtx = 0; vtx < num_leaf; vtx++) corners_out[vtx] = maps[vtx][subs[vtx].corners[vtx]];
 
     std::map<std::pair<int, int>, std::vector<int>> edge_chains;
-    for (const auto& e : edges) {
-        if (!edge_glue_map.count(e)) continue;
-        int p = e.first, q = e.second;
-        std::vector<int> chain_p = subs[p].edge_chains.at(e);
-        for (auto& idx : chain_p) idx = maps[p][idx];
-        std::vector<int> chain_q = subs[q].edge_chains.at(e);
-        for (auto& idx : chain_q) idx = maps[q][idx];
-        chain_p.insert(chain_p.end(), chain_q.begin(), chain_q.end());
-        edge_chains[e] = std::move(chain_p);
+    for (const auto& [key, segments] : edge_level_up_map) {
+        std::vector<int> chain;
+        for (const auto& seg : segments) {
+            int sub_idx = seg[0], a = seg[1], b = seg[2];
+            int lo = std::min(a, b), hi = std::max(a, b);
+            std::vector<int> s = subs[sub_idx].edge_chains.at({ lo, hi });
+            if (a > b) std::reverse(s.begin(), s.end()); // start at a
+            for (auto idx : s) chain.push_back(maps[sub_idx][idx]);
+        }
+        edge_chains[key] = std::move(chain);
     }
 
     return { std::move(combined.adj), std::move(corners_out), std::move(edge_chains) };
@@ -1220,7 +1259,8 @@ BoardConfig dodecahedron_flake_board(int n) {
     std::map<std::pair<int, int>, std::array<int, 4>> edge_glue_map;
     for (const auto& g : data.glue) edge_glue_map[{ g[0], g[1] }] = { g[2], g[3], g[4], g[5] };
 
-    auto result = node_edge_merge_flake_rec(n, 20, data.edges, edge_glue_map, {});
+    auto edge_level_up_map = growing_edge_level_up_map(edge_glue_map);
+    auto result = node_edge_merge_flake_rec(n, 20, 20, data.edges, edge_glue_map, {}, edge_level_up_map);
     std::vector<std::vector<unsigned>> embed(result.adj.size()); // emb_dim=0
     return make_bc(std::move(result.adj), 0u, std::move(embed));
 }
@@ -1233,7 +1273,8 @@ BoardConfig icosahedron_flake_board(int n) {
     std::map<std::pair<int, int>, std::array<int, 4>> edge_glue_map;
     for (const auto& g : data.glue) edge_glue_map[{ g[0], g[1] }] = { g[2], g[3], g[4], g[5] };
 
-    auto result = node_edge_merge_flake_rec(n, 12, data.edges, edge_glue_map, {});
+    auto edge_level_up_map = growing_edge_level_up_map(edge_glue_map);
+    auto result = node_edge_merge_flake_rec(n, 12, 12, data.edges, edge_glue_map, {}, edge_level_up_map);
     std::vector<std::vector<unsigned>> embed(result.adj.size()); // emb_dim=0
     return make_bc(std::move(result.adj), 0u, std::move(embed));
 }
@@ -1247,7 +1288,8 @@ BoardConfig octahedron_flake_board(int n) {
     std::map<std::pair<int, int>, std::array<int, 4>> edge_glue_map;
     for (const auto& g : data.glue) edge_glue_map[{ g[0], g[1] }] = { g[2], g[3], g[4], g[5] };
 
-    auto result = node_edge_merge_flake_rec(n, 6, data.edges, edge_glue_map, {});
+    auto edge_level_up_map = growing_edge_level_up_map(edge_glue_map);
+    auto result = node_edge_merge_flake_rec(n, 6, 6, data.edges, edge_glue_map, {}, edge_level_up_map);
     std::vector<std::vector<unsigned>> embed(result.adj.size()); // emb_dim=0
     return make_bc(std::move(result.adj), 0u, std::move(embed));
 }
@@ -1320,7 +1362,73 @@ BoardConfig regular_polygon_flake_board(int n_sides, int order) {
     std::map<std::pair<int, int>, std::pair<int, int>> node_glue_map;
     for (const auto& g : data.node_glue) node_glue_map[{ g[0], g[1] }] = { g[2], g[3] };
 
-    auto result = node_edge_merge_flake_rec(order, n_sides, data.edges, edge_glue_map, node_glue_map);
+    auto edge_level_up_map = growing_edge_level_up_map(edge_glue_map);
+    auto result = node_edge_merge_flake_rec(
+        order, n_sides, n_sides, data.edges, edge_glue_map, node_glue_map, edge_level_up_map);
+    std::vector<std::vector<unsigned>> embed(result.adj.size()); // emb_dim=0
+    return make_bc(std::move(result.adj), 0u, std::move(embed));
+}
+
+// Mirrors shared/boardConfig.ts's centralRegularPolygonFlake() - see board_config.h's own doc
+// comment for the high-level construction. Reuses regular_polygon_flake_data(n_sides)'s own base
+// edge_glue/node_glue (the plain regular_polygon_flake_board() relation between ADJACENT copies,
+// untouched), adding one further auxiliary sub-copy (index n_sides, num_leaf..num_subs-1 - see
+// node_edge_merge_flake_rec()'s own doc comment) glued to every regular copy via node_glue_map only
+// - a closed-form vertex correspondence (`(i + n_sides/2) % n_sides`, `i`), needing no distance
+// search unlike compute_flake_glue()/compute_node_glue() above (mirrors
+// shared/boardConfig.ts's regularPolygonFractalDescr() derivation exactly).
+BoardConfig central_regular_polygon_flake_board(int n_sides, int order) {
+    assert(n_sides >= 3 && "n_sides must be at least 3");
+    assert(order >= 1 && "order must be at least 1");
+    const auto& data = regular_polygon_flake_data(n_sides);
+
+    std::map<std::pair<int, int>, std::array<int, 4>> edge_glue_map;
+    for (const auto& g : data.edge_glue) edge_glue_map[{ g[0], g[1] }] = { g[2], g[3], g[4], g[5] };
+    std::map<std::pair<int, int>, std::pair<int, int>> node_glue_map;
+    for (const auto& g : data.node_glue) node_glue_map[{ g[0], g[1] }] = { g[2], g[3] };
+
+    int num_subs = n_sides;
+    if (n_sides % 2 == 0 && n_sides > 4) {
+        int center_idx = n_sides;
+        num_subs = n_sides + 1;
+        for (int i = 0; i < n_sides; i++)
+            node_glue_map[{ i, center_idx }] = { (i + n_sides / 2) % n_sides, i };
+    }
+
+    auto edge_level_up_map = growing_edge_level_up_map(edge_glue_map);
+    auto result = node_edge_merge_flake_rec(
+        order, n_sides, num_subs, data.edges, edge_glue_map, node_glue_map, edge_level_up_map);
+    std::vector<std::vector<unsigned>> embed(result.adj.size()); // emb_dim=0
+    return make_bc(std::move(result.adj), 0u, std::move(embed));
+}
+
+// Mirrors shared/boardConfig.ts's centralPentagonFlake() - see board_config.h's own doc comment for
+// the high-level construction. Reuses regular_polygon_flake_data(5)'s own base node_glue (pentagon's
+// plain adjacent-copy relation is always a node merge - 5 % 4 != 0); the central copy's own relation
+// is a closed-form edge_glue_map/edge_level_up_map pair, mirroring
+// shared/boardConfig.ts's centralPentagonFractalDescr() exactly, no distance search needed.
+BoardConfig central_pentagon_flake_board(int order) {
+    assert(order >= 1 && "order must be at least 1");
+    const int n_sides = 5;
+    const auto& data = regular_polygon_flake_data(n_sides);
+
+    std::map<std::pair<int, int>, std::pair<int, int>> node_glue_map;
+    for (const auto& g : data.node_glue) node_glue_map[{ g[0], g[1] }] = { g[2], g[3] };
+
+    int center_idx = n_sides;
+    int num_subs = n_sides + 1;
+    std::map<std::pair<int, int>, std::array<int, 4>> edge_glue_map;
+    std::map<std::pair<int, int>, std::vector<std::array<int, 3>>> edge_level_up_map;
+    for (int i = 0; i < n_sides; i++) {
+        int a = i, b = (i + 1) % n_sides;
+        int j = (i + 3) % n_sides;
+        edge_glue_map[{ j, center_idx }] = { a, b, b, a };
+        int lo = std::min(a, b), hi = std::max(a, b);
+        edge_level_up_map[{ lo, hi }] = { { a, a, b }, { b, a, b } };
+    }
+
+    auto result = node_edge_merge_flake_rec(
+        order, n_sides, num_subs, data.edges, edge_glue_map, node_glue_map, edge_level_up_map);
     std::vector<std::vector<unsigned>> embed(result.adj.size()); // emb_dim=0
     return make_bc(std::move(result.adj), 0u, std::move(embed));
 }
@@ -1750,6 +1858,8 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<int>& 
     if (kind == "icoflake") return icosahedron_flake_board(v[0]);
     if (kind == "octaflake") return octahedron_flake_board(v[0]);
     if (kind == "polyflake") return regular_polygon_flake_board(v[0], v[1]);
+    if (kind == "cpolyflake") return central_regular_polygon_flake_board(v[0], v[1]);
+    if (kind == "cpentflake") return central_pentagon_flake_board(v[0]);
     if (kind == "trihex") return triangular_hex_board(v[0]);
     if (kind == "hex")   return hex_board(v[0]);
     if (kind == "hexdel") return trihex_board(v[0]);

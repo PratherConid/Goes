@@ -276,6 +276,32 @@ BoardConfig octahedron_flake_board(int n);
 // inherently-irrational-coordinates reason).
 BoardConfig regular_polygon_flake_board(int n_sides, int order);
 
+// Mirrors shared/boardConfig.ts's centralRegularPolygonFlake() - same construction as
+// regular_polygon_flake_board() above, with one further auxiliary sub-copy added at every recursion
+// level (mirroring shared/boardConfig.ts's FractalDescr's own "beyond leafPos.length" subDescr
+// entries - see the .cpp file's own comment on node_edge_merge_flake_rec()): a central copy glued to
+// all n_sides regular copies at once, via a plain node merge (central copy's own vertex i coincides
+// with regular copy i's own vertex i+n_sides/2 - closed-form, mirroring
+// shared/boardConfig.ts's regularPolygonFractalDescr() derivation exactly; no distance search
+// needed, unlike compute_flake_glue()/compute_node_glue() above). Only actually adds the central
+// copy when n_sides is even and greater than 4 (same condition as the TS side, for the same
+// reason); for any other n_sides, silently falls back to regular_polygon_flake_board()'s own
+// construction rather than rejecting the input.
+BoardConfig central_regular_polygon_flake_board(int n_sides, int order);
+
+// Mirrors shared/boardConfig.ts's centralPentagonFlake() - the pentagon-specific special case
+// centralRegularPolygonFlake()'s own even-n_sides construction can't cover (pentagon is odd, so a
+// same-orientation central copy has no non-degenerate fixed point - see
+// shared/boardConfig.ts's centralPentagonFractalDescr() for the full derivation this mirrors): a
+// central copy at the SAME scale magnitude but OPPOSITE orientation, glued to every regular copy by
+// a whole shared EDGE rather than a single node (closed-form vertex correspondence, same as
+// central_regular_polygon_flake_board() above - no distance search needed). This is the one shape
+// needing a genuinely different edge_level_up_map (see node_edge_merge_flake_rec()'s own doc
+// comment): pentagon's own "corner i to corner i+1" chain exists but goes unused by the plain (non-
+// central) pentagon flake, which merges its own adjacent copies by a single node instead - only
+// becoming load-bearing once the central copy needs it to glue against.
+BoardConfig central_pentagon_flake_board(int order);
+
 // A triangular-lattice board arranged in a hexagon shape, with d layers of triangles surrounding
 // the central point. Not tiled by hexagons - see hex_board below for that. Cells are
 // identified by axial coordinates (q, r) with max(|q|, |r|, |q+r|) <= d, embedded (shifted to
@@ -333,7 +359,7 @@ BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("line" | "rect" | "rectd" |
 // "cublat" | "hcub" | "tri" | "sier" | "regpoly" | "tetra" | "octa" | "ortho" | "dodeca" | "icosa" |
-// "dodflake" | "icoflake" | "octaflake" | "polyflake" |
+// "dodflake" | "icoflake" | "octaflake" | "polyflake" | "cpolyflake" | "cpentflake" |
 // "trihex" | "hex" | "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" | "star" - matches
 // shared/types.ts's GameConfig.boardType strings), passing `args` as that
 // builder's positional parameters. Throws std::runtime_error for an unknown
