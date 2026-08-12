@@ -105,7 +105,7 @@ std::map<int, std::pair<int, int>> identity_node_level_up_map(int num_leaf) {
     return m;
 }
 
-FlakeRecResult node_edge_merge_flake_rec(
+SubFlakeResult node_edge_merge_flake_rec(
     int n, int num_leaf, int num_subs, const std::vector<std::pair<int, int>>& edges,
     const std::map<std::pair<int, int>, std::array<int, 4>>& edge_glue_map,
     const std::map<std::pair<int, int>, std::pair<int, int>>& node_glue_map,
@@ -124,7 +124,7 @@ FlakeRecResult node_edge_merge_flake_rec(
         return { std::move(adj), std::move(corners), std::move(chains) };
     }
 
-    std::vector<FlakeRecResult> subs;
+    std::vector<SubFlakeResult> subs;
     for (int s = 0; s < num_subs; s++)
         subs.push_back(node_edge_merge_flake_rec(
             n - 1, num_leaf, num_subs, edges, edge_glue_map, node_glue_map, edge_level_up_map,

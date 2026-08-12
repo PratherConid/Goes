@@ -14,10 +14,9 @@
 // plain index/adjacency structure. See board_config.h's own doc comment on dodecahedron_flake_board()
 // for why these boards never compute or store real node positions at all.
 
-// Mirrors dodecaFlakeRec()/icosaFlakeRec()'s own object-shaped return value ({ pos, adj, corners,
-// edgeChains }) - minus `pos`, since these boards track no position at all (see this file's own top
-// comment).
-struct FlakeRecResult {
+// Mirrors shared/fractal.ts's SubFlakeResult - minus `pos`, since these boards track no position at
+// all (see this file's own top comment).
+struct SubFlakeResult {
     std::vector<std::vector<int>> adj;
     std::vector<int> corners;
     std::map<std::pair<int, int>, std::vector<int>> edge_chains;
@@ -84,7 +83,7 @@ std::map<int, std::pair<int, int>> identity_node_level_up_map(int num_leaf);
 // top comment) the recursion is purely combinatorial, so this single function serves every flake
 // board in board_config.h/.cpp, parameterized only by `num_leaf`, `num_subs`, `edges`,
 // `edge_glue_map`, `node_glue_map`, `edge_level_up_map`, and `node_level_up_map`.
-FlakeRecResult node_edge_merge_flake_rec(
+SubFlakeResult node_edge_merge_flake_rec(
     int n, int num_leaf, int num_subs, const std::vector<std::pair<int, int>>& edges,
     const std::map<std::pair<int, int>, std::array<int, 4>>& edge_glue_map,
     const std::map<std::pair<int, int>, std::pair<int, int>>& node_glue_map,

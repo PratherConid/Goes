@@ -245,9 +245,16 @@ function growingEdgeLevelUpMap(
  *    usually (but not always, see `centralPentagonFractalDescr()`) the same `(P, Q)` pair twice over,
  *    matching "shared edge length doubles per level".
  */
+interface SubFlakeResult {
+    pos: number[][];
+    adj: number[][];
+    corners: number[];
+    edgeChains: Map<string, number[]>;
+}
+
 function nodeEdgeMergeFlakeRec(
     n: number, scale: number, offset: number[], descr: FractalDescr,
-): { pos: number[][]; adj: number[][]; corners: number[]; edgeChains: Map<string, number[]> } {
+): SubFlakeResult {
     const { leafPos, leafConn, subDescr, edgeGlueMap, nodeGlueMap, edgeLevelUpMap, nodeLevelUpMap } = descr;
     if (n === 1) {
         const pos = leafPos.map(p => p.map((v, d) => scale * v + offset[d]));
