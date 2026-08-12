@@ -3,6 +3,11 @@
  * `BoardConfig.adj`), independent of any board-specific geometry.
  */
 
+/** An all-zero N×N adjacency matrix - the usual starting point before filling in edges. */
+export function zeroAdj(N: number): number[][] {
+    return Array.from({ length: N }, () => new Array<number>(N).fill(0));
+}
+
 /** An adjacency-list view of a graph: `list[i]` is the set of `i`'s neighbors. */
 export type AdjacencyList = Set<number>[];
 
@@ -73,4 +78,69 @@ export function findSquares(adj: number[][]): [number, number, number, number][]
                 }
         }
     return squares;
+}
+
+/**
+ * Union-Find: given `N` nodes and a list of pairs to merge, returns each node's equivalence-class
+ * index, compressed to a dense `0..M-1` range (`M` = number of distinct classes) in ascending order
+ * of each class's lowest original member. Internal to mergeBoards() (below) - resolves every merge
+ * instruction at once, so a chain like `(0,3)~(1,5)` and `(1,5)~(2,7)` correctly collapses `(0,3)`
+ * and `(2,7)` into the same node too, even though no single instruction names both directly.
+ */
+function unionFindClasses(N: number, pairs: [number, number][]): number[] {
+    const parent = Array.from({ length: N }, (_, i) => i);
+    function find(x: number): number {
+        while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+        return x;
+    }
+    for (const [a, b] of pairs) {
+        const pa = find(a), pb = find(b);
+        if (pa !== pb) parent[pa] = pb;
+    }
+    const roots = Array.from({ length: N }, (_, i) => find(i));
+    const uniqueRoots = [...new Set(roots)].sort((a, b) => a - b);
+    const rootToNew = new Map(uniqueRoots.map((r, i) => [r, i]));
+    return roots.map(r => rootToNew.get(r)!);
+}
+
+/**
+ * Combines a list of boards into one, additionally identifying every `([b1, i1], [b2, i2])` pair in
+ * `merges` (board index, that board's own local node index) as the same node - every merge is
+ * resolved in one batch via unionFindClasses(), not board-by-board, so callers never need to fold
+ * boards in one at a time just to keep every merge target "already placed": a merge between two
+ * boards that haven't been introduced to each other by any other merge is handled exactly like any
+ * other. The merged node keeps whichever input position is encountered first (callers are expected
+ * to only merge pairs whose positions already coincide, e.g. two recursive `sierpinskiSimplex`
+ * sub-copies sharing a corner). Returns the combined board plus, for each input board (in the same
+ * order as `boards`), a map from that board's own local indices to its final index in the combined
+ * board - needed by callers that must keep tracking specific nodes (like sierpinskiSimplex's own
+ * outer corners) across further merges. `pos` here is opaque per-node data (typically a real
+ * position, but never inspected as one) simply carried along through the same merge as `adj`.
+ */
+export function mergeBoards(
+    boards: { pos: number[][]; adj: number[][] }[], merges: [[number, number], [number, number]][],
+): { pos: number[][]; adj: number[][]; maps: number[][] } {
+    const offset: number[] = new Array(boards.length).fill(0);
+    for (let i = 1; i < boards.length; i++) offset[i] = offset[i - 1] + boards[i - 1].pos.length;
+    const total = boards.reduce((s, b) => s + b.pos.length, 0);
+    const g = (b: number, local: number) => offset[b] + local;
+
+    const nodeToNew = unionFindClasses(total, merges.map(([[b1, i1], [b2, i2]]) => [g(b1, i1), g(b2, i2)]));
+    const newN = total === 0 ? 0 : Math.max(...nodeToNew) + 1;
+
+    const pos: number[][] = new Array(newN);
+    for (let b = 0; b < boards.length; b++)
+        for (let local = 0; local < boards[b].pos.length; local++)
+            pos[nodeToNew[g(b, local)]] = boards[b].pos[local];
+
+    const adj = zeroAdj(newN);
+    for (let b = 0; b < boards.length; b++) {
+        const board = boards[b];
+        for (let i = 0; i < board.pos.length; i++)
+            for (let j = 0; j < board.pos.length; j++)
+                if (board.adj[i][j]) adj[nodeToNew[g(b, i)]][nodeToNew[g(b, j)]] = 1;
+    }
+
+    const maps = boards.map((board, b) => board.pos.map((_, local) => nodeToNew[g(b, local)]));
+    return { pos, adj, maps };
 }

@@ -1,5 +1,11 @@
 import type { BoardModifier, Embedding } from './boardConfig.js';
 
+/** General-purpose runtime assertion, used throughout shared/ and beyond - unified here rather than
+ * duplicated per-file (see git history). */
+export function assert(cond: boolean, msg: string): asserts cond {
+    if (!cond) throw new Error(`Assertion failed: ${msg}`);
+}
+
 export const enum MoveType {
     NOMOVE = 0,
     PLACE  = 1,
