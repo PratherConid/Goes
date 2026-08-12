@@ -1115,6 +1115,27 @@ interface SubDescr {
  * exhaustive search (computeFlakeGlue()/computeNodeGlue()) over `leafPos`/`leafConn`, since there is
  * no general closed-form shortcut for either relation.
  *
+ * `edgeLevelUpMap` keys a leaf-vertex pair `(A, B)` (NOT a `subDescr`-index pair like `edgeGlueMap`/
+ * `nodeGlueMap` - always two valid indices into `leafPos`) to an ordered list of `(subIdx, a, b)`
+ * triples: this shape's own chain for edge `(A, B)`, at ANY recursion order, is the concatenation -
+ * in list order - of `subDescr[subIdx]`'s own chain for its OWN edge `(a, b)` (oriented to start at
+ * `a`), one list entry at a time. This is pure output-chain plumbing (see nodeEdgeMergeFlakeRec()'s
+ * own doc comment for what a chain is/is used for) - it says nothing about which pairs actually merge
+ * (that's `edgeGlueMap`'s job) or produce an edge in `adj` (that's `leafConn`/the base case). Every
+ * shape with a growing shared edge between ADJACENT sub-copies `P`/`Q` (dodeca/icosa/octahedron/
+ * `regularPolygonFlake`'s own 4n-gon case) sets this via `growingEdgeLevelUpMap(edgeGlueMap)`: for
+ * each `edgeGlueMap` key `(P, Q)` (which, for exactly these shapes, doubles as a valid leaf-vertex
+ * pair, since `subDescr` index equals leaf-vertex index one-to-one), the concatenation
+ * `[[P, P, Q], [Q, P, Q]]` - `subDescr[P]`'s own `(P, Q)`-chain then `subDescr[Q]`'s own `(P, Q)`-
+ * chain - reproducing the shared-edge-doubles-per-level behavior this map replaced (see git history).
+ * `centralPentagonFractalDescr()` is the one shape that needs a genuinely different map: its own
+ * "corner `i` to corner `i+1`" chain exists (each entry a length-2^n concatenation, same shape as
+ * `growingEdgeLevelUpMap`'s, just using the leaf-adjacent indices `i`, `i+1` in place of `P`, `Q`)
+ * even though, unlike the growing-edge shapes above, it is never itself an `edgeGlueMap` key - it goes
+ * entirely unused by the plain (non-central) pentagon flake, which merges its own adjacent copies by a
+ * single node instead (see regularPolygonFractalDescr()'s own doc comment) - only becoming load-
+ * bearing once a central copy is added, which glues to it via `edgeGlueMap`.
+ *
  * `globalScale`: the overall board at recursion order `n` is built at scale `globalScale ** (n - 1)`
  * (see buildFractal()) - chosen so that leaf-level (deepest, order-1) copies always come out unit
  * edge length, however deep `n` goes.
@@ -1125,7 +1146,24 @@ interface FractalDescr {
     subDescr: SubDescr[];
     edgeGlueMap: Map<string, [number, number, number, number]>;
     nodeGlueMap: Map<string, [number, number]>;
+    edgeLevelUpMap: Map<string, [number, number, number][]>;
     globalScale: number;
+}
+
+/**
+ * Derives the standard `edgeLevelUpMap` for a shape whose growing shared edges are exactly its
+ * `edgeGlueMap` entries between ADJACENT sub-copies (dodeca/icosa/octahedron/regularPolygonFlake's own
+ * 4n-gon case) - see FractalDescr's own doc comment for the `[[P, P, Q], [Q, P, Q]]` derivation.
+ */
+function growingEdgeLevelUpMap(
+    edgeGlueMap: Map<string, [number, number, number, number]>,
+): Map<string, [number, number, number][]> {
+    return new Map(
+        [...edgeGlueMap.keys()].map(key => {
+            const [P, Q] = key.split(',').map(Number);
+            return [key, [[P, P, Q], [Q, P, Q]]];
+        }),
+    );
 }
 
 /**
@@ -1148,17 +1186,17 @@ interface FractalDescr {
  * only composes this same simple way when `r + c = 1` for every slot - see git history for that
  * derivation. `scale`/`shift` sidestep needing any such shared constraint at all.)
  *
- * `descr.edgeGlueMap`/`descr.nodeGlueMap` are computed once by the caller (per shape, cached in the
- * `descr` itself) and threaded through unchanged rather than recomputed on every recursive call - see
- * FractalDescr's own doc comment for exactly what each map's keys/values mean.
+ * `descr.edgeGlueMap`/`descr.nodeGlueMap`/`descr.edgeLevelUpMap` are computed once by the caller (per
+ * shape, cached in the `descr` itself) and threaded through unchanged rather than recomputed on every
+ * recursive call - see FractalDescr's own doc comment for exactly what each map's keys/values mean.
  *
- * Alongside `pos`/`adj`/`corners`, also returns `edgeChains`: for every `edgeGlueMap` key `(P, Q)`
+ * Alongside `pos`/`adj`/`corners`, also returns `edgeChains`: for every `edgeLevelUpMap` key `(A, B)`
  * (node-merge edges never get an entry - there is no "chain", just one point), the ordered list of
  * node indices lying along that edge at THIS call's own recursion depth - length `2^n` (base case:
- * literally `[P, Q]`, using `P`/`Q` as leaf-vertex indices, since a base edge's own key numbers are
- * always valid leaf-vertex indices too - see FractalDescr's own doc comment). This is pure
- * bookkeeping data for an *outer* caller's own merge step - concatenating two node lists here never
- * adds an edge between them; it says nothing about this call's own `adj`.
+ * literally `[A, B]`, since an `edgeLevelUpMap` key is always a valid leaf-vertex pair - see
+ * FractalDescr's own doc comment). This is pure bookkeeping data for an *outer* caller's own merge
+ * step - concatenating node lists here never adds an edge between them; it says nothing about this
+ * call's own `adj`.
  *
  * Two things consume it, mirroring the fact that a sub-flake's own edges incident to its own
  * attachment slot are exactly the ones an adjacent copy might need to glue against:
@@ -1170,22 +1208,23 @@ interface FractalDescr {
  *    `2^(n-1)`, since `subs[P]`/`subs[Q]` are themselves order-`(n-1)`) - not just their 2 endpoints.
  *    A `nodeGlueMap` entry instead contributes exactly one merge pair: `subs[P]`'s own corner `m` and
  *    `subs[Q]`'s own corner `p` - no chain, so no growth with `n`.
- *  - This call's own returned `chain(P, Q)`, for an even-outer caller (`edgeGlueMap` entries only):
- *    `subs[P]`'s own chain for THE SAME key `(P, Q)` is exactly the one of *its* own attachment-edges
- *    that is `(P, Q)` itself, and likewise for `subs[Q]` - concatenating those two `(P, Q)`-chains
- *    (remapped into this call's own final node-index space) gives length `2^n`, matching "shared
- *    edge length doubles per level" exactly.
+ *  - This call's own returned `chain(A, B)`, for an even-outer caller: built fresh from
+ *    `edgeLevelUpMap.get('A,B')`'s own segment list, concatenating each `(subIdx, a, b)` segment's
+ *    `subs[subIdx]`'s own chain for `(a, b)` (remapped into this call's own final node-index space,
+ *    oriented to start at `a`) in list order - see FractalDescr's own doc comment for why this is
+ *    usually (but not always, see `centralPentagonFractalDescr()`) the same `(P, Q)` pair twice over,
+ *    matching "shared edge length doubles per level".
  */
 function nodeEdgeMergeFlakeRec(
     n: number, scale: number, offset: number[], descr: FractalDescr,
 ): { pos: number[][]; adj: number[][]; corners: number[]; edgeChains: Map<string, number[]> } {
-    const { leafPos, leafConn, subDescr, edgeGlueMap, nodeGlueMap } = descr;
+    const { leafPos, leafConn, subDescr, edgeGlueMap, nodeGlueMap, edgeLevelUpMap } = descr;
     if (n === 1) {
         const pos = leafPos.map(p => p.map((v, d) => scale * v + offset[d]));
         const adj = zeroAdj(leafPos.length);
         for (const [a, b] of leafConn) { adj[a][b] = 1; adj[b][a] = 1; }
         const edgeChains = new Map<string, number[]>();
-        for (const key of edgeGlueMap.keys()) {
+        for (const key of edgeLevelUpMap.keys()) {
             const [a, b] = key.split(',').map(Number);
             edgeChains.set(key, [a, b]);
         }
@@ -1220,11 +1259,15 @@ function nodeEdgeMergeFlakeRec(
     const cornersOut = leafPos.map((_, vtx) => combined.maps[vtx][subs[vtx].corners[vtx]]);
 
     const edgeChains = new Map<string, number[]>();
-    for (const key of edgeGlueMap.keys()) {
-        const [P, Q] = key.split(',').map(Number);
-        const chainP = subs[P].edgeChains.get(key)!.map(idx => combined.maps[P][idx]);
-        const chainQ = subs[Q].edgeChains.get(key)!.map(idx => combined.maps[Q][idx]);
-        edgeChains.set(key, [...chainP, ...chainQ]);
+    for (const [key, segments] of edgeLevelUpMap) {
+        const chain: number[] = [];
+        for (const [subIdx, a, b] of segments) {
+            const lo = Math.min(a, b), hi = Math.max(a, b);
+            let seg = subs[subIdx].edgeChains.get(`${lo},${hi}`)!;
+            if (a > b) seg = [...seg].reverse(); // orient to start at a
+            chain.push(...seg.map(idx => combined.maps[subIdx][idx]));
+        }
+        edgeChains.set(key, chain);
     }
 
     return { pos: combined.pos, adj: combined.adj, corners: cornersOut, edgeChains };
@@ -1315,8 +1358,10 @@ function dodecahedronFractalDescr(): FractalDescr {
     );
     const subDescr: SubDescr[] = leafPos.map(v => ({ scale: r, shift: v.map(x => x * c) }));
 
-    dodecahedronFractalDescrCache =
-        { leafPos, leafConn, subDescr, edgeGlueMap, nodeGlueMap: new Map(), globalScale: 1 / r };
+    dodecahedronFractalDescrCache = {
+        leafPos, leafConn, subDescr, edgeGlueMap, nodeGlueMap: new Map(),
+        edgeLevelUpMap: growingEdgeLevelUpMap(edgeGlueMap), globalScale: 1 / r,
+    };
     return dodecahedronFractalDescrCache;
 }
 
@@ -1424,8 +1469,10 @@ function icosahedronFractalDescr(): FractalDescr {
     );
     const subDescr: SubDescr[] = leafPos.map(v => ({ scale: r, shift: v.map(x => x * c) }));
 
-    icosahedronFractalDescrCache =
-        { leafPos, leafConn, subDescr, edgeGlueMap, nodeGlueMap: new Map(), globalScale: 1 / r };
+    icosahedronFractalDescrCache = {
+        leafPos, leafConn, subDescr, edgeGlueMap, nodeGlueMap: new Map(),
+        edgeLevelUpMap: growingEdgeLevelUpMap(edgeGlueMap), globalScale: 1 / r,
+    };
     return icosahedronFractalDescrCache;
 }
 
@@ -1507,8 +1554,10 @@ function octahedronFractalDescr(): FractalDescr {
     );
     const subDescr: SubDescr[] = leafPos.map(v => ({ scale: r, shift: v.map(x => x * c) }));
 
-    octahedronFractalDescrCache =
-        { leafPos, leafConn, subDescr, edgeGlueMap, nodeGlueMap: new Map(), globalScale: 1 / r };
+    octahedronFractalDescrCache = {
+        leafPos, leafConn, subDescr, edgeGlueMap, nodeGlueMap: new Map(),
+        edgeLevelUpMap: growingEdgeLevelUpMap(edgeGlueMap), globalScale: 1 / r,
+    };
     return octahedronFractalDescrCache;
 }
 
@@ -1631,7 +1680,10 @@ function regularPolygonFractalDescr(nSides: number, center: boolean): FractalDes
             nodeGlueMap.set(`${i},${centerIdx}`, [(i + nSides / 2) % nSides, i]);
     }
 
-    const descr: FractalDescr = { leafPos, leafConn, subDescr, edgeGlueMap, nodeGlueMap, globalScale: 1 / r };
+    const descr: FractalDescr = {
+        leafPos, leafConn, subDescr, edgeGlueMap, nodeGlueMap,
+        edgeLevelUpMap: growingEdgeLevelUpMap(edgeGlueMap), globalScale: 1 / r,
+    };
     regularPolygonFractalDescrCache.set(cacheKey, descr);
     return descr;
 }
@@ -1670,6 +1722,85 @@ export function centralRegularPolygonFlake(nSides: number, order: number): Board
     assert(Number.isInteger(nSides) && nSides >= 3, `nSides must be an integer at least 3, got ${nSides}`);
     assert(Number.isInteger(order) && order >= 1, `order must be a positive integer, got ${order}`);
     const built = buildFractal(order, regularPolygonFractalDescr(nSides, true));
+    return make(built.pos, built.adj);
+}
+
+let centralPentagonFractalDescrCache: FractalDescr | null = null;
+
+/**
+ * The static description centralPentagonFlake() builds on: a special case of
+ * regularPolygonFractalDescr()'s own `center` feature that pentagon (`nSides=5`) can't use - pentagon
+ * is odd, so a same-orientation central copy (that feature's own `scale = c - r`, always positive) has
+ * no fixed point to sit at other than a degenerate one. Instead, pentagon's central copy sits at the
+ * SAME scale magnitude but OPPOSITE orientation - `scale = -r`, `shift = 0` - a 180-degree rotation of
+ * an ordinary sub-copy (found by brute-force distance search over `S_center(leafPos[i])` against every
+ * sub-copy/vertex pair, not derived symbolically - pentagon's fifth-root-of-unity algebra doesn't
+ * collapse as cleanly as the even-`nSides` case above, since `leafPos[i]` and `leafPos[(i+3)%5]` point
+ * in genuinely different directions rather than being antipodal). That search found central copy
+ * vertex `i` and vertex `i+1` coinciding with sub-copy `(i+3) % 5`'s own vertex `i` and vertex `i+1`
+ * respectively - a whole shared EDGE, unlike regularPolygonFractalDescr()'s own central copy (always a
+ * single shared node): `edgeGlueMap` gets one entry per `i`, keyed `((i+3)%5, centerIdx)`.
+ *
+ * That edge merge needs a growing chain for pentagon's own base edge `(i, i+1)` - normally never
+ * computed, since a plain (non-central) pentagon flake merges adjacent copies by a single node (see
+ * regularPolygonFractalDescr()'s own doc comment) - so `edgeLevelUpMap` gets an entry per base edge
+ * too, same `[[i, i, i+1], [i+1, i, i+1]]` shape as `growingEdgeLevelUpMap()`'s (see FractalDescr's own
+ * doc comment), just keyed by the leaf-adjacent pair itself rather than an `edgeGlueMap` key (pentagon
+ * has no growing edge of its own between ADJACENT sub-copies - only between a sub-copy and the
+ * center). Verified (this `edgeLevelUpMap` design, and the resulting node/edge/degree counts) against
+ * an independent mergeClose()-based reference construction, order=1..5.
+ */
+function centralPentagonFractalDescr(): FractalDescr {
+    if (centralPentagonFractalDescrCache) return centralPentagonFractalDescrCache;
+
+    const nSides = 5;
+    const R = 1 / (2 * Math.sin(Math.PI / nSides)); // matches regularPolygonBoard()'s own unit-edge scale
+    const leafPos: number[][] = [];
+    for (let k = 0; k < nSides; k++) {
+        const theta = (2 * Math.PI * k) / nSides;
+        leafPos.push([R * Math.cos(theta), R * Math.sin(theta)]);
+    }
+    const leafConn: [number, number][] = [];
+    for (let k = 0; k < nSides; k++) {
+        const a = k, b = (k + 1) % nSides;
+        leafConn.push(a < b ? [a, b] : [b, a]);
+    }
+
+    const { r, c } = regularPolygonFlakeRC(nSides);
+    const nodeGlue = computeNodeGlue(leafPos, leafConn, r, c);
+    const nodeGlueMap = new Map<string, [number, number]>();
+    for (const [ga, gb, gm, gp] of nodeGlue) nodeGlueMap.set(`${ga},${gb}`, [gm, gp]);
+
+    const subDescr: SubDescr[] = leafPos.map(v => ({ scale: r, shift: v.map(x => x * c) }));
+    const centerIdx = subDescr.length;
+    subDescr.push({ scale: -r, shift: new Array(leafPos[0].length).fill(0) });
+
+    const edgeGlueMap = new Map<string, [number, number, number, number]>();
+    const edgeLevelUpMap = new Map<string, [number, number, number][]>();
+    for (let i = 0; i < nSides; i++) {
+        const a = i, b = (i + 1) % nSides;
+        edgeGlueMap.set(`${(i + 3) % nSides},${centerIdx}`, [a, b, b, a]);
+        const key = `${Math.min(a, b)},${Math.max(a, b)}`;
+        edgeLevelUpMap.set(key, [[a, a, b], [b, a, b]]);
+    }
+
+    centralPentagonFractalDescrCache =
+        { leafPos, leafConn, subDescr, edgeGlueMap, nodeGlueMap, edgeLevelUpMap, globalScale: 1 / r };
+    return centralPentagonFractalDescrCache;
+}
+
+/**
+ * The special-case pentagon flake with a central copy at every recursion level - see
+ * centralPentagonFractalDescr()'s own doc comment for why pentagon needs its own dedicated
+ * construction rather than centralRegularPolygonFlake()'s general even-`nSides` one (odd `nSides` has
+ * no same-orientation fixed point for a central copy to sit at; pentagon's own central copy instead
+ * sits at the opposite orientation, `scale = -r`). Otherwise the same overall scheme as
+ * regularPolygonFlake()/centralRegularPolygonFlake() (see nodeEdgeMergeFlakeRec()'s own doc comment
+ * for the recursive construction).
+ */
+export function centralPentagonFlake(order: number): BoardConfig {
+    assert(Number.isInteger(order) && order >= 1, `order must be a positive integer, got ${order}`);
+    const built = buildFractal(order, centralPentagonFractalDescr());
     return make(built.pos, built.adj);
 }
 
@@ -2135,7 +2266,8 @@ export enum PrescribedBoard {
     icosahedronFlake,
     octahedronFlake,
     regularPolygonFlake,
-    centralRegularPolygonFlake
+    centralRegularPolygonFlake,
+    centralPentagonFlake
 }
 
 // k Number-typed args in a row - shorthand for PrescribedBoardMap's common case below (every board
@@ -2202,6 +2334,9 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [BoardArgType[], string
     [PrescribedBoard.centralRegularPolygonFlake]:
         [nums(2), "cpolyflake", "&lt;sides&gt; &lt;n&gt;",
             "Regular polygon flake with a central copy at every level (sides must be even, &gt; 4)"],
+    [PrescribedBoard.centralPentagonFlake]:
+        [nums(1), "cpentflake", "&lt;n&gt;",
+            "Pentagon flake with an opposite-orientation central copy at every level (n=1 is the plain pentagon)"],
 };
 
 export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => BoardConfig> = {
@@ -2231,6 +2366,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.octahedronFlake]:          (...a) => octahedronFlake(a[0]),
     [PrescribedBoard.regularPolygonFlake]:      (...a) => regularPolygonFlake(a[0], a[1]),
     [PrescribedBoard.centralRegularPolygonFlake]: (...a) => centralRegularPolygonFlake(a[0], a[1]),
+    [PrescribedBoard.centralPentagonFlake]:     (...a) => centralPentagonFlake(a[0]),
 };
 
 /**

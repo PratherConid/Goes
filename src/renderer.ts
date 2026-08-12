@@ -97,6 +97,12 @@ const _boardConfigDescriptions = new Map([
     ['hcub_2_6_6_6_6',
         '2-skeleton of a 4-dimensional 6×6×6×6 hypercuboid: only the rectangular faces (at least 2 '
         + 'of the 4 coordinates pinned to an extreme) are meshed, the solid interior is excluded'],
+    ['cpentflake_4',
+        'Order-4 central pentagon flake fractal: a pentagon flake with an opposite-orientation '
+        + 'central copy at every level'],
+    ['cpolyflake_8_3',
+        'Order-3 central regular-polygon flake fractal on an 8-sided polygon (a central copy at '
+        + 'every level)'],
 ]);
 
 
@@ -625,6 +631,7 @@ export class Renderer {
         [PrescribedBoard.octahedronFlake]:          [4],
         [PrescribedBoard.regularPolygonFlake]:      [6, 2],
         [PrescribedBoard.centralRegularPolygonFlake]: [6, 2],
+        [PrescribedBoard.centralPentagonFlake]:     [2],
     };
     nShowHistory = 10;
     currentSidePanel: SidePanelContent = SidePanelContent.Home;
