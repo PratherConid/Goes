@@ -1,6 +1,10 @@
 {
   "boardType": "cublat",
-  "boardArgs": [2, 2, 2],
+  "boardArgs": [
+    {"kind": "Number", "value": 2},
+    {"kind": "Number", "value": 2},
+    {"kind": "Number", "value": 2}
+  ],
   "boardModifiers": [
     {"kind": "SquareForm", "w": 9}
   ]

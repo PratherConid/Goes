@@ -1,8 +1,14 @@
 {
   "boardType": "twsq",
-  "boardArgs": [3, 3, 2],
+  "boardArgs": [
+    {"kind": "Number", "value": 3},
+    {"kind": "Number", "value": 3},
+    {"kind": "Number", "value": 2}
+  ],
   "boardModifiers": [
     {"kind": "EdgeSplit", "splitN": 3},
-    {"kind": "Prod", "boardType": "line", "boardArgs": [4]}
+    {"kind": "Prod", "boardType": "line", "boardArgs": [
+      {"kind": "Number", "value": 4}
+    ]}
   ]
 }

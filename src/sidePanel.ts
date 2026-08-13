@@ -5,6 +5,7 @@
 
 import type { BoardView, GameConfig, PlayerInfo, TurnInfo } from '@shared/types.js';
 import type { BoardModifier } from '@shared/boardConfig.js';
+import { formatBoardArgEntry } from '@shared/boardConfig.js';
 import { STONE_MAP } from '@shared/boardState.js';
 
 export enum SidePanelContent {
@@ -322,8 +323,8 @@ export const fmtModifiers = (modifiers: BoardModifier[]) =>
                 case 'MergeClose': return `mc ${m.dist}`;
                 case 'TriangleForm': return `triform ${m.w}`;
                 case 'SquareForm': return `sqform ${m.w}`;
-                case 'Prod': return `prod ${m.boardType} ${m.boardArgs.join(' ')}`;
-                case 'BeginProd': return `beginprod ${m.boardType} ${m.boardArgs.join(' ')}`;
+                case 'Prod': return `prod ${m.boardType} ${m.boardArgs.map(formatBoardArgEntry).join(' ')}`;
+                case 'BeginProd': return `beginprod ${m.boardType} ${m.boardArgs.map(formatBoardArgEntry).join(' ')}`;
                 case 'EndProd': return 'endprod';
                 case 'GlobalCentralize': return 'gcent';
                 case 'SqOctarize': return 'sqocta';
@@ -364,7 +365,7 @@ export function currentGameSetupHtml(v: BoardView, players: Map<number, PlayerIn
 export function newGameSetupHtml(cfg: GameConfig): string {
     return `
         <div><b>Board type:</b> ${cfg.boardType}</div>
-        <div><b>Board dimension:</b> ${cfg.boardArgs}</div>
+        <div><b>Board dimension:</b> ${cfg.boardArgs.map(formatBoardArgEntry).join(' ')}</div>
         <div><b>Board modifiers:</b> ${fmtModifiers(cfg.boardModifiers)}</div>
         <div><b>Type of stones:</b> ${cfg.numStones}</div>
         <div><b>Number of players:</b> ${cfg.numPlayers}</div>

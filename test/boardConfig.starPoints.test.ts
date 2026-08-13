@@ -2,11 +2,11 @@
 // board star-point ("hoshi") layouts for common rectangular board sizes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeStarPoints } from '../shared/boardConfig.ts';
+import { computeStarPoints, numArg } from '../shared/boardConfig.ts';
 import { GameConfig } from '../shared/types.ts';
 
 function mkConfig(boardType: string, boardArgs: number[]): GameConfig {
-    return new GameConfig(boardType, boardArgs, [], 2, 2, [
+    return new GameConfig(boardType, boardArgs.map(numArg), [], 2, 2, [
         { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
         { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
     ], [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', [0, 0],

@@ -1,9 +1,13 @@
 {
   "boardType": "regpoly",
-  "boardArgs": [5],
+  "boardArgs": [
+    {"kind": "Number", "value": 5}
+  ],
   "boardModifiers": [
     {"kind": "GlobalCentralize"},
-    {"kind": "Prod", "boardType": "line", "boardArgs": [2]},
+    {"kind": "Prod", "boardType": "line", "boardArgs": [
+      {"kind": "Number", "value": 2}
+    ]},
     {"kind": "SquareForm", "w": 7}
   ]
 }

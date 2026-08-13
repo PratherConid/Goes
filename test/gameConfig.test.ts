@@ -3,10 +3,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GameConfig, PlayerInfo } from '../shared/types.ts';
+import { numArg } from '../shared/boardConfig.ts';
 
 function sampleConfig() {
     const config = new GameConfig(
-        'rect', [9, 9], [], 2, 2,
+        'rect', [numArg(9), numArg(9)], [], 2, 2,
         [
             { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
             { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
@@ -56,7 +57,7 @@ test('GameConfig.toJSON()/fromJSON() round-trips players and scalar fields', () 
 
 test('GameConfig.fromJSON() defaults scoreRule/komi/koRule/allowSuicide/maxPlies when absent', () => {
     const raw = {
-        boardType: 'rect', boardArgs: [9, 9], numStones: 2, numPlayers: 2,
+        boardType: 'rect', boardArgs: [numArg(9), numArg(9)], numStones: 2, numPlayers: 2,
         turnList: [
             { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
             { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },

@@ -1,4 +1,5 @@
-import type { BoardModifier, Embedding } from './boardConfig.js';
+import type { BoardModifier, BoardArgEntry, Embedding } from './boardConfig.js';
+import { cloneBoardArgEntry } from './boardConfig.js';
 
 /** General-purpose runtime assertion, used throughout shared/ and beyond - unified here rather than
  * duplicated per-file (see git history). */
@@ -221,15 +222,17 @@ export class OnlinePlayerRequest {
 }
 
 // Deep-clones a single BoardModifier - a plain `{ ...m }` alone would still share Prod/BeginProd's
-// own nested boardArgs array between the original and the clone, so mutating one's boardArgs would
-// bleed into the other. Used (via .map()) by both GameConfig.copy() and adoptJSONBoardCfg() below.
+// own nested boardArgs array (itself a BoardArgEntry[] - see cloneBoardArgEntry()'s own doc comment
+// in boardConfig.ts for why each entry needs its own deep clone too) between the original and the
+// clone, so mutating one's boardArgs would bleed into the other. Used (via .map()) by both
+// GameConfig.copy() and adoptJSONBoardCfg() below.
 function cloneBoardModifier(m: BoardModifier): BoardModifier {
-    return 'boardArgs' in m ? { ...m, boardArgs: [...m.boardArgs] } : { ...m };
+    return 'boardArgs' in m ? { ...m, boardArgs: m.boardArgs.map(cloneBoardArgEntry) } : { ...m };
 }
 
 export class GameConfig {
     boardType: string;
-    boardArgs: number[];
+    boardArgs: BoardArgEntry[];
     boardModifiers: BoardModifier[];
     numStones: number;
     numPlayers: number;
@@ -260,7 +263,7 @@ export class GameConfig {
 
     constructor(
         boardType: string,
-        boardArgs: number[],
+        boardArgs: BoardArgEntry[],
         boardModifiers: BoardModifier[],
         numStones: number,
         numPlayers: number,
@@ -298,7 +301,7 @@ export class GameConfig {
     copy(): GameConfig {
         return new GameConfig(
             this.boardType,
-            [...this.boardArgs],
+            this.boardArgs.map(cloneBoardArgEntry),
             this.boardModifiers.map(cloneBoardModifier),
             this.numStones,
             this.numPlayers,
@@ -347,7 +350,7 @@ export class GameConfig {
     // session after the first such edit.
     adoptJSONBoardCfg(raw: any): void {
         this.boardType      = raw.boardType;
-        this.boardArgs      = [...raw.boardArgs];
+        this.boardArgs      = (raw.boardArgs as BoardArgEntry[]).map(cloneBoardArgEntry);
         this.boardModifiers = (raw.boardModifiers as BoardModifier[]).map(cloneBoardModifier);
     }
 

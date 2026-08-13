@@ -12,6 +12,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     dodecahedronBoard, dodecahedronFlake, PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, BoardArgType,
+    numArg,
 } from '../shared/boardConfig.ts';
 
 const EPS = 1e-9;
@@ -83,5 +84,5 @@ test('is registered as the "dodflake" prescribed board type, taking exactly 1 Nu
     const [argTypes, cmd] = PrescribedBoardMap[PrescribedBoard.dodecahedronFlake];
     assert.equal(cmd, 'dodflake');
     assert.deepEqual(argTypes, [BoardArgType.Number]);
-    assert.deepEqual(PrescribedBoardFns[PrescribedBoard.dodecahedronFlake](2), flakes[1]);
+    assert.deepEqual(PrescribedBoardFns[PrescribedBoard.dodecahedronFlake](numArg(2)), flakes[1]);
 });

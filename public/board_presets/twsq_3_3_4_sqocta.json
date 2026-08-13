@@ -1,6 +1,10 @@
 {
   "boardType": "twsq",
-  "boardArgs": [3, 3, 4],
+  "boardArgs": [
+    {"kind": "Number", "value": 3},
+    {"kind": "Number", "value": 3},
+    {"kind": "Number", "value": 4}
+  ],
   "boardModifiers": [
     {"kind": "SqOctarize"}
   ]

@@ -72,7 +72,7 @@ test("'bd' with meshdim then a comma-separated dims token sets a variable-dimens
     runCommand('bd 4 5,5,2,2');
 
     const newGameDetails = document.getElementById('new-game-setup-details') as HTMLDivElement;
-    assert.match(newGameDetails.innerHTML, /Board dimension:<\/b> 4,5,5,2,2/);
+    assert.match(newGameDetails.innerHTML, /Board dimension:<\/b> 4 5,5,2,2/);
 });
 
 test('_startNewGame catches an applyModifiers error and shows it in the command output bar', () => {

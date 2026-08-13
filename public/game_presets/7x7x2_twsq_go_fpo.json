@@ -1,6 +1,6 @@
 {
   "boardType": "twsq",
-  "boardArgs": [7, 7, 2],
+  "boardArgs": [{"kind": "Number", "value": 7}, {"kind": "Number", "value": 7}, {"kind": "Number", "value": 2}],
   "boardModifiers": [],
   "numStones": 2,
   "numPlayers": 2,

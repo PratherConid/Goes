@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     icosahedronBoard, icosahedronFlake, PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, BoardArgType,
+    numArg,
 } from '../shared/boardConfig.ts';
 
 const EPS = 1e-9;
@@ -79,5 +80,5 @@ test('is registered as the "icoflake" prescribed board type, taking exactly 1 Nu
     const [argTypes, cmd] = PrescribedBoardMap[PrescribedBoard.icosahedronFlake];
     assert.equal(cmd, 'icoflake');
     assert.deepEqual(argTypes, [BoardArgType.Number]);
-    assert.deepEqual(PrescribedBoardFns[PrescribedBoard.icosahedronFlake](2), flakes[1]);
+    assert.deepEqual(PrescribedBoardFns[PrescribedBoard.icosahedronFlake](numArg(2)), flakes[1]);
 });

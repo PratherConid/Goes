@@ -1,5 +1,8 @@
 {
   "boardType": "sier",
-  "boardArgs": [3, 5],
+  "boardArgs": [
+    {"kind": "Number", "value": 3},
+    {"kind": "Number", "value": 5}
+  ],
   "boardModifiers": []
 }

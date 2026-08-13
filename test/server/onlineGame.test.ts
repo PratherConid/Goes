@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import {
     startTestServer, startTestServerProcess, connect, waitForEvents, type TestServer, type TestClient,
 } from './testServer.ts';
+import { numArg } from '../../shared/boardConfig.ts';
 
 let server: TestServer;
 
@@ -21,7 +22,7 @@ after(async () => { await server.close(); });
 // OnlinePlayerRequest-based createGame()).
 function passOnlyConfig() {
     return {
-        boardType: 'rect', boardArgs: [1, 1], boardModifiers: [], numStones: 2, numPlayers: 2,
+        boardType: 'rect', boardArgs: [numArg(1), numArg(1)], boardModifiers: [], numStones: 2, numPlayers: 2,
         turnList: [
             { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
             { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
@@ -36,7 +37,7 @@ function passOnlyConfig() {
 // tests below, which need several distinct real moves (not just passes) to withdraw between.
 function realTwoPlayerConfig() {
     return {
-        boardType: 'rect', boardArgs: [3, 3], boardModifiers: [], numStones: 2, numPlayers: 2,
+        boardType: 'rect', boardArgs: [numArg(3), numArg(3)], boardModifiers: [], numStones: 2, numPlayers: 2,
         turnList: [
             { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
             { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
@@ -48,7 +49,7 @@ function realTwoPlayerConfig() {
 
 function realThreePlayerConfig() {
     return {
-        boardType: 'rect', boardArgs: [5, 5], boardModifiers: [], numStones: 3, numPlayers: 3,
+        boardType: 'rect', boardArgs: [numArg(5), numArg(5)], boardModifiers: [], numStones: 3, numPlayers: 3,
         turnList: [
             { player: 1, stones: [1, 0, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },
             { player: 2, stones: [0, 1, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },

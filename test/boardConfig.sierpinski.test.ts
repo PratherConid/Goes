@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     sierpinskiSimplex, PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, BoardArgType,
+    numArg,
 } from '../shared/boardConfig.ts';
 
 const EPS = 1e-9;
@@ -100,5 +101,5 @@ test('is registered as the "sier" prescribed board type, taking exactly 2 Number
     const [argTypes, cmd] = PrescribedBoardMap[PrescribedBoard.sierpinskiSimplex];
     assert.equal(cmd, 'sier');
     assert.deepEqual(argTypes, [BoardArgType.Number, BoardArgType.Number]);
-    assert.deepEqual(PrescribedBoardFns[PrescribedBoard.sierpinskiSimplex](2, 3), sierpinskiSimplex(2, 3));
+    assert.deepEqual(PrescribedBoardFns[PrescribedBoard.sierpinskiSimplex](numArg(2), numArg(3)), sierpinskiSimplex(2, 3));
 });

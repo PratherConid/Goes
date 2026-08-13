@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    rectangularBoard, product, parseModifier, applyModifier, applyModifiers,
+    rectangularBoard, product, parseModifier, applyModifier, applyModifiers, numArg,
 } from '../shared/boardConfig.ts';
 
 test('product against a single-node board reproduces the other factor\'s own adjacency exactly', () => {
@@ -57,7 +57,7 @@ test('product of a 2x2 grid and a 2-path is graph-isomorphic to a 2x2x2 cube (N,
 
 test('parseModifier parses beginprod\'s board type and integer args, and bare endprod', () => {
     assert.deepEqual(parseModifier('beginprod', ['rect', '3', '3']),
-        { kind: 'BeginProd', boardType: 'rect', boardArgs: [3, 3] });
+        { kind: 'BeginProd', boardType: 'rect', boardArgs: [numArg(3), numArg(3)] });
     assert.deepEqual(parseModifier('endprod', []), { kind: 'EndProd' });
 });
 
@@ -70,7 +70,7 @@ test('parseModifier rejects malformed beginprod/endprod', () => {
 
 test('parseModifier(\'beginprod\', ...) truncates extra board args to the type\'s required count', () => {
     assert.deepEqual(parseModifier('beginprod', ['rect', '3', '3', '99', '100']),
-        { kind: 'BeginProd', boardType: 'rect', boardArgs: [3, 3] });
+        { kind: 'BeginProd', boardType: 'rect', boardArgs: [numArg(3), numArg(3)] });
 });
 
 test('parseModifier(\'beginprod\', ...) throws when fewer board args than required are given', () => {
@@ -80,7 +80,7 @@ test('parseModifier(\'beginprod\', ...) throws when fewer board args than requir
 
 test('applyModifier rejects BeginProd/EndProd directly - only applyModifiers may apply them', () => {
     const bc = rectangularBoard(2, 2);
-    assert.throws(() => applyModifier(bc, { kind: 'BeginProd', boardType: 'rect', boardArgs: [1, 1] }));
+    assert.throws(() => applyModifier(bc, { kind: 'BeginProd', boardType: 'rect', boardArgs: [numArg(1), numArg(1)] }));
     assert.throws(() => applyModifier(bc, { kind: 'EndProd' }));
 });
 

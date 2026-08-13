@@ -1,6 +1,6 @@
 import { BoardState } from '@shared/boardState.js';
 import { PrescribedBoardMap, PrescribedBoardFns, PrescribedBoard, applyModifiers } from '@shared/boardConfig.js';
-import type { BoardConfig } from '@shared/boardConfig.js';
+import type { BoardConfig, BoardArgEntry } from '@shared/boardConfig.js';
 import { PlayerInfo, GameConfig, FinishedGame, OnlinePlayerRequest, makeId } from '@shared/types.js';
 import type { OnlineStateResponse, PendingGame, ReplayMove, ChatMessage } from '@shared/types.js';
 import { recordFinishedGame, getFinishedGames } from './gameRecordStore.js';
@@ -54,7 +54,7 @@ export interface OnlineGame {
 
 const MAX_CHAT_LENGTH = 2000;
 
-const boardTypeToFn = new Map<string, (...args: number[]) => BoardConfig>();
+const boardTypeToFn = new Map<string, (...args: BoardArgEntry[]) => BoardConfig>();
 for (const key of Object.keys(PrescribedBoardMap)) {
     const numKey = Number(key) as PrescribedBoard;
     const [, typeStr] = PrescribedBoardMap[numKey];

@@ -7,7 +7,9 @@
 // POST /move - JSON body fields:
 //   config            object with game configuration:
 //     boardType         "rect"|"rectd"|"cublat"|"hcub"|"tri"|"trihex"|"hex"|"hexdel"|"snubsq"|"snubsqtri"|"twsq"|"gtsq"
-//     boardArgs         integer dimensions matching the board type
+//     boardArgs         [{kind:"Number",value}|{kind:"CommaSeparatedNumbers"|"ZeroOneList",values}, ...]
+//                       one entry per positional dimension arg the board type expects - see
+//                       shared/boardConfig.ts's BoardArgEntry
 //     numStones         int
 //     numPlayers        int
 //     turnList          [{player, stones, protected, friendly}] - see shared/types.ts's TurnInfo

@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     regularPolygonBoard, PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, BoardArgType,
+    numArg,
 } from '../shared/boardConfig.ts';
 
 const EPS = 1e-9;
@@ -51,5 +52,5 @@ test('is registered as the "regpoly" prescribed board type, taking exactly 1 Num
     const [argTypes, cmd] = PrescribedBoardMap[PrescribedBoard.regularPolygonBoard];
     assert.equal(cmd, 'regpoly');
     assert.deepEqual(argTypes, [BoardArgType.Number]);
-    assert.deepEqual(PrescribedBoardFns[PrescribedBoard.regularPolygonBoard](6), regularPolygonBoard(6));
+    assert.deepEqual(PrescribedBoardFns[PrescribedBoard.regularPolygonBoard](numArg(6)), regularPolygonBoard(6));
 });

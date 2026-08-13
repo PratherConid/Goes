@@ -1,5 +1,8 @@
 {
   "boardType": "hcub",
-  "boardArgs": [2, 6, 6, 6, 6],
+  "boardArgs": [
+    {"kind": "Number", "value": 2},
+    {"kind": "CommaSeparatedNumbers", "values": [6, 6, 6, 6]}
+  ],
   "boardModifiers": []
 }

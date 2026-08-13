@@ -3,10 +3,10 @@ import { PlayerInfo, GameConfig, FinishedGame, OnlinePlayerRequest, makeId } fro
 import type {
     BoardView, OnlineStateResponse, PendingGame, ScoreRule, KoRule, TurnInfo, ReplayMove, ChatMessage,
 } from '@shared/types.js';
-import type { BoardConfig, BoardModifier } from '@shared/boardConfig.js';
+import type { BoardConfig, BoardModifier, BoardArgEntry } from '@shared/boardConfig.js';
 import {
     PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, BoardArgType, parseBoardArgToken, computeStarPoints,
-    parseModifier, applyModifiers, projectPoint, MC_DEFAULT_DIST,
+    parseModifier, applyModifiers, projectPoint, MC_DEFAULT_DIST, numArg, csvArg, zolArg, cloneBoardArgEntry,
 } from '@shared/boardConfig.js';
 import { ServerConnection, type RequestHandle } from './serverConnection.js';
 import {
@@ -103,6 +103,12 @@ const _boardConfigDescriptions = new Map([
     ['cpolyflake_8_3',
         'Order-3 central regular-polygon flake fractal on an 8-sided polygon (a central copy at '
         + 'every level)'],
+    ['menger_3_3_0101',
+        'Order-3, 3-dimensional Menger-sponge-family flake fractal with a non-classical indicator '
+        + '(center and edge-mid sub-cubes removed, face-center and corner sub-cubes kept)'],
+    ['menger_4_2_011',
+        'Order-4 Sierpinski carpet (the 2-dimensional case of the Menger-sponge-family flake '
+        + 'fractal, indicator 011)'],
 ]);
 
 
@@ -557,7 +563,7 @@ export class Renderer {
     pendingPos: number | null = null;
     newCfg = new GameConfig(
         PrescribedBoardMap[PrescribedBoard.rectangularBoard][1],
-        [9, 9],
+        [numArg(9), numArg(9)],
         [],
         2, 2,
         [
@@ -602,37 +608,37 @@ export class Renderer {
     presets = new Map<string, GameConfig>();
     // Loaded at startup from public/board_presets/ (see _loadBoardConfigs()); name -> raw
     // {boardType, boardArgs, boardModifiers} JSON, applied via GameConfig.adoptJSONBoardCfg().
-    boardConfigs = new Map<string, { boardType: string; boardArgs: number[]; boardModifiers: BoardModifier[] }>();
+    boardConfigs = new Map<string, { boardType: string; boardArgs: BoardArgEntry[]; boardModifiers: BoardModifier[] }>();
     // Per-board-type dimension memory so 'bt' restores custom dimensions on type switch
-    boardDimensionForNew: Record<PrescribedBoard, number[]> = {
-        [PrescribedBoard.linearBoard]:               [9],
-        [PrescribedBoard.rectangularBoard]:         [9, 9],
-        [PrescribedBoard.rectangularDiagonalBoard]: [9, 9, 3],
-        [PrescribedBoard.cubeLatticeBoard]:         [5, 5, 2],
-        [PrescribedBoard.hypercuboidBoard]:         [4, 5, 5, 2, 2],
-        [PrescribedBoard.triangularBoard]:          [13],
-        [PrescribedBoard.regularPolygonBoard]:      [6],
+    boardDimensionForNew: Record<PrescribedBoard, BoardArgEntry[]> = {
+        [PrescribedBoard.linearBoard]:               [numArg(9)],
+        [PrescribedBoard.rectangularBoard]:         [numArg(9), numArg(9)],
+        [PrescribedBoard.rectangularDiagonalBoard]: [numArg(9), numArg(9), numArg(3)],
+        [PrescribedBoard.cubeLatticeBoard]:         [numArg(5), numArg(5), numArg(2)],
+        [PrescribedBoard.hypercuboidBoard]:         [numArg(4), csvArg([5, 5, 2, 2])],
+        [PrescribedBoard.triangularBoard]:          [numArg(13)],
+        [PrescribedBoard.regularPolygonBoard]:      [numArg(6)],
         [PrescribedBoard.tetrahedronBoard]:         [],
         [PrescribedBoard.dodecahedronBoard]:        [],
         [PrescribedBoard.icosahedronBoard]:         [],
-        [PrescribedBoard.triangularHexBoard]:       [5],
-        [PrescribedBoard.hexBoard]:                 [4],
-        [PrescribedBoard.trihexBoard]:               [3],
-        [PrescribedBoard.snubSquareBoard]:          [5, 5, 2],
-        [PrescribedBoard.snubSquareTriBoard]:       [3, 3, 3],
-        [PrescribedBoard.twistedSquareBoard]:       [4, 4, 3],
-        [PrescribedBoard.glueTwistedSquareBoard]:   [4, 4, 3],
-        [PrescribedBoard.starBoard]:                 [6],
+        [PrescribedBoard.triangularHexBoard]:       [numArg(5)],
+        [PrescribedBoard.hexBoard]:                 [numArg(4)],
+        [PrescribedBoard.trihexBoard]:               [numArg(3)],
+        [PrescribedBoard.snubSquareBoard]:          [numArg(5), numArg(5), numArg(2)],
+        [PrescribedBoard.snubSquareTriBoard]:       [numArg(3), numArg(3), numArg(3)],
+        [PrescribedBoard.twistedSquareBoard]:       [numArg(4), numArg(4), numArg(3)],
+        [PrescribedBoard.glueTwistedSquareBoard]:   [numArg(4), numArg(4), numArg(3)],
+        [PrescribedBoard.starBoard]:                 [numArg(6)],
         [PrescribedBoard.octahedronBoard]:          [],
-        [PrescribedBoard.sierpinskiSimplex]:        [2, 4],
-        [PrescribedBoard.orthoplexBoard]:           [3],
-        [PrescribedBoard.dodecahedronFlake]:        [2],
-        [PrescribedBoard.icosahedronFlake]:         [2],
-        [PrescribedBoard.octahedronFlake]:          [4],
-        [PrescribedBoard.regularPolygonFlake]:      [6, 2],
-        [PrescribedBoard.centralRegularPolygonFlake]: [6, 2],
-        [PrescribedBoard.centralPentagonFlake]:     [2],
-        [PrescribedBoard.mengerSpongeFlake]:        [2, 3, 0, 0, 1, 1],
+        [PrescribedBoard.sierpinskiSimplex]:        [numArg(2), numArg(4)],
+        [PrescribedBoard.orthoplexBoard]:           [numArg(3)],
+        [PrescribedBoard.dodecahedronFlake]:        [numArg(2)],
+        [PrescribedBoard.icosahedronFlake]:         [numArg(2)],
+        [PrescribedBoard.octahedronFlake]:          [numArg(4)],
+        [PrescribedBoard.regularPolygonFlake]:      [numArg(6), numArg(2)],
+        [PrescribedBoard.centralRegularPolygonFlake]: [numArg(6), numArg(2)],
+        [PrescribedBoard.centralPentagonFlake]:     [numArg(2)],
+        [PrescribedBoard.mengerSpongeFlake]:        [numArg(2), numArg(3), zolArg([0, 0, 1, 1])],
     };
     nShowHistory = 10;
     currentSidePanel: SidePanelContent = SidePanelContent.Home;
@@ -1026,7 +1032,7 @@ export class Renderer {
             }
         }));
         this.boardConfigs = new Map(entries.filter(
-            (e): e is readonly [string, { boardType: string; boardArgs: number[]; boardModifiers: BoardModifier[] }] =>
+            (e): e is readonly [string, { boardType: string; boardArgs: BoardArgEntry[]; boardModifiers: BoardModifier[] }] =>
                 e !== null,
         ));
     }
@@ -2906,7 +2912,7 @@ export class Renderer {
             if (!_cmdToBoard.has(parts[1])) { this._setCmdOutput(`Unknown board type: ${parts[1]}`); return; }
             const entry = _cmdToBoard.get(parts[1])!;
             this.newCfg.boardType = parts[1];
-            this.newCfg.boardArgs = [...this.boardDimensionForNew[entry.boardType as PrescribedBoard]];
+            this.newCfg.boardArgs = this.boardDimensionForNew[entry.boardType as PrescribedBoard].map(cloneBoardArgEntry);
         }
         else if (cmd === 'bd') {
             const boardTypeEnum = _cmdToBoard.get(this.newCfg.boardType)!.boardType as PrescribedBoard;
@@ -2918,28 +2924,28 @@ export class Renderer {
                 this._setCmdOutput(`Usage: bd ${argTypes.map(placeholder).join(' ')}`);
                 return;
             }
-            // Each token is parsed per its own declared BoardArgType (see parseBoardArgToken) - an
-            // ordinary Number-typed token yields one value, so this is unaffected for every board
-            // type except hypercuboidBoard's own single CommaSeparatedNumbers token and
-            // mengerSpongeFlake's own single ZeroOneList token, which can each expand to any number
-            // of values - no need to sniff the input's own shape. ZeroOneList's own token is
-            // self-validating (throws on a non-0/1 character - see parseBoardArgToken's own doc
-            // comment), so this is wrapped in try/catch, unlike before.
-            let expansions: number[][];
+            // Each token is parsed per its own declared BoardArgType into exactly one BoardArgEntry
+            // (see parseBoardArgToken/BoardArgEntry's own doc comments) - ZeroOneList's own token is
+            // self-validating (throws on a non-0/1 character), so this is wrapped in try/catch.
+            let entries: BoardArgEntry[];
             try {
-                expansions = argTypes.map((type, i) => parseBoardArgToken(type, tokens[i]));
+                entries = argTypes.map((type, i) => parseBoardArgToken(type, tokens[i]));
             } catch (e) {
                 this._setCmdOutput(`bd: ${e instanceof Error ? e.message : String(e)}`); return;
             }
-            const nums = expansions.flat();
             // A ZeroOneList's own entries are legitimately 0 (e.g. an "off" indicator class) - only
-            // every OTHER argType's entries (ordinary dimension/count values) must be positive.
-            const isZeroOneEntry = argTypes.flatMap((type, i) => new Array(expansions[i].length).fill(type === BoardArgType.ZeroOneList));
-            if (nums.some((n, idx) => !Number.isInteger(n) || (!isZeroOneEntry[idx] && n <= 0))) {
+            // a Number/CommaSeparatedNumbers entry's own number(s) (ordinary dimensions/counts) must
+            // be positive.
+            const isValid = (e: BoardArgEntry) => e.kind === BoardArgType.ZeroOneList
+                ? e.values.every(n => Number.isInteger(n))
+                : e.kind === BoardArgType.Number
+                    ? Number.isInteger(e.value) && e.value > 0
+                    : e.values.every(n => Number.isInteger(n) && n > 0);
+            if (!entries.every(isValid)) {
                 this._setCmdOutput('bd: all arguments must be positive integers (0/1 list entries excepted)'); return;
             }
-            this.boardDimensionForNew[boardTypeEnum] = nums;
-            this.newCfg.boardArgs = [...nums];
+            this.boardDimensionForNew[boardTypeEnum] = entries;
+            this.newCfg.boardArgs = entries.map(cloneBoardArgEntry);
         }
         else if (cmd === 'mod') {
             if (!parts[1]) { this._setCmdOutput('Usage: mod <name> <args…>'); return; }

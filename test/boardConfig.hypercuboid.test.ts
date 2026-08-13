@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import {
     hypercuboidBoard, rectangularBoard, cubeLatticeBoard,
     PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, BoardArgType, parseModifier,
+    numArg, csvArg,
 } from '../shared/boardConfig.ts';
 
 function degrees(bc: { adj: number[][] }): number[] {
@@ -90,23 +91,24 @@ test('is registered as the "hcub" prescribed board type, taking a Number then a 
     assert.equal(cmd, 'hcub');
     assert.deepEqual(argTypes, [BoardArgType.Number, BoardArgType.CommaSeparatedNumbers]);
     assert.deepEqual(
-        PrescribedBoardFns[PrescribedBoard.hypercuboidBoard](4, 5, 5, 2, 2), hypercuboidBoard(4, [5, 5, 2, 2]),
+        PrescribedBoardFns[PrescribedBoard.hypercuboidBoard](numArg(4), csvArg([5, 5, 2, 2])),
+        hypercuboidBoard(4, [5, 5, 2, 2]),
     );
 });
 
 test('parseModifier(\'beginprod\', [\'hcub\', ...]) parses meshdim then splits the comma-separated ' +
     'dims token into boardArgs', () => {
     assert.deepEqual(parseModifier('beginprod', ['hcub', '4', '5,5,2,2']),
-        { kind: 'BeginProd', boardType: 'hcub', boardArgs: [4, 5, 5, 2, 2] });
+        { kind: 'BeginProd', boardType: 'hcub', boardArgs: [numArg(4), csvArg([5, 5, 2, 2])] });
 });
 
 test('parseModifier(\'beginprod\', [\'hcub\', ...]) still truncates to its 2 required tokens, ' +
     'ignoring anything after them', () => {
     assert.deepEqual(parseModifier('beginprod', ['hcub', '4', '5,5,2,2', '99']),
-        { kind: 'BeginProd', boardType: 'hcub', boardArgs: [4, 5, 5, 2, 2] });
+        { kind: 'BeginProd', boardType: 'hcub', boardArgs: [numArg(4), csvArg([5, 5, 2, 2])] });
 });
 
 test('parseModifier(\'beginprod\', ...) is unaffected for an ordinary comma-free board type', () => {
     assert.deepEqual(parseModifier('beginprod', ['rect', '3', '3']),
-        { kind: 'BeginProd', boardType: 'rect', boardArgs: [3, 3] });
+        { kind: 'BeginProd', boardType: 'rect', boardArgs: [numArg(3), numArg(3)] });
 });

@@ -1286,35 +1286,54 @@ BoardConfig twisted_square_board(int w, int h, int g) {
     return make_bc(std::move(adj), 2u, std::move(pos));
 }
 
-BoardConfig build_board_config(const std::string& kind, const std::vector<int>& args) {
+int board_arg_number(const BoardArgEntry& e) {
+    assert(e.kind == BoardArgKind::Number && "expected a Number board arg");
+    return e.value;
+}
+const std::vector<int>& board_arg_list(const BoardArgEntry& e) {
+    assert(e.kind != BoardArgKind::Number && "expected a list board arg");
+    return e.values;
+}
+
+std::string format_board_arg_entry(const BoardArgEntry& e) {
+    if (e.kind == BoardArgKind::Number) return std::to_string(e.value);
+    std::string sep = e.kind == BoardArgKind::CommaSeparatedNumbers ? "," : "";
+    std::string s;
+    for (size_t i = 0; i < e.values.size(); i++) { if (i) s += sep; s += std::to_string(e.values[i]); }
+    return s;
+}
+
+BoardConfig build_board_config(const std::string& kind, const std::vector<BoardArgEntry>& args) {
     const auto& v = args;
-    if (kind == "line")  return linear_board(v[0]);
-    if (kind == "rect")  return rectangular_board(v[0], v[1]);
-    if (kind == "rectd") return rectangular_diagonal_board(v[0], v[1], v[2]);
-    if (kind == "cublat") return cube_lattice_board(v[0], v[1], v[2]);
-    if (kind == "hcub")  return hypercuboid_board(v[0], std::vector<int>(v.begin() + 1, v.end()));
-    if (kind == "tri")   return triangular_board(v[0]);
-    if (kind == "sier")  return sierpinski_simplex_board(v[0], v[1]);
-    if (kind == "regpoly") return regular_polygon_board(v[0]);
-    if (kind == "star")  return star_board(v[0]);
+    auto num = [](const BoardArgEntry& e) { return board_arg_number(e); };
+    auto list = [](const BoardArgEntry& e) { return board_arg_list(e); };
+    if (kind == "line")  return linear_board(num(v[0]));
+    if (kind == "rect")  return rectangular_board(num(v[0]), num(v[1]));
+    if (kind == "rectd") return rectangular_diagonal_board(num(v[0]), num(v[1]), num(v[2]));
+    if (kind == "cublat") return cube_lattice_board(num(v[0]), num(v[1]), num(v[2]));
+    if (kind == "hcub")  return hypercuboid_board(num(v[0]), list(v[1]));
+    if (kind == "tri")   return triangular_board(num(v[0]));
+    if (kind == "sier")  return sierpinski_simplex_board(num(v[0]), num(v[1]));
+    if (kind == "regpoly") return regular_polygon_board(num(v[0]));
+    if (kind == "star")  return star_board(num(v[0]));
     if (kind == "tetra") return tetrahedron_board();
     if (kind == "octa") return octahedron_board();
-    if (kind == "ortho") return orthoplex_board(v[0]);
+    if (kind == "ortho") return orthoplex_board(num(v[0]));
     if (kind == "dodeca") return dodecahedron_board();
     if (kind == "icosa") return icosahedron_board();
-    if (kind == "dodflake") return dodecahedron_flake_board(v[0]);
-    if (kind == "icoflake") return icosahedron_flake_board(v[0]);
-    if (kind == "octaflake") return octahedron_flake_board(v[0]);
-    if (kind == "polyflake") return regular_polygon_flake_board(v[0], v[1]);
-    if (kind == "cpolyflake") return central_regular_polygon_flake_board(v[0], v[1]);
-    if (kind == "cpentflake") return central_pentagon_flake_board(v[0]);
-    if (kind == "menger") return menger_sponge_flake_board(v[0], v[1], std::vector<int>(v.begin() + 2, v.end()));
-    if (kind == "trihex") return triangular_hex_board(v[0]);
-    if (kind == "hex")   return hex_board(v[0]);
-    if (kind == "hexdel") return trihex_board(v[0]);
-    if (kind == "snubsq") return snub_square_board(v[0], v[1], v[2]);
-    if (kind == "snubsqtri") return snub_square_tri_board(v[0], v[1], v[2]);
-    if (kind == "twsq")  return twisted_square_board(v[0], v[1], v[2]);
-    if (kind == "gtsq")  return glue_twisted_square_board(v[0], v[1], v[2]);
+    if (kind == "dodflake") return dodecahedron_flake_board(num(v[0]));
+    if (kind == "icoflake") return icosahedron_flake_board(num(v[0]));
+    if (kind == "octaflake") return octahedron_flake_board(num(v[0]));
+    if (kind == "polyflake") return regular_polygon_flake_board(num(v[0]), num(v[1]));
+    if (kind == "cpolyflake") return central_regular_polygon_flake_board(num(v[0]), num(v[1]));
+    if (kind == "cpentflake") return central_pentagon_flake_board(num(v[0]));
+    if (kind == "menger") return menger_sponge_flake_board(num(v[0]), num(v[1]), list(v[2]));
+    if (kind == "trihex") return triangular_hex_board(num(v[0]));
+    if (kind == "hex")   return hex_board(num(v[0]));
+    if (kind == "hexdel") return trihex_board(num(v[0]));
+    if (kind == "snubsq") return snub_square_board(num(v[0]), num(v[1]), num(v[2]));
+    if (kind == "snubsqtri") return snub_square_tri_board(num(v[0]), num(v[1]), num(v[2]));
+    if (kind == "twsq")  return twisted_square_board(num(v[0]), num(v[1]), num(v[2]));
+    if (kind == "gtsq")  return glue_twisted_square_board(num(v[0]), num(v[1]), num(v[2]));
     throw std::runtime_error("Unknown board type: " + kind);
 }

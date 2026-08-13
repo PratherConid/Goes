@@ -1053,7 +1053,7 @@ int main(int argc, char* argv[]) {
 
     auto bc = apply_modifiers(build_board_config(game_cfg.board_type, game_cfg.board_args), game_cfg.board_modifiers);
     std::cout << "Board: " << game_cfg.board_type;
-    for (int a : game_cfg.board_args) std::cout << " " << a;
+    for (const auto& a : game_cfg.board_args) std::cout << " " << format_board_arg_entry(a);
     std::cout << "  N=" << bc.N << std::endl;
 
     const std::string arch = effective_arch(args, game_cfg.board_type, bc.emb_dim);

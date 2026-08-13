@@ -104,6 +104,47 @@ BoardConfig scale_board(const BoardConfig& bc, double factor);
 // side, there's no projMat to construct here - see BoardConfig's own fields above, C++ never renders.
 BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2);
 
+// One positional board-construction arg, tagged with its own kind - mirrors shared/boardConfig.ts's
+// BoardArgType/BoardArgEntry (see that TS type's own doc comment for the full rationale: exactly
+// one BoardArgEntry per positional arg, never a flattened/anonymous number list, since a variable-
+// length list arg's own length can depend on ANOTHER arg's value - menger_sponge_flake_board()'s
+// own indicator, whose length is dim+1 - making it impossible to unambiguously re-derive the
+// grouping from a flat array alone). `value` is meaningful iff `kind == Number`; `values` iff
+// `kind == CommaSeparatedNumbers` or `ZeroOneList` (both are plain int lists once parsed - the
+// distinction only matters for the ORIGINAL command-line token's own syntax, comma-joined vs a bare
+// 0/1 string, which C++ never re-parses from text - see board_arg_number()/board_arg_list()).
+enum class BoardArgKind { Number, CommaSeparatedNumbers, ZeroOneList };
+struct BoardArgEntry {
+    BoardArgKind kind = BoardArgKind::Number;
+    int value = 0;
+    std::vector<int> values;
+
+    bool operator==(const BoardArgEntry& other) const {
+        return kind == other.kind && value == other.value && values == other.values;
+    }
+};
+
+// Mirrors shared/boardConfig.ts's numArg()/csvArg()/zolArg() - shorthand for building a BoardArgEntry
+// by hand (as opposed to parsing one from JSON - see training/self_play.cpp's own to_json/from_json).
+inline BoardArgEntry num_arg(int value) { return BoardArgEntry{ BoardArgKind::Number, value, {} }; }
+inline BoardArgEntry csv_arg(std::vector<int> values) {
+    return BoardArgEntry{ BoardArgKind::CommaSeparatedNumbers, 0, std::move(values) };
+}
+inline BoardArgEntry zol_arg(std::vector<int> values) {
+    return BoardArgEntry{ BoardArgKind::ZeroOneList, 0, std::move(values) };
+}
+
+// Mirrors shared/boardConfig.ts's boardArgNumber()/boardArgList() - read a BoardArgEntry back to the
+// single number/number list it must hold, asserting (not throwing - see their own .cpp definitions)
+// if it's actually the other kind. Shared by build_board_config's own dispatch below.
+int board_arg_number(const BoardArgEntry& e);
+const std::vector<int>& board_arg_list(const BoardArgEntry& e);
+
+// Mirrors shared/boardConfig.ts's formatBoardArgEntry() - the command-line token e was parsed from
+// (Number -> the plain value; CommaSeparatedNumbers -> comma-joined; ZeroOneList -> concatenated
+// digits, no separator). Used for diagnostic printouts (train.cpp).
+std::string format_board_arg_entry(const BoardArgEntry& e);
+
 // A BoardConfig-transforming operation - see apply_modifier/apply_modifiers. Mirrors
 // shared/boardConfig.ts's BoardModifier, minus a C++ port of parseModifier(name, args): that parses
 // interactive command text, which has no analog here - train.cpp/server.cpp get their whole
@@ -123,7 +164,7 @@ struct BoardModifier {
     // double argument" modifiers.
     double dist = 0.0;             // meaningful when kind == ModifierKind::MergeClose / Scale
     std::string board_type;        // only meaningful when kind == ModifierKind::Prod / BeginProd
-    std::vector<int> board_args;   // only meaningful when kind == ModifierKind::Prod / BeginProd
+    std::vector<BoardArgEntry> board_args; // only meaningful when kind == ModifierKind::Prod / BeginProd
 
     // Needed for std::vector<BoardModifier>::operator== (used by weak_equal, training/self_play.cpp)
     // - C++17 has no defaulted struct equality (that's a C++20 feature), so this is spelled out.
@@ -368,12 +409,12 @@ BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("line" | "rect" | "rectd" |
 // "cublat" | "hcub" | "tri" | "sier" | "regpoly" | "tetra" | "octa" | "ortho" | "dodeca" | "icosa" |
-// "dodflake" | "icoflake" | "octaflake" | "polyflake" | "cpolyflake" | "cpentflake" |
+// "dodflake" | "icoflake" | "octaflake" | "polyflake" | "cpolyflake" | "cpentflake" | "menger" |
 // "trihex" | "hex" | "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" | "star" - matches
-// shared/types.ts's GameConfig.boardType strings), passing `args` as that
-// builder's positional parameters. Throws std::runtime_error for an unknown
-// kind. Shared by
+// shared/types.ts's GameConfig.boardType strings), reading each of `args` back via
+// board_arg_number()/board_arg_list() as that builder's own positional parameters expect. Throws
+// std::runtime_error for an unknown kind. Shared by
 // train.cpp (via GameConfig::board_type/board_args, loaded from
 // --game-config) and server.cpp (via the /move request's boardType/boardArgs)
 // so there's one board-kind switch instead of two near-identical copies.
-BoardConfig build_board_config(const std::string& kind, const std::vector<int>& args);
+BoardConfig build_board_config(const std::string& kind, const std::vector<BoardArgEntry>& args);

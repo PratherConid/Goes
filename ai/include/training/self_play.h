@@ -16,7 +16,7 @@
 struct GameConfig {
     // Mirrors shared/types.ts's GameConfig.boardType/boardArgs/boardModifiers.
     std::string board_type;
-    std::vector<int> board_args;
+    std::vector<BoardArgEntry> board_args;
     std::vector<BoardModifier> board_modifiers;
     int num_stones;
     int num_players;

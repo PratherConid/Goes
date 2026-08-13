@@ -1,6 +1,6 @@
 {
   "boardType": "rect",
-  "boardArgs": [19, 19],
+  "boardArgs": [{"kind": "Number", "value": 19}, {"kind": "Number", "value": 19}],
   "boardModifiers": [],
   "numStones": 4,
   "numPlayers": 2,

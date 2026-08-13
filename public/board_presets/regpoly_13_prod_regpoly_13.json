@@ -1,7 +1,11 @@
 {
   "boardType": "regpoly",
-  "boardArgs": [13],
+  "boardArgs": [
+    {"kind": "Number", "value": 13}
+  ],
   "boardModifiers": [
-    {"kind": "Prod", "boardType": "regpoly", "boardArgs": [13]}
+    {"kind": "Prod", "boardType": "regpoly", "boardArgs": [
+      {"kind": "Number", "value": 13}
+    ]}
   ]
 }

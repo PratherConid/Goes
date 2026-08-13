@@ -12,6 +12,31 @@ static std::mt19937 rng(std::random_device{}());
 
 using json = nlohmann::json;
 
+// ADL customization points (global namespace, matching BoardArgEntry's own - see game/board_config.h)
+// so nlohmann::json's generic container support picks these up wherever a std::vector<BoardArgEntry>
+// (GameConfig::board_args, BoardModifier::board_args) is assigned to/read from a json value below -
+// matches shared/boardConfig.ts's own wire format exactly (kind: "Number"|"CommaSeparatedNumbers"|
+// "ZeroOneList", each carrying "value" or "values" - see BoardArgEntry's own doc comment).
+static void to_json(json& j, const BoardArgEntry& e) {
+    switch (e.kind) {
+        case BoardArgKind::Number: j = { {"kind", "Number"}, {"value", e.value} }; break;
+        case BoardArgKind::CommaSeparatedNumbers: j = { {"kind", "CommaSeparatedNumbers"}, {"values", e.values} }; break;
+        case BoardArgKind::ZeroOneList: j = { {"kind", "ZeroOneList"}, {"values", e.values} }; break;
+    }
+}
+static void from_json(const json& j, BoardArgEntry& e) {
+    std::string kind = j.at("kind").get<std::string>();
+    if (kind == "Number") {
+        e.kind = BoardArgKind::Number;
+        e.value = j.at("value").get<int>();
+        e.values.clear();
+    } else if (kind == "CommaSeparatedNumbers" || kind == "ZeroOneList") {
+        e.kind = kind == "CommaSeparatedNumbers" ? BoardArgKind::CommaSeparatedNumbers : BoardArgKind::ZeroOneList;
+        e.values = j.at("values").get<std::vector<int>>();
+        e.value = 0;
+    } else throw std::runtime_error("Unknown BoardArgEntry kind: " + kind);
+}
+
 bool weak_equal(const GameConfig& a, const GameConfig& b) {
     if (a.board_type != b.board_type) return false;
     if (a.board_args != b.board_args) return false;
@@ -181,14 +206,14 @@ static std::vector<BoardModifier> parse_board_modifiers(const json& j) {
             BoardModifier bm;
             bm.kind = ModifierKind::Prod;
             bm.board_type = m["boardType"].get<std::string>();
-            bm.board_args = m["boardArgs"].get<std::vector<int>>();
+            bm.board_args = m["boardArgs"].get<std::vector<BoardArgEntry>>();
             out.push_back(std::move(bm));
         }
         else if (kind == "BeginProd") {
             BoardModifier bm;
             bm.kind = ModifierKind::BeginProd;
             bm.board_type = m["boardType"].get<std::string>();
-            bm.board_args = m["boardArgs"].get<std::vector<int>>();
+            bm.board_args = m["boardArgs"].get<std::vector<BoardArgEntry>>();
             out.push_back(std::move(bm));
         }
         else if (kind == "EndProd") out.push_back({ModifierKind::EndProd});
@@ -204,7 +229,7 @@ static std::vector<BoardModifier> parse_board_modifiers(const json& j) {
 GameConfig parse_game_cfg(const json& cfg) {
     GameConfig game_cfg;
     game_cfg.board_type = cfg["boardType"].get<std::string>();
-    game_cfg.board_args = cfg["boardArgs"].get<std::vector<int>>();
+    game_cfg.board_args = cfg["boardArgs"].get<std::vector<BoardArgEntry>>();
     game_cfg.board_modifiers = parse_board_modifiers(cfg.value("boardModifiers", json::array()));
     game_cfg.num_stones  = cfg["numStones"].get<int>();
     game_cfg.num_players = cfg["numPlayers"].get<int>();

@@ -1,5 +1,8 @@
 {
   "boardType": "rect",
-  "boardArgs": [3, 3],
+  "boardArgs": [
+    {"kind": "Number", "value": 3},
+    {"kind": "Number", "value": 3}
+  ],
   "boardModifiers": []
 }
