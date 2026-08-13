@@ -9,7 +9,7 @@ import { findTriangles, findSquares, zeroAdj, mergeBoards } from './topology.js'
 import {
     buildFractal,
     dodecahedronFractalDescr, icosahedronFractalDescr, octahedronFractalDescr,
-    regularPolygonFractalDescr, centralPentagonFractalDescr, mengerSpongeFractalDescr,
+    regularPolygonFractalDescr, centralPentagonFractalDescr, mengerFractalDescr,
 } from './fractal.js';
 
 /**
@@ -1065,13 +1065,16 @@ export function centralPentagonFlake(order: number): BoardConfig {
  * The Menger sponge "flake" fractal - n=1 is the plain unit cube itself (mengerSpongeFractalDescr()'s
  * own `leafPos`/`leafConn`); n>1 recurses into 20 order-(n-1) copies, one per surviving sub-cube of the
  * classic 3x3x3-minus-7 subdivision (see nodeEdgeMergeFlakeRec()'s own doc comment for the recursive
- * construction, and mengerSpongeFractalDescr()'s own doc comment for how its `subDescr`/`glueMap` are
+ * construction, and mengerFractalDescr()'s own doc comment for how its `subDescr`/`glueMap` are
  * derived). Unlike every other flake here (glued node-to-node or edge-to-edge), adjacent copies share a
- * whole growing FACE - mengerSpongeFractalDescr()'s own "square" glue object.
+ * whole growing FACE - mengerFractalDescr()'s own "hyperface" glue object. `mengerFractalDescr(3, [0, 0,
+ * 1, 1])` is the classical Menger sponge itself (see that function's own doc comment for what
+ * `indicator` means and why `[0, 0, 1, 1]` reproduces exactly it - the center and 6 face-centers
+ * removed, 12 edge-mid and 8 corner sub-cubes kept, 20 of 27 total).
  */
 export function mengerSpongeFlake(n: number): BoardConfig {
     assert(Number.isInteger(n) && n >= 1, `n must be a positive integer, got ${n}`);
-    const built = buildFractal(n, mengerSpongeFractalDescr());
+    const built = buildFractal(n, mengerFractalDescr(3, [0, 0, 1, 1]));
     return make(new Embedding(3, built.pos, DEFAULT_3D_PROJMAT), built.adj);
 }
 

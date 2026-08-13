@@ -764,174 +764,256 @@ export function centralPentagonFractalDescr(): FractalDescr {
     return centralPentagonFractalDescrCache;
 }
 
-let mengerSpongeFractalDescrCache: FractalDescr | null = null;
+// Cached per (dim, indicator) - see mengerFractalDescr()'s own doc comment for what these mean and
+// how they combine into this cache's own two-level key.
+const mengerFractalDescrCache = new Map<number, Map<number, FractalDescr>>();
 
 /**
- * A cube leaf vertex `(x, y, z)`, `x,y,z` each `0` or `1`, packed as `encodeMengerVertex(x,y,z) =
- * x*4 + y*2 + z` (matching dodecahedronFractalDescr()'s own `xIdx` convention) - `decodeMengerVertex`
- * is its inverse, via bit-shifts. mengerSpongeFractalDescr()'s own `leafPos` is indexed this way, and
- * `mengerSpongeSquareGlueObject()` below decodes/encodes leaf-vertex numbers with these SAME two
- * functions at every recursion level, since the same base cube is reused recursively (see
- * `GlueObjectType`'s own doc comment).
+ * All `base^k` length-`k` tuples with entries in `0..base-1`, in mixed-radix counting order (entry 0
+ * most significant - the same order a `k`-deep nested `for` loop, outermost variable first, would
+ * produce). Shared by mengerFractalDescr() (leaf-vertex corners, `base=2`; sub-cube grid positions,
+ * `base=3`) and mengerFaceGlueObject() (a face's own free-axis grid positions, `base=3`) - the
+ * enumeration order only needs to be SOME fixed, deterministic order (see mengerFaceGlueObject()'s own
+ * doc comment for why), so this one, shared implementation covers every use.
  */
-function encodeMengerVertex(x: number, y: number, z: number): number {
-    return x * 4 + y * 2 + z;
-}
-function decodeMengerVertex(v: number): [number, number, number] {
-    return [(v >> 2) & 1, (v >> 1) & 1, v & 1];
+function radixTuples(k: number, base: number): number[][] {
+    let tuples: number[][] = [[]];
+    for (let d = 0; d < k; d++) {
+        const next: number[][] = [];
+        for (const t of tuples) for (let v = 0; v < base; v++) next.push([...t, v]);
+        tuples = next;
+    }
+    return tuples;
 }
 
 /**
- * The 4 leaf-vertex tags of a cube's own face at `axis = fixedVal` (`axis` one of 0,1,2 for x,y,z;
- * `fixedVal` 0 or 1): tag `i` has, on the face's own 2 free axes (the 2 axes other than `axis`, in
- * ascending order), coordinates `(i & 1, (i >> 1) & 1)`. This "tag `i` has free-coords `(i&1,
- * (i>>1)&1)`" convention is exactly what `mengerSpongeSquareGlueObject()`'s own `step()` assumes of
- * its own input tags (see that function's own doc comment) - every `glueMap` entry built by
- * `mengerSpongeFractalDescr()` uses this SAME function for both `selfVertices` and `otherVertices`, so
- * the convention is self-consistent throughout.
+ * A `dim`-dimensional hypercube leaf vertex `(x_0, ..., x_{dim-1})`, `x_i in {0, 1}`, packed as
+ * `encodeMengerVertex(coords) = sum_i coords[i] * 2^(dim-1-i)` (matching dodecahedronFractalDescr()'s
+ * own `xIdx` convention, generalized to `dim` axes - `dim=3`'s own `x*4+y*2+z` is this formula's own
+ * `dim=3` case) - `decodeMengerVertex` is its inverse, via bit-shifts. mengerFractalDescr()'s own
+ * `leafPos` is indexed this way, and `mengerFaceGlueObject()` below decodes/encodes leaf-vertex numbers
+ * with these SAME two functions at every recursion level, since the same base hypercube is reused
+ * recursively (see `GlueObjectType`'s own doc comment).
  */
-function mengerFaceTags(axis: number, fixedVal: number): number[] {
-    const freeAxes = [0, 1, 2].filter(a => a !== axis);
+function encodeMengerVertex(coords: number[]): number {
+    return coords.reduce((acc, c) => acc * 2 + c, 0);
+}
+function decodeMengerVertex(dim: number, v: number): number[] {
+    const coords: number[] = new Array(dim);
+    for (let i = 0; i < dim; i++) coords[i] = (v >> (dim - 1 - i)) & 1;
+    return coords;
+}
+
+/**
+ * The `2^(dim-|fixedAxes|)` leaf-vertex tags of a `dim`-dimensional hypercube's own sub-face pinned to
+ * `fixedVals[j]` on axis `fixedAxes[j]`, for every `j` (the general form of "a face" - `|fixedAxes|=1`
+ * is an ordinary `(dim-1)`-dimensional face; `|fixedAxes|=dim` is a single corner point, R=1). Tag `i`
+ * has, on the sub-face's own free axes (every axis not in `fixedAxes`, in ascending order), bit `j` of
+ * `i` as free axis `j`'s own coordinate. This "tag `i` has bit `j` of `i` on free axis `j`" convention
+ * is exactly what `mengerHyperfaceGlueObject()`'s own `step()` assumes of its own input tags (see that
+ * function's own doc comment) - every `glueMap` entry built by `mengerFractalDescr()` uses this SAME
+ * function for both `selfVertices` and `otherVertices`, so the convention is self-consistent
+ * throughout. `dim=|fixedAxes|` is the degenerate, no-free-axes case: this returns the single tag
+ * `[encodeMengerVertex(fixedVals in axis order)]` - a plain point, matching `POINT_GLUE_OBJECT`'s own
+ * R=1 (needed whenever two sub-cubes touch only at a shared corner - see mengerFractalDescr()'s own doc
+ * comment for when that happens).
+ */
+function mengerFaceTags(dim: number, fixedAxes: number[], fixedVals: number[]): number[] {
+    const freeAxes = [...Array(dim).keys()].filter(a => !fixedAxes.includes(a));
     const tags: number[] = [];
-    for (let i = 0; i < 4; i++) {
-        const c = [0, 0, 0];
-        c[axis] = fixedVal;
-        c[freeAxes[0]] = i & 1;
-        c[freeAxes[1]] = (i >> 1) & 1;
-        tags.push(encodeMengerVertex(c[0], c[1], c[2]));
+    for (let i = 0; i < (1 << freeAxes.length); i++) {
+        const c = new Array(dim).fill(0);
+        fixedAxes.forEach((ax, j) => { c[ax] = fixedVals[j]; });
+        freeAxes.forEach((ax, j) => { c[ax] = (i >> j) & 1; });
+        tags.push(encodeMengerVertex(c));
     }
     return tags;
 }
 
 /**
- * The "square" glue object (R=4) mengerSpongeFractalDescr() glues adjacent sub-cubes' shared faces
- * with - see `GlueObjectType`'s own doc comment for why this needs genuine, ad hoc, per-shape logic (a
- * face's own sub-pieces are NOT all reselections of the face's 4 named corners, unlike
- * `POINT_GLUE_OBJECT`/`EDGE_GLUE_OBJECT` above). Closes over `slotOf` (Menger sponge's own 20-entry
- * `(a,b,c)` sub-cube grid position -> `subDescr` slot lookup - see `mengerSpongeFractalDescr()`'s own
- * doc comment) since which OUTER `subDescr` slot each sub-piece chases into is inherently specific to
- * Menger sponge's own sub-cube layout - unlike `POINT_GLUE_OBJECT`/`EDGE_GLUE_OBJECT`, this is
- * deliberately NOT a shape-independent, reusable module-level constant.
- *
- * `step(tags)`: decodes all 4 input tags (`mengerFaceTags()`'s own convention) back into `(x,y,z)` and
- * finds the FIXED axis (the one all 4 agree on - the face's own normal) and its value; the other 2
- * axes are this face's own "free" axes. A cube subdivides into a 3x3x3 grid of sub-cubes; this face
- * lies at grid position 0 (if `fixedVal=0`) or 2 (if `fixedVal=1`) along the fixed axis, and spans all
- * 3x3=9 grid positions of the two free axes - MINUS the grid center (free-axis grid position `(1,1)`),
- * which is ALWAYS one of the 7 sub-cubes Menger sponge removes (a "face-center" cube: exactly 2 of its
- * 3 grid coordinates equal 1, its fixed-axis one from this face and both free-axis ones from the
- * center) - leaving exactly 8, matching the classic Menger sponge face subdivision this shape is built
- * from. For each of those 8 grid positions, `subSlot` is that sub-cube's own OUTER slot (via
- * `slotOf`), and `tags` is THAT sub-cube's OWN copy of the SAME face (same fixed axis/value,
- * `mengerFaceTags()`'s own convention again, but now naming the sub-cube's OWN local leaf-vertex
- * numbering - the SAME 0..7 range, reused recursively, per `GlueObjectType`'s own doc comment). This
- * uniform per-grid-position formula needs no explicit "inherited vs freshly-introduced" branch at all:
- * for the 4 CORNER grid positions, one of the 4 local tags it produces numerically coincides with one
- * of the input tags (both computed by the exact same formula on matching free-axis coordinates); for
- * the 4 edge-midpoint grid positions, none do - but that fresh-vs-inherited distinction falls out
- * automatically from the shared formula rather than needing to be computed explicitly. (Sub-pieces
- * that share a grid point with EACH OTHER - e.g. two adjacent edge-midpoint cells - are reconciled by
- * `mengerSpongeFractalDescr()`'s own separate `glueMap` entry for THAT pair of sub-cubes, not by this
- * function: this object's only job is "which nodes on THIS face correspond to which nodes on the
- * other side of THIS SPECIFIC glued pair," exactly as `GlueEntry`'s own doc comment specifies -
- * verified against an independent floating-point reference construction, orders 1-3; see git history.)
+ * Whether the `dim`-length sub-cube grid position `grid` (each entry `0`, `1`, or `2` - `1` meaning
+ * "centered" on that axis) survives mengerFractalDescr()'s own removal rule: writing `offCenter` for
+ * the count of `grid`'s own non-1 entries (how many axes this position is "off-center" on, `0..dim`),
+ * `grid` is kept iff `indicator[offCenter] === 1`. `indicator` has exactly `dim+1` entries, one per
+ * possible `offCenter` value `0..dim` - see mengerFractalDescr()'s own doc comment for how this single
+ * rule specializes to the Cantor set/Sierpinski carpet/Menger sponge at `dim=1,2,3`.
  */
-function mengerSpongeSquareGlueObject(slotOf: Map<string, number>): GlueObjectType {
+function isMengerGridKept(grid: number[], indicator: number[]): boolean {
+    const offCenter = grid.filter(v => v !== 1).length;
+    return indicator[offCenter] === 1;
+}
+
+/**
+ * The general "hyperface" glue object mengerFractalDescr() glues every touching pair of sub-cubes
+ * with, regardless of the dimension of the sub-face they share - see `GlueObjectType`'s own doc
+ * comment for why this needs genuine, ad hoc, per-shape logic (a face's own sub-pieces are NOT all
+ * reselections of the face's own corners, unlike `POINT_GLUE_OBJECT`/`EDGE_GLUE_OBJECT` above). Closes
+ * over `slotOf` (mengerFractalDescr()'s own `(a_0,...,a_{dim-1})` sub-cube grid position -> `subDescr`
+ * slot lookup) since which OUTER `subDescr` slot each sub-piece chases into is inherently specific to
+ * THIS shape's own sub-cube layout - unlike `POINT_GLUE_OBJECT`/`EDGE_GLUE_OBJECT`, this is
+ * deliberately NOT a shape-independent, reusable module-level constant (also closes over
+ * `dim`/`indicator`, needed to know which of a sub-face's own grid positions actually survive - see
+ * below).
+ *
+ * Two sub-cubes at grid positions `gA`, `gB` touch (share SOME sub-face, of any dimension down to a
+ * single corner point) exactly when every axis has `|gA[axis] - gB[axis]| <= 1` (grid values 0 and 2
+ * are NEVER adjacent - there is a real gap between them, spanned by grid value 1, whether or not that
+ * middle sub-cube itself survives) and at least one axis actually differs. The set of DIFFERING axes -
+ * `fixedAxes` below, from `step()`'s own perspective, since those are exactly the axes the shared
+ * sub-face is pinned on - can be ANY non-empty subset of `0..dim-1`, from a single axis (an ordinary
+ * `(dim-1)`-face, mengerSpongeFlake()'s own square faces at `dim=3`) up to all `dim` axes at once (a
+ * single shared corner point - e.g. `dim=3`, `indicator=[1,0,0]`: the center sub-cube survives
+ * alongside the 8 corner sub-cubes, but faces and edges do not, so the center only ever touches a
+ * corner at one shared point, needing exactly this R=1 case - see mengerFractalDescr()'s own doc
+ * comment).
+ *
+ * `step(tags)`: decodes all input tags (`mengerFaceTags()`'s own convention) back into their own
+ * coordinates and finds the FULL SET of axes every one of them agrees on (`fixedAxes` - inferring this
+ * from the tags themselves, rather than being told it, is what lets one `step()` implementation handle
+ * every possible sub-face dimension uniformly); the remaining axes are this sub-face's own "free" axes.
+ * A hypercube subdivides into a `3^dim` grid of sub-cubes; this sub-face lies at grid position 0 (if
+ * `fixedVals[j]=0`) or 2 (if `fixedVals[j]=1`) on each of `fixedAxes`, and spans all
+ * `3^(dim-|fixedAxes|)` grid positions of the free axes (`radixTuples(freeAxes.length, 3)`) - each
+ * combined with the fixed axes' own positions into a full `dim`-length grid position and checked
+ * against `isMengerGridKept()`, exactly the SAME rule `mengerFractalDescr()`'s own `positions` uses
+ * (this sub-face's own subdivision is nothing but a slice of the shape's single removal rule, some axes
+ * pinned - so which of a sub-face's own sub-pieces survive falls out automatically, rather than needing
+ * a separately hard-coded constant per dimension). For each surviving grid position, `subSlot` is that
+ * sub-cube's own OUTER slot (via `slotOf`), and `tags` is THAT sub-cube's OWN copy of the SAME sub-face
+ * (same fixed axes/values, `mengerFaceTags()`'s own convention again, but now naming the sub-cube's OWN
+ * local leaf-vertex numbering - the SAME `0..2^dim-1` range, reused recursively, per `GlueObjectType`'s
+ * own doc comment). This uniform per-grid-position formula needs no explicit "inherited vs
+ * freshly-introduced" branch at all: for the sub-face's own corner grid positions, one of the local
+ * tags it produces numerically coincides with one of the input tags (both computed by the exact same
+ * formula on matching free-axis coordinates); for the others, none do - but that fresh-vs-inherited
+ * distinction falls out automatically from the shared formula rather than needing to be computed
+ * explicitly. (Sub-pieces that share a grid point with EACH OTHER are reconciled by
+ * mengerFractalDescr()'s own separate `glueMap` entry for THAT pair of sub-cubes, not by this function:
+ * this object's only job is "which nodes on THIS sub-face correspond to which nodes on the other side
+ * of THIS SPECIFIC glued pair," exactly as `GlueEntry`'s own doc comment specifies - verified against an
+ * independent floating-point reference construction at `dim=1,2,3` (including non-classical `indicator`
+ * choices that force the R=1 corner-touching case, not just Cantor/carpet/sponge), orders 1-3; see git
+ * history.)
+ */
+function mengerHyperfaceGlueObject(dim: number, indicator: number[], slotOf: Map<string, number>): GlueObjectType {
     return {
         step(tags) {
-            const coords = tags.map(decodeMengerVertex);
-            let fixedAxis = -1, fixedVal = -1;
-            for (let axis = 0; axis < 3; axis++) {
-                if (coords.every(c => c[axis] === coords[0][axis])) { fixedAxis = axis; fixedVal = coords[0][axis]; break; }
-            }
-            assert(fixedAxis !== -1, `mengerSpongeSquareGlueObject: tags do not lie on a common face: ${tags}`);
-            const freeAxes = [0, 1, 2].filter(a => a !== fixedAxis);
-            const fixedGrid = fixedVal === 0 ? 0 : 2;
+            const coords = tags.map(v => decodeMengerVertex(dim, v));
+            const fixedAxes: number[] = [];
+            for (let axis = 0; axis < dim; axis++)
+                if (coords.every(c => c[axis] === coords[0][axis])) fixedAxes.push(axis);
+            assert(fixedAxes.length > 0, `mengerHyperfaceGlueObject: tags do not lie on a common sub-face: ${tags}`);
+            const freeAxes = [...Array(dim).keys()].filter(a => !fixedAxes.includes(a));
+            const fixedVals = fixedAxes.map(ax => coords[0][ax]);
+            const fixedGrids = fixedVals.map(v => v === 0 ? 0 : 2);
 
             const steps: { subSlot: number; tags: number[] }[] = [];
-            for (let g1 = 0; g1 < 3; g1++)
-                for (let g2 = 0; g2 < 3; g2++) {
-                    if (g1 === 1 && g2 === 1) continue; // this face's own removed center
-                    const grid = [0, 0, 0];
-                    grid[fixedAxis] = fixedGrid;
-                    grid[freeAxes[0]] = g1;
-                    grid[freeAxes[1]] = g2;
-                    const subSlot = slotOf.get(grid.join(','));
-                    assert(subSlot !== undefined, `mengerSpongeSquareGlueObject: no sub-cube at grid ${grid}`);
-                    steps.push({ subSlot, tags: mengerFaceTags(fixedAxis, fixedVal) });
-                }
+            for (const free of radixTuples(freeAxes.length, 3)) {
+                const grid = new Array(dim).fill(1);
+                fixedAxes.forEach((ax, j) => { grid[ax] = fixedGrids[j]; });
+                freeAxes.forEach((ax, j) => { grid[ax] = free[j]; });
+                if (!isMengerGridKept(grid, indicator)) continue;
+                const subSlot = slotOf.get(grid.join(','));
+                assert(subSlot !== undefined, `mengerHyperfaceGlueObject: no sub-cube at grid ${grid}`);
+                steps.push({ subSlot, tags: mengerFaceTags(dim, fixedAxes, fixedVals) });
+            }
             return steps;
         },
     };
 }
 
 /**
- * The static description mengerSpongeFlake() builds on: the unit cube's 8 corners (`leafPos`,
- * `(x,y,z) in {0,1}^3`, indexed via `encodeMengerVertex()`) and 12 edges (`leafConn` - every pair
- * differing in exactly 1 coordinate). Each order n>1 divides into the classic Menger sponge's 3x3x3
- * grid of 27 sub-cubes minus the 7 that are removed - the very center `(1,1,1)` and the 6 face-centers
- * (exactly 2 of 3 grid coordinates equal 1) - leaving 20, matching `subDescr`'s own 20 entries
- * (`positions[i]` is grid position `(a,b,c)`, `slotOf` its inverse - both built once here and closed
- * over by `mengerSpongeSquareGlueObject()` above). Sub-cube `(a,b,c)`'s own `SubDescr` is
- * `{ scale: 1/3, shift: [g(a), g(b), g(c)] }` where `g(k) = (k-1)/3` is that grid coordinate's own
- * center position within the parent's own `[-0.5, 0.5]` unit-cube range (`leafPos` itself uses
- * `(x,y,z) in {0,1}^3` shifted to `x - 0.5` etc., so corners land at +-0.5) - unlike every other shape
- * in this file, `scale`/`shift` here are NOT derived from a single shared `r,c` pair (Menger sponge
- * has no analog of dodeca/icosa/octahedron's uniform "every copy transforms by the same r,c" relation
- * - each grid position gets its own independent shift, only their common `1/3` scale is shared).
+ * The static description mengerSpongeFlake() (and its lower-dimensional analogs) build on: the `dim`-
+ * dimensional unit hypercube's own `2^dim` corners (`leafPos`, `(x_0,...,x_{dim-1}) in {0,1}^dim`,
+ * indexed via `encodeMengerVertex()`) and its edges (`leafConn` - every corner pair differing in
+ * exactly 1 coordinate). Each order n>1 divides into a `3^dim` grid of sub-cubes, keeping only those
+ * `isMengerGridKept()` accepts for the given `indicator` (a length-`dim+1` 0/1 list: entry `k` says
+ * whether the "exactly `k` axes off-center" class survives, for `k = 0..dim` - including `k = dim`
+ * itself, every axis off-center, the hypercube's own `2^dim` corners; a `0` there leaves no
+ * sub-hypercube at any of the shape's own extreme positions, an unusual but valid degenerate choice).
+ * This single rule specializes to the three classical examples: `dim=1`, `indicator=[0,1]` is the
+ * Cantor set (2 of 3 sub-segments kept, the removed-middle-third construction); `dim=2`,
+ * `indicator=[0,1,1]` is the Sierpinski carpet (8 of 9 sub-squares kept, only the center removed);
+ * `dim=3`, `indicator=[0,0,1,1]` is the classical Menger sponge (20 of 27 sub-cubes kept, the center
+ * and 6 face-centers removed) - verified (node/edge counts at orders 1-3, all three, plus further
+ * non-classical `indicator` choices at `dim=2,3`) against an independent floating-point
+ * mergeClose()-based reference construction; see git history.
  *
- * `glueMap` has one entry per pair of the 20 valid sub-cubes that are face-adjacent (differ by 1 in
- * exactly one grid coordinate, both valid) - `object: mengerSpongeSquareGlueObject(slotOf)`,
- * `selfVertices`/`otherVertices` the two cubes' own matching faces (`mengerFaceTags(axis, 1)`/
- * `mengerFaceTags(axis, 0)` respectively - the lower-coordinate cube's own "+axis" face glued to the
- * higher-coordinate cube's own "-axis" face; no reflection or rotation ever happens between adjacent
- * Menger-sponge sub-cubes, so the two faces' matching tag `i` line up directly with no reordering
- * needed, unlike centralPentagonFractalDescr()'s own reflected central copy). Verified (node/edge
- * counts at orders 1-3) against an independent floating-point mergeClose()-based reference
- * construction; see git history.
+ * `positions[i]` is the `i`-th surviving grid position (`dim`-length, entries in `0,1,2`), `slotOf` its
+ * inverse - both built once here and closed over by `mengerHyperfaceGlueObject()` above. Sub-cube
+ * `positions[i]`'s own `SubDescr` is `{ scale: 1/3, shift: positions[i].map(k => (k-1)/3) }` (`(k-1)/3`
+ * is that grid coordinate's own center position within the parent's own `[-0.5, 0.5]` unit-cube range -
+ * `leafPos` itself uses `{0,1}^dim` shifted to `x - 0.5` etc., so corners land at +-0.5) - unlike every
+ * other shape in this file, `scale`/`shift` here are NOT derived from a single shared `r,c` pair (this
+ * construction has no analog of dodeca/icosa/octahedron's uniform "every copy transforms by the same
+ * r,c" relation - each grid position gets its own independent shift, only their common `1/3` scale is
+ * shared).
+ *
+ * `glueMap` has one entry per pair of surviving grid positions that TOUCH (every axis differs by at
+ * most 1, at least one axis differs - see `mengerHyperfaceGlueObject()`'s own doc comment for why this
+ * can be more than one axis at once, e.g. two sub-cubes sharing only a corner) - `object:
+ * mengerHyperfaceGlueObject(dim, indicator, slotOf)`, `selfVertices`/`otherVertices` the two cubes' own
+ * matching sub-faces (`mengerFaceTags(dim, diffAxes, ...)`, one call per side: on each differing axis,
+ * whichever of the two grid positions has the SMALLER coordinate contributes fixedVal 1 there (its own
+ * "+axis" side, touching the other), the larger contributes fixedVal 0 - no reflection or rotation ever
+ * happens between adjacent sub-cubes here, so the two sub-faces' matching tag `i` line up directly with
+ * no reordering needed, unlike centralPentagonFractalDescr()'s own reflected central copy).
+ *
+ * Cached per `(dim, indicator)`: `indicator`'s own `dim+1` bits, MSB-first, reduced to a single integer
+ * key (`indicator.reduce((acc, b) => acc * 2 + b, 0)`), nested under a first-level cache keyed by `dim`
+ * itself (`indicator`'s own valid range depends on `dim`, so nesting under `dim` sidesteps needing any
+ * arbitrary scheme to pack both into one flat key).
  */
-export function mengerSpongeFractalDescr(): FractalDescr {
-    if (mengerSpongeFractalDescrCache) return mengerSpongeFractalDescrCache;
+export function mengerFractalDescr(dim: number, indicator: number[]): FractalDescr {
+    assert(Number.isInteger(dim) && dim >= 1, `dim must be a positive integer, got ${dim}`);
+    assert(indicator.length === dim + 1 && indicator.every(b => b === 0 || b === 1),
+        `indicator must be a length-${dim + 1} list of 0/1 entries, got [${indicator}]`);
 
-    const leafPos: number[][] = new Array(8);
-    for (let x = 0; x < 2; x++)
-        for (let y = 0; y < 2; y++)
-            for (let z = 0; z < 2; z++)
-                leafPos[encodeMengerVertex(x, y, z)] = [x - 0.5, y - 0.5, z - 0.5];
+    const indicatorBits = indicator.reduce<number>((acc, b) => acc * 2 + b, 0);
+    let byIndicator = mengerFractalDescrCache.get(dim);
+    if (!byIndicator) { byIndicator = new Map<number, FractalDescr>(); mengerFractalDescrCache.set(dim, byIndicator); }
+    const cached = byIndicator.get(indicatorBits);
+    if (cached) return cached;
+
+    const numCorners = 1 << dim;
+    const leafPos: number[][] = new Array(numCorners);
+    for (let v = 0; v < numCorners; v++) leafPos[v] = decodeMengerVertex(dim, v).map(x => x - 0.5);
     const leafConn: [number, number][] = [];
-    for (let v1 = 0; v1 < 8; v1++)
-        for (let v2 = v1 + 1; v2 < 8; v2++) {
-            const c1 = decodeMengerVertex(v1), c2 = decodeMengerVertex(v2);
+    for (let v1 = 0; v1 < numCorners; v1++)
+        for (let v2 = v1 + 1; v2 < numCorners; v2++) {
+            const c1 = decodeMengerVertex(dim, v1), c2 = decodeMengerVertex(dim, v2);
             const diff = c1.filter((c, i) => c !== c2[i]).length;
             if (diff === 1) leafConn.push([v1, v2]);
         }
 
-    const positions: [number, number, number][] = [];
-    for (let a = 0; a < 3; a++)
-        for (let b = 0; b < 3; b++)
-            for (let c = 0; c < 3; c++)
-                if ([a, b, c].filter(v => v === 1).length < 2) positions.push([a, b, c]);
-    const slotOf = new Map(positions.map(([a, b, c], i): [string, number] => [`${a},${b},${c}`, i]));
-    const gridCenter = (k: number) => (k - 1) / 3;
-    const subDescr: SubDescr[] = positions.map(([a, b, c]) => ({
-        scale: 1 / 3,
-        shift: [gridCenter(a), gridCenter(b), gridCenter(c)],
-    }));
+    const positions = radixTuples(dim, 3).filter(grid => isMengerGridKept(grid, indicator));
+    const slotOf = new Map(positions.map((grid, i): [string, number] => [grid.join(','), i]));
+    const subDescr: SubDescr[] = positions.map(grid => ({ scale: 1 / 3, shift: grid.map(k => (k - 1) / 3) }));
 
-    const object = mengerSpongeSquareGlueObject(slotOf);
+    const object = mengerHyperfaceGlueObject(dim, indicator, slotOf);
     const glueMap = new Map<string, GlueEntry>();
     for (let i = 0; i < positions.length; i++)
-        for (let axis = 0; axis < 3; axis++) {
-            const [a, b, c] = positions[i];
-            const neighbor: [number, number, number] = [a, b, c];
-            neighbor[axis] += 1;
-            if (neighbor[axis] > 2) continue;
-            const j = slotOf.get(neighbor.join(','));
-            if (j === undefined) continue; // neighbor removed
-            glueMap.set(`${i},${j}`,
-                { object, selfVertices: mengerFaceTags(axis, 1), otherVertices: mengerFaceTags(axis, 0) });
+        for (let j = i + 1; j < positions.length; j++) {
+            const gi = positions[i], gj = positions[j];
+            const diffAxes: number[] = [];
+            let touching = true;
+            for (let axis = 0; axis < dim; axis++) {
+                const d = gj[axis] - gi[axis];
+                if (d === 0) continue;
+                if (Math.abs(d) !== 1) { touching = false; break; }
+                diffAxes.push(axis);
+            }
+            if (!touching || diffAxes.length === 0) continue;
+            const selfVals = diffAxes.map(ax => gi[ax] < gj[ax] ? 1 : 0);
+            const otherVals = selfVals.map(v => 1 - v);
+            glueMap.set(`${i},${j}`, {
+                object,
+                selfVertices: mengerFaceTags(dim, diffAxes, selfVals),
+                otherVertices: mengerFaceTags(dim, diffAxes, otherVals),
+            });
         }
 
-    mengerSpongeFractalDescrCache = { leafPos, leafConn, subDescr, glueMap, globalScale: 3 };
-    return mengerSpongeFractalDescrCache;
+    const descr: FractalDescr = { leafPos, leafConn, subDescr, glueMap, globalScale: 3 };
+    byIndicator.set(indicatorBits, descr);
+    return descr;
 }
