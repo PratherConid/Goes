@@ -1,6 +1,8 @@
 #pragma once
 #include <vector>
 #include <set>
+#include <map>
+#include <string>
 #include <array>
 #include <utility>
 
@@ -13,10 +15,17 @@ std::vector<std::vector<int>> zero_adj(int N);
 
 // A plain (pos, adj) pair - the recursive intermediate form merge_boards() and its callers
 // (board_config.cpp's sierpinski_rec(), fractal.cpp's node_edge_merge_flake_rec()) build on before
-// an outermost caller wraps the result into a full BoardConfig.
+// an outermost caller wraps the result into a full BoardConfig. `labels` mirrors
+// shared/topology.ts's mergeBoards() own optional per-board `labels` (address string -> that
+// board's own local node index - see shared/fractal.ts's own doc comment on addresses/
+// `SubFlakeResult` for what an address is): carried through the SAME remapping as `pos`/`adj` and
+// combined into one map keyed the same way. Left empty (as sierpinski_rec()'s own boards do) simply
+// contributes nothing to the combined map - there is no separate "has labels" flag needed, since an
+// empty map already behaves that way.
 struct RawBoard {
     std::vector<std::vector<unsigned>> pos;
     std::vector<std::vector<int>> adj;
+    std::map<std::string, int> labels;
 };
 
 // Combines a list of boards into one, additionally identifying every `((b1, i1), (b2, i2))` pair in
@@ -24,8 +33,9 @@ struct RawBoard {
 // resolved in one batch via an internal union-find, not board-by-board, so a merge between two
 // boards that haven't been introduced to each other by any other merge is handled exactly like any
 // other. The merged node keeps whichever input position is encountered first. Returns the combined
-// board plus, for each input board (same order as `boards`), a map from that board's own local
-// indices to its final index in the combined board. Mirrors shared/topology.ts's mergeBoards().
+// board (its own `labels` combined the same way, see `RawBoard`'s own doc comment) plus, for each
+// input board (same order as `boards`), a map from that board's own local indices to its final index
+// in the combined board. Mirrors shared/topology.ts's mergeBoards().
 std::pair<RawBoard, std::vector<std::vector<int>>> merge_boards(
     const std::vector<RawBoard>& boards,
     const std::vector<std::pair<std::pair<int,int>, std::pair<int,int>>>& merges);

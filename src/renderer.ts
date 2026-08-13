@@ -632,7 +632,7 @@ export class Renderer {
         [PrescribedBoard.regularPolygonFlake]:      [6, 2],
         [PrescribedBoard.centralRegularPolygonFlake]: [6, 2],
         [PrescribedBoard.centralPentagonFlake]:     [2],
-        [PrescribedBoard.mengerSpongeFlake]:        [2],
+        [PrescribedBoard.mengerSpongeFlake]:        [2, 3, 0, 0, 1, 1],
     };
     nShowHistory = 10;
     currentSidePanel: SidePanelContent = SidePanelContent.Home;
@@ -2913,18 +2913,30 @@ export class Renderer {
             const argTypes = PrescribedBoardMap[boardTypeEnum][0];
             const tokens = parts.slice(1);
             if (tokens.length !== argTypes.length) {
-                this._setCmdOutput(
-                    `Usage: bd ${argTypes.map(t => t === BoardArgType.Number ? '<num>' : '<num,num,…>').join(' ')}`,
-                );
+                const placeholder = (t: BoardArgType) => t === BoardArgType.Number ? '<num>'
+                    : t === BoardArgType.CommaSeparatedNumbers ? '<num,num,…>' : '<0/1…>';
+                this._setCmdOutput(`Usage: bd ${argTypes.map(placeholder).join(' ')}`);
                 return;
             }
             // Each token is parsed per its own declared BoardArgType (see parseBoardArgToken) - an
             // ordinary Number-typed token yields one value, so this is unaffected for every board
-            // type except hypercuboidBoard's own single CommaSeparatedNumbers token, which can
-            // expand to any number of dimension values - no need to sniff the input's own shape.
-            const nums = argTypes.flatMap((type, i) => parseBoardArgToken(type, tokens[i]));
-            if (nums.some(n => !Number.isInteger(n) || n <= 0)) {
-                this._setCmdOutput('bd: all arguments must be positive integers'); return;
+            // type except hypercuboidBoard's own single CommaSeparatedNumbers token and
+            // mengerSpongeFlake's own single ZeroOneList token, which can each expand to any number
+            // of values - no need to sniff the input's own shape. ZeroOneList's own token is
+            // self-validating (throws on a non-0/1 character - see parseBoardArgToken's own doc
+            // comment), so this is wrapped in try/catch, unlike before.
+            let expansions: number[][];
+            try {
+                expansions = argTypes.map((type, i) => parseBoardArgToken(type, tokens[i]));
+            } catch (e) {
+                this._setCmdOutput(`bd: ${e instanceof Error ? e.message : String(e)}`); return;
+            }
+            const nums = expansions.flat();
+            // A ZeroOneList's own entries are legitimately 0 (e.g. an "off" indicator class) - only
+            // every OTHER argType's entries (ordinary dimension/count values) must be positive.
+            const isZeroOneEntry = argTypes.flatMap((type, i) => new Array(expansions[i].length).fill(type === BoardArgType.ZeroOneList));
+            if (nums.some((n, idx) => !Number.isInteger(n) || (!isZeroOneEntry[idx] && n <= 0))) {
+                this._setCmdOutput('bd: all arguments must be positive integers (0/1 list entries excepted)'); return;
             }
             this.boardDimensionForNew[boardTypeEnum] = nums;
             this.newCfg.boardArgs = [...nums];

@@ -1062,20 +1062,28 @@ export function centralPentagonFlake(order: number): BoardConfig {
 }
 
 /**
- * The Menger sponge "flake" fractal - n=1 is the plain unit cube itself (mengerSpongeFractalDescr()'s
- * own `leafPos`/`leafConn`); n>1 recurses into 20 order-(n-1) copies, one per surviving sub-cube of the
- * classic 3x3x3-minus-7 subdivision (see nodeEdgeMergeFlakeRec()'s own doc comment for the recursive
- * construction, and mengerFractalDescr()'s own doc comment for how its `subDescr`/`glueMap` are
- * derived). Unlike every other flake here (glued node-to-node or edge-to-edge), adjacent copies share a
- * whole growing FACE - mengerFractalDescr()'s own "hyperface" glue object. `mengerFractalDescr(3, [0, 0,
- * 1, 1])` is the classical Menger sponge itself (see that function's own doc comment for what
- * `indicator` means and why `[0, 0, 1, 1]` reproduces exactly it - the center and 6 face-centers
- * removed, 12 edge-mid and 8 corner sub-cubes kept, 20 of 27 total).
+ * The `dim`-dimensional Menger-sponge-family "flake" fractal (dim=1 is the Cantor set, dim=2 the
+ * Sierpinski carpet, dim=3 the classical Menger sponge, and so on - see mengerFractalDescr()'s own
+ * doc comment for the full derivation `order`/`dim`/`indicator` feed into): `order`=1 is the plain
+ * unit `dim`-cube itself; `order`>1 recurses into one order-(order-1) copy per surviving sub-cube of
+ * `indicator`'s own `3^dim`-minus-removed-classes subdivision, each sharing a whole growing sub-face
+ * - not just a point - with every touching copy (mengerFractalDescr()'s own "hyperface" glue
+ * object). `indicator` must have exactly `dim + 1` entries (`mengerFractalDescr()`'s own
+ * requirement) - `[0, 0, 1, 1]` at `dim=3` is the classical Menger sponge (the center and 6
+ * face-centers removed, 12 edge-mid and 8 corner sub-cubes kept, 20 of 27 total).
+ *
+ * Unlike every other flake here (always 3D or 2D, so always `DEFAULT_3D_PROJMAT`/no embedding),
+ * `dim` is caller-chosen and unbounded, so this uses `defaultProductProjMat` (shared with
+ * sierpinskiSimplex()/orthoplexBoard(), the other arbitrary-embDim boards) rather than a fixed 3D
+ * one.
  */
-export function mengerSpongeFlake(n: number): BoardConfig {
-    assert(Number.isInteger(n) && n >= 1, `n must be a positive integer, got ${n}`);
-    const built = buildFractal(n, mengerFractalDescr(3, [0, 0, 1, 1]));
-    return make(new Embedding(3, built.pos, DEFAULT_3D_PROJMAT), built.adj);
+export function mengerSpongeFlake(order: number, dim: number, indicator: number[]): BoardConfig {
+    assert(Number.isInteger(order) && order >= 1, `order must be a positive integer, got ${order}`);
+    assert(Number.isInteger(dim) && dim >= 1, `dim must be a positive integer, got ${dim}`);
+    assert(indicator.length === dim + 1,
+        `indicator must be a length-${dim + 1} list of 0/1 entries, got [${indicator}]`);
+    const built = buildFractal(order, mengerFractalDescr(dim, indicator));
+    return make(new Embedding(dim, built.pos, defaultProductProjMat(dim)), built.adj);
 }
 
 /**
@@ -1496,21 +1504,32 @@ export function snubSquareTriBoard(w: number, h: number, g: number): BoardConfig
  * The kind of value a single positional command-line token for a prescribed board type parses
  * into: `Number` is a plain integer; `CommaSeparatedNumbers` is a comma-joined list of integers
  * packed into one token - needed for a variable-arity board type (currently only
- * `hypercuboidBoard`, whose dimension count isn't fixed) - see `parseBoardArgToken`.
+ * `hypercuboidBoard`, whose dimension count isn't fixed); `ZeroOneList` is a plain string of `0`/`1`
+ * characters with NO separator (e.g. `"0011"`), packing a 0/1 indicator list into one token -
+ * needed for `mengerSpongeFlake`'s own `indicator` argument (see its own doc comment) - see
+ * `parseBoardArgToken`.
  */
-export enum BoardArgType { Number, CommaSeparatedNumbers }
+export enum BoardArgType { Number, CommaSeparatedNumbers, ZeroOneList }
 
 /**
  * Parses a single command-line token into the number(s) it represents, per `type` - see
  * `BoardArgType`'s own doc comment. Shared by `parseBoardTypeArgs` (the `prod`/`beginprod`
  * modifier syntax) and `src/renderer.ts`'s `'bd'` command, so there is exactly one place that
  * knows how to interpret a board-arg token - callers never sniff the token's own shape (e.g.
- * "does it contain a comma") themselves.
+ * "does it contain a comma") themselves. `ZeroOneList` is the one case that validates its own
+ * token eagerly (throwing on any non-`0`/`1` character) rather than leaving that to the caller,
+ * since - unlike `Number`/`CommaSeparatedNumbers`, where "is this a valid integer" is exactly what
+ * `Number.isInteger` already checks downstream - a malformed `ZeroOneList` token (e.g. containing a
+ * stray letter or comma) would otherwise silently produce `NaN` entries with no clear origin.
  */
 export function parseBoardArgToken(type: BoardArgType, token: string): number[] {
     switch (type) {
         case BoardArgType.Number: return [Number(token)];
         case BoardArgType.CommaSeparatedNumbers: return token.split(',').map(Number);
+        case BoardArgType.ZeroOneList:
+            if (!/^[01]+$/.test(token))
+                throw new Error(`expected a string of 0/1 characters, got "${token}"`);
+            return token.split('').map(Number);
     }
 }
 
@@ -1613,7 +1632,11 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [BoardArgType[], string
         [nums(1), "cpentflake", "&lt;n&gt;",
             "Pentagon flake with an opposite-orientation central copy at every level (n=1 is the plain pentagon)"],
     [PrescribedBoard.mengerSpongeFlake]:
-        [nums(1), "menger", "&lt;n&gt;", "Menger sponge flake fractal of order n (n=1 is the plain cube)"],
+        [[BoardArgType.Number, BoardArgType.Number, BoardArgType.ZeroOneList], "menger",
+            "&lt;order&gt; &lt;dim&gt; &lt;indicator&gt;",
+            "Menger-sponge-family flake fractal (dim=1 Cantor set, dim=2 Sierpinski carpet, dim=3 Menger "
+            + "sponge, ...) of the given order; indicator is a dim+1-length 0/1 string, e.g. 0011 at dim=3 "
+            + "for the classical Menger sponge"],
 };
 
 export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => BoardConfig> = {
@@ -1644,7 +1667,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.regularPolygonFlake]:      (...a) => regularPolygonFlake(a[0], a[1]),
     [PrescribedBoard.centralRegularPolygonFlake]: (...a) => centralRegularPolygonFlake(a[0], a[1]),
     [PrescribedBoard.centralPentagonFlake]:     (...a) => centralPentagonFlake(a[0]),
-    [PrescribedBoard.mengerSpongeFlake]:        (...a) => mengerSpongeFlake(a[0]),
+    [PrescribedBoard.mengerSpongeFlake]:        (...a) => mengerSpongeFlake(a[0], a[1], a.slice(2)),
 };
 
 /**

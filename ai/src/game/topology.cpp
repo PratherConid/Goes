@@ -74,7 +74,11 @@ std::pair<RawBoard, std::vector<std::vector<int>>> merge_boards(
             maps[b][local] = node_to_new[g(static_cast<int>(b), static_cast<int>(local))];
     }
 
-    return { RawBoard{ std::move(pos), std::move(adj) }, std::move(maps) };
+    std::map<std::string, int> labels;
+    for (size_t b = 0; b < boards.size(); b++)
+        for (const auto& [addr, local] : boards[b].labels) labels[addr] = maps[b][local];
+
+    return { RawBoard{ std::move(pos), std::move(adj), std::move(labels) }, std::move(maps) };
 }
 
 AdjacencyList to_adjacency_list(const std::vector<std::vector<int>>& adj) {

@@ -797,44 +797,32 @@ BoardConfig icosahedron_board() {
 }
 
 // --- dodecahedron_flake_board()/icosahedron_flake_board()/octahedron_flake_board()/
-// regular_polygon_flake_board()/central_regular_polygon_flake_board()/central_pentagon_flake_board():
-// mirrors shared/boardConfig.ts's dodecahedronFlake()/icosahedronFlake()/octahedronFlake()/
-// regularPolygonFlake()/centralRegularPolygonFlake()/centralPentagonFlake() - see board_config.h's
-// own doc comment on dodecahedron_flake_board() for why these never compute or store node positions
-// at all. The FractalDescr-equivalent recursive core and each shape's own static edge/glue data
-// builder live in fractal.h/fractal.cpp (mirrors shared/fractal.ts - see that file's own top
-// comment for why) - only the actual BoardConfig-returning functions below stay here.
+// regular_polygon_flake_board()/central_regular_polygon_flake_board()/central_pentagon_flake_board()/
+// menger_sponge_flake_board(): mirrors shared/boardConfig.ts's dodecahedronFlake()/icosahedronFlake()/
+// octahedronFlake()/regularPolygonFlake()/centralRegularPolygonFlake()/centralPentagonFlake()/
+// mengerSpongeFlake() - see board_config.h's own doc comment on dodecahedron_flake_board() for why
+// these never compute or store node positions at all. The FractalDescr-equivalent recursive core and
+// each shape's own static glue-data builder live in fractal.h/fractal.cpp (mirrors shared/fractal.ts
+// - see that file's own top comment for why) - only the actual BoardConfig-returning functions below
+// stay here, each now just `build_fractal(n, some_fractal_descr())` wrapped in a BoardConfig, mirroring
+// shared/boardConfig.ts's own equally-thin wrappers exactly.
 
 // Mirrors shared/boardConfig.ts's dodecahedronFlake() - see board_config.h's own doc comment for
 // the high-level construction (why there's no embedding at all here).
 BoardConfig dodecahedron_flake_board(int n) {
     assert(n >= 1 && "n must be at least 1");
-    const auto& data = dodecahedron_flake_data();
-    std::map<std::pair<int, int>, std::array<int, 4>> edge_glue_map;
-    for (const auto& g : data.glue) edge_glue_map[{ g[0], g[1] }] = { g[2], g[3], g[4], g[5] };
-
-    auto edge_level_up_map = growing_edge_level_up_map(edge_glue_map);
-    auto node_level_up_map = identity_node_level_up_map(20);
-    auto result = node_edge_merge_flake_rec(
-        n, 20, 20, data.edges, edge_glue_map, {}, edge_level_up_map, node_level_up_map);
-    std::vector<std::vector<unsigned>> embed(result.adj.size()); // emb_dim=0
-    return make_bc(std::move(result.adj), 0u, std::move(embed));
+    auto adj = build_fractal(n, dodecahedron_fractal_descr());
+    std::vector<std::vector<unsigned>> embed(adj.size()); // emb_dim=0
+    return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
 // Mirrors shared/boardConfig.ts's icosahedronFlake() - see board_config.h's own doc comment on
 // dodecahedron_flake_board() for the high-level construction, which this shares in full.
 BoardConfig icosahedron_flake_board(int n) {
     assert(n >= 1 && "n must be at least 1");
-    const auto& data = icosahedron_flake_data();
-    std::map<std::pair<int, int>, std::array<int, 4>> edge_glue_map;
-    for (const auto& g : data.glue) edge_glue_map[{ g[0], g[1] }] = { g[2], g[3], g[4], g[5] };
-
-    auto edge_level_up_map = growing_edge_level_up_map(edge_glue_map);
-    auto node_level_up_map = identity_node_level_up_map(12);
-    auto result = node_edge_merge_flake_rec(
-        n, 12, 12, data.edges, edge_glue_map, {}, edge_level_up_map, node_level_up_map);
-    std::vector<std::vector<unsigned>> embed(result.adj.size()); // emb_dim=0
-    return make_bc(std::move(result.adj), 0u, std::move(embed));
+    auto adj = build_fractal(n, icosahedron_fractal_descr());
+    std::vector<std::vector<unsigned>> embed(adj.size()); // emb_dim=0
+    return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
 // Mirrors shared/boardConfig.ts's octahedronFlake() - see board_config.h's own doc comment on
@@ -842,16 +830,9 @@ BoardConfig icosahedron_flake_board(int n) {
 // 6 vertices/12 edges instead of 20 vertices/30 edges or 12 vertices/30 edges.
 BoardConfig octahedron_flake_board(int n) {
     assert(n >= 1 && "n must be at least 1");
-    const auto& data = octahedron_flake_data();
-    std::map<std::pair<int, int>, std::array<int, 4>> edge_glue_map;
-    for (const auto& g : data.glue) edge_glue_map[{ g[0], g[1] }] = { g[2], g[3], g[4], g[5] };
-
-    auto edge_level_up_map = growing_edge_level_up_map(edge_glue_map);
-    auto node_level_up_map = identity_node_level_up_map(6);
-    auto result = node_edge_merge_flake_rec(
-        n, 6, 6, data.edges, edge_glue_map, {}, edge_level_up_map, node_level_up_map);
-    std::vector<std::vector<unsigned>> embed(result.adj.size()); // emb_dim=0
-    return make_bc(std::move(result.adj), 0u, std::move(embed));
+    auto adj = build_fractal(n, octahedron_fractal_descr());
+    std::vector<std::vector<unsigned>> embed(adj.size()); // emb_dim=0
+    return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
 // Mirrors shared/boardConfig.ts's regularPolygonFlake() - see board_config.h's own doc comment for
@@ -860,88 +841,44 @@ BoardConfig octahedron_flake_board(int n) {
 BoardConfig regular_polygon_flake_board(int n_sides, int order) {
     assert(n_sides >= 3 && "n_sides must be at least 3");
     assert(order >= 1 && "order must be at least 1");
-    const auto& data = regular_polygon_flake_data(n_sides);
-
-    std::map<std::pair<int, int>, std::array<int, 4>> edge_glue_map;
-    for (const auto& g : data.edge_glue) edge_glue_map[{ g[0], g[1] }] = { g[2], g[3], g[4], g[5] };
-    std::map<std::pair<int, int>, std::pair<int, int>> node_glue_map;
-    for (const auto& g : data.node_glue) node_glue_map[{ g[0], g[1] }] = { g[2], g[3] };
-
-    auto edge_level_up_map = growing_edge_level_up_map(edge_glue_map);
-    auto node_level_up_map = identity_node_level_up_map(n_sides);
-    auto result = node_edge_merge_flake_rec(
-        order, n_sides, n_sides, data.edges, edge_glue_map, node_glue_map, edge_level_up_map,
-        node_level_up_map);
-    std::vector<std::vector<unsigned>> embed(result.adj.size()); // emb_dim=0
-    return make_bc(std::move(result.adj), 0u, std::move(embed));
+    auto adj = build_fractal(order, regular_polygon_fractal_descr(n_sides, false));
+    std::vector<std::vector<unsigned>> embed(adj.size()); // emb_dim=0
+    return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
 // Mirrors shared/boardConfig.ts's centralRegularPolygonFlake() - see board_config.h's own doc
-// comment for the high-level construction. Reuses regular_polygon_flake_data(n_sides)'s own base
-// edge_glue/node_glue (the plain regular_polygon_flake_board() relation between ADJACENT copies,
-// untouched), adding one further auxiliary sub-copy (index n_sides, num_leaf..num_subs-1 - see
-// node_edge_merge_flake_rec()'s own doc comment) glued to every regular copy via node_glue_map only
-// - a closed-form vertex correspondence (`(i + n_sides/2) % n_sides`, `i`), needing no distance
-// search unlike compute_flake_glue()/compute_node_glue() above (mirrors
-// shared/boardConfig.ts's regularPolygonFractalDescr() derivation exactly).
+// comment for the high-level construction; regular_polygon_fractal_descr(n_sides, true) is the one
+// doing the actual work (see its own doc comment in fractal.cpp for the central-copy derivation and
+// the `n_sides` even/>4 condition, mirroring shared/boardConfig.ts's own).
 BoardConfig central_regular_polygon_flake_board(int n_sides, int order) {
     assert(n_sides >= 3 && "n_sides must be at least 3");
     assert(order >= 1 && "order must be at least 1");
-    const auto& data = regular_polygon_flake_data(n_sides);
-
-    std::map<std::pair<int, int>, std::array<int, 4>> edge_glue_map;
-    for (const auto& g : data.edge_glue) edge_glue_map[{ g[0], g[1] }] = { g[2], g[3], g[4], g[5] };
-    std::map<std::pair<int, int>, std::pair<int, int>> node_glue_map;
-    for (const auto& g : data.node_glue) node_glue_map[{ g[0], g[1] }] = { g[2], g[3] };
-
-    int num_subs = n_sides;
-    if (n_sides % 2 == 0 && n_sides > 4) {
-        int center_idx = n_sides;
-        num_subs = n_sides + 1;
-        for (int i = 0; i < n_sides; i++)
-            node_glue_map[{ i, center_idx }] = { (i + n_sides / 2) % n_sides, i };
-    }
-
-    auto edge_level_up_map = growing_edge_level_up_map(edge_glue_map);
-    auto node_level_up_map = identity_node_level_up_map(n_sides);
-    auto result = node_edge_merge_flake_rec(
-        order, n_sides, num_subs, data.edges, edge_glue_map, node_glue_map, edge_level_up_map,
-        node_level_up_map);
-    std::vector<std::vector<unsigned>> embed(result.adj.size()); // emb_dim=0
-    return make_bc(std::move(result.adj), 0u, std::move(embed));
+    auto adj = build_fractal(order, regular_polygon_fractal_descr(n_sides, true));
+    std::vector<std::vector<unsigned>> embed(adj.size()); // emb_dim=0
+    return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
 // Mirrors shared/boardConfig.ts's centralPentagonFlake() - see board_config.h's own doc comment for
-// the high-level construction. Reuses regular_polygon_flake_data(5)'s own base node_glue (pentagon's
-// plain adjacent-copy relation is always a node merge - 5 % 4 != 0); the central copy's own relation
-// is a closed-form edge_glue_map/edge_level_up_map pair, mirroring
-// shared/boardConfig.ts's centralPentagonFractalDescr() exactly, no distance search needed.
+// the high-level construction; central_pentagon_fractal_descr() (fractal.cpp) is the one doing the
+// actual work.
 BoardConfig central_pentagon_flake_board(int order) {
     assert(order >= 1 && "order must be at least 1");
-    const int n_sides = 5;
-    const auto& data = regular_polygon_flake_data(n_sides);
+    auto adj = build_fractal(order, central_pentagon_fractal_descr());
+    std::vector<std::vector<unsigned>> embed(adj.size()); // emb_dim=0
+    return make_bc(std::move(adj), 0u, std::move(embed));
+}
 
-    std::map<std::pair<int, int>, std::pair<int, int>> node_glue_map;
-    for (const auto& g : data.node_glue) node_glue_map[{ g[0], g[1] }] = { g[2], g[3] };
-
-    int center_idx = n_sides;
-    int num_subs = n_sides + 1;
-    std::map<std::pair<int, int>, std::array<int, 4>> edge_glue_map;
-    std::map<std::pair<int, int>, std::vector<std::array<int, 3>>> edge_level_up_map;
-    for (int i = 0; i < n_sides; i++) {
-        int a = i, b = (i + 1) % n_sides;
-        int j = (i + 3) % n_sides;
-        edge_glue_map[{ j, center_idx }] = { a, b, b, a };
-        int lo = std::min(a, b), hi = std::max(a, b);
-        edge_level_up_map[{ lo, hi }] = { { a, a, b }, { b, a, b } };
-    }
-
-    auto node_level_up_map = identity_node_level_up_map(n_sides);
-    auto result = node_edge_merge_flake_rec(
-        order, n_sides, num_subs, data.edges, edge_glue_map, node_glue_map, edge_level_up_map,
-        node_level_up_map);
-    std::vector<std::vector<unsigned>> embed(result.adj.size()); // emb_dim=0
-    return make_bc(std::move(result.adj), 0u, std::move(embed));
+// Mirrors shared/boardConfig.ts's mengerSpongeFlake() - see board_config.h's own doc comment for the
+// high-level construction; menger_fractal_descr(dim, indicator) (fractal.cpp) is the one doing the
+// actual work - {0, 0, 1, 1} at dim=3 is the classical Menger sponge itself.
+BoardConfig menger_sponge_flake_board(int order, int dim, const std::vector<int>& indicator) {
+    assert(order >= 1 && "order must be at least 1");
+    assert(dim >= 1 && "dim must be at least 1");
+    assert(static_cast<int>(indicator.size()) == dim + 1 &&
+        "indicator must be a length-(dim+1) list of 0/1 entries");
+    auto adj = build_fractal(order, menger_fractal_descr(dim, indicator));
+    std::vector<std::vector<unsigned>> embed(adj.size()); // emb_dim=0
+    return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
 BoardConfig triangular_hex_board(int d) {
@@ -1371,6 +1308,7 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<int>& 
     if (kind == "polyflake") return regular_polygon_flake_board(v[0], v[1]);
     if (kind == "cpolyflake") return central_regular_polygon_flake_board(v[0], v[1]);
     if (kind == "cpentflake") return central_pentagon_flake_board(v[0]);
+    if (kind == "menger") return menger_sponge_flake_board(v[0], v[1], std::vector<int>(v.begin() + 2, v.end()));
     if (kind == "trihex") return triangular_hex_board(v[0]);
     if (kind == "hex")   return hex_board(v[0]);
     if (kind == "hexdel") return trihex_board(v[0]);

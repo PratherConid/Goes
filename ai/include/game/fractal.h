@@ -1,122 +1,116 @@
 #pragma once
 #include <vector>
 #include <map>
+#include <string>
 #include <array>
 #include <utility>
+#include <functional>
 
-// The recursive "flake" fractal core, and each shape's own static edge/glue data builder - mirrors
+// The recursive "flake" fractal core, and each shape's own static glue-data builder - mirrors
 // shared/fractal.ts (see that file's own top comment for why this is split out from board_config.h:
 // a self-contained unit distinct from that file's many one-off, non-recursive board constructors).
 // The actual BoardConfig-returning functions built on these (dodecahedron_flake_board()/etc.) stay
-// in board_config.h/.cpp, which calls node_edge_merge_flake_rec()/the data builders declared below -
-// keeping this file free of BoardConfig/embedding concerns entirely: every value here is either a
-// leaf-space position (used only for the one-time glue search, in fractal.cpp, never exposed) or a
-// plain index/adjacency structure. See board_config.h's own doc comment on dodecahedron_flake_board()
-// for why these boards never compute or store real node positions at all.
+// in board_config.h/.cpp, which calls build_fractal()/the descr builders declared below - keeping
+// this file free of BoardConfig/embedding concerns entirely: every value here is either a leaf-space
+// position (used only for the one-time glue search, in fractal.cpp, never exposed) or a plain
+// index/adjacency structure. See board_config.h's own doc comment on dodecahedron_flake_board() for
+// why these boards never compute or store real node positions at all.
+//
+// One further, C++-specific deviation beyond dropping positions: shared/fractal.ts's `FractalDescr`
+// carries a `SubDescr { scale, shift }` per sub-copy, since the TS side's own recursion threads a
+// real-valued affine transform through every level to build `pos`. With `pos` dropped entirely here,
+// `scale`/`shift` are unused by anything the C++ side actually computes (the STRUCTURAL recursion -
+// how many sub-copies, which pairs glue to which) - so `FractalDescr` below carries plain `num_subs`
+// (the count `subDescr.length` would have been) in its place, same simplification the
+// pre-generalization version of this file already made for the same reason (see git history).
 
-// Mirrors shared/fractal.ts's SubFlakeResult - minus `pos`, since these boards track no position at
-// all (see this file's own top comment).
+// Mirrors shared/fractal.ts's GlueObjectType's own `step()` return shape: for one of a glue object's
+// own sub-pieces, which outer sub-slot to chase into (`sub_slot`) and that sub-piece's own tags one
+// level deeper (`tags`).
+struct GlueStep {
+    int sub_slot;
+    std::vector<int> tags;
+};
+
+// Mirrors shared/fractal.ts's GlueObjectType - see its own doc comment for the full contract `step`
+// must satisfy (purely combinatorial, single-recursion-step, ad hoc per object). A `std::function`
+// here (rather than a bare function pointer) is what lets menger_hyperface_glue_object() below close
+// over its own `dim`/`indicator`/`slot_of`, mirroring the TS side's own JS closure.
+struct GlueObjectType {
+    std::function<std::vector<GlueStep>(const std::vector<int>&)> step;
+};
+
+// Mirrors shared/fractal.ts's POINT_GLUE_OBJECT/EDGE_GLUE_OBJECT - see their own doc comments there
+// for the full derivation; both are stateless (no captures), so - unlike menger_hyperface_glue_object()
+// below - these are plain shared constants, one instance reused by every `GlueEntry` that needs them.
+extern const GlueObjectType POINT_GLUE_OBJECT;
+extern const GlueObjectType EDGE_GLUE_OBJECT;
+
+// Mirrors shared/fractal.ts's glueObjectAddresses() - GENERIC, shared code, common to every glue
+// object, applying its own single-step `step()` repeatedly to enumerate, in a fixed, self-consistent
+// order, every address realizing `object`'s own structure at recursion depth `depth`. See the TS
+// function's own doc comment for the full base-case/recursive-case derivation, which this mirrors
+// exactly.
+std::vector<std::string> glue_object_addresses(const GlueObjectType& object, const std::vector<int>& tags, int depth);
+
+// Mirrors shared/fractal.ts's GlueEntry - see its own doc comment: sub-copy `P`'s own realization of
+// `object` (instantiated with `self_vertices`) coincides with sub-copy `Q`'s own realization
+// (instantiated with `other_vertices`), point-for-point in array order.
+struct GlueEntry {
+    GlueObjectType object;
+    std::vector<int> self_vertices;
+    std::vector<int> other_vertices;
+};
+
+// Mirrors shared/fractal.ts's FractalDescr - minus `leafPos`/`subDescr`'s own `scale`/`shift` and
+// `globalScale` (all position-only - see this file's own top comment), plus `num_leaf`/`num_subs`
+// (`leafPos.length`/`subDescr.length`, needed since the arrays themselves are dropped). `leaf_conn`
+// mirrors `leafPos`'s own sibling `leafConn` unchanged (already position-free). `glue_map` mirrors
+// `glueMap` exactly, just keyed by a real `std::pair<int,int>` rather than a `"P,Q"` string (a
+// C++-specific difference with no TS counterpart: TS strings its keys only because a JS `Map` needs a
+// primitive key and has no compound-key support, which does not apply here).
+struct FractalDescr {
+    int num_leaf;
+    int num_subs;
+    std::vector<std::pair<int, int>> leaf_conn;
+    std::map<std::pair<int, int>, GlueEntry> glue_map;
+};
+
+// Mirrors shared/fractal.ts's SubFlakeResult - minus `pos` (see this file's own top comment).
 struct SubFlakeResult {
     std::vector<std::vector<int>> adj;
-    std::vector<int> corners;
-    std::map<std::pair<int, int>, std::vector<int>> edge_chains;
+    std::map<std::string, int> labels;
 };
 
-// Mirrors shared/fractal.ts's growingEdgeLevelUpMap(): derives the standard `edge_level_up_map` for
-// a shape whose growing shared edges are exactly its `edge_glue_map` entries between ADJACENT
-// sub-copies (dodeca/icosa/octahedron/regular_polygon_flake_board()'s own 4n-gon case) - see
-// node_edge_merge_flake_rec()'s own doc comment for the `{{P,P,Q},{Q,P,Q}}` derivation.
-std::map<std::pair<int, int>, std::vector<std::array<int, 3>>> growing_edge_level_up_map(
-    const std::map<std::pair<int, int>, std::array<int, 4>>& edge_glue_map);
+// Mirrors shared/fractal.ts's nodeEdgeMergeFlakeRec() - minus `scale`/`offset` (both position-only,
+// see this file's own top comment); `descr.num_subs` takes the role of iterating `descr.subDescr`
+// (only its own COUNT is needed, per `FractalDescr`'s own doc comment). See the TS function's own
+// doc comment for the full recursive construction (base case, addresses/merges, mergeBoards()) this
+// mirrors line-for-line, using merge_boards()'s own `labels` support (topology.h) in place of TS's
+// mergeBoards() own `labels`.
+SubFlakeResult node_edge_merge_flake_rec(int n, const FractalDescr& descr);
 
-// Mirrors shared/fractal.ts's identityNodeLevelUpMap(): the standard `node_level_up_map` every shape
-// here uses - leaf vertex `vtx` maps to `(vtx, vtx)` (sub-copy `vtx`'s own corner `vtx`) - see
-// node_edge_merge_flake_rec()'s own doc comment for what this map means/is consumed for.
-std::map<int, std::pair<int, int>> identity_node_level_up_map(int num_leaf);
+// Mirrors shared/fractal.ts's buildFractal() - minus `pos` (see this file's own top comment), and so
+// minus the `offset`/`globalScale` machinery only `pos` ever needed.
+std::vector<std::vector<int>> build_fractal(int n, const FractalDescr& descr);
 
-// Mirrors shared/fractal.ts's nodeEdgeMergeFlakeRec() - see its own doc comment for the full
-// recursive construction. `num_subs` sub-copies are built each recursion (mirroring
-// shared/fractal.ts's `subDescr` list): the first `num_leaf` correspond to leaf vertices (0 ..
-// num_leaf-1, `edges`' own endpoint range) and expose `corners`/`corners_out`; any further entries
-// (num_leaf <= idx < num_subs) are purely auxiliary, with no leaf vertex of their own (e.g.
-// central_regular_polygon_flake_board()'s/central_pentagon_flake_board()'s own central copy) - same
-// split as shared/fractal.ts's FractalDescr's own doc comment. `edge_glue_map`/`node_glue_map` key
-// every glued pair `(P, Q)` (sub-copy indices, not necessarily an `edges` member) to EITHER a whole,
-// growing shared edge OR a single shared point, never both: an `edge_glue_map` entry pairs up
-// `subs[P]`'s own chain for `(C, D)` with `subs[Q]`'s own chain for `(E, F)` position-by-position,
-// while a `node_glue_map` entry contributes exactly one merge pair (`subs[P]`'s own corner `m`,
-// `subs[Q]`'s own corner `p`) and no chain at all. The structural merge is built as one `merges`
-// list across every entry of both maps and resolved by a single topology.h merge_boards() call (see
-// that function's own doc comment for why this - rather than folding subs in one at a time - is
-// what makes octahedron_flake_board()'s own transitive antipodal-corner coincidence come out
-// correct).
-//
-// `edge_level_up_map` keys a leaf-vertex pair `(A, B)` (always two valid indices below `num_leaf` -
-// NOT a sub-copy-index pair like `edge_glue_map`/`node_glue_map`) to an ordered list of `(sub_idx,
-// a, b)` triples: this shape's own chain for edge `(A, B)`, at ANY recursion order, is the
-// concatenation - in list order - of `subs[sub_idx]`'s own chain for its OWN edge `(a, b)`
-// (oriented to start at `a`). Every shape with a growing shared edge between ADJACENT sub-copies
-// (dodeca/icosa/octahedron/regular_polygon_flake_board()'s own 4n-gon case) sets this via
-// growing_edge_level_up_map() - for exactly those shapes, an `edge_glue_map` key `(P, Q)` doubles as
-// a valid leaf-vertex pair (sub-copy index == leaf-vertex index one-to-one), giving
-// `{{P,P,Q},{Q,P,Q}}` (`subs[P]`'s own `(P,Q)`-chain then `subs[Q]`'s own `(P,Q)`-chain),
-// reproducing this map's own pre-generalization behavior exactly (concatenate `subs[P]`'s and
-// `subs[Q]`'s own same-keyed chain - see git history). central_pentagon_flake_board() is the one
-// shape needing a genuinely different map: its own "corner i to corner i+1" chain exists (same
-// two-segment shape, using the leaf-adjacent indices `i`, `i+1` in place of `P`, `Q`) even though it
-// is never itself an `edge_glue_map` key - it goes entirely unused by the plain (non-central)
-// pentagon flake, which merges its own adjacent copies by a single node instead - only becoming
-// load-bearing once a central copy is added, which glues to it via `edge_glue_map`.
-//
-// `node_level_up_map` keys a leaf-vertex index `vtx` (NOT a sub-copy index like `edge_glue_map`/
-// `node_glue_map`'s own keys) to a `(sub_idx, subflake_node)` pair: this shape's own corner `vtx`,
-// at recursion order `n > 1`, is `subs[sub_idx]`'s own corner `subflake_node` (recursively). This is
-// what lets a shape's RECURSION-STEP topology (which sub-copy attaches where, and via which of that
-// sub-copy's own corners) be picked independently of its LEAF board's own topology (`edges`) - every
-// shape here still sets it via identity_node_level_up_map() (leaf vertex `vtx` maps to `(vtx, vtx)`:
-// sub-copy `vtx`'s own corner `vtx`), the "chase the same index every level" convention this map
-// replaced (see git history), but a future shape's own recursion step need not follow leaf vertex
-// `vtx`'s own numbering at all.
-//
-// One deliberate deviation from mirroring TS's own per-shape functions (no deviation needed - this
-// is already shared TS-side by every caller): with positions dropped entirely (see this file's own
-// top comment) the recursion is purely combinatorial, so this single function serves every flake
-// board in board_config.h/.cpp, parameterized only by `num_leaf`, `num_subs`, `edges`,
-// `edge_glue_map`, `node_glue_map`, `edge_level_up_map`, and `node_level_up_map`.
-SubFlakeResult node_edge_merge_flake_rec(
-    int n, int num_leaf, int num_subs, const std::vector<std::pair<int, int>>& edges,
-    const std::map<std::pair<int, int>, std::array<int, 4>>& edge_glue_map,
-    const std::map<std::pair<int, int>, std::pair<int, int>>& node_glue_map,
-    const std::map<std::pair<int, int>, std::vector<std::array<int, 3>>>& edge_level_up_map,
-    const std::map<int, std::pair<int, int>>& node_level_up_map);
+// Mirrors shared/fractal.ts's dodecahedronFractalDescr()/icosahedronFractalDescr()/
+// octahedronFractalDescr()/regularPolygonFractalDescr()/centralPentagonFractalDescr() - see each TS
+// function's own doc comment for the full derivation (vertex/edge construction, `r`/`c`, the glue
+// search) each of these mirrors exactly, minus positions (this file's own top comment) and glue
+// entries built via `POINT_GLUE_OBJECT`/`EDGE_GLUE_OBJECT` in place of the TS side's own. Cached the
+// same way as their TS counterparts (dodeca/icosa/octahedron once each; regular-polygon per
+// `(n_sides, center)`).
+const FractalDescr& dodecahedron_fractal_descr();
+const FractalDescr& icosahedron_fractal_descr();
+const FractalDescr& octahedron_fractal_descr();
+const FractalDescr& regular_polygon_fractal_descr(int n_sides, bool center);
+const FractalDescr& central_pentagon_fractal_descr();
 
-// Vertex/edge/glue data dodecahedron_flake_board()/icosahedron_flake_board()/octahedron_flake_board()
-// each need - mirrors shared/fractal.ts's dodecahedronFractalDescr()/icosahedronFractalDescr()/
-// octahedronFractalDescr(), minus `verts` in the return (see this file's own top comment for why -
-// they're scratch data internal to fractal.cpp's one-time glue search, never exposed). Cached in
-// fractal.cpp's own function-local statics since `edges`/`glue` only ever depend on each shape's own
-// fixed structure and never change.
-struct FlakeEdgeGlueData {
-    std::vector<std::pair<int, int>> edges;
-    std::vector<std::array<int, 6>> glue;
-};
-const FlakeEdgeGlueData& dodecahedron_flake_data();
-const FlakeEdgeGlueData& icosahedron_flake_data();
-const FlakeEdgeGlueData& octahedron_flake_data();
-
-// Vertex/edge/glue data regular_polygon_flake_board()/central_regular_polygon_flake_board()/
-// central_pentagon_flake_board() each need - mirrors shared/fractal.ts's
-// regularPolygonFractalDescr(), minus the `center` argument (the central-copy relations it derives
-// are closed-form - see board_config.h's own doc comment on central_regular_polygon_flake_board()/
-// central_pentagon_flake_board() - so board_config.cpp builds them directly, reusing this same base
-// `edges`/`edge_glue`/`node_glue` unchanged rather than bundling a second cached variant per shape).
-// Cached per `n_sides` (unlike dodeca/icosa/octahedron's own single-shape caches) since
-// regular_polygon_flake_board() isn't a fixed shape. Exactly one of `edge_glue`/`node_glue` is
-// populated (never both), per `n_sides % 4` - see board_config.h's own doc comment on
-// regular_polygon_flake_board() for which point(s) and why.
-struct RegularPolygonFlakeData {
-    std::vector<std::pair<int, int>> edges;
-    std::vector<std::array<int, 6>> edge_glue;
-    std::vector<std::array<int, 4>> node_glue;
-};
-const RegularPolygonFlakeData& regular_polygon_flake_data(int n_sides);
+// Mirrors shared/fractal.ts's mengerFractalDescr(dim, indicator) - see its own doc comment for the
+// full derivation (the `3^dim` grid removal rule, the general "hyperface" glue object handling any
+// number of simultaneously-differing axes down to a single shared corner point). `indicator` must
+// have exactly `dim + 1` entries (0/1), one per `offCenter = 0..dim` class. Cached per `(dim,
+// indicator)`, `indicator`'s own bits (MSB-first) reduced to a single integer key nested under a
+// first-level cache keyed by `dim` itself - same two-level scheme as the TS side's own cache.
+const FractalDescr& menger_fractal_descr(int dim, const std::vector<int>& indicator);

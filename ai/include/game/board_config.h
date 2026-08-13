@@ -267,8 +267,8 @@ BoardConfig octahedron_flake_board(int n);
 
 // Mirrors shared/boardConfig.ts's regularPolygonFlake() - same overall construction as
 // dodecahedron_flake_board() above (see its own doc comment), just with n_sides vertices/edges
-// instead of a fixed shape, so cached per n_sides rather than once (see the .cpp file's own comment
-// on regular_polygon_flake_data()). Unlike dodeca/icosa/octahedron (always merges by whole edge, or
+// instead of a fixed shape, so cached per n_sides rather than once (see fractal.cpp's own comment
+// on regular_polygon_fractal_descr()). Unlike dodeca/icosa/octahedron (always merges by whole edge, or
 // - octahedron - transitively equivalent to one), a regular polygon's base edges merge by a whole
 // growing edge when n_sides is a multiple of 4, and by a single non-growing node otherwise (see the
 // .cpp file's own comment on regular_polygon_flake_rc() for the closed-form r/c this forces). No
@@ -296,11 +296,20 @@ BoardConfig central_regular_polygon_flake_board(int n_sides, int order);
 // central copy at the SAME scale magnitude but OPPOSITE orientation, glued to every regular copy by
 // a whole shared EDGE rather than a single node (closed-form vertex correspondence, same as
 // central_regular_polygon_flake_board() above - no distance search needed). This is the one shape
-// needing a genuinely different edge_level_up_map (see node_edge_merge_flake_rec()'s own doc
-// comment): pentagon's own "corner i to corner i+1" chain exists but goes unused by the plain (non-
-// central) pentagon flake, which merges its own adjacent copies by a single node instead - only
-// becoming load-bearing once the central copy needs it to glue against.
+// needing an EDGE_GLUE_OBJECT entry (fractal.h) whose two named corners exist but go unused by the
+// plain (non-central) pentagon flake, which merges its own adjacent copies by a single node instead
+// - only becoming load-bearing once the central copy needs it to glue against.
 BoardConfig central_pentagon_flake_board(int order);
+
+// Mirrors shared/boardConfig.ts's mengerSpongeFlake() - order >= 1, dim >= 1, `indicator` a
+// length-(dim+1) list of 0/1 entries (see menger_fractal_descr()'s own doc comment in fractal.h for
+// the full derivation - dim=1 is the Cantor set, dim=2 the Sierpinski carpet, dim=3 the classical
+// Menger sponge, and so on; {0, 0, 1, 1} at dim=3 reproduces the classical Menger sponge exactly).
+// order=1 is the plain unit dim-cube itself; order>1 recurses into one order-(order-1) copy per
+// surviving sub-cube of `indicator`'s own subdivision, each sharing a whole growing sub-face - not
+// just a point - with every touching copy. Same emb_dim = 0 / empty embed[] approach and no-position
+// construction as dodecahedron_flake_board() above (see its own doc comment).
+BoardConfig menger_sponge_flake_board(int order, int dim, const std::vector<int>& indicator);
 
 // A triangular-lattice board arranged in a hexagon shape, with d layers of triangles surrounding
 // the central point. Not tiled by hexagons - see hex_board below for that. Cells are
