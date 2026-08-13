@@ -290,12 +290,11 @@ function nodeEdgeMergeFlakeRec(
     }
 
     const combined = mergeBoards(subs, merges);
-    // Only the first leafPos.length subDescr entries correspond to actual leaf-vertex attachment
-    // points (see FractalDescr's own doc comment) - any further entries (e.g. an auxiliary central
-    // copy) are purely internal structure, not exposed as one of this call's own `corners`.
-    // nodeLevelUpMap decouples which subDescr slot/corner each leaf vertex chases (see FractalDescr's
-    // own doc comment) from leaf vertex `vtx`'s own numbering - every shape here still chases slot
-    // `vtx`'s own corner `vtx`, but not because that's hardcoded here.
+    // cornersOut has exactly leafPos.length entries - the corners this shape exposes to an outer
+    // caller (see FractalDescr's own doc comment) - each one's (subIdx, subflakeNode) backing comes
+    // entirely from nodeLevelUpMap; nothing here assumes any relationship between subIdx and vtx
+    // (every shape in this file happens to pick subIdx === vtx via identityNodeLevelUpMap, but
+    // that's a per-shape choice, not something this function relies on).
     const cornersOut = leafPos.map((_, vtx) => {
         const [subIdx, subflakeNode] = nodeLevelUpMap.get(`${vtx}`)!;
         return combined.maps[subIdx][subs[subIdx].corners[subflakeNode]];
