@@ -9,7 +9,7 @@ import { findTriangles, findSquares, zeroAdj, mergeBoards } from './topology.js'
 import {
     buildFractal,
     dodecahedronFractalDescr, icosahedronFractalDescr, octahedronFractalDescr,
-    regularPolygonFractalDescr, centralPentagonFractalDescr,
+    regularPolygonFractalDescr, centralPentagonFractalDescr, mengerSpongeFractalDescr,
 } from './fractal.js';
 
 /**
@@ -1062,6 +1062,20 @@ export function centralPentagonFlake(order: number): BoardConfig {
 }
 
 /**
+ * The Menger sponge "flake" fractal - n=1 is the plain unit cube itself (mengerSpongeFractalDescr()'s
+ * own `leafPos`/`leafConn`); n>1 recurses into 20 order-(n-1) copies, one per surviving sub-cube of the
+ * classic 3x3x3-minus-7 subdivision (see nodeEdgeMergeFlakeRec()'s own doc comment for the recursive
+ * construction, and mengerSpongeFractalDescr()'s own doc comment for how its `subDescr`/`glueMap` are
+ * derived). Unlike every other flake here (glued node-to-node or edge-to-edge), adjacent copies share a
+ * whole growing FACE - mengerSpongeFractalDescr()'s own "square" glue object.
+ */
+export function mengerSpongeFlake(n: number): BoardConfig {
+    assert(Number.isInteger(n) && n >= 1, `n must be a positive integer, got ${n}`);
+    const built = buildFractal(n, mengerSpongeFractalDescr());
+    return make(new Embedding(3, built.pos, DEFAULT_3D_PROJMAT), built.adj);
+}
+
+/**
  * A triangular-lattice board arranged in a hexagon shape, with `d` layers of triangles surrounding
  * the central point (side length d+1, in hex terms) - the shape used by boards like Havannah/Y.
  * Not tiled by hexagons - see hexagonalBoard (TODO) for that. Cells are indexed by axial
@@ -1524,7 +1538,8 @@ export enum PrescribedBoard {
     octahedronFlake,
     regularPolygonFlake,
     centralRegularPolygonFlake,
-    centralPentagonFlake
+    centralPentagonFlake,
+    mengerSpongeFlake
 }
 
 // k Number-typed args in a row - shorthand for PrescribedBoardMap's common case below (every board
@@ -1594,6 +1609,8 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [BoardArgType[], string
     [PrescribedBoard.centralPentagonFlake]:
         [nums(1), "cpentflake", "&lt;n&gt;",
             "Pentagon flake with an opposite-orientation central copy at every level (n=1 is the plain pentagon)"],
+    [PrescribedBoard.mengerSpongeFlake]:
+        [nums(1), "menger", "&lt;n&gt;", "Menger sponge flake fractal of order n (n=1 is the plain cube)"],
 };
 
 export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => BoardConfig> = {
@@ -1624,6 +1641,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: number[]) => 
     [PrescribedBoard.regularPolygonFlake]:      (...a) => regularPolygonFlake(a[0], a[1]),
     [PrescribedBoard.centralRegularPolygonFlake]: (...a) => centralRegularPolygonFlake(a[0], a[1]),
     [PrescribedBoard.centralPentagonFlake]:     (...a) => centralPentagonFlake(a[0]),
+    [PrescribedBoard.mengerSpongeFlake]:        (...a) => mengerSpongeFlake(a[0]),
 };
 
 /**

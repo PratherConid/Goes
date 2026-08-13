@@ -116,10 +116,18 @@ function unionFindClasses(N: number, pairs: [number, number][]): number[] {
  * board - needed by callers that must keep tracking specific nodes (like sierpinskiSimplex's own
  * outer corners) across further merges. `pos` here is opaque per-node data (typically a real
  * position, but never inspected as one) simply carried along through the same merge as `adj`.
+ *
+ * `labels` (optional per board) is address-string -> that board's own local node index (see
+ * shared/fractal.ts's own doc comment on addresses/`SubFlakeResult` for what an address is) -
+ * carried through the SAME remapping as `pos`/`adj` and combined into one map keyed the same way,
+ * used by fractal.ts's own node_edge_merge_flake_rec() to identify which merged node a given
+ * address now resolves to. A board that omits `labels` simply contributes nothing to the combined
+ * map (e.g. board_config.ts's own sierpinskiRec(), which has no use for addresses).
  */
 export function mergeBoards(
-    boards: { pos: number[][]; adj: number[][] }[], merges: [[number, number], [number, number]][],
-): { pos: number[][]; adj: number[][]; maps: number[][] } {
+    boards: { pos: number[][]; adj: number[][]; labels?: Map<string, number> }[],
+    merges: [[number, number], [number, number]][],
+): { pos: number[][]; adj: number[][]; maps: number[][]; labels: Map<string, number> } {
     const offset: number[] = new Array(boards.length).fill(0);
     for (let i = 1; i < boards.length; i++) offset[i] = offset[i - 1] + boards[i - 1].pos.length;
     const total = boards.reduce((s, b) => s + b.pos.length, 0);
@@ -142,5 +150,13 @@ export function mergeBoards(
     }
 
     const maps = boards.map((board, b) => board.pos.map((_, local) => nodeToNew[g(b, local)]));
-    return { pos, adj, maps };
+
+    const labels = new Map<string, number>();
+    for (let b = 0; b < boards.length; b++) {
+        const boardLabels = boards[b].labels;
+        if (!boardLabels) continue;
+        for (const [addr, local] of boardLabels) labels.set(addr, maps[b][local]);
+    }
+
+    return { pos, adj, maps, labels };
 }
