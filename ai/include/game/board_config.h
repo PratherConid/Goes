@@ -270,6 +270,17 @@ BoardConfig octahedron_board();
 // antipode) is unaffected. n=3 is the regular octahedron (see octahedron_board() above).
 BoardConfig orthoplex_board(int n);
 
+// A uniform n-gonal antiprism: 2n vertices - a "top" n-gon (indices 0..n-1) and a "bottom" n-gon
+// (indices n..2n-1, rotated by half a step), joined by 2n "slant" edges (top k to bottom k and
+// bottom (k-1+n)%n, its two nearest bottom neighbors), forming 2n triangles around the belt in
+// addition to the two n-gon rings. Same emb_dim = 0 / empty embed[] approach as regular_polygon_board,
+// for the same reason (the circumradius/height are inherently irrational for essentially every n -
+// see shared/boardConfig.ts's antiprismBoard() for the coordinates/connectivity derivation this
+// mirrors, adjacency only). n=3 is graph-isomorphic to the regular octahedron (see octahedron_board()
+// above), though this keeps its own top/bottom-triangle + belt vertex numbering rather than
+// orthoplex_board()'s antipodal-pair one.
+BoardConfig antiprism_board(int n);
+
 // A regular dodecahedron: 20 vertices, 12 pentagonal faces, 30 edges (every vertex degree 3).
 // Same emb_dim = 0 / empty embed[] approach as regular_polygon_board, for the same reason
 // (dodecahedron vertices are inherently irrational - see shared/boardConfig.ts's
@@ -408,9 +419,9 @@ BoardConfig glue_twisted_square_board(int w, int h, int g);
 BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("line" | "rect" | "rectd" |
-// "cublat" | "hcub" | "tri" | "sier" | "regpoly" | "tetra" | "octa" | "ortho" | "dodeca" | "icosa" |
-// "dodflake" | "icoflake" | "octaflake" | "polyflake" | "cpolyflake" | "cpentflake" | "menger" |
-// "trihex" | "hex" | "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" | "star" - matches
+// "cublat" | "hcub" | "tri" | "sier" | "regpoly" | "tetra" | "octa" | "ortho" | "ap" | "dodeca" |
+// "icosa" | "dodflake" | "icoflake" | "octaflake" | "polyflake" | "cpolyflake" | "cpentflake" |
+// "menger" | "trihex" | "hex" | "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" | "star" - matches
 // shared/types.ts's GameConfig.boardType strings), reading each of `args` back via
 // board_arg_number()/board_arg_list() as that builder's own positional parameters expect. Throws
 // std::runtime_error for an unknown kind. Shared by

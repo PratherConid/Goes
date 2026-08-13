@@ -743,6 +743,29 @@ BoardConfig orthoplex_board(int n) {
     return make_bc(std::move(adj), static_cast<unsigned>(n), std::move(pos));
 }
 
+// Mirrors shared/boardConfig.ts's antiprismBoard() connectivity (adjacency only - no
+// position/embedding, see board_config.h's own doc comment on this function: R/h are inherently
+// irrational for essentially every n). 2n vertices - top n-gon at indices 0..n-1, bottom n-gon at
+// indices n..2n-1 - top k joined to top (k+1)%n, bottom k to bottom (k+1)%n, and top k to its two
+// nearest bottom neighbors, bottom k and bottom (k-1+n)%n (same reasoning as the TS side's own doc
+// comment for why those are the two nearest).
+BoardConfig antiprism_board(int n) {
+    assert(n >= 3 && "n must be at least 3");
+    int N = 2 * n;
+    auto top = [](int k) { return k; };
+    auto bot = [n](int k) { return n + k; };
+    auto adj = zero_adj(N);
+    auto connect = [&](int i, int j) { adj[i][j] = 1; adj[j][i] = 1; };
+    for (int k = 0; k < n; k++) {
+        connect(top(k), top((k + 1) % n));
+        connect(bot(k), bot((k + 1) % n));
+        connect(top(k), bot(k));
+        connect(top(k), bot((k - 1 + n) % n));
+    }
+    std::vector<std::vector<unsigned>> embed(N); // emb_dim=0
+    return make_bc(std::move(adj), 0u, std::move(embed));
+}
+
 // Mirrors shared/boardConfig.ts's dodecahedronBoard() connectivity (adjacency only - no
 // position/embedding, see board_config.h's own doc comment on this function).
 BoardConfig dodecahedron_board() {
@@ -1319,6 +1342,7 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<BoardA
     if (kind == "tetra") return tetrahedron_board();
     if (kind == "octa") return octahedron_board();
     if (kind == "ortho") return orthoplex_board(num(v[0]));
+    if (kind == "ap")    return antiprism_board(num(v[0]));
     if (kind == "dodeca") return dodecahedron_board();
     if (kind == "icosa") return icosahedron_board();
     if (kind == "dodflake") return dodecahedron_flake_board(num(v[0]));

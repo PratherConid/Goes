@@ -943,6 +943,55 @@ export function orthoplexBoard(n: number): BoardConfig {
 }
 
 /**
+ * A uniform n-gonal antiprism: 2n vertices - a "top" n-gon (`k = 0..n-1`) at height `+h`, angle
+ * `2*pi*k/n`, and a "bottom" n-gon at height `-h`, angle `2*pi*k/n + pi/n` (rotated by half a step
+ * relative to the top) - joined by 2n unit-length "slant" edges (top vertex `k` to bottom vertices
+ * `k` and `k-1 mod n`, its two nearest bottom neighbors), forming 2n triangles around the belt, in
+ * addition to the top/bottom n-gon rings themselves.
+ *
+ * Both `R` (the n-gon circumradius) and `h` are chosen so every edge - n-gon and slant alike - comes
+ * out exactly unit length: `R = 1/(2*sin(pi/n))` makes the n-gon's own edges (a chord subtending
+ * angle `2*pi/n`) unit length, the same formula and reasoning as regularPolygonBoard()'s own. A
+ * slant edge's own squared length is `(2*R*sin(pi/(2n)))^2 + (2h)^2` (a chord subtending the smaller
+ * angle `pi/n` between a top vertex and its nearest bottom neighbor, combined with their height
+ * difference `2h`, via the standard "chord + height" distance decomposition for two points on
+ * parallel circles) - setting that equal to 1 and solving for `h` gives
+ * `h = 0.5*sqrt(1 - 4*R^2*sin^2(pi/(2n)))`. Verified numerically (every edge exactly unit length) for
+ * n=3..12.
+ *
+ * `n=3` is geometrically the regular octahedron (see octahedronBoard()) - every face, including the
+ * two "triangular" top/bottom rings, ends up unit-edge - though this function always keeps the two
+ * n-gon rings as their own dedicated faces rather than special-casing `n=3` to match
+ * orthoplexBoard()'s own vertex layout/numbering.
+ */
+export function antiprismBoard(n: number): BoardConfig {
+    assert(n >= 3, `n must be at least 3, got ${n}`);
+    const R = 1 / (2 * Math.sin(Math.PI / n));
+    const h = 0.5 * Math.sqrt(1 - 4 * R * R * Math.sin(Math.PI / (2 * n)) ** 2);
+
+    const top = (k: number) => k;
+    const bot = (k: number) => n + k;
+    const pos: number[][] = new Array(2 * n);
+    for (let k = 0; k < n; k++) {
+        const topTheta = (2 * Math.PI * k) / n;
+        pos[top(k)] = [R * Math.cos(topTheta), R * Math.sin(topTheta), h];
+        const botTheta = topTheta + Math.PI / n;
+        pos[bot(k)] = [R * Math.cos(botTheta), R * Math.sin(botTheta), -h];
+    }
+
+    const adj = zeroAdj(2 * n);
+    const connect = (i: number, j: number) => { adj[i][j] = 1; adj[j][i] = 1; };
+    for (let k = 0; k < n; k++) {
+        connect(top(k), top((k + 1) % n));
+        connect(bot(k), bot((k + 1) % n));
+        connect(top(k), bot(k));
+        connect(top(k), bot((k - 1 + n) % n));
+    }
+
+    return make(new Embedding(3, pos, DEFAULT_3D_PROJMAT), adj);
+}
+
+/**
  * A regular dodecahedron: 20 vertices, 12 pentagonal faces, 30 unit-length edges, centered at the
  * origin - dodecahedronFractalDescr()'s own `leafPos`/`leafConn` (see that function's own doc comment
  * for the construction), simply assembled into a BoardConfig.
@@ -1631,7 +1680,8 @@ export enum PrescribedBoard {
     regularPolygonFlake,
     centralRegularPolygonFlake,
     centralPentagonFlake,
-    mengerSpongeFlake
+    mengerSpongeFlake,
+    antiprismBoard
 }
 
 // k Number-typed args in a row - shorthand for PrescribedBoardMap's common case below (every board
@@ -1707,6 +1757,8 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [BoardArgType[], string
             "Menger-sponge-family flake fractal (dim=1 Cantor set, dim=2 Sierpinski carpet, dim=3 Menger "
             + "sponge, ...) of the given order; indicator is a dim+1-length 0/1 string, e.g. 0011 at dim=3 "
             + "for the classical Menger sponge"],
+    [PrescribedBoard.antiprismBoard]:
+        [nums(1), "ap", "&lt;n&gt;", "Uniform n-gonal antiprism (2 n-gons + 2n triangles), unit-length edges"],
 };
 
 // Shorthand for PrescribedBoardFns below: `num`/`list` pull a positional BoardArgEntry's own
@@ -1743,6 +1795,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: BoardArgEntry
     [PrescribedBoard.centralRegularPolygonFlake]: (...a) => centralRegularPolygonFlake(num(a[0]), num(a[1])),
     [PrescribedBoard.centralPentagonFlake]:     (...a) => centralPentagonFlake(num(a[0])),
     [PrescribedBoard.mengerSpongeFlake]:        (...a) => mengerSpongeFlake(num(a[0]), num(a[1]), list(a[2])),
+    [PrescribedBoard.antiprismBoard]:           (...a) => antiprismBoard(num(a[0])),
 };
 
 /**

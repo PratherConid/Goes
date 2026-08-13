@@ -639,6 +639,7 @@ export class Renderer {
         [PrescribedBoard.centralRegularPolygonFlake]: [numArg(6), numArg(2)],
         [PrescribedBoard.centralPentagonFlake]:     [numArg(2)],
         [PrescribedBoard.mengerSpongeFlake]:        [numArg(2), numArg(3), zolArg([0, 0, 1, 1])],
+        [PrescribedBoard.antiprismBoard]:           [numArg(5)],
     };
     nShowHistory = 10;
     currentSidePanel: SidePanelContent = SidePanelContent.Home;
