@@ -7,6 +7,7 @@ src/**/*.js
 shared/**/*.js
 server/src/**/*.js
 server/data
+build/
 
 # AI training outputs
 ai/checkpoints/
