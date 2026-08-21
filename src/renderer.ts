@@ -112,6 +112,10 @@ const _boardConfigDescriptions = new Map([
     ['menger_4_2_011',
         'Order-4 Sierpinski carpet (the 2-dimensional case of the Menger-sponge-family flake '
         + 'fractal, indicator 011)'],
+    ['rect_19_19_nis_(rrmp_0.1_(all))_nis_(deg_gt_1)',
+        '19×19 rectangular board with 10% of its nodes randomly removed, then any node left with '
+        + 'degree 1 or less (an isolated node, or one only reachable via a since-removed neighbor) '
+        + 'dropped too'],
 ]);
 
 

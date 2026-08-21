@@ -1,0 +1,11 @@
+{
+  "boardType": "rect",
+  "boardArgs": [
+    {"kind": "Number", "value": 19},
+    {"kind": "Number", "value": 19}
+  ],
+  "boardModifiers": [
+    {"kind": "NodeInducedSubgraph", "sel": {"op": "rrmp", "type": "node", "frac": 0.1, "a": {"op": "all", "type": "node"}}},
+    {"kind": "NodeInducedSubgraph", "sel": {"op": "deg", "type": "node", "cmp": "gt", "n": 1}}
+  ]
+}

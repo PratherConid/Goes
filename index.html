@@ -58,8 +58,14 @@
     }
     .popup-box .btn-row { margin-top: 10px; }
     /* Wide/left-aligned variant for the 'mod' command's edit-modifiers popup - the plain
-       max-width:320px/text-align:center above suits a short message, not a multi-entry list. */
-    .popup-box.mod-edit-box { max-width: 480px; text-align: left; }
+       max-width:320px/text-align:center above suits a short message, not a multi-entry list.
+       .popup-box otherwise never gets an explicit width (just max-width), so it's shrink-to-fit -
+       a shrink-to-fit parent can't resolve a child's width:100% (the textarea below) against its
+       own not-yet-determined width, so browsers fall back to the textarea's intrinsic size instead
+       of expanding it, defeating the wider max-width entirely. An explicit `width` here (capped by
+       max-width for narrow viewports) fixes that by giving the textarea's 100% something concrete
+       to resolve against. */
+    .popup-box.mod-edit-box { width: 480px; max-width: calc(100vw - 40px); text-align: left; }
     /* Layered on top of .account-input (the chat textbox's own class - see #chat-input) for a
        matching look; only the bits #chat-input itself also overrides (resize/font-family) plus
        this popup's own sizing are added here. */
