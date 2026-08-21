@@ -9,6 +9,6 @@
     {"kind": "EdgeSplit", "splitN": 3},
     {"kind": "Prod", "boardType": "line", "boardArgs": [
       {"kind": "Number", "value": 4}
-    ]}
+    ], "modifiers": []}
   ]
 }

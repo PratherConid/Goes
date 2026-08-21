@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     hypercuboidBoard, rectangularBoard, cubeLatticeBoard,
-    PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, BoardArgType, parseModifier,
+    PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, BoardArgType, parseModifiers,
     numArg, csvArg,
 } from '../shared/boardConfig.ts';
 
@@ -96,19 +96,23 @@ test('is registered as the "hcub" prescribed board type, taking a Number then a 
     );
 });
 
-test('parseModifier(\'beginprod\', [\'hcub\', ...]) parses meshdim then splits the comma-separated ' +
-    'dims token into boardArgs', () => {
-    assert.deepEqual(parseModifier('beginprod', ['hcub', '4', '5,5,2,2']),
-        { kind: 'BeginProd', boardType: 'hcub', boardArgs: [numArg(4), csvArg([5, 5, 2, 2])] });
+// parseModifiers's 'beginprod' handling shares parseBoardTypeArgs with 'prod' - these checks only
+// exercise the (meshdim, comma-separated-dims) board-arg parsing itself, via the resulting nested
+// Prod node's own boardArgs (see boardConfig.product.test.ts for the full beginprod...endprod
+// round trip, including deeper nesting).
+test('parseModifiers(\'beginprod hcub ...; endprod\') parses meshdim then splits the ' +
+    'comma-separated dims token into boardArgs', () => {
+    assert.deepEqual(parseModifiers('beginprod hcub 4 5,5,2,2; endprod'),
+        [{ kind: 'Prod', boardType: 'hcub', boardArgs: [numArg(4), csvArg([5, 5, 2, 2])], modifiers: [] }]);
 });
 
-test('parseModifier(\'beginprod\', [\'hcub\', ...]) still truncates to its 2 required tokens, ' +
+test('parseModifiers(\'beginprod hcub ...; endprod\') still truncates to its 2 required tokens, ' +
     'ignoring anything after them', () => {
-    assert.deepEqual(parseModifier('beginprod', ['hcub', '4', '5,5,2,2', '99']),
-        { kind: 'BeginProd', boardType: 'hcub', boardArgs: [numArg(4), csvArg([5, 5, 2, 2])] });
+    assert.deepEqual(parseModifiers('beginprod hcub 4 5,5,2,2 99; endprod'),
+        [{ kind: 'Prod', boardType: 'hcub', boardArgs: [numArg(4), csvArg([5, 5, 2, 2])], modifiers: [] }]);
 });
 
-test('parseModifier(\'beginprod\', ...) is unaffected for an ordinary comma-free board type', () => {
-    assert.deepEqual(parseModifier('beginprod', ['rect', '3', '3']),
-        { kind: 'BeginProd', boardType: 'rect', boardArgs: [numArg(3), numArg(3)] });
+test('parseModifiers(\'beginprod ...\') is unaffected for an ordinary comma-free board type', () => {
+    assert.deepEqual(parseModifiers('beginprod rect 3 3; endprod'),
+        [{ kind: 'Prod', boardType: 'rect', boardArgs: [numArg(3), numArg(3)], modifiers: [] }]);
 });

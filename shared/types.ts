@@ -233,13 +233,18 @@ export class OnlinePlayerRequest {
     }
 }
 
-// Deep-clones a single BoardModifier - a plain `{ ...m }` alone would still share Prod/BeginProd's
-// own nested boardArgs array (itself a BoardArgEntry[] - see cloneBoardArgEntry()'s own doc comment
-// in boardConfig.ts for why each entry needs its own deep clone too) between the original and the
-// clone, so mutating one's boardArgs would bleed into the other. Used (via .map()) by both
-// GameConfig.copy() and adoptJSONBoardCfg() below.
+// Deep-clones a single BoardModifier - a plain `{ ...m }` alone would still share Prod's own
+// nested boardArgs array (itself a BoardArgEntry[] - see cloneBoardArgEntry()'s own doc comment in
+// boardConfig.ts for why each entry needs its own deep clone too) and, since Prod/Repeat are both
+// tree-shaped, their own nested modifiers array (recursively cloned the same way) between the
+// original and the clone, so mutating one's boardArgs/modifiers wouldn't otherwise bleed into the
+// other. Used (via .map()) by both GameConfig.copy() and adoptJSONBoardCfg() below.
 function cloneBoardModifier(m: BoardModifier): BoardModifier {
-    return 'boardArgs' in m ? { ...m, boardArgs: m.boardArgs.map(cloneBoardArgEntry) } : { ...m };
+    if (m.kind === 'Prod')
+        return { ...m, boardArgs: m.boardArgs.map(cloneBoardArgEntry), modifiers: m.modifiers.map(cloneBoardModifier) };
+    if (m.kind === 'Repeat')
+        return { ...m, modifiers: m.modifiers.map(cloneBoardModifier) };
+    return { ...m };
 }
 
 export class GameConfig {

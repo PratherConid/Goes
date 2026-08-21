@@ -6,13 +6,13 @@ import type {
 import type { BoardConfig, BoardModifier, BoardArgEntry } from '@shared/boardConfig.js';
 import {
     PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, BoardArgType, parseBoardArgToken, computeStarPoints,
-    parseModifier, applyModifiers, projectPoint, MC_DEFAULT_DIST, numArg, csvArg, zolArg, cloneBoardArgEntry,
+    parseModifiers, applyModifiers, projectPoint, MC_DEFAULT_DIST, numArg, csvArg, zolArg, cloneBoardArgEntry,
 } from '@shared/boardConfig.js';
 import { ServerConnection, type RequestHandle } from './serverConnection.js';
 import {
     SidePanelContent, SidePanelHierarchy, SidePanelBwFw, renderSidePanelChrome, sidePanelParent, childButtons,
     renderGamePresetSelection, currentGameSetupHtml, newGameSetupHtml,
-    coloredStoneCircle, fmtTurnList,
+    coloredStoneCircle, fmtTurnList, fmtModifiers,
 } from './sidePanel.js';
 import {
     type Viewport, QUAT_IDENTITY, defaultViewport, computeAlpha, computePerspectiveScale,
@@ -552,7 +552,8 @@ type PopupInfo =
     | { kind: 'withdraw-request'; id: string; from: string; numWithdrawn: number }
     | { kind: 'create-failed'; message: string }
     | { kind: 'login-prompt' }
-    | { kind: 'confirm'; message: string; onYes: () => void; onNo: () => void };
+    | { kind: 'confirm'; message: string; onYes: () => void; onNo: () => void }
+    | { kind: 'edit-modifiers' };
 
 export class Renderer {
     aiEngineReady = false;
@@ -593,6 +594,14 @@ export class Renderer {
     // rebuilds the whole panel - including this input - on every _render().
     private inviteInputTarget: number | 'random' | null = null;
     private inviteInputValue = '';
+    // Transient UI-only state for the 'edit-modifiers' popup (the 'mod' command) - the textarea's
+    // current text (field-backed the same way inviteInputValue is above, since renderPopup()
+    // rebuilds the whole popup, textarea included, on every call) and the parse error to show above
+    // the Ok button, if the last Ok click's parseModifiers(_modText) call threw. Seeded from
+    // newCfg.boardModifiers (via fmtModifiers) when 'mod' opens the popup; written back to
+    // newCfg.boardModifiers only once Ok's parseModifiers call succeeds (see _applyModifiersEdit()).
+    private _modText = '';
+    private _modError: string | null = null;
     // Dedupes 'localEngine' auto-advance attempts (see _render()) per
     // (activeIdx, plyCount) - a failed attempt leaves plyCount unchanged, so
     // this prevents retrying every single _render() tick in a loop; a fresh
@@ -899,21 +908,27 @@ export class Renderer {
         if (this.currentSidePanel === SidePanelContent.CurrentGameSetup)
             for (const btn of childButtons(children, onNav)) this.currentGameSetupButtons.appendChild(btn);
 
-        // The "Select Game Preset" nav button (via childButtons(), like
-        // Home/CurrentGameSetup above) and the "Start New Local Game"/"Start
-        // New Online Game" action buttons (not SidePanelContent nav targets, so
-        // built directly rather than via childButtons()) live in the same
-        // #new-game-buttons div, rebuilt together each navigation to New Game.
+        // Three rows: Game Preset/Board Preset nav buttons (via childButtons(), like
+        // Home/CurrentGameSetup above); Configure Players (also childButtons()) alongside
+        // Configure Modifiers (not a SidePanelContent nav target, so built directly like the
+        // Start-new-game buttons below); Start New Local Game/Start New Online Game (likewise built
+        // directly). All three rows live in the same #new-game-buttons div, rebuilt together each
+        // navigation to New Game. children here is SidePanelHierarchy[NewGame][1] - see its own doc
+        // comment - [GamePresetSelection, BoardPresetSelection, ConfigureOnlinePlayers], in that order.
         this.newGameButtons.innerHTML = '';
         if (this.currentSidePanel === SidePanelContent.NewGame) {
-            const navBtnRow = document.createElement('div');
-            navBtnRow.className = 'btn-row';
-            navBtnRow.append(...childButtons(children, onNav));
-            this.newGameButtons.appendChild(navBtnRow);
-            const btnRow = document.createElement('div');
-            btnRow.className = 'btn-row';
-            btnRow.append(this._buildStartLocalGameBtn(), this._buildStartOnlineGameBtn());
-            this.newGameButtons.appendChild(btnRow);
+            const presetBtnRow = document.createElement('div');
+            presetBtnRow.className = 'btn-row';
+            presetBtnRow.append(...childButtons(children.slice(0, 2), onNav));
+            this.newGameButtons.appendChild(presetBtnRow);
+            const configureBtnRow = document.createElement('div');
+            configureBtnRow.className = 'btn-row';
+            configureBtnRow.append(...childButtons(children.slice(2), onNav), this._buildConfigureModifiersBtn());
+            this.newGameButtons.appendChild(configureBtnRow);
+            const startBtnRow = document.createElement('div');
+            startBtnRow.className = 'btn-row';
+            startBtnRow.append(this._buildStartLocalGameBtn(), this._buildStartOnlineGameBtn());
+            this.newGameButtons.appendChild(startBtnRow);
         }
 
         // GameRecords is a pure hub (like Home) - its own content IS its
@@ -1049,9 +1064,11 @@ export class Renderer {
         // Camera roll (left/right) and scale (up/down, same 1.02 multiply/divide as the status
         // panel's own Scale textbox - see src/camera.ts) - global so they work regardless of which
         // side-panel node is focused, but skipped while a text input (cmdInput, the projMat cell
-        // editor, etc.) has focus so they don't hijack arrow-key input meant for that field.
+        // editor, etc.) has focus, or while any popup (e.g. the 'mod' command's edit-modifiers
+        // textarea) is showing, so they don't hijack arrow-key input meant for those instead.
         document.addEventListener('keydown', e => {
             if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
+            if (this.popUp) return;
             if (document.activeElement instanceof HTMLInputElement) return;
             if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
                 this._active.viewport.quat = applyRoll(this._active.viewport.quat, e.key === 'ArrowLeft' ? 1 : -1);
@@ -1535,9 +1552,10 @@ export class Renderer {
                 + 'slots (see its own usage string above); a variable-dimension type like hcub takes '
                 + 'a single comma-separated list',
             )}
-            ${row('mod &lt;name&gt; &lt;args&gt; …', 'Push a board modifier onto the new-game config (see Board Modifiers)')}
-            ${row('pmod [&lt;n&gt;]', 'Pop n modifiers off the end of the new-game modifier list (default 1)')}
-            ${row('cmod', 'Clear the new-game modifier list')}
+            ${row('mod', 'Open a text box (pre-filled with the new-game config\'s current modifiers) to '
+                + 'freely edit the whole modifier list at once - one "&lt;name&gt; &lt;args&gt;" per '
+                + 'entry, separated by ";" (see Board Modifiers); Ok re-parses it and, if well-formed, '
+                + 'replaces the new-game modifier list - otherwise the box stays open with an error')}
             ${row('ns &lt;n&gt;',             'Set number of stone types for new games')}
             ${row('np &lt;n&gt;',             'Set number of players for new games')}
             ${row('tl &lt;player&gt;-&lt;stone bits&gt; …',
@@ -1613,6 +1631,13 @@ export class Renderer {
             ${row('endprod',
                 'Ends the innermost beginprod: multiplies its finished board into the board that was '
                 + 'active before that beginprod (Cartesian product), and resumes modifying the result')}
+            ${row('repeat &lt;num&gt;',
+                'Repeat: starts building a modifier list to apply, in order, num times in a row - '
+                + 'modifiers up to the matching endrepeat are the ones repeated, each application '
+                + 'transforming the result of the previous one')}
+            ${row('endrepeat',
+                'Ends the innermost repeat: applies its modifiers to the board that was active before '
+                + 'that repeat, num times in a row, and resumes modifying the result')}
             ${row('gcent',
                 'GlobalCentralize: add one new node at the barycenter of every existing node, connected '
                 + 'to all of them')}
@@ -1944,6 +1969,18 @@ export class Renderer {
         return btn;
     }
 
+    // New Game panel's own "Configure Modifiers" button - not a SidePanelContent nav target (like
+    // ConfigureOnlinePlayers's own button, built via childButtons()), so built directly here, same
+    // as _buildStartLocalGameBtn/_buildStartOnlineGameBtn above; does exactly what the 'mod'
+    // command does (_openModifiersEditor()).
+    private _buildConfigureModifiersBtn(): HTMLButtonElement {
+        const btn = document.createElement('button');
+        btn.className = 'panel-child-btn';
+        btn.textContent = 'Configure Modifiers';
+        btn.addEventListener('click', () => this._openModifiersEditor());
+        return btn;
+    }
+
     // Builds the "Configure Online Players" side-panel node's content -
     // a clickable UI for the same onlinePlayerRequest state the
     // tfpro/sol/soe/adde/addl commands mutate (_parseCommand), reusing each
@@ -2152,6 +2189,35 @@ export class Renderer {
             laterBtn.textContent = 'Later';
             laterBtn.addEventListener('click', () => this._dismissPopup());
             btnRow.append(loginBtn, laterBtn);
+        } else if (this.currentPopup.kind === 'edit-modifiers') {
+            // Own layout (label/textarea/error stacked above the Ok button) rather than the shared
+            // text+btnRow pair every other popup kind uses below - appends directly and returns.
+            box.classList.add('mod-edit-box');
+            text.textContent = 'Board modifiers:';
+            const textarea = document.createElement('textarea');
+            // account-input matches the chat textbox's own look (#chat-input); mod-edit-textarea
+            // layers this popup's own sizing on top (see index.html).
+            textarea.className = 'account-input mod-edit-textarea';
+            textarea.rows = 4;
+            textarea.value = this._modText;
+            // Field-backed the same way inviteInputValue is (see its own doc comment) - not
+            // re-rendered on every keystroke, so the textarea keeps focus/cursor position while typing.
+            textarea.addEventListener('input', () => { this._modText = textarea.value; });
+            box.append(text, textarea);
+            if (this._modError !== null) {
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'mod-edit-error';
+                errorDiv.textContent = this._modError;
+                box.appendChild(errorDiv);
+            }
+            const okBtn = document.createElement('button');
+            okBtn.className = 'panel-child-btn';
+            okBtn.textContent = 'Ok';
+            okBtn.addEventListener('click', () => this._applyModifiersEdit());
+            btnRow.appendChild(okBtn);
+            box.appendChild(btnRow);
+            this.popupOverlay.appendChild(box);
+            return;
         } else {
             text.textContent = this.currentPopup.message;
             const okBtn = document.createElement('button');
@@ -2176,6 +2242,32 @@ export class Renderer {
         this.currentPopup = null;
         this._advancePopupQueue();
         this._render();
+    }
+
+    // Opens the edit-modifiers popup (the 'mod' command, and the New Game panel's own "Configure
+    // Modifiers" button - see _buildConfigureModifiersBtn()) - seeded from the current
+    // newCfg.boardModifiers via fmtModifiers, same as _modText's own doc comment describes.
+    private _openModifiersEditor() {
+        this._modText = fmtModifiers(this.newCfg.boardModifiers);
+        this._modError = null;
+        this.popupQueue.push({ kind: 'edit-modifiers' });
+        this._advancePopupQueue();
+    }
+
+    // The 'edit-modifiers' popup's Ok button: parses the whole textarea via parseModifiers (the
+    // mutually-recursive-with-parseModifier tree builder in boardConfig.ts, which handles
+    // beginprod/endprod nesting itself - see its own doc comment). On success, adopts the result
+    // into newCfg.boardModifiers and closes the popup; on failure, keeps the popup open and shows
+    // the error above the Ok button instead, leaving _modText as the user left it.
+    private _applyModifiersEdit() {
+        try {
+            this.newCfg.boardModifiers = parseModifiers(this._modText);
+        } catch (e) {
+            this._modError = e instanceof Error ? e.message : String(e);
+            this._render();
+            return;
+        }
+        this._dismissPopup();
     }
 
     // Drops any 'invite' popup for game `id` - currently showing or still queued (relevant when
@@ -2976,25 +3068,7 @@ export class Renderer {
             this.newCfg.boardArgs = entries.map(cloneBoardArgEntry);
         }
         else if (cmd === 'mod') {
-            if (!parts[1]) { this._setCmdOutput('Usage: mod <name> <args…>'); return; }
-            try {
-                this.newCfg.boardModifiers.push(parseModifier(parts[1], parts.slice(2)));
-            } catch (e) {
-                this._setCmdOutput(e instanceof Error ? e.message : String(e));
-                return;
-            }
-        }
-        else if (cmd === 'pmod') {
-            let n = 1;
-            if (parts[1]) {
-                const parsed = posInt(parts[1]);
-                if (parsed === null) { this._setCmdOutput('Usage: pmod [n]  (positive integer)'); return; }
-                n = parsed;
-            }
-            this.newCfg.boardModifiers.splice(-n);
-        }
-        else if (cmd === 'cmod') {
-            this.newCfg.boardModifiers = [];
+            this._openModifiersEditor();
         }
         else if (cmd === 'ns') {
             const n = Number(parts[1]);

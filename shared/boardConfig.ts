@@ -1617,7 +1617,7 @@ export enum BoardArgType { Number = 'Number', CommaSeparatedNumbers = 'CommaSepa
  * One parsed board-arg token, tagged with its own `BoardArgType` so callers never have to
  * separately track "which type produced this value" alongside a flattened, anonymous number -
  * this is the type every "list of board args" in this codebase is a list OF (`GameConfig.boardArgs`,
- * `BoardModifier`'s own `Prod`/`BeginProd.boardArgs`, `PrescribedBoardFns`' own rest args, ...):
+ * `BoardModifier`'s own `Prod.boardArgs`, `PrescribedBoardFns`' own rest args, ...):
  * exactly one `BoardArgEntry` per POSITIONAL arg (never flattened), so `entries[i]` always
  * corresponds to `PrescribedBoardMap[pb][0][i]` (that positional arg's own declared `BoardArgType`)
  * for any board type `pb`. Earlier revisions of this design flattened every entry into one
@@ -1684,8 +1684,8 @@ export function parseBoardArgToken(type: BoardArgType, token: string): BoardArgE
  * The exact inverse of `parseBoardArgToken` (modulo `CommaSeparatedNumbers`/`ZeroOneList`
  * distinguishing themselves only via separator, `,` vs none, on the way back out too) - reconstructs
  * the command-line token `e` was parsed from. Used wherever a `BoardArgEntry` needs to be rendered
- * back to displayable/re-parseable text (e.g. `src/sidePanel.ts`'s `fmtModifiers()`, for a `Prod`/
- * `BeginProd` modifier's own `boardArgs`).
+ * back to displayable/re-parseable text (e.g. `src/sidePanel.ts`'s `fmtModifiers()`, for a `Prod`
+ * modifier's own `boardArgs`).
  */
 export function formatBoardArgEntry(e: BoardArgEntry): string {
     switch (e.kind) {
@@ -1851,7 +1851,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: BoardArgEntry
 
 /**
  * Command name (PrescribedBoardMap[pb][1], e.g. 'rect', 'cublat') -> PrescribedBoard enum value -
- * shared by buildPrescribedBoard below and parseModifier's beginprod validation.
+ * shared by buildPrescribedBoard below and parseModifiers's beginprod validation.
  */
 const PRESCRIBED_BOARD_BY_NAME = new Map<string, PrescribedBoard>(
     (Object.entries(PrescribedBoardMap) as [string, [BoardArgType[], string, string, string]][])
@@ -1861,7 +1861,8 @@ const PRESCRIBED_BOARD_BY_NAME = new Map<string, PrescribedBoard>(
 /**
  * Builds a board from its command-name kind (e.g. 'rect', 'cublat' - see PrescribedBoardMap) and
  * positional args - the same string-keyed dispatch renderer.ts's `_cmdToBoard` builds from the same
- * PrescribedBoardMap/PrescribedBoardFns pairing. Used by applyModifiers's BeginProd handling below.
+ * PrescribedBoardMap/PrescribedBoardFns pairing. Used by applyModifier's Prod handling (to build the
+ * fresh board a Prod node multiplies in) and parseModifiers's beginprod handling below.
  * Throws for an unrecognized kind.
  */
 function buildPrescribedBoard(kind: string, args: BoardArgEntry[]): BoardConfig {
@@ -1876,9 +1877,8 @@ export type BoardModifier =
     | { kind: 'MergeClose'; dist: number }
     | { kind: 'TriangleForm'; w: number }
     | { kind: 'SquareForm'; w: number }
-    | { kind: 'Prod'; boardType: string; boardArgs: BoardArgEntry[] }
-    | { kind: 'BeginProd'; boardType: string; boardArgs: BoardArgEntry[] }
-    | { kind: 'EndProd' }
+    | { kind: 'Prod'; boardType: string; boardArgs: BoardArgEntry[]; modifiers: BoardModifier[] }
+    | { kind: 'Repeat'; count: number; modifiers: BoardModifier[] }
     | { kind: 'GlobalCentralize' }
     | { kind: 'SqOctarize' }
     | { kind: 'Scale'; factor: number }
@@ -1890,7 +1890,8 @@ export const MC_DEFAULT_DIST = 0.01;
 
 /**
  * Parses a board-type command name (e.g. 'rect', 'cublat' - see PrescribedBoardMap) plus its
- * positional dimension args, shared by `prod`/`beginprod`'s parseModifier branches below: the
+ * positional dimension args, shared by `prod`'s parseModifier branch and `beginprod`'s
+ * parseModifiers branch below: the
  * board type is validated eagerly via PRESCRIBED_BOARD_BY_NAME, and its args must number at least
  * PrescribedBoardMap's declared arg-type count for that type or this throws; extras beyond that
  * count are silently truncated (so e.g. a leftover product-context arg doesn't need to be
@@ -1916,11 +1917,16 @@ function parseBoardTypeArgs(cmdName: string, args: string[]): { boardType: strin
 
 /**
  * Parses a BoardModifier from its command name ('rect', 'es', 'mc', 'triform', 'sqform', 'prod',
- * 'beginprod', 'endprod', 'gcent', 'sqocta', 'scale', 'nis', 'eis') and string args - see
- * applyModifier/applyModifiers. mc's arg is optional: with none, `dist` defaults to MC_DEFAULT_DIST.
- * prod/beginprod's first arg is a board-type command name and the rest are that type's own
- * positional dimension args - see parseBoardTypeArgs. nis/eis's arg is a node/edge selector (see
- * shared/selector.ts) - see nodeInducedSubgraph/edgeInducedSubgraph.
+ * 'gcent', 'sqocta', 'scale', 'nis', 'eis') and string args - see applyModifier/applyModifiers.
+ * mc's arg is optional: with none, `dist` defaults to MC_DEFAULT_DIST. prod's first arg is a
+ * board-type command name and the rest are that type's own positional dimension args - see
+ * parseBoardTypeArgs; parsed this way, prod's own `modifiers` is always empty (the one-shot case).
+ * nis/eis's arg is a node/edge selector (see shared/selector.ts) - see
+ * nodeInducedSubgraph/edgeInducedSubgraph. Does NOT accept 'beginprod'/'endprod' or
+ * 'repeat'/'endrepeat' - unlike every other name, resolving those isn't possible from one command in
+ * isolation (a 'beginprod'/'repeat' needs everything up to its own matching closer, however many
+ * commands away that is) - see parseModifiers (which handles a whole modifiers-list text, calling
+ * this function for every other command).
  */
 export function parseModifier(name: string, args: string[]): BoardModifier {
     if (name === 'rect') {
@@ -1967,15 +1973,7 @@ export function parseModifier(name: string, args: string[]): BoardModifier {
     }
     if (name === 'prod') {
         const { boardType, boardArgs } = parseBoardTypeArgs('prod', args);
-        return { kind: 'Prod', boardType, boardArgs };
-    }
-    if (name === 'beginprod') {
-        const { boardType, boardArgs } = parseBoardTypeArgs('beginprod', args);
-        return { kind: 'BeginProd', boardType, boardArgs };
-    }
-    if (name === 'endprod') {
-        assert(args.length === 0, `endprod takes no arguments, got ${args.length}`);
-        return { kind: 'EndProd' };
+        return { kind: 'Prod', boardType, boardArgs, modifiers: [] };
     }
     if (name === 'nis') {
         assert(args.length >= 1, `nis takes at least 1 argument (a node selector), got ${args.length}`);
@@ -1991,18 +1989,81 @@ export function parseModifier(name: string, args: string[]): BoardModifier {
     throw new Error(`Unknown board modifier: ${name}`);
 }
 
+// The two "opener" names parseModifiers (below) resolves itself - unlike every other modifier
+// name, neither is resolved by its own command alone, so parseModifier rejects both (see its own
+// doc comment) - each maps to its own required closer.
+const MODIFIER_CLOSERS: Record<string, string> = { beginprod: 'endprod', repeat: 'endrepeat' };
+
+/**
+ * Parses a whole modifiers-list text - the same "&lt;name&gt; &lt;args&gt;; &lt;name&gt;
+ * &lt;args&gt;; ..." syntax `fmtModifiers` (src/sidePanel.ts) renders back out, one semicolon-
+ * separated command per BoardModifier (see parseModifier's own doc comment for the per-command
+ * grammar) - into a BoardModifier[]. Every command is self-contained and parsed via parseModifier,
+ * *except* 'beginprod'/'repeat' (see MODIFIER_CLOSERS above): parseModifiers instead recurses on
+ * itself (see the internal `run` below) to fold the whole beginprod...endprod or repeat...endrepeat
+ * span, however many commands long, into a single nested 'Prod'/'Repeat' node (BoardModifier's own
+ * tree shape) - the two nest freely inside each other, provided each opener's own matching closer is
+ * the next one that ends it (bracket-style; a 'repeat' opened inside a 'beginprod' must be closed by
+ * its own 'endrepeat' before that 'beginprod's own 'endprod', not after). Throws on an unmatched
+ * closer, a closer that doesn't match its nearest still-open opener, or a still-open opener at the
+ * end of the text.
+ */
+export function parseModifiers(text: string): BoardModifier[] {
+    const commands = text.split(';').map(s => s.trim()).filter(s => s.length > 0);
+    const closers = new Set(Object.values(MODIFIER_CLOSERS));
+
+    // Consumes commands off the front of `cs`, in order, until either it's exhausted or the next
+    // one is any closer (left unconsumed - for this same function's own opener case, always the
+    // caller one level up, to consume itself and check it's the right one) - returns the parsed
+    // modifiers plus whatever commands are left. The opener cases' own recursive calls are what
+    // make this self-recursive.
+    function run(cs: string[]): [BoardModifier[], string[]] {
+        const modifiers: BoardModifier[] = [];
+        let rest = cs;
+        while (rest.length > 0 && !closers.has(rest[0].split(/\s+/)[0])) {
+            const [name, ...args] = rest[0].split(/\s+/);
+            rest = rest.slice(1);
+            const closer = MODIFIER_CLOSERS[name];
+            if (closer === undefined) {
+                modifiers.push(parseModifier(name, args));
+                continue;
+            }
+            const [nested, afterNested] = run(rest);
+            assert(afterNested.length > 0, `${name}: missing matching ${closer}`);
+            const [gotCloser, ...endArgs] = afterNested[0].split(/\s+/);
+            assert(gotCloser === closer, `${name}: expected matching ${closer}, got '${gotCloser}'`);
+            assert(endArgs.length === 0, `${closer} takes no arguments, got ${endArgs.length}`);
+            rest = afterNested.slice(1);
+            if (name === 'beginprod') {
+                const { boardType, boardArgs } = parseBoardTypeArgs('beginprod', args);
+                modifiers.push({ kind: 'Prod', boardType, boardArgs, modifiers: nested });
+            } else {
+                assert(args.length === 1, `repeat takes exactly 1 argument (count), got ${args.length}`);
+                const count = Number(args[0]);
+                assert(Number.isInteger(count) && count >= 0,
+                    `repeat: count must be a nonnegative integer, got "${args[0]}"`);
+                modifiers.push({ kind: 'Repeat', count, modifiers: nested });
+            }
+        }
+        return [modifiers, rest];
+    }
+
+    const [modifiers, rest] = run(commands);
+    if (rest.length > 0) {
+        const closer = rest[0].split(/\s+/)[0];
+        const opener = Object.keys(MODIFIER_CLOSERS).find(k => MODIFIER_CLOSERS[k] === closer);
+        throw new Error(`${closer}: no matching ${opener}`);
+    }
+    return modifiers;
+}
+
 /**
  * Applies `modifier` to `bc`, dispatching to `rectify` / `edgeSplit` / `mergeClose` /
- * `triangleForm` / `squareForm` / `product` / `globalCentralize` / `sqOctarize` / `scaleBoard` /
- * `nodeInducedSubgraph` / `edgeInducedSubgraph`
- * (Prod builds a fresh board from its own boardType/boardArgs via buildPrescribedBoard, then
- * multiplies it into `bc`). Does NOT
- * accept BeginProd/EndProd - those have no meaning applied to a
- * single board in isolation (BeginProd starts a whole new board for applyModifiers to build up
- * separately - potentially with further modifiers of its own before the product happens, unlike
- * Prod's one-shot immediate product - and EndProd's `product()` needs that suspended outer board
- * back too) - see applyModifiers, which handles both specially and is the only valid way to apply a
- * modifier list containing them.
+ * `triangleForm` / `squareForm` / `globalCentralize` / `sqOctarize` / `scaleBoard` /
+ * `nodeInducedSubgraph` / `edgeInducedSubgraph` (Prod builds a fresh board from its own
+ * boardType/boardArgs via buildPrescribedBoard, applies its own nested `modifiers` to that fresh
+ * board via applyModifiers, then multiplies the result into `bc`; Repeat applies its own nested
+ * `modifiers` to `bc`, via applyModifiers, `count` times in a row).
  */
 export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardConfig {
     switch (modifier.kind) {
@@ -2011,47 +2072,24 @@ export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardCo
         case 'MergeClose': return mergeClose(bc, modifier.dist);
         case 'TriangleForm': return triangleForm(bc, modifier.w);
         case 'SquareForm': return squareForm(bc, modifier.w);
-        case 'Prod': return product(bc, buildPrescribedBoard(modifier.boardType, modifier.boardArgs));
+        case 'Prod': {
+            const sub = applyModifiers(buildPrescribedBoard(modifier.boardType, modifier.boardArgs), modifier.modifiers);
+            return product(bc, sub);
+        }
+        case 'Repeat': {
+            let current = bc;
+            for (let i = 0; i < modifier.count; i++) current = applyModifiers(current, modifier.modifiers);
+            return current;
+        }
         case 'GlobalCentralize': return globalCentralize(bc);
         case 'SqOctarize': return sqOctarize(bc);
         case 'Scale': return scaleBoard(bc, modifier.factor);
         case 'NodeInducedSubgraph': return nodeInducedSubgraph(bc, modifier.sel);
         case 'EdgeInducedSubgraph': return edgeInducedSubgraph(bc, modifier.sel);
-        case 'BeginProd':
-        case 'EndProd':
-            throw new Error(`applyModifier: ${modifier.kind} must be applied via applyModifiers, not directly`);
     }
 }
 
-/**
- * Applies every modifier in `modifiers`, in order, to `bc`. Most modifiers just transform the
- * "current" board via applyModifier, but BeginProd/EndProd (rejected by applyModifier itself - see
- * its doc comment) are handled specially here, via a stack of boards suspended to be multiplied back
- * in later:
- *   - BeginProd pushes the current board onto the stack and starts a fresh "current" board (built via
- *     buildPrescribedBoard from its boardType/boardArgs), so that modifiers up to the matching EndProd
- *     transform this new board instead of the outer one.
- *   - EndProd pops the suspended outer board and replaces "current" with `product(outer, current)` -
- *     the two multiplied together.
- * BeginProd/EndProd pairs may nest (a BeginProd inside another BeginProd...EndProd span just pushes a
- * second stack entry). Throws on an EndProd with no matching BeginProd (empty stack), or if the
- * modifier list ends with an unmatched BeginProd (non-empty stack).
- */
+/** Applies every modifier in `modifiers`, in order, to `bc`. */
 export function applyModifiers(bc: BoardConfig, modifiers: BoardModifier[]): BoardConfig {
-    let current = bc;
-    const stack: BoardConfig[] = [];
-    for (const m of modifiers) {
-        if (m.kind === 'BeginProd') {
-            stack.push(current);
-            current = buildPrescribedBoard(m.boardType, m.boardArgs);
-        } else if (m.kind === 'EndProd') {
-            assert(stack.length > 0, 'applyModifiers: endprod with no matching beginprod');
-            const outer = stack.pop()!;
-            current = product(outer, current);
-        } else {
-            current = applyModifier(current, m);
-        }
-    }
-    assert(stack.length === 0, `applyModifiers: ${stack.length} unmatched beginprod(s)`);
-    return current;
+    return modifiers.reduce((current, m) => applyModifier(current, m), bc);
 }

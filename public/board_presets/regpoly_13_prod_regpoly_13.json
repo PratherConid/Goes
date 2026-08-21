@@ -6,6 +6,6 @@
   "boardModifiers": [
     {"kind": "Prod", "boardType": "regpoly", "boardArgs": [
       {"kind": "Number", "value": 13}
-    ]}
+    ], "modifiers": []}
   ]
 }

@@ -1,9 +1,13 @@
-// Regression tests for the `product` board-transform function and the `beginprod`/`endprod`
-// modifier pair that drives it via applyModifiers's stack (applyModifier itself must reject both).
+// Regression tests for the `product` board-transform function and the tree-shaped 'Prod'
+// BoardModifier that drives it: `prod` parses straight to a one-shot Prod node (empty nested
+// `modifiers`), while `beginprod`/`endprod` are handled by parseModifiers - which parses a whole
+// modifiers-list text at once, folding a beginprod...endprod span (however many commands long)
+// into a single nested Prod node via its own self-recursion - see BoardModifier's/parseModifiers's
+// own doc comments in shared/boardConfig.ts.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    rectangularBoard, product, parseModifier, applyModifier, applyModifiers, numArg,
+    rectangularBoard, product, parseModifier, parseModifiers, applyModifier, applyModifiers, numArg,
 } from '../shared/boardConfig.ts';
 
 test('product against a single-node board reproduces the other factor\'s own adjacency exactly', () => {
@@ -55,72 +59,62 @@ test('product of a 2x2 grid and a 2-path is graph-isomorphic to a 2x2x2 cube (N,
     assert.deepEqual(degrees, new Array(8).fill(3), 'every node: deg_G(i) + deg_H(j) = 2 + 1 = 3');
 });
 
-test('parseModifier parses beginprod\'s board type and integer args, and bare endprod', () => {
-    assert.deepEqual(parseModifier('beginprod', ['rect', '3', '3']),
-        { kind: 'BeginProd', boardType: 'rect', boardArgs: [numArg(3), numArg(3)] });
-    assert.deepEqual(parseModifier('endprod', []), { kind: 'EndProd' });
+test('parseModifier(\'prod\', ...) parses a one-shot Prod node with empty nested modifiers', () => {
+    assert.deepEqual(parseModifier('prod', ['rect', '3', '3']),
+        { kind: 'Prod', boardType: 'rect', boardArgs: [numArg(3), numArg(3)], modifiers: [] });
 });
 
-test('parseModifier rejects malformed beginprod/endprod', () => {
-    assert.throws(() => parseModifier('beginprod', []), 'needs at least a board type');
-    assert.throws(() => parseModifier('beginprod', ['rect', '3', 'abc']), 'non-integer board arg');
-    assert.throws(() => parseModifier('beginprod', ['nope', '1', '2']), 'unknown board type');
-    assert.throws(() => parseModifier('endprod', ['x']), 'endprod takes no arguments');
+test('parseModifiers builds a nested Prod node from a beginprod...endprod span', () => {
+    assert.deepEqual(parseModifiers('beginprod rect 3 3; endprod'),
+        [{ kind: 'Prod', boardType: 'rect', boardArgs: [numArg(3), numArg(3)], modifiers: [] }]);
 });
 
-test('parseModifier(\'beginprod\', ...) truncates extra board args to the type\'s required count', () => {
-    assert.deepEqual(parseModifier('beginprod', ['rect', '3', '3', '99', '100']),
-        { kind: 'BeginProd', boardType: 'rect', boardArgs: [numArg(3), numArg(3)] });
+test('parseModifiers rejects malformed beginprod/endprod', () => {
+    assert.throws(() => parseModifiers('beginprod'), 'needs at least a board type');
+    assert.throws(() => parseModifiers('beginprod rect 3 abc; endprod'), 'non-integer board arg');
+    assert.throws(() => parseModifiers('beginprod nope 1 2; endprod'), 'unknown board type');
+    assert.throws(() => parseModifiers('beginprod rect 3 3; endprod x'), 'endprod takes no arguments');
+    assert.throws(() => parseModifiers('endprod'), 'endprod with no matching beginprod');
 });
 
-test('parseModifier(\'beginprod\', ...) throws when fewer board args than required are given', () => {
-    assert.throws(() => parseModifier('beginprod', ['rect', '3']),
+test('parseModifiers(\'beginprod ...\') truncates extra board args to the type\'s required count', () => {
+    assert.deepEqual(parseModifiers('beginprod rect 3 3 99 100; endprod'),
+        [{ kind: 'Prod', boardType: 'rect', boardArgs: [numArg(3), numArg(3)], modifiers: [] }]);
+});
+
+test('parseModifiers(\'beginprod ...\') throws when fewer board args than required are given', () => {
+    assert.throws(() => parseModifiers('beginprod rect 3; endprod'),
         /requires 2 argument\(s\), got 1/);
 });
 
-test('applyModifier rejects BeginProd/EndProd directly - only applyModifiers may apply them', () => {
-    const bc = rectangularBoard(2, 2);
-    assert.throws(() => applyModifier(bc, { kind: 'BeginProd', boardType: 'rect', boardArgs: [numArg(1), numArg(1)] }));
-    assert.throws(() => applyModifier(bc, { kind: 'EndProd' }));
-});
-
-test('applyModifiers: beginprod...endprod multiplies the finished inner board into the outer one', () => {
+test('applyModifier applies a Prod node: builds boardType/boardArgs, applies its own nested ' +
+    'modifiers, then multiplies the result into bc', () => {
     const outer = rectangularBoard(2, 1);
-    const result = applyModifiers(outer, [
-        parseModifier('beginprod', ['rect', '1', '2']),
-        parseModifier('endprod', []),
-    ]);
+    const result = applyModifier(
+        outer, { kind: 'Prod', boardType: 'rect', boardArgs: [numArg(1), numArg(2)], modifiers: [] });
     assert.deepEqual(result, product(outer, rectangularBoard(1, 2)));
 });
 
-test('applyModifiers: modifiers between beginprod/endprod transform the inner board, not the outer one', () => {
+test('a Prod node\'s own nested modifiers transform its inner board, not the outer one', () => {
     const outer = rectangularBoard(2, 1);
-    const result = applyModifiers(outer, [
-        parseModifier('beginprod', ['rect', '2', '2']),
-        parseModifier('es', ['2']),
-        parseModifier('endprod', []),
-    ]);
+    const modifiers = parseModifiers('beginprod rect 2 2; es 2; endprod');
+    const result = applyModifiers(outer, modifiers);
     const expectedInner = applyModifier(rectangularBoard(2, 2), parseModifier('es', ['2']));
     assert.deepEqual(result, product(outer, expectedInner));
 });
 
-test('applyModifiers: beginprod/endprod pairs nest, each popping its own stack entry', () => {
+test('beginprod/endprod pairs nest into a nested Prod node inside a nested Prod node', () => {
     const outer = rectangularBoard(3, 1);
-    const result = applyModifiers(outer, [
-        parseModifier('beginprod', ['rect', '1', '2']),
-        parseModifier('beginprod', ['rect', '2', '1']),
-        parseModifier('endprod', []),
-        parseModifier('endprod', []),
-    ]);
+    const modifiers = parseModifiers('beginprod rect 1 2; beginprod rect 2 1; endprod; endprod');
+    assert.deepEqual(modifiers, [{
+        kind: 'Prod', boardType: 'rect', boardArgs: [numArg(1), numArg(2)],
+        modifiers: [{ kind: 'Prod', boardType: 'rect', boardArgs: [numArg(2), numArg(1)], modifiers: [] }],
+    }]);
+    const result = applyModifiers(outer, modifiers);
     const innerProduct = product(rectangularBoard(1, 2), rectangularBoard(2, 1));
     assert.deepEqual(result, product(outer, innerProduct));
 });
 
-test('applyModifiers throws on an unmatched endprod or a dangling beginprod', () => {
-    const bc = rectangularBoard(2, 2);
-    assert.throws(() => applyModifiers(bc, [parseModifier('endprod', [])]), 'endprod with no beginprod');
-    assert.throws(
-        () => applyModifiers(bc, [parseModifier('beginprod', ['rect', '1', '1'])]),
-        'beginprod never closed',
-    );
+test('a beginprod left unmatched throws (an unclosed beginprod at the end of the text)', () => {
+    assert.throws(() => parseModifiers('beginprod rect 1 1'), /missing matching endprod/);
 });

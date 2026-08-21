@@ -57,6 +57,20 @@
       text-align: center;
     }
     .popup-box .btn-row { margin-top: 10px; }
+    /* Wide/left-aligned variant for the 'mod' command's edit-modifiers popup - the plain
+       max-width:320px/text-align:center above suits a short message, not a multi-entry list. */
+    .popup-box.mod-edit-box { max-width: 480px; text-align: left; }
+    /* Layered on top of .account-input (the chat textbox's own class - see #chat-input) for a
+       matching look; only the bits #chat-input itself also overrides (resize/font-family) plus
+       this popup's own sizing are added here. */
+    .mod-edit-textarea {
+      display: block;
+      min-height: 120px;
+      margin-top: 6px;
+      font-family: inherit;
+      resize: vertical;
+    }
+    .mod-edit-error { color: #000; margin-top: 8px; font-size: 13px; }
 
     /* Fixed top-right so it's reachable regardless of layout mode - even
        when #side-panel is hidden/fullscreen and nothing else is on screen. */

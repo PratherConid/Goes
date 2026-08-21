@@ -312,29 +312,38 @@ export const fmtGlobalLimit = (limit: (number | null)[]) =>
     limit
         .map((lim, i) => `${coloredStoneCircle(i + 1)}&nbsp;${lim === null ? '∞' : lim}`)
         .join('&nbsp;&nbsp;&nbsp;');
-// Renders e.g. "rect; es 3; mc 0.5; triform 3; prod rect 3 3; beginprod rect 3 3; endprod; gcent;
-// sqocta; scale 2; nis (deg gt 2); eis (all)" - one "<name> <args>" entry per modifier (same short
-// names as the `mod` command, see boardConfig.ts's parseModifier), joined by "; ".
-export const fmtModifiers = (modifiers: BoardModifier[]) =>
-    modifiers
-        .map((m): string => {
-            switch (m.kind) {
-                case 'Rectify': return 'rect';
-                case 'EdgeSplit': return `es ${m.splitN}`;
-                case 'MergeClose': return `mc ${m.dist}`;
-                case 'TriangleForm': return `triform ${m.w}`;
-                case 'SquareForm': return `sqform ${m.w}`;
-                case 'Prod': return `prod ${m.boardType} ${m.boardArgs.map(formatBoardArgEntry).join(' ')}`;
-                case 'BeginProd': return `beginprod ${m.boardType} ${m.boardArgs.map(formatBoardArgEntry).join(' ')}`;
-                case 'EndProd': return 'endprod';
-                case 'GlobalCentralize': return 'gcent';
-                case 'SqOctarize': return 'sqocta';
-                case 'Scale': return `scale ${m.factor}`;
-                case 'NodeInducedSubgraph': return `nis ${formatSelector(m.sel)}`;
-                case 'EdgeInducedSubgraph': return `eis ${formatSelector(m.sel)}`;
-            }
-        })
-        .join('; ');
+// Renders one modifier as one "<name> <args>" entry (same short names as the `mod` command's own
+// edit-modifiers popup, see boardConfig.ts's parseModifier/parseModifiers) - except the two
+// tree-shaped modifiers, 'Prod' and 'Repeat', which expand back out to the flat "beginprod <args>;
+// ...; endprod"/"repeat <count>; ...; endrepeat" command sequence parseModifiers would fold back
+// into them, recursively.
+function fmtModifier(m: BoardModifier): string {
+    switch (m.kind) {
+        case 'Rectify': return 'rect';
+        case 'EdgeSplit': return `es ${m.splitN}`;
+        case 'MergeClose': return `mc ${m.dist}`;
+        case 'TriangleForm': return `triform ${m.w}`;
+        case 'SquareForm': return `sqform ${m.w}`;
+        case 'Prod': {
+            const head = `${m.boardType} ${m.boardArgs.map(formatBoardArgEntry).join(' ')}`;
+            return m.modifiers.length === 0
+                ? `prod ${head}`
+                : [`beginprod ${head}`, ...m.modifiers.map(fmtModifier), 'endprod'].join('; ');
+        }
+        case 'Repeat':
+            return [`repeat ${m.count}`, ...m.modifiers.map(fmtModifier), 'endrepeat'].join('; ');
+        case 'GlobalCentralize': return 'gcent';
+        case 'SqOctarize': return 'sqocta';
+        case 'Scale': return `scale ${m.factor}`;
+        case 'NodeInducedSubgraph': return `nis ${formatSelector(m.sel)}`;
+        case 'EdgeInducedSubgraph': return `eis ${formatSelector(m.sel)}`;
+    }
+}
+
+// Renders e.g. "rect; es 3; mc 0.5; triform 3; prod rect 3 3; beginprod rect 3 3; es 2; endprod;
+// repeat 3; es 2; endrepeat; gcent; sqocta; scale 2; nis (deg gt 2); eis (all)" - see fmtModifier
+// above, joined by "; ".
+export const fmtModifiers = (modifiers: BoardModifier[]) => modifiers.map(fmtModifier).join('; ');
 
 // Pure: HTML for the "Current Game Info" side-panel node's content - the
 // active game's live rules, sourced from its BoardView v (already-resolved
