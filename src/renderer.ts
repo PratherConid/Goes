@@ -65,16 +65,19 @@ const _presetDescriptions = new Map([
 // _loadBoardConfigs() - each paired with a short human-readable description shown in the
 // "Select Board Preset" side panel (see renderGamePresetSelection, sidePanel.ts).
 const _boardConfigDescriptions = new Map([
-    ['rect_3x3',   '3×3 rectangular board'],
-    ['rect_9x9',   '9×9 rectangular board'],
-    ['rect_13x13', '13×13 rectangular board'],
-    ['rect_19x19', '19×19 rectangular board'],
-    ['twsq_7x7x2', '7×7×2 twisted-square board'],
-    ['twsq_3x3x2_es_3_prod_lin_4',
+    ['rect_3_3',   '3×3 rectangular board'],
+    ['rect_9_9',   '9×9 rectangular board'],
+    ['rect_13_13', '13×13 rectangular board'],
+    ['rect_19_19', '19×19 rectangular board'],
+    ['twsq_7_7_2', '7×7×2 twisted-square board'],
+    ['twsq_3_3_2_es_3_prod_lin_4',
         '3×3×2 twisted-square board, each edge split into 3, then multiplied by a 4-node line'],
     ['regpoly_5_es_5_prod_lin_6',
         '5-sided regular polygon board, each edge split into 5, then multiplied by a 6-node line'],
-    ['cublat_2x2x2_sqform_9', '2×2×2 cubical board with every square face subdivided into a 9x9 grid'],
+    ['cublat_2_2_2_sqform_9', '2×2×2 cubical board with every square face subdivided into a 9x9 grid'],
+    ['cublat_3_3_3_sel_(deg_gt_3)_sqform_6',
+        '3×3×3 cubical board, keeping only nodes with degree above 3 (drops the 8 corners), each '
+        + 'resulting square replaced by a side-length-6 square board'],
     ['regpoly_13_prod_regpoly_13', 'Product of two 13-sided regular polygon boards'],
     ['star_5_es_6_prod_line_5',
         '5-armed star board, each edge split into 6, then multiplied by a 5-node line'],
@@ -1618,6 +1621,20 @@ export class Renderer {
                 + 'edges) with an octahedron - two new apex nodes, one on each side along the new '
                 + "dimension, each connected to that square's 4 corners")}
             ${row('scale &lt;num&gt;', 'Scale: multiply every node\'s natural-dimension position by num')}
+            ${row('nis &lt;node-selector&gt;',
+                'NodeInducedSubgraph: keep only the nodes the given node selector selects (see '
+                + 'Selectors below), dropping every other node and any edge touching one')}
+            ${head('Selectors')}
+            ${row('(union SEL SEL)', 'Set union')}
+            ${row('(inter SEL SEL)', 'Set intersection')}
+            ${row('(diff SEL SEL)', 'Set difference (left minus right)')}
+            ${row('(compl SEL)', 'Complement, within all nodes or all edges (whichever SEL selects from)')}
+            ${row('(all &lt;node|edge&gt;)', 'Every node, or every edge')}
+            ${row('(none &lt;node|edge&gt;)', 'No nodes, or no edges')}
+            ${row('(deg &lt;eq|gt|lt&gt; &lt;num&gt;)', 'Nodes whose degree is =/&gt;/&lt; num')}
+            ${row('(e2n SEL)', 'Node selector to edge selector: an edge is selected iff both its nodes are')}
+            ${row('(n2e SEL)',
+                'Edge selector to node selector: a node is selected iff it lies on a selected edge')}
         </table>`;
     }
 

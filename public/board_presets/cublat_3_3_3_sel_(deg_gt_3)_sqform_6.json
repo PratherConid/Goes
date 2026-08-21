@@ -1,0 +1,12 @@
+{
+  "boardType": "cublat",
+  "boardArgs": [
+    {"kind": "Number", "value": 3},
+    {"kind": "Number", "value": 3},
+    {"kind": "Number", "value": 3}
+  ],
+  "boardModifiers": [
+    {"kind": "NodeInducedSubgraph", "sel": {"op": "deg", "type": "node", "cmp": "gt", "n": 3}},
+    {"kind": "SquareForm", "w": 6}
+  ]
+}

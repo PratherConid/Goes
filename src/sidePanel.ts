@@ -6,6 +6,7 @@
 import type { BoardView, GameConfig, PlayerInfo, TurnInfo } from '@shared/types.js';
 import type { BoardModifier } from '@shared/boardConfig.js';
 import { formatBoardArgEntry } from '@shared/boardConfig.js';
+import { formatSelector } from '@shared/selector.js';
 import { STONE_MAP } from '@shared/boardState.js';
 
 export enum SidePanelContent {
@@ -312,8 +313,8 @@ export const fmtGlobalLimit = (limit: (number | null)[]) =>
         .map((lim, i) => `${coloredStoneCircle(i + 1)}&nbsp;${lim === null ? '∞' : lim}`)
         .join('&nbsp;&nbsp;&nbsp;');
 // Renders e.g. "rect; es 3; mc 0.5; triform 3; prod rect 3 3; beginprod rect 3 3; endprod; gcent;
-// sqocta; scale 2" - one "<name> <args>" entry per modifier (same short names as the `mod`
-// command, see boardConfig.ts's parseModifier), joined by "; ".
+// sqocta; scale 2; nis (deg gt 2)" - one "<name> <args>" entry per modifier (same short names as
+// the `mod` command, see boardConfig.ts's parseModifier), joined by "; ".
 export const fmtModifiers = (modifiers: BoardModifier[]) =>
     modifiers
         .map((m): string => {
@@ -329,6 +330,7 @@ export const fmtModifiers = (modifiers: BoardModifier[]) =>
                 case 'GlobalCentralize': return 'gcent';
                 case 'SqOctarize': return 'sqocta';
                 case 'Scale': return `scale ${m.factor}`;
+                case 'NodeInducedSubgraph': return `nis ${formatSelector(m.sel)}`;
             }
         })
         .join('; ');

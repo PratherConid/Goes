@@ -7,6 +7,18 @@ export function assert(cond: boolean, msg: string): asserts cond {
     if (!cond) throw new Error(`Assertion failed: ${msg}`);
 }
 
+/** One edge {n1, n2} of a board's adjacency graph, always normalized so n1 <= n2 - see makeBoardEdge
+ * - so the same edge has a unique representation regardless of which endpoint was found first. */
+export interface BoardEdge {
+    n1: number;
+    n2: number;
+}
+
+/** Builds a BoardEdge from two node indices in either order, normalizing n1 <= n2. */
+export function makeBoardEdge(a: number, b: number): BoardEdge {
+    return a <= b ? { n1: a, n2: b } : { n1: b, n2: a };
+}
+
 export const enum MoveType {
     NOMOVE = 0,
     PLACE  = 1,

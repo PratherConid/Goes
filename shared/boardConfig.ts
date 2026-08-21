@@ -2,6 +2,7 @@ import type { GameConfig } from './types.js';
 import { assert } from './types.js';
 import { convexHullEdges } from './geometry.js';
 import { findTriangles, findSquares, zeroAdj, mergeBoards } from './topology.js';
+import { type Selector, parseNodeSelector, selectNode } from './selector.js';
 // The FractalDescr/nodeEdgeMergeFlakeRec recursive core, and each "flake" shape's own static
 // *FractalDescr() builder, live in fractal.ts (see git history) - the actual BoardConfig-returning
 // functions built on them (dodecahedronBoard/dodecahedronFlake/etc., below) stay here alongside
@@ -219,6 +220,27 @@ export function mergeClose(bc: BoardConfig, dist: number): BoardConfig {
             if (d2 < dist2) quot.push([i, j]);
         }
     return quotientBoard(bc, quot);
+}
+
+/**
+ * The subgraph induced by `sel` (evaluated via shared/selector.ts's selectNode): keeps only the
+ * nodes `sel` selects - compacted to a fresh 0..k-1 index range, in ascending original-index order,
+ * positions/embDim/projMat otherwise untouched - with two surviving nodes adjacent iff they were
+ * already adjacent in `bc`. Unlike quotientBoard/mergeClose, nothing is merged or repositioned; a
+ * non-selected node's own incident edges are simply dropped along with it.
+ */
+export function nodeInducedSubgraph(bc: BoardConfig, sel: Selector): BoardConfig {
+    const selected = selectNode(bc.adj, bc.emb.pos, sel);
+    const kept: number[] = [];
+    for (let i = 0; i < bc.N; i++) if (selected.has(i)) kept.push(i);
+
+    const pos = kept.map(i => bc.emb.pos[i]);
+    const adj = zeroAdj(kept.length);
+    for (let a = 0; a < kept.length; a++)
+        for (let b = a + 1; b < kept.length; b++)
+            if (bc.adj[kept[a]][kept[b]]) { adj[a][b] = 1; adj[b][a] = 1; }
+
+    return make(new Embedding(bc.emb.embDim, pos, bc.emb.projMat), adj);
 }
 
 /**
@@ -1830,7 +1852,8 @@ export type BoardModifier =
     | { kind: 'EndProd' }
     | { kind: 'GlobalCentralize' }
     | { kind: 'SqOctarize' }
-    | { kind: 'Scale'; factor: number };
+    | { kind: 'Scale'; factor: number }
+    | { kind: 'NodeInducedSubgraph'; sel: Selector };
 
 /** mc's default `dist` when called with no argument - see parseModifier and renderer.ts's command reference panel. */
 export const MC_DEFAULT_DIST = 0.01;
@@ -1923,12 +1946,20 @@ export function parseModifier(name: string, args: string[]): BoardModifier {
         assert(args.length === 0, `endprod takes no arguments, got ${args.length}`);
         return { kind: 'EndProd' };
     }
+    if (name === 'nis') {
+        assert(args.length >= 1, `nis takes at least 1 argument (a node selector), got ${args.length}`);
+        // args is already whitespace-split (see renderer.ts's _parseCommand) - rejoining with single
+        // spaces reconstructs one string for parseNodeSelector's own tokenizer, which doesn't care
+        // about the exact whitespace between tokens either way.
+        return { kind: 'NodeInducedSubgraph', sel: parseNodeSelector(args.join(' ')) };
+    }
     throw new Error(`Unknown board modifier: ${name}`);
 }
 
 /**
  * Applies `modifier` to `bc`, dispatching to `rectify` / `edgeSplit` / `mergeClose` /
- * `triangleForm` / `squareForm` / `product` / `globalCentralize` / `sqOctarize` / `scaleBoard`
+ * `triangleForm` / `squareForm` / `product` / `globalCentralize` / `sqOctarize` / `scaleBoard` /
+ * `nodeInducedSubgraph`
  * (Prod builds a fresh board from its own boardType/boardArgs via buildPrescribedBoard, then
  * multiplies it into `bc`). Does NOT
  * accept BeginProd/EndProd - those have no meaning applied to a
@@ -1949,6 +1980,7 @@ export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardCo
         case 'GlobalCentralize': return globalCentralize(bc);
         case 'SqOctarize': return sqOctarize(bc);
         case 'Scale': return scaleBoard(bc, modifier.factor);
+        case 'NodeInducedSubgraph': return nodeInducedSubgraph(bc, modifier.sel);
         case 'BeginProd':
         case 'EndProd':
             throw new Error(`applyModifier: ${modifier.kind} must be applied via applyModifiers, not directly`);
