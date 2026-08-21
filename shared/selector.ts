@@ -5,26 +5,33 @@ import { type BoardEdge, makeBoardEdge } from './types.js';
 //   (union SEL SEL)         -- set union
 //   (inter SEL SEL)         -- set intersection
 //   (diff SEL SEL)          -- set difference (left minus right)
-//   (compl SEL)             -- complement, within all nodes/all edges (whichever SEL denotes)
-//   (all <node|edge>)       -- every node, or every edge
-//   (none <node|edge>)      -- no nodes, or no edges
+//   (compl SEL)             -- complement, within all nodes or all edges (whichever kind of
+//                               selector this is)
+//   (all)                   -- every node, or every edge
+//   (none)                  -- no nodes, or no edges
 //   (deg <eq|gt|lt> <num>)  -- nodes whose degree is =/>/< a given nonnegative integer
 //   (e2n SEL)               -- node selector -> edge selector: an edge is selected iff both its
 //                               nodes are selected
 //   (n2e SEL)               -- edge selector -> node selector: a node is selected iff it is an
 //                               endpoint of some selected edge
+//   (rrmn <num> SEL)        -- randomly removes exactly num (a nonnegative integer) items from SEL's
+//                               own result, uniformly at random
+//   (rrmp <num> SEL)        -- randomly removes a fixed portion of SEL's own result: num (a
+//                               nonnegative float) times SEL's own result size, rounded down
 //
-// `union`/`inter`/`diff`/`compl`/`all`/`none` are polymorphic - they work over either node-sets or
-// edge-sets, but (for union/inter/diff) both operands must denote the same kind; `all`/`none` take
-// no sub-selector to infer their own kind from (unlike compl), so they spell it out explicitly
-// instead. `deg` always denotes a node selector; `e2n`/`n2e` each fix both their operand's and their
-// own result's kind. Every Selector
-// node below carries its own `type` (which kind of set it denotes), computed bottom-up while parsing
-// - this lets parseNodeSelector()/parseEdgeSelector() reject a syntactically-valid expression of the
-// wrong overall kind, and lets selectNode()/selectEdge() (this file's mutually recursive evaluators)
-// re-check `type` themselves rather than trusting a caller-constructed Selector, since a Selector
-// need not always come from this file's own parsers (e.g. a hand-built AST, or one round-tripped
-// through JSON).
+// `union`/`inter`/`diff`/`compl`/`all`/`none`/`rrmn`/`rrmp` are polymorphic - the exact same syntax
+// works over either node-sets or edge-sets. Every Selector node (one monolithic type, below) carries
+// its own `type` (which kind of set it denotes) - but rather than parse a type-less tree and infer/
+// validate `type` bottom-up afterward, parsing itself is done by two mutually recursive functions,
+// parseNodeSelExpr/parseEdgeSelExpr (mirroring selectNode()/selectEdge()'s own mutual recursion
+// below): parseNodeSelExpr always produces `type: 'node'` nodes (recursing into parseEdgeSelExpr for
+// n2e's own operand), parseEdgeSelExpr always produces `type: 'edge'` nodes (recursing into
+// parseNodeSelExpr for e2n's own operand). This is what lets `all`/`none` skip spelling out which
+// kind they mean: `type` comes from *which parser reached them*, not from anything written in the
+// expression itself. selectNode()/selectEdge() (this file's own separate mutually recursive
+// evaluators) still re-check `sel.type` themselves rather than trusting it, since a Selector need
+// not always come from this file's own parsers (e.g. a hand-built AST, or one round-tripped through
+// JSON).
 export type SelectorType = 'node' | 'edge';
 
 export type Selector =
@@ -33,7 +40,9 @@ export type Selector =
     | { op: 'all' | 'none'; type: SelectorType }
     | { op: 'deg'; type: 'node'; cmp: 'eq' | 'gt' | 'lt'; n: number }
     | { op: 'e2n'; type: 'edge'; a: Selector }
-    | { op: 'n2e'; type: 'node'; a: Selector };
+    | { op: 'n2e'; type: 'node'; a: Selector }
+    | { op: 'rrmn'; type: SelectorType; count: number; a: Selector }
+    | { op: 'rrmp'; type: SelectorType; frac: number; a: Selector };
 
 // ── parsing ──────────────────────────────────────────────────────────────────
 
@@ -72,83 +81,144 @@ class ParseCursor {
     }
 }
 
-function parseSelExpr(c: ParseCursor): Selector {
+// Shared numeric-argument validation for (deg .../rrmn ...)'s count and (rrmp ...)'s portion -
+// `context` names the argument in the thrown error (e.g. "(deg ...) argument").
+function nextNonnegInt(c: ParseCursor, context: string): number {
+    const tok = c.next();
+    const n = Number(tok);
+    if (!Number.isInteger(n) || n < 0)
+        throw new Error(`selector: ${context} must be a nonnegative integer, got '${tok}'`);
+    return n;
+}
+
+function nextNonnegNumber(c: ParseCursor, context: string): number {
+    const tok = c.next();
+    const n = Number(tok);
+    if (!Number.isFinite(n) || n < 0)
+        throw new Error(`selector: ${context} must be a nonnegative number, got '${tok}'`);
+    return n;
+}
+
+// Parses a node SEL - mutually recursive with parseEdgeSelExpr via n2e's own operand. Every Selector
+// this returns has `type: 'node'`.
+function parseNodeSelExpr(c: ParseCursor): Selector {
     c.expect('(');
     const op = c.next();
     switch (op) {
         case 'union': case 'inter': case 'diff': {
-            const a = parseSelExpr(c);
-            const b = parseSelExpr(c);
+            const a = parseNodeSelExpr(c);
+            const b = parseNodeSelExpr(c);
             c.expect(')');
-            if (a.type !== b.type)
-                throw new Error(`selector: (${op} ...) operands must be the same kind, got '${a.type}' and '${b.type}'`);
-            return { op, type: a.type, a, b };
+            return { op, type: 'node', a, b };
         }
         case 'compl': {
-            const a = parseSelExpr(c);
+            const a = parseNodeSelExpr(c);
             c.expect(')');
-            return { op: 'compl', type: a.type, a };
+            return { op: 'compl', type: 'node', a };
         }
-        case 'all': case 'none': {
-            const kindTok = c.next();
-            if (kindTok !== 'node' && kindTok !== 'edge')
-                throw new Error(`selector: (${op} ...) kind must be 'node' or 'edge', got '${kindTok}'`);
+        case 'all':
             c.expect(')');
-            return { op, type: kindTok };
-        }
+            return { op: 'all', type: 'node' };
+        case 'none':
+            c.expect(')');
+            return { op: 'none', type: 'node' };
         case 'deg': {
             const cmpTok = c.next();
             if (cmpTok !== 'eq' && cmpTok !== 'gt' && cmpTok !== 'lt')
                 throw new Error(`selector: (deg ...) comparator must be 'eq', 'gt', or 'lt', got '${cmpTok}'`);
-            const numTok = c.next();
-            const n = Number(numTok);
-            if (!Number.isInteger(n) || n < 0)
-                throw new Error(`selector: (deg ...) argument must be a nonnegative integer, got '${numTok}'`);
+            const n = nextNonnegInt(c, '(deg ...) argument');
             c.expect(')');
             return { op: 'deg', type: 'node', cmp: cmpTok, n };
         }
-        case 'e2n': {
-            const a = parseSelExpr(c);
-            c.expect(')');
-            if (a.type !== 'node')
-                throw new Error(`selector: (e2n SEL) requires a node selector, got an edge selector`);
-            return { op: 'e2n', type: 'edge', a };
-        }
         case 'n2e': {
-            const a = parseSelExpr(c);
+            const a = parseEdgeSelExpr(c);
             c.expect(')');
-            if (a.type !== 'edge')
-                throw new Error(`selector: (n2e SEL) requires an edge selector, got a node selector`);
             return { op: 'n2e', type: 'node', a };
         }
+        case 'rrmn': {
+            const count = nextNonnegInt(c, '(rrmn ...) count');
+            const a = parseNodeSelExpr(c);
+            c.expect(')');
+            return { op: 'rrmn', type: 'node', count, a };
+        }
+        case 'rrmp': {
+            const frac = nextNonnegNumber(c, '(rrmp ...) portion');
+            const a = parseNodeSelExpr(c);
+            c.expect(')');
+            return { op: 'rrmp', type: 'node', frac, a };
+        }
         default:
-            throw new Error(`selector: unknown operator '${op}'`);
+            throw new Error(`selector: unknown node-selector operator '${op}'`);
     }
 }
 
-function parseSelector(s: string): Selector {
+// Parses an edge SEL - mutually recursive with parseNodeSelExpr via e2n's own operand. Every
+// Selector this returns has `type: 'edge'`.
+function parseEdgeSelExpr(c: ParseCursor): Selector {
+    c.expect('(');
+    const op = c.next();
+    switch (op) {
+        case 'union': case 'inter': case 'diff': {
+            const a = parseEdgeSelExpr(c);
+            const b = parseEdgeSelExpr(c);
+            c.expect(')');
+            return { op, type: 'edge', a, b };
+        }
+        case 'compl': {
+            const a = parseEdgeSelExpr(c);
+            c.expect(')');
+            return { op: 'compl', type: 'edge', a };
+        }
+        case 'all':
+            c.expect(')');
+            return { op: 'all', type: 'edge' };
+        case 'none':
+            c.expect(')');
+            return { op: 'none', type: 'edge' };
+        case 'e2n': {
+            const a = parseNodeSelExpr(c);
+            c.expect(')');
+            return { op: 'e2n', type: 'edge', a };
+        }
+        case 'rrmn': {
+            const count = nextNonnegInt(c, '(rrmn ...) count');
+            const a = parseEdgeSelExpr(c);
+            c.expect(')');
+            return { op: 'rrmn', type: 'edge', count, a };
+        }
+        case 'rrmp': {
+            const frac = nextNonnegNumber(c, '(rrmp ...) portion');
+            const a = parseEdgeSelExpr(c);
+            c.expect(')');
+            return { op: 'rrmp', type: 'edge', frac, a };
+        }
+        default:
+            throw new Error(`selector: unknown edge-selector operator '${op}'`);
+    }
+}
+
+// Shared by parseNodeSelector/parseEdgeSelector: tokenizes `s`, runs `parseExpr` over the whole
+// thing, and rejects any leftover trailing input.
+function parseTopLevel(s: string, parseExpr: (c: ParseCursor) => Selector): Selector {
     const tokens = tokenize(s);
     if (tokens.length === 0) throw new Error('selector: empty input');
     const c = new ParseCursor(tokens);
-    const sel = parseSelExpr(c);
+    const sel = parseExpr(c);
     if (!c.atEnd()) throw new Error(`selector: unexpected trailing input starting at '${c.peek()}'`);
     return sel;
 }
 
 /** Parses `s` as a node selector (see this file's own top comment for the grammar) - throws if `s`
- * doesn't follow the grammar, or if it's a syntactically valid selector that denotes edges instead. */
+ * doesn't follow the grammar (an edge-only operator like e2n is simply not a recognized operator
+ * inside a node-selector context - see parseNodeSelExpr). */
 export function parseNodeSelector(s: string): Selector {
-    const sel = parseSelector(s);
-    if (sel.type !== 'node') throw new Error('selector: expected a node selector, got an edge selector');
-    return sel;
+    return parseTopLevel(s, parseNodeSelExpr);
 }
 
 /** Parses `s` as an edge selector (see this file's own top comment for the grammar) - throws if `s`
- * doesn't follow the grammar, or if it's a syntactically valid selector that denotes nodes instead. */
+ * doesn't follow the grammar. */
 export function parseEdgeSelector(s: string): Selector {
-    const sel = parseSelector(s);
-    if (sel.type !== 'edge') throw new Error('selector: expected an edge selector, got a node selector');
-    return sel;
+    return parseTopLevel(s, parseEdgeSelExpr);
 }
 
 /** Formats `sel` back into the S-expression syntax parseNodeSelector()/parseEdgeSelector() accept -
@@ -161,13 +231,17 @@ export function formatSelector(sel: Selector): string {
         case 'compl':
             return `(compl ${formatSelector(sel.a)})`;
         case 'all': case 'none':
-            return `(${sel.op} ${sel.type})`;
+            return `(${sel.op})`;
         case 'deg':
             return `(deg ${sel.cmp} ${sel.n})`;
         case 'e2n':
             return `(e2n ${formatSelector(sel.a)})`;
         case 'n2e':
             return `(n2e ${formatSelector(sel.a)})`;
+        case 'rrmn':
+            return `(rrmn ${sel.count} ${formatSelector(sel.a)})`;
+        case 'rrmp':
+            return `(rrmp ${sel.frac} ${formatSelector(sel.a)})`;
     }
 }
 
@@ -188,6 +262,23 @@ function dedupeEdges(N: number, edges: BoardEdge[]): BoardEdge[] {
     const byKey = new Map<number, BoardEdge>();
     for (const e of edges) byKey.set(edgeKey(N, e), e);
     return [...byKey.values()];
+}
+
+// Returns a NEW array with exactly `removeCount` (clamped to [0, items.length], since removing more
+// than exist isn't meaningful) uniformly-randomly-chosen elements dropped, via a partial
+// Fisher-Yates shuffle (only the first `removeCount` positions need to be randomized to pick which
+// elements to drop). The rest of this file's set operations are pure and order-preserving; rrmn/rrmp
+// (the only Selector ops that use this) are neither - two evaluations of the same selector can
+// return different results, and the kept elements' relative order isn't preserved either.
+function randomlyRemove<T>(items: T[], removeCount: number): T[] {
+    const n = items.length;
+    const toRemove = Math.min(Math.max(removeCount, 0), n);
+    const shuffled = [...items];
+    for (let i = 0; i < toRemove; i++) {
+        const j = i + Math.floor(Math.random() * (n - i));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled.slice(toRemove);
 }
 
 /**
@@ -239,6 +330,14 @@ export function selectNode(adj: number[][], pos: number[][], sel: Selector): Set
             const out = new Set<number>();
             for (const e of selectEdge(adj, pos, sel.a)) { out.add(e.n1); out.add(e.n2); }
             return out;
+        }
+        case 'rrmn': {
+            const base = [...selectNode(adj, pos, sel.a)];
+            return new Set(randomlyRemove(base, sel.count));
+        }
+        case 'rrmp': {
+            const base = [...selectNode(adj, pos, sel.a)];
+            return new Set(randomlyRemove(base, Math.floor(sel.frac * base.length)));
         }
         default:
             throw new Error(`selectNode: unexpected node-selector op '${(sel as Selector).op}'`);
@@ -294,6 +393,14 @@ export function selectEdge(adj: number[][], pos: number[][], sel: Selector): Boa
                 for (let j = i + 1; j < N; j++)
                     if (adj[i][j] && nodes.has(i) && nodes.has(j)) out.push(makeBoardEdge(i, j));
             return out;
+        }
+        case 'rrmn': {
+            const base = selectEdge(adj, pos, sel.a);
+            return randomlyRemove(base, sel.count);
+        }
+        case 'rrmp': {
+            const base = selectEdge(adj, pos, sel.a);
+            return randomlyRemove(base, Math.floor(sel.frac * base.length));
         }
         default:
             throw new Error(`selectEdge: unexpected edge-selector op '${(sel as Selector).op}'`);

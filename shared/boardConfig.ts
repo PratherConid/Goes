@@ -2,7 +2,7 @@ import type { GameConfig } from './types.js';
 import { assert } from './types.js';
 import { convexHullEdges } from './geometry.js';
 import { findTriangles, findSquares, zeroAdj, mergeBoards } from './topology.js';
-import { type Selector, parseNodeSelector, selectNode } from './selector.js';
+import { type Selector, parseNodeSelector, parseEdgeSelector, selectNode, selectEdge } from './selector.js';
 // The FractalDescr/nodeEdgeMergeFlakeRec recursive core, and each "flake" shape's own static
 // *FractalDescr() builder, live in fractal.ts (see git history) - the actual BoardConfig-returning
 // functions built on them (dodecahedronBoard/dodecahedronFlake/etc., below) stay here alongside
@@ -239,6 +239,35 @@ export function nodeInducedSubgraph(bc: BoardConfig, sel: Selector): BoardConfig
     for (let a = 0; a < kept.length; a++)
         for (let b = a + 1; b < kept.length; b++)
             if (bc.adj[kept[a]][kept[b]]) { adj[a][b] = 1; adj[b][a] = 1; }
+
+    return make(new Embedding(bc.emb.embDim, pos, bc.emb.projMat), adj);
+}
+
+/**
+ * The subgraph induced by `sel` (evaluated via shared/selector.ts's selectEdge): keeps only the
+ * edges `sel` selects, and only the nodes touched by at least one of them - compacted to a fresh
+ * 0..k-1 index range, in ascending original-index order, positions/embDim/projMat otherwise
+ * untouched. Unlike nodeInducedSubgraph (which keeps every original edge between two surviving
+ * nodes, since it starts from a node selection), this keeps exactly the selected edges themselves -
+ * the standard graph-theory distinction between a node-induced and an edge-induced subgraph - so a
+ * node with no selected incident edge doesn't survive at all, even if it's adjacent to other
+ * surviving nodes via a non-selected edge.
+ */
+export function edgeInducedSubgraph(bc: BoardConfig, sel: Selector): BoardConfig {
+    const edges = selectEdge(bc.adj, bc.emb.pos, sel);
+    const touched = new Set<number>();
+    for (const e of edges) { touched.add(e.n1); touched.add(e.n2); }
+    const kept: number[] = [];
+    for (let i = 0; i < bc.N; i++) if (touched.has(i)) kept.push(i);
+    const newIdx = new Map<number, number>(kept.map((orig, idx) => [orig, idx]));
+
+    const pos = kept.map(i => bc.emb.pos[i]);
+    const adj = zeroAdj(kept.length);
+    for (const e of edges) {
+        const a = newIdx.get(e.n1)!, b = newIdx.get(e.n2)!;
+        adj[a][b] = 1;
+        adj[b][a] = 1;
+    }
 
     return make(new Embedding(bc.emb.embDim, pos, bc.emb.projMat), adj);
 }
@@ -1853,7 +1882,8 @@ export type BoardModifier =
     | { kind: 'GlobalCentralize' }
     | { kind: 'SqOctarize' }
     | { kind: 'Scale'; factor: number }
-    | { kind: 'NodeInducedSubgraph'; sel: Selector };
+    | { kind: 'NodeInducedSubgraph'; sel: Selector }
+    | { kind: 'EdgeInducedSubgraph'; sel: Selector };
 
 /** mc's default `dist` when called with no argument - see parseModifier and renderer.ts's command reference panel. */
 export const MC_DEFAULT_DIST = 0.01;
@@ -1886,10 +1916,11 @@ function parseBoardTypeArgs(cmdName: string, args: string[]): { boardType: strin
 
 /**
  * Parses a BoardModifier from its command name ('rect', 'es', 'mc', 'triform', 'sqform', 'prod',
- * 'beginprod', 'endprod', 'gcent', 'sqocta', 'scale') and string args - see applyModifier/applyModifiers.
- * mc's arg is optional: with none, `dist` defaults to MC_DEFAULT_DIST. prod/beginprod's first arg
- * is a board-type command name and the rest are that type's own positional dimension args - see
- * parseBoardTypeArgs.
+ * 'beginprod', 'endprod', 'gcent', 'sqocta', 'scale', 'nis', 'eis') and string args - see
+ * applyModifier/applyModifiers. mc's arg is optional: with none, `dist` defaults to MC_DEFAULT_DIST.
+ * prod/beginprod's first arg is a board-type command name and the rest are that type's own
+ * positional dimension args - see parseBoardTypeArgs. nis/eis's arg is a node/edge selector (see
+ * shared/selector.ts) - see nodeInducedSubgraph/edgeInducedSubgraph.
  */
 export function parseModifier(name: string, args: string[]): BoardModifier {
     if (name === 'rect') {
@@ -1953,13 +1984,17 @@ export function parseModifier(name: string, args: string[]): BoardModifier {
         // about the exact whitespace between tokens either way.
         return { kind: 'NodeInducedSubgraph', sel: parseNodeSelector(args.join(' ')) };
     }
+    if (name === 'eis') {
+        assert(args.length >= 1, `eis takes at least 1 argument (an edge selector), got ${args.length}`);
+        return { kind: 'EdgeInducedSubgraph', sel: parseEdgeSelector(args.join(' ')) };
+    }
     throw new Error(`Unknown board modifier: ${name}`);
 }
 
 /**
  * Applies `modifier` to `bc`, dispatching to `rectify` / `edgeSplit` / `mergeClose` /
  * `triangleForm` / `squareForm` / `product` / `globalCentralize` / `sqOctarize` / `scaleBoard` /
- * `nodeInducedSubgraph`
+ * `nodeInducedSubgraph` / `edgeInducedSubgraph`
  * (Prod builds a fresh board from its own boardType/boardArgs via buildPrescribedBoard, then
  * multiplies it into `bc`). Does NOT
  * accept BeginProd/EndProd - those have no meaning applied to a
@@ -1981,6 +2016,7 @@ export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardCo
         case 'SqOctarize': return sqOctarize(bc);
         case 'Scale': return scaleBoard(bc, modifier.factor);
         case 'NodeInducedSubgraph': return nodeInducedSubgraph(bc, modifier.sel);
+        case 'EdgeInducedSubgraph': return edgeInducedSubgraph(bc, modifier.sel);
         case 'BeginProd':
         case 'EndProd':
             throw new Error(`applyModifier: ${modifier.kind} must be applied via applyModifiers, not directly`);

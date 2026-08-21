@@ -1,6 +1,7 @@
 // Covers shared/selector.ts's tiny S-expression selector language: parseNodeSelector()/
-// parseEdgeSelector() (grammar + selector-kind validation) and selectNode()/selectEdge() (evaluation
-// against a real adjacency matrix), on a plain 4-node path graph 0-1-2-3.
+// parseEdgeSelector() (two mutually recursive parsers - see the file's own top comment) and
+// selectNode()/selectEdge() (evaluation against a real adjacency matrix), on a plain 4-node path
+// graph 0-1-2-3.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseNodeSelector, parseEdgeSelector, selectNode, selectEdge } from '../shared/selector.ts';
@@ -18,47 +19,46 @@ test('parseNodeSelector/parseEdgeSelector reject malformed input (grammar errors
     assert.throws(() => parseNodeSelector(''), /empty input/);
     assert.throws(() => parseNodeSelector('(deg eq 5'), /unexpected end of input/);
     assert.throws(() => parseNodeSelector('(deg eq 5) extra'), /unexpected trailing input/);
-    assert.throws(() => parseNodeSelector('(foo)'), /unknown operator/);
+    assert.throws(() => parseNodeSelector('(foo)'), /unknown node-selector operator/);
     assert.throws(() => parseNodeSelector('(deg xx 5)'), /comparator must be/);
     assert.throws(() => parseNodeSelector('(deg eq -3)'), /nonnegative integer/);
     assert.throws(() => parseNodeSelector('(deg eq 3.5)'), /nonnegative integer/);
     assert.throws(() => parseNodeSelector('(deg eq abc)'), /nonnegative integer/);
 });
 
-test('parseNodeSelector/parseEdgeSelector reject a syntactically valid selector of the wrong kind', () => {
-    // (e2n SEL) always denotes edges - wrong for parseNodeSelector.
-    assert.throws(() => parseNodeSelector('(e2n (deg eq 1))'), /expected a node selector, got an edge selector/);
-    // (deg ...) always denotes nodes - wrong for parseEdgeSelector.
-    assert.throws(() => parseEdgeSelector('(deg eq 1)'), /expected an edge selector, got a node selector/);
-});
-
-test('union/inter/diff reject operands of different kinds', () => {
+test('parseNodeSelector/parseEdgeSelector reject an operator of the wrong kind, wherever it appears', () => {
+    // e2n only exists in parseEdgeSelExpr - unrecognized inside a node-selector context, whether at
+    // the top level or nested.
+    assert.throws(() => parseNodeSelector('(e2n (deg eq 1))'), /unknown node-selector operator 'e2n'/);
     assert.throws(
         () => parseNodeSelector('(union (deg eq 1) (e2n (deg eq 1)))'),
-        /operands must be the same kind/,
+        /unknown node-selector operator 'e2n'/,
     );
+    // deg only exists in parseNodeSelExpr - unrecognized inside an edge-selector context.
+    assert.throws(() => parseEdgeSelector('(deg eq 1)'), /unknown edge-selector operator 'deg'/);
 });
 
 test('e2n/n2e reject an operand of the wrong kind', () => {
-    // (e2n (deg eq 1)) is already edge-typed - e2n requires a node-typed operand.
-    assert.throws(() => parseEdgeSelector('(e2n (e2n (deg eq 1)))'), /e2n SEL. requires a node selector/);
-    // (deg eq 1) is node-typed - n2e requires an edge-typed operand.
-    assert.throws(() => parseNodeSelector('(n2e (deg eq 1))'), /n2e SEL. requires an edge selector/);
+    // (e2n (deg eq 1)) is edge-only - e2n's own operand is parsed via parseNodeSelExpr, which
+    // doesn't recognize e2n.
+    assert.throws(() => parseEdgeSelector('(e2n (e2n (deg eq 1)))'), /unknown node-selector operator 'e2n'/);
+    // (deg eq 1) is node-only - n2e's own operand is parsed via parseEdgeSelExpr, which doesn't
+    // recognize deg.
+    assert.throws(() => parseNodeSelector('(n2e (deg eq 1))'), /unknown edge-selector operator 'deg'/);
 });
 
-test('all/none select every node/edge or none, per the explicit kind argument', () => {
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(all node)')), new Set([0, 1, 2, 3]));
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(none node)')), new Set());
+test('all/none select every node/edge or none, resolved by which parser reaches them (no argument)', () => {
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(all)')), new Set([0, 1, 2, 3]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(none)')), new Set());
     assert.deepEqual(
-        selectEdge(adj, pos, parseEdgeSelector('(all edge)')),
+        selectEdge(adj, pos, parseEdgeSelector('(all)')),
         [{ n1: 0, n2: 1 }, { n1: 1, n2: 2 }, { n1: 2, n2: 3 }]);
-    assert.deepEqual(selectEdge(adj, pos, parseEdgeSelector('(none edge)')), []);
+    assert.deepEqual(selectEdge(adj, pos, parseEdgeSelector('(none)')), []);
 
-    // (all)/(none) with no kind, or an unrecognized kind, are grammar errors.
-    assert.throws(() => parseNodeSelector('(all)'), /kind must be .node. or .edge./);
-    assert.throws(() => parseNodeSelector('(all edges)'), /kind must be .node. or .edge./);
-    // (all node) is node-typed - wrong for parseEdgeSelector.
-    assert.throws(() => parseEdgeSelector('(all node)'), /expected an edge selector, got a node selector/);
+    // (all)/(none) take no argument at all now - anything extra before the closing paren is a
+    // grammar error.
+    assert.throws(() => parseNodeSelector('(all edge)'), /expected '\)', got 'edge'/);
+    assert.throws(() => parseEdgeSelector('(all node)'), /expected '\)', got 'node'/);
 });
 
 test('deg selects nodes by exact/greater/less degree', () => {
@@ -107,6 +107,44 @@ test('union/inter/diff combine edge selectors as plain (deduplicated) set operat
     assert.deepEqual(
         selectEdge(adj, pos, parseEdgeSelector(`(diff ${all} ${middle})`)),
         [{ n1: 0, n2: 1 }, { n1: 2, n2: 3 }]);
+});
+
+test('rrmn/rrmp reject a malformed count/portion argument', () => {
+    assert.throws(() => parseNodeSelector('(rrmn -1 (all))'), /nonnegative integer/);
+    assert.throws(() => parseNodeSelector('(rrmn 1.5 (all))'), /nonnegative integer/);
+    assert.throws(() => parseNodeSelector('(rrmn abc (all))'), /nonnegative integer/);
+    assert.throws(() => parseNodeSelector('(rrmp -0.5 (all))'), /nonnegative number/);
+    assert.throws(() => parseNodeSelector('(rrmp abc (all))'), /nonnegative number/);
+});
+
+// rrmn/rrmp are randomized - these tests only check the deterministic invariants (result size, and
+// that every kept item really was in the original set), not which specific items got removed.
+test('rrmn removes exactly count items (clamped to the set size), chosen from the original set', () => {
+    for (const count of [0, 1, 3, 4, 10]) {
+        const kept = selectNode(adj, pos, parseNodeSelector(`(rrmn ${count} (all))`));
+        assert.equal(kept.size, Math.max(4 - count, 0));
+        for (const n of kept) assert.ok([0, 1, 2, 3].includes(n));
+    }
+});
+
+test('rrmp removes floor(frac * size) items, clamped to the set size', () => {
+    const cases: [number, number][] = [[0, 4], [0.25, 3], [0.5, 2], [1, 0], [1.5, 0]];
+    for (const [frac, expectedSize] of cases) {
+        const kept = selectNode(adj, pos, parseNodeSelector(`(rrmp ${frac} (all))`));
+        assert.equal(kept.size, expectedSize, `frac=${frac}`);
+        for (const n of kept) assert.ok([0, 1, 2, 3].includes(n));
+    }
+});
+
+test('rrmn/rrmp also work over edge selectors', () => {
+    const kept = selectEdge(adj, pos, parseEdgeSelector('(rrmn 1 (all))'));
+    assert.equal(kept.length, 2);
+    const all = selectEdge(adj, pos, parseEdgeSelector('(all)'));
+    for (const e of kept) assert.ok(all.some(a => a.n1 === e.n1 && a.n2 === e.n2));
+
+    const keptFrac = selectEdge(adj, pos, parseEdgeSelector('(rrmp 0.6666 (all))'));
+    // floor(0.6666 * 3) = 1 removed, 2 kept.
+    assert.equal(keptFrac.length, 2);
 });
 
 test('selectNode/selectEdge throw when given a selector of the wrong kind', () => {

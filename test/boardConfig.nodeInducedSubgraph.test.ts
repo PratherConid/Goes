@@ -31,11 +31,11 @@ test('keeps only the selected nodes, preserving their original positions and mut
 
 test('selecting everything/nothing reproduces the whole board/an empty board', () => {
     const bc = rectangularBoard(3, 3);
-    const all = nodeInducedSubgraph(bc, parseNodeSelector('(all node)'));
+    const all = nodeInducedSubgraph(bc, parseNodeSelector('(all)'));
     assert.equal(all.N, 9);
     assert.deepEqual(degrees(all.adj), degrees(bc.adj));
 
-    const none = nodeInducedSubgraph(bc, parseNodeSelector('(none node)'));
+    const none = nodeInducedSubgraph(bc, parseNodeSelector('(none)'));
     assert.equal(none.N, 0);
 });
 
@@ -56,6 +56,10 @@ test('parseModifier("nis", ...) round-trips through applyModifier the same as ca
 test('parseModifier("nis", ...) rejects too few arguments or a malformed selector', () => {
     assert.throws(() => parseModifier('nis', []), /nis takes at least 1 argument/);
     assert.throws(() => parseModifier('nis', ['(deg', 'eq']), /unexpected end of input/);
-    // (e2n ...) denotes edges - nis needs a node selector.
-    assert.throws(() => parseModifier('nis', ['(e2n', '(deg', 'eq', '3))']), /expected a node selector/);
+    // (e2n ...) is edge-only - nis parses its argument via parseNodeSelector, which doesn't
+    // recognize e2n.
+    assert.throws(
+        () => parseModifier('nis', ['(e2n', '(deg', 'eq', '3))']),
+        /unknown node-selector operator 'e2n'/,
+    );
 });

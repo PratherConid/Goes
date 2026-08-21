@@ -1624,17 +1624,27 @@ export class Renderer {
             ${row('nis &lt;node-selector&gt;',
                 'NodeInducedSubgraph: keep only the nodes the given node selector selects (see '
                 + 'Selectors below), dropping every other node and any edge touching one')}
+            ${row('eis &lt;edge-selector&gt;',
+                'EdgeInducedSubgraph: keep only the edges the given edge selector selects (see '
+                + 'Selectors below), and only the nodes touched by at least one of them - unlike '
+                + 'nis, a node with no selected incident edge is dropped even if adjacent to a '
+                + 'surviving node via some other, non-selected edge')}
             ${head('Selectors')}
             ${row('(union SEL SEL)', 'Set union')}
             ${row('(inter SEL SEL)', 'Set intersection')}
             ${row('(diff SEL SEL)', 'Set difference (left minus right)')}
             ${row('(compl SEL)', 'Complement, within all nodes or all edges (whichever SEL selects from)')}
-            ${row('(all &lt;node|edge&gt;)', 'Every node, or every edge')}
-            ${row('(none &lt;node|edge&gt;)', 'No nodes, or no edges')}
+            ${row('(all)', 'Every node, or every edge')}
+            ${row('(none)', 'No nodes, or no edges')}
             ${row('(deg &lt;eq|gt|lt&gt; &lt;num&gt;)', 'Nodes whose degree is =/&gt;/&lt; num')}
             ${row('(e2n SEL)', 'Node selector to edge selector: an edge is selected iff both its nodes are')}
             ${row('(n2e SEL)',
                 'Edge selector to node selector: a node is selected iff it lies on a selected edge')}
+            ${row('(rrmn &lt;num&gt; SEL)',
+                'Randomly removes exactly num (a nonnegative integer) items from SEL, uniformly at random')}
+            ${row('(rrmp &lt;num&gt; SEL)',
+                'Randomly removes a portion of SEL: num (a nonnegative fraction) times SEL\'s own '
+                + 'size, rounded down')}
         </table>`;
     }
 
