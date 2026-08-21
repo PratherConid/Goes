@@ -37,6 +37,74 @@ static void from_json(const json& j, BoardArgEntry& e) {
     } else throw std::runtime_error("Unknown BoardArgEntry kind: " + kind);
 }
 
+// Same ADL convention as BoardArgEntry's own to_json/from_json above - matches shared/selector.ts's
+// Selector wire format exactly (op/type strings, "a"/"b" nested Selector objects, "cmp"/"n" for deg,
+// "count" for rrmn, "frac" for rrmp - see that file's own Selector type doc comment).
+static std::string selector_op_name(SelectorOp op) {
+    switch (op) {
+        case SelectorOp::Union: return "union";
+        case SelectorOp::Inter: return "inter";
+        case SelectorOp::Diff:  return "diff";
+        case SelectorOp::Compl: return "compl";
+        case SelectorOp::All:   return "all";
+        case SelectorOp::None:  return "none";
+        case SelectorOp::Deg:   return "deg";
+        case SelectorOp::E2N:   return "e2n";
+        case SelectorOp::N2E:   return "n2e";
+        case SelectorOp::Rrmn:  return "rrmn";
+        case SelectorOp::Rrmp:  return "rrmp";
+    }
+    throw std::runtime_error("selector_op_name: unknown SelectorOp");
+}
+static void to_json(json& j, const Selector& sel) {
+    j["op"] = selector_op_name(sel.op);
+    j["type"] = sel.type == SelectorType::Node ? "node" : "edge";
+    switch (sel.op) {
+        case SelectorOp::Union: case SelectorOp::Inter: case SelectorOp::Diff:
+            j["a"] = *sel.a; j["b"] = *sel.b; break;
+        case SelectorOp::Compl: case SelectorOp::E2N: case SelectorOp::N2E:
+            j["a"] = *sel.a; break;
+        case SelectorOp::All: case SelectorOp::None: break;
+        case SelectorOp::Deg:
+            j["cmp"] = sel.cmp == DegCmp::Eq ? "eq" : sel.cmp == DegCmp::Gt ? "gt" : "lt";
+            j["n"] = sel.n;
+            break;
+        case SelectorOp::Rrmn: j["count"] = sel.count; j["a"] = *sel.a; break;
+        case SelectorOp::Rrmp: j["frac"] = sel.frac; j["a"] = *sel.a; break;
+    }
+}
+static void from_json(const json& j, Selector& sel) {
+    std::string type = j.at("type").get<std::string>();
+    if (type == "node") sel.type = SelectorType::Node;
+    else if (type == "edge") sel.type = SelectorType::Edge;
+    else throw std::runtime_error("Unknown Selector type: " + type);
+
+    auto get_a = [&]() { return std::make_shared<Selector>(j.at("a").get<Selector>()); };
+    auto get_b = [&]() { return std::make_shared<Selector>(j.at("b").get<Selector>()); };
+
+    std::string op = j.at("op").get<std::string>();
+    if (op == "union") { sel.op = SelectorOp::Union; sel.a = get_a(); sel.b = get_b(); }
+    else if (op == "inter") { sel.op = SelectorOp::Inter; sel.a = get_a(); sel.b = get_b(); }
+    else if (op == "diff") { sel.op = SelectorOp::Diff; sel.a = get_a(); sel.b = get_b(); }
+    else if (op == "compl") { sel.op = SelectorOp::Compl; sel.a = get_a(); }
+    else if (op == "all") { sel.op = SelectorOp::All; }
+    else if (op == "none") { sel.op = SelectorOp::None; }
+    else if (op == "deg") {
+        sel.op = SelectorOp::Deg;
+        std::string cmp = j.at("cmp").get<std::string>();
+        if (cmp == "eq") sel.cmp = DegCmp::Eq;
+        else if (cmp == "gt") sel.cmp = DegCmp::Gt;
+        else if (cmp == "lt") sel.cmp = DegCmp::Lt;
+        else throw std::runtime_error("Unknown Selector deg cmp: " + cmp);
+        sel.n = j.at("n").get<int>();
+    }
+    else if (op == "e2n") { sel.op = SelectorOp::E2N; sel.a = get_a(); }
+    else if (op == "n2e") { sel.op = SelectorOp::N2E; sel.a = get_a(); }
+    else if (op == "rrmn") { sel.op = SelectorOp::Rrmn; sel.count = j.at("count").get<int>(); sel.a = get_a(); }
+    else if (op == "rrmp") { sel.op = SelectorOp::Rrmp; sel.frac = j.at("frac").get<double>(); sel.a = get_a(); }
+    else throw std::runtime_error("Unknown Selector op: " + op);
+}
+
 bool weak_equal(const GameConfig& a, const GameConfig& b) {
     if (a.board_type != b.board_type) return false;
     if (a.board_args != b.board_args) return false;
@@ -73,12 +141,13 @@ bool strong_equal(const GameConfig& a, const GameConfig& b) {
     return a.to_json() == b.to_json();
 }
 
-nlohmann::json GameConfig::to_json() const {
-    json j;
-    j["boardType"]  = board_type;
-    j["boardArgs"]  = board_args;
+// Serializes a whole BoardModifier list to JSON, matching shared/boardConfig.ts's BoardModifier
+// wire format exactly. A free function (not inlined into GameConfig::to_json() below) since Prod/
+// Repeat's own nested `modifiers` (BoardModifier's tree shape - see board_config.h's own doc
+// comment) need the exact same per-modifier serialization recursively.
+static json board_modifiers_to_json(const std::vector<BoardModifier>& modifiers) {
     json bm = json::array();
-    for (auto& m : board_modifiers) {
+    for (auto& m : modifiers) {
         json mj;
         switch (m.kind) {
             case ModifierKind::Rectify:    mj["kind"] = "Rectify"; break;
@@ -90,20 +159,35 @@ nlohmann::json GameConfig::to_json() const {
                 mj["kind"] = "Prod";
                 mj["boardType"] = m.board_type;
                 mj["boardArgs"] = m.board_args;
+                mj["modifiers"] = board_modifiers_to_json(m.modifiers);
                 break;
-            case ModifierKind::BeginProd:
-                mj["kind"] = "BeginProd";
-                mj["boardType"] = m.board_type;
-                mj["boardArgs"] = m.board_args;
+            case ModifierKind::Repeat:
+                mj["kind"] = "Repeat";
+                mj["count"] = m.split_n;
+                mj["modifiers"] = board_modifiers_to_json(m.modifiers);
                 break;
-            case ModifierKind::EndProd:    mj["kind"] = "EndProd"; break;
             case ModifierKind::GlobalCentralize: mj["kind"] = "GlobalCentralize"; break;
             case ModifierKind::SqOctarize: mj["kind"] = "SqOctarize"; break;
             case ModifierKind::Scale: mj["kind"] = "Scale"; mj["factor"] = m.dist; break;
+            case ModifierKind::NodeInducedSubgraph:
+                mj["kind"] = "NodeInducedSubgraph";
+                mj["sel"] = m.sel;
+                break;
+            case ModifierKind::EdgeInducedSubgraph:
+                mj["kind"] = "EdgeInducedSubgraph";
+                mj["sel"] = m.sel;
+                break;
         }
         bm.push_back(std::move(mj));
     }
-    j["boardModifiers"] = bm;
+    return bm;
+}
+
+nlohmann::json GameConfig::to_json() const {
+    json j;
+    j["boardType"]  = board_type;
+    j["boardArgs"]  = board_args;
+    j["boardModifiers"] = board_modifiers_to_json(board_modifiers);
     j["numStones"]  = num_stones;
     j["numPlayers"] = num_players;
 
@@ -207,20 +291,32 @@ static std::vector<BoardModifier> parse_board_modifiers(const json& j) {
             bm.kind = ModifierKind::Prod;
             bm.board_type = m["boardType"].get<std::string>();
             bm.board_args = m["boardArgs"].get<std::vector<BoardArgEntry>>();
+            bm.modifiers = parse_board_modifiers(m.value("modifiers", json::array()));
             out.push_back(std::move(bm));
         }
-        else if (kind == "BeginProd") {
+        else if (kind == "Repeat") {
             BoardModifier bm;
-            bm.kind = ModifierKind::BeginProd;
-            bm.board_type = m["boardType"].get<std::string>();
-            bm.board_args = m["boardArgs"].get<std::vector<BoardArgEntry>>();
+            bm.kind = ModifierKind::Repeat;
+            bm.split_n = m["count"].get<int>();
+            bm.modifiers = parse_board_modifiers(m.value("modifiers", json::array()));
             out.push_back(std::move(bm));
         }
-        else if (kind == "EndProd") out.push_back({ModifierKind::EndProd});
         else if (kind == "GlobalCentralize") out.push_back({ModifierKind::GlobalCentralize});
         else if (kind == "SqOctarize") out.push_back({ModifierKind::SqOctarize});
         else if (kind == "Scale")
             out.push_back({ModifierKind::Scale, 0, m["factor"].get<double>()});
+        else if (kind == "NodeInducedSubgraph") {
+            BoardModifier bm;
+            bm.kind = ModifierKind::NodeInducedSubgraph;
+            bm.sel = m["sel"].get<Selector>();
+            out.push_back(std::move(bm));
+        }
+        else if (kind == "EdgeInducedSubgraph") {
+            BoardModifier bm;
+            bm.kind = ModifierKind::EdgeInducedSubgraph;
+            bm.sel = m["sel"].get<Selector>();
+            out.push_back(std::move(bm));
+        }
         else throw std::runtime_error("Unknown board modifier kind: " + kind);
     }
     return out;

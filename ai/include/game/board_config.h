@@ -1,4 +1,5 @@
 #pragma once
+#include "game/selector.h"
 #include <vector>
 #include <utility>
 #include <string>
@@ -104,6 +105,24 @@ BoardConfig scale_board(const BoardConfig& bc, double factor);
 // side, there's no projMat to construct here - see BoardConfig's own fields above, C++ never renders.
 BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2);
 
+// The subgraph induced by sel (evaluated via game/selector.h's select_node): keeps only the nodes
+// sel selects - compacted to a fresh 0..k-1 index range, in ascending original-index order,
+// embed/emb_dim otherwise untouched - with two surviving nodes adjacent iff they were already
+// adjacent in bc. Unlike quotient_board/merge_close, nothing is merged or repositioned; a
+// non-selected node's own incident edges are simply dropped along with it. Mirrors
+// shared/boardConfig.ts's nodeInducedSubgraph().
+BoardConfig node_induced_subgraph(const BoardConfig& bc, const Selector& sel);
+
+// The subgraph induced by sel (evaluated via game/selector.h's select_edge): keeps only the edges
+// sel selects, and only the nodes touched by at least one of them - compacted to a fresh 0..k-1
+// index range, in ascending original-index order, embed/emb_dim otherwise untouched. Unlike
+// node_induced_subgraph (which keeps every original edge between two surviving nodes, since it
+// starts from a node selection), this keeps exactly the selected edges themselves - the standard
+// graph-theory distinction between a node-induced and an edge-induced subgraph - so a node with no
+// selected incident edge doesn't survive at all, even if it's adjacent to other surviving nodes via
+// a non-selected edge. Mirrors shared/boardConfig.ts's edgeInducedSubgraph().
+BoardConfig edge_induced_subgraph(const BoardConfig& bc, const Selector& sel);
+
 // One positional board-construction arg, tagged with its own kind - mirrors shared/boardConfig.ts's
 // BoardArgType/BoardArgEntry (see that TS type's own doc comment for the full rationale: exactly
 // one BoardArgEntry per positional arg, never a flattened/anonymous number list, since a variable-
@@ -146,54 +165,59 @@ const std::vector<int>& board_arg_list(const BoardArgEntry& e);
 std::string format_board_arg_entry(const BoardArgEntry& e);
 
 // A BoardConfig-transforming operation - see apply_modifier/apply_modifiers. Mirrors
-// shared/boardConfig.ts's BoardModifier, minus a C++ port of parseModifier(name, args): that parses
-// interactive command text, which has no analog here - train.cpp/server.cpp get their whole
-// GameConfig (including board_modifiers) from a JSON file/HTTP body via parse_game_cfg
-// (training/self_play.cpp) instead.
+// shared/boardConfig.ts's BoardModifier, minus a C++ port of parseModifier(name, args)/
+// parseModifiers(text) (which parse interactive command text - no analog here): train.cpp/
+// server.cpp get their whole GameConfig (including board_modifiers) from a JSON file/HTTP body via
+// parse_game_cfg (training/self_play.cpp) instead, which reads the already-tree-shaped JSON
+// directly (see parse_game_cfg's own parse_board_modifiers()).
 enum class ModifierKind {
-    Rectify, EdgeSplit, MergeClose, TriangleForm, SquareForm, Prod, BeginProd, EndProd,
-    GlobalCentralize, SqOctarize, Scale
+    Rectify, EdgeSplit, MergeClose, TriangleForm, SquareForm, Prod, Repeat,
+    GlobalCentralize, SqOctarize, Scale, NodeInducedSubgraph, EdgeInducedSubgraph
 };
 struct BoardModifier {
     ModifierKind kind;
-    // split_n is reused for TriangleForm/SquareForm's own single int parameter (its w) - all three
-    // are "one plain int argument" modifiers, same as Prod/BeginProd already share board_type/
-    // board_args below.
-    int split_n = 0;         // meaningful when kind == ModifierKind::EdgeSplit / TriangleForm/SquareForm
+    // split_n is reused for TriangleForm/SquareForm's own single int parameter (its w), and for
+    // Repeat's own single int parameter (its count) - all four are "one plain int argument"
+    // modifiers, same as Prod already shares board_type/board_args below.
+    int split_n = 0;   // meaningful when kind == ModifierKind::EdgeSplit/TriangleForm/SquareForm/Repeat
     // dist is reused for Scale's own single double parameter (its factor) - both are "one plain
     // double argument" modifiers.
     double dist = 0.0;             // meaningful when kind == ModifierKind::MergeClose / Scale
-    std::string board_type;        // only meaningful when kind == ModifierKind::Prod / BeginProd
-    std::vector<BoardArgEntry> board_args; // only meaningful when kind == ModifierKind::Prod / BeginProd
+    std::string board_type;        // only meaningful when kind == ModifierKind::Prod
+    std::vector<BoardArgEntry> board_args; // only meaningful when kind == ModifierKind::Prod
+    // Prod/Repeat's own nested modifier list, applied (via apply_modifiers) to the fresh board Prod
+    // builds from board_type/board_args, or repeatedly to the current board for Repeat - this is
+    // what makes BoardModifier tree-shaped, mirroring shared/boardConfig.ts's own Prod/Repeat
+    // (which replaced a separate, non-tree-shaped Prod/BeginProd/EndProd trio - see that file's own
+    // history/doc comments). A plain std::vector<BoardModifier> member of BoardModifier itself is
+    // legal (no forward-declaration/pointer indirection needed) since C++17 relaxed std::vector's
+    // completeness requirement for its own element type.
+    std::vector<BoardModifier> modifiers; // meaningful when kind == ModifierKind::Prod / Repeat
+    // Only meaningful when kind == ModifierKind::NodeInducedSubgraph / EdgeInducedSubgraph - see
+    // game/selector.h.
+    Selector sel;
 
     // Needed for std::vector<BoardModifier>::operator== (used by weak_equal, training/self_play.cpp)
     // - C++17 has no defaulted struct equality (that's a C++20 feature), so this is spelled out.
     bool operator==(const BoardModifier& other) const {
         return kind == other.kind && split_n == other.split_n && dist == other.dist &&
-               board_type == other.board_type && board_args == other.board_args;
+               board_type == other.board_type && board_args == other.board_args &&
+               modifiers == other.modifiers && sel == other.sel;
     }
 };
 
 // Applies modifier to bc, dispatching to rectify / edge_split / merge_close / triangle_form /
-// square_form / product / global_centralize / sq_octarize / scale_board (Prod builds a fresh
-// board from its own board_type/board_args via build_board_config, then multiplies it into bc -
-// a one-shot immediate product, unlike BeginProd/EndProd below). Does NOT accept
-// BeginProd/EndProd - those have no meaning applied to a single board in isolation (BeginProd starts
-// a whole new board for apply_modifiers to build up separately - potentially with further modifiers
-// of its own before the product happens - and EndProd's product() needs that suspended outer board
-// back too) - see apply_modifiers, the only valid way to apply a modifier list containing them.
-// Mirrors shared/boardConfig.ts's applyModifier(), including this same rejection.
+// square_form / global_centralize / sq_octarize / scale_board / node_induced_subgraph /
+// edge_induced_subgraph (Prod builds a fresh board from its own board_type/board_args via
+// build_board_config, applies its own nested modifiers to that fresh board via apply_modifiers, then
+// multiplies the result into bc; Repeat applies its own nested modifiers to bc, via apply_modifiers,
+// split_n times in a row). Mirrors shared/boardConfig.ts's applyModifier().
 BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier);
 
-// Applies every modifier in modifiers, in order, to bc. Most modifiers just transform the "current"
-// board via apply_modifier, but BeginProd/EndProd (rejected by apply_modifier itself - see its own
-// comment) are handled specially here, via a stack of boards suspended to be multiplied back in
-// later: BeginProd pushes the current board onto the stack and starts a fresh "current" board (via
-// build_board_config, from its board_type/board_args), so modifiers up to the matching EndProd
-// transform this new board instead of the outer one; EndProd pops the suspended outer board and
-// replaces "current" with product(outer, current). BeginProd/EndProd pairs may nest. Throws on an
-// EndProd with no matching BeginProd, or if modifiers ends with an unmatched BeginProd. Mirrors
-// shared/boardConfig.ts's applyModifiers().
+// Applies every modifier in modifiers, in order, to bc. Mirrors shared/boardConfig.ts's
+// applyModifiers() - now a plain fold, since BoardModifier's own Prod/Repeat (unlike the old
+// Prod/BeginProd/EndProd trio) are already self-contained tree nodes needing no cross-modifier stack
+// here.
 BoardConfig apply_modifiers(const BoardConfig& bc, const std::vector<BoardModifier>& modifiers);
 
 // A board with w nodes forming a simple line: node i is connected to node i + 1, at position [i]
