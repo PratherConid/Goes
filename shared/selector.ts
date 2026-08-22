@@ -1,5 +1,6 @@
 import {
     type BoardEdge, makeBoardEdge, type BoardTriangle, type BoardSquare,
+    type Selector, type FormSelector, type SelectorType,
 } from './types.js';
 import { findTriangles, findSquares } from './topology.js';
 
@@ -59,18 +60,6 @@ import { findTriangles, findSquares } from './topology.js';
 // evaluators) still re-check `sel.type` themselves rather than trusting it, since a Selector need
 // not always come from this file's own parsers (e.g. a hand-built AST, or one round-tripped through
 // JSON).
-export type SelectorType = 'node' | 'edge' | 'tri' | 'sq';
-
-export type Selector =
-    | { op: 'union' | 'inter' | 'diff'; type: SelectorType; a: Selector; b: Selector }
-    | { op: 'compl'; type: SelectorType; a: Selector }
-    | { op: 'more'; type: 'node' | 'edge'; a: Selector }
-    | { op: 'all' | 'none'; type: SelectorType }
-    | { op: 'deg'; type: 'node'; cmp: 'eq' | 'gt' | 'lt'; n: number }
-    | { op: 'conva' | 'conve'; type: SelectorType; from: SelectorType; a: Selector }
-    | { op: 'rrmn'; type: SelectorType; count: number; a: Selector }
-    | { op: 'rrmp'; type: SelectorType; frac: number; a: Selector };
-
 // ── parsing ──────────────────────────────────────────────────────────────────
 
 // '(' and ')' are always their own token, even with no surrounding whitespace (e.g. "(deg eq 5)");
@@ -394,16 +383,6 @@ export function formatSelector(sel: Selector): string {
             return `(rrmp ${sel.frac} ${formatSelector(sel.a)})`;
     }
 }
-
-// A tiny extension of the grammar above for shared/boardConfig.ts's `genericForm` - a FormSelector
-// names which KIND of object (triangle or square) genericForm should look for, plus an optional
-// inner SEL (of that same kind) restricting which ones of that kind qualify (default: every one
-// found). Written as its own small S-expression, `(tri [SEL])` / `(sq [SEL])` - distinct from a
-// plain Selector, since a FormSelector isn't itself selecting FROM an existing known-kind set; it's
-// declaring which kind to look for in the first place.
-export type FormSelector =
-    | { kind: 'tri'; sel?: Selector }
-    | { kind: 'sq'; sel?: Selector };
 
 // Parses one `(tri [SEL])` / `(sq [SEL])` - mirrors parseNodeSelExpr/etc.'s own "consume '(', read a
 // leading token, dispatch" shape, but there's no mutual recursion here: a FormSelector's own SEL is

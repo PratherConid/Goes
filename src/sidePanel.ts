@@ -3,9 +3,8 @@
 // Renderer.activeTab: 'history'|'status'|'commands' switch with a hierarchy
 // that isn't hardcoded to one flat level.
 
-import type { BoardView, GameConfig, PlayerInfo, TurnInfo } from '@shared/types.js';
-import type { BoardModifier } from '@shared/boardConfig.js';
-import { formatBoardArgEntry } from '@shared/boardConfig.js';
+import type { BoardView, GameConfig, PlayerInfo, TurnInfo, BoardModifier } from '@shared/types.js';
+import { formatBoardArgEntry } from '@shared/types.js';
 import { formatSelector, formatFormSelectors } from '@shared/selector.js';
 import { STONE_MAP } from '@shared/boardState.js';
 

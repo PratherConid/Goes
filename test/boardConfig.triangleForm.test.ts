@@ -5,8 +5,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     triangleForm, triangularBoard, icosahedronBoard, dodecahedronBoard, parseModifier, applyModifier,
-    Embedding, type BoardConfig,
 } from '../shared/boardConfig.ts';
+import { Embedding, type BoardConfig } from '../shared/types.ts';
 import { parseTriangleSelector } from '../shared/selector.ts';
 
 function degreeSequence(adj: number[][]): number[] {

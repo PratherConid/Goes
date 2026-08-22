@@ -1,6 +1,6 @@
 import { BoardState } from '@shared/boardState.js';
-import { rectangularBoard, applyModifiers, boardArgNumber } from '@shared/boardConfig.js';
-import { GameConfig } from '@shared/types.js';
+import { rectangularBoard, applyModifiers } from '@shared/boardConfig.js';
+import { GameConfig, boardArgNumber } from '@shared/types.js';
 import { Renderer } from './renderer.js';
 
 async function main() {

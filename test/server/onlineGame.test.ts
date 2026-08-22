@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import {
     startTestServer, startTestServerProcess, connect, waitForEvents, type TestServer, type TestClient,
 } from './testServer.ts';
-import { numArg } from '../../shared/boardConfig.ts';
+import { numArg } from '../../shared/types.ts';
 
 let server: TestServer;
 

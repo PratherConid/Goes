@@ -6,9 +6,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    sierpinskiSimplex, PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, BoardArgType,
-    numArg,
+    sierpinskiSimplex, PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns,
 } from '../shared/boardConfig.ts';
+import { BoardArgType, numArg } from '../shared/types.ts';
 
 const EPS = 1e-9;
 function dist(a: number[], b: number[]): number {

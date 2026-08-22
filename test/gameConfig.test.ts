@@ -2,8 +2,7 @@
 // online-game config payloads sent between client and server.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GameConfig, PlayerInfo } from '../shared/types.ts';
-import { numArg } from '../shared/boardConfig.ts';
+import { GameConfig, PlayerInfo, numArg } from '../shared/types.ts';
 
 function sampleConfig() {
     const config = new GameConfig(

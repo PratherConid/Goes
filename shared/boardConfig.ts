@@ -1,9 +1,11 @@
-import type { GameConfig } from './types.js';
-import { assert } from './types.js';
+import type { GameConfig, BoardArgEntry, BoardConfig, BoardModifier, Selector, FormSelector } from './types.js';
+import {
+    assert, BoardArgType, boardArgNumber, boardArgList, parseBoardArgToken, Embedding, projectPoint,
+} from './types.js';
 import { convexHullEdges } from './geometry.js';
 import { findTriangles, findSquares, zeroAdj, mergeBoards } from './topology.js';
 import {
-    type Selector, type FormSelector, parseNodeSelector, parseEdgeSelector, parseTriangleSelector,
+    parseNodeSelector, parseEdgeSelector, parseTriangleSelector,
     parseSquareSelector, parseFormSelectors, selectNode, selectEdge, selectTriangle, selectSquare,
 } from './selector.js';
 // The FractalDescr/nodeEdgeMergeFlakeRec recursive core, and each "flake" shape's own static
@@ -15,51 +17,6 @@ import {
     dodecahedronFractalDescr, icosahedronFractalDescr, octahedronFractalDescr,
     regularPolygonFractalDescr, centralPentagonFractalDescr, mengerFractalDescr,
 } from './fractal.js';
-
-/**
- * A board's node positions in their natural embedding dimension (embDim - 2 for most boards, 3 for
- * cubeLatticeBoard/tetrahedronBoard/dodecahedronBoard/icosahedronBoard, arbitrary for
- * hypercuboidBoard/sierpinskiSimplex/orthoplexBoard), plus
- * the linear map (projMat, 3 x embDim) that projects them down to a 3D render position (x, y, z) -
- * the renderer currently ignores z (see boardLayout(), src/renderer.ts). Kept separate from the
- * render position so that geometric operations that care about real dimensionality (e.g. a
- * convex-hull-based rectify()) can operate on `pos` directly instead of an already-flattened
- * approximation.
- */
-/** Applies a 3 x embDim projMat to a single embDim-length point, returning its 3D (x, y, z) projection. */
-export function projectPoint(projMat: number[][], p: number[]): number[] {
-    return [
-        p.reduce((s, v, k) => s + projMat[0][k] * v, 0),
-        p.reduce((s, v, k) => s + projMat[1][k] * v, 0),
-        p.reduce((s, v, k) => s + projMat[2][k] * v, 0),
-    ];
-}
-
-export class Embedding {
-    embDim: number;
-    pos: number[][];       // N x embDim
-    projMat: number[][];   // 3 x embDim - projects natural coords to a 3D (x, y, z) render position
-
-    constructor(embDim: number, pos: number[][], projMat: number[][]) {
-        assert(pos.every(p => p.length === embDim), 'Embedding: pos row length must equal embDim');
-        assert(projMat.length === 3 && projMat.every(r => r.length === embDim),
-            'Embedding: projMat must be 3 x embDim');
-        this.embDim = embDim;
-        this.pos = pos;
-        this.projMat = projMat;
-    }
-
-    /** The 3D (x, y, z) render position: projMat applied to each row of pos. */
-    project(): number[][] {
-        return this.pos.map(p => projectPoint(this.projMat, p));
-    }
-}
-
-export interface BoardConfig {
-    emb: Embedding;    // natural-dimension node positions + their 3D render projection
-    adj: number[][];  // N×N symmetric adjacency matrix, entries 0/1
-    N: number;
-}
 
 // Default projMat for a plain 2D-embedded board: x/y pass straight through, z is always 0 (flat).
 const DEFAULT_2D_PROJMAT = [[1, 0], [0, 1], [0, 0]];
@@ -1580,109 +1537,6 @@ export function snubSquareTriBoard(w: number, h: number, g: number): BoardConfig
 }
 
 
-/**
- * The kind of value a single positional command-line token for a prescribed board type parses
- * into: `Number` is a plain integer; `CommaSeparatedNumbers` is a comma-joined list of integers
- * packed into one token - needed for a variable-arity board type (currently only
- * `hypercuboidBoard`, whose dimension count isn't fixed); `ZeroOneList` is a plain string of `0`/`1`
- * characters with NO separator (e.g. `"0011"`), packing a 0/1 indicator list into one token -
- * needed for `mengerSpongeFlake`'s own `indicator` argument (see its own doc comment). A plain
- * string enum (rather than the numeric-backed convention `PrescribedBoard` uses) so that it reads
- * the same way as `BoardModifier`'s own string-literal `kind` tags wherever a `BoardArgEntry`
- * (below) ends up serialized to JSON (e.g. `public/board_presets/*.json`) - see `parseBoardArgToken`.
- */
-export enum BoardArgType { Number = 'Number', CommaSeparatedNumbers = 'CommaSeparatedNumbers', ZeroOneList = 'ZeroOneList' }
-
-/**
- * One parsed board-arg token, tagged with its own `BoardArgType` so callers never have to
- * separately track "which type produced this value" alongside a flattened, anonymous number -
- * this is the type every "list of board args" in this codebase is a list OF (`GameConfig.boardArgs`,
- * `BoardModifier`'s own `Prod.boardArgs`, `PrescribedBoardFns`' own rest args, ...):
- * exactly one `BoardArgEntry` per POSITIONAL arg (never flattened), so `entries[i]` always
- * corresponds to `PrescribedBoardMap[pb][0][i]` (that positional arg's own declared `BoardArgType`)
- * for any board type `pb`. Earlier revisions of this design flattened every entry into one
- * anonymous `number[]` instead (a `CommaSeparatedNumbers`/`ZeroOneList` token contributing several
- * numbers at once, with no record of which - see git history) - callers then had to re-derive the
- * grouping via positional-index conventions (e.g. "the tail after index 1 is the list"), which broke
- * outright for `mengerSpongeFlake`'s own `(order, dim, indicator)` shape, where the list's own
- * length depends on ANOTHER arg's value (`dim`), making it fundamentally impossible to
- * unambiguously re-derive from a flat array alone.
- */
-export type BoardArgEntry =
-    | { kind: BoardArgType.Number; value: number }
-    | { kind: BoardArgType.CommaSeparatedNumbers; values: number[] }
-    | { kind: BoardArgType.ZeroOneList; values: number[] };
-
-/** Constructs a `BoardArgEntry` of each kind - shorthand shared by every caller that builds one by hand (as opposed to parsing one via `parseBoardArgToken`), e.g. default-arg tables. */
-export const numArg = (value: number): BoardArgEntry => ({ kind: BoardArgType.Number, value });
-export const csvArg = (values: number[]): BoardArgEntry => ({ kind: BoardArgType.CommaSeparatedNumbers, values });
-export const zolArg = (values: number[]): BoardArgEntry => ({ kind: BoardArgType.ZeroOneList, values });
-
-/**
- * Reads a `BoardArgEntry` back to the single number it must hold, throwing if it's actually a list
- * entry - shorthand for the (very common) case of a `PrescribedBoardFns` entry whose underlying
- * function takes a plain `number` for this positional arg.
- */
-export function boardArgNumber(e: BoardArgEntry): number {
-    assert(e.kind === BoardArgType.Number, `expected a Number board arg, got ${e.kind}`);
-    return e.value;
-}
-/**
- * Reads a `BoardArgEntry` back to the number list it must hold, throwing if it's actually a
- * `Number` entry - shorthand for a `PrescribedBoardFns` entry whose underlying function takes a
- * `number[]` for this positional arg (`CommaSeparatedNumbers` or `ZeroOneList`, whichever - a
- * function taking a plain number list generally doesn't care which token syntax produced it).
- */
-export function boardArgList(e: BoardArgEntry): number[] {
-    assert(e.kind !== BoardArgType.Number, `expected a list board arg, got ${e.kind}`);
-    return e.values;
-}
-
-/**
- * Parses a single command-line token into the `BoardArgEntry` it represents, per `type` - see
- * `BoardArgType`'s own doc comment. Shared by `parseBoardTypeArgs` (the `prod`/`beginprod`
- * modifier syntax) and `src/renderer.ts`'s `'bd'` command, so there is exactly one place that
- * knows how to interpret a board-arg token - callers never sniff the token's own shape (e.g.
- * "does it contain a comma") themselves. `ZeroOneList` is the one case that validates its own
- * token eagerly (throwing on any non-`0`/`1` character) rather than leaving that to the caller,
- * since - unlike `Number`/`CommaSeparatedNumbers`, where "is this a valid integer" is exactly what
- * `Number.isInteger` already checks downstream - a malformed `ZeroOneList` token (e.g. containing a
- * stray letter or comma) would otherwise silently produce `NaN` entries with no clear origin.
- */
-export function parseBoardArgToken(type: BoardArgType, token: string): BoardArgEntry {
-    switch (type) {
-        case BoardArgType.Number: return numArg(Number(token));
-        case BoardArgType.CommaSeparatedNumbers: return csvArg(token.split(',').map(Number));
-        case BoardArgType.ZeroOneList:
-            if (!/^[01]+$/.test(token))
-                throw new Error(`expected a string of 0/1 characters, got "${token}"`);
-            return zolArg(token.split('').map(Number));
-    }
-}
-
-/**
- * The exact inverse of `parseBoardArgToken` (modulo `CommaSeparatedNumbers`/`ZeroOneList`
- * distinguishing themselves only via separator, `,` vs none, on the way back out too) - reconstructs
- * the command-line token `e` was parsed from. Used wherever a `BoardArgEntry` needs to be rendered
- * back to displayable/re-parseable text (e.g. `src/sidePanel.ts`'s `fmtModifiers()`, for a `Prod`
- * modifier's own `boardArgs`).
- */
-export function formatBoardArgEntry(e: BoardArgEntry): string {
-    switch (e.kind) {
-        case BoardArgType.Number: return String(e.value);
-        case BoardArgType.CommaSeparatedNumbers: return e.values.join(',');
-        case BoardArgType.ZeroOneList: return e.values.join('');
-    }
-}
-
-/** Deep-clones a single `BoardArgEntry` - a plain `{ ...e }` alone would still share a
- * `CommaSeparatedNumbers`/`ZeroOneList` entry's own `values` array between the original and the
- * clone (same reasoning as `cloneBoardModifier` in shared/types.ts, which clones a `BoardArgEntry[]`
- * this way wherever a `BoardModifier` carries one). */
-export function cloneBoardArgEntry(e: BoardArgEntry): BoardArgEntry {
-    return e.kind === BoardArgType.Number ? { ...e } : { ...e, values: [...e.values] };
-}
-
 export enum PrescribedBoard {
     linearBoard,
     rectangularBoard,
@@ -1850,21 +1704,6 @@ function buildPrescribedBoard(kind: string, args: BoardArgEntry[]): BoardConfig 
     if (pb === undefined) throw new Error(`Unknown board type: ${kind}`);
     return PrescribedBoardFns[pb](...args);
 }
-
-export type BoardModifier =
-    | { kind: 'Rectify' }
-    | { kind: 'EdgeSplit'; splitN: number }
-    | { kind: 'MergeClose'; dist: number }
-    | { kind: 'TriangleForm'; w: number; sel?: Selector }
-    | { kind: 'SquareForm'; w: number; sel?: Selector }
-    | { kind: 'Form'; w: number; sels: FormSelector[] }
-    | { kind: 'Prod'; boardType: string; boardArgs: BoardArgEntry[]; modifiers: BoardModifier[] }
-    | { kind: 'Repeat'; count: number; modifiers: BoardModifier[] }
-    | { kind: 'GlobalCentralize' }
-    | { kind: 'SqOctarize' }
-    | { kind: 'Scale'; factor: number }
-    | { kind: 'NodeInducedSubgraph'; sel: Selector }
-    | { kind: 'EdgeInducedSubgraph'; sel: Selector };
 
 /** mc's default `dist` when called with no argument - see parseModifier and renderer.ts's command reference panel. */
 export const MC_DEFAULT_DIST = 0.01;

@@ -1,12 +1,15 @@
 import { BoardState, MoveType, STONE_MAP } from '@shared/boardState.js';
-import { PlayerInfo, GameConfig, FinishedGame, OnlinePlayerRequest, makeId } from '@shared/types.js';
-import type {
-    BoardView, OnlineStateResponse, PendingGame, ScoreRule, KoRule, TurnInfo, ReplayMove, ChatMessage,
-} from '@shared/types.js';
-import type { BoardConfig, BoardModifier, BoardArgEntry } from '@shared/boardConfig.js';
 import {
-    PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, BoardArgType, parseBoardArgToken, computeStarPoints,
-    parseModifiers, applyModifiers, projectPoint, MC_DEFAULT_DIST, numArg, csvArg, zolArg, cloneBoardArgEntry,
+    PlayerInfo, GameConfig, FinishedGame, OnlinePlayerRequest, makeId,
+    BoardArgType, parseBoardArgToken, numArg, csvArg, zolArg, cloneBoardArgEntry, projectPoint,
+} from '@shared/types.js';
+import type {
+    BoardView, OnlineStateResponse, PendingGame, ScoreRule, KoRule, TurnInfo, ReplayMove, ChatMessage, BoardArgEntry,
+    BoardConfig, BoardModifier,
+} from '@shared/types.js';
+import {
+    PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, computeStarPoints,
+    parseModifiers, applyModifiers, MC_DEFAULT_DIST,
 } from '@shared/boardConfig.js';
 import { ServerConnection, type RequestHandle } from './serverConnection.js';
 import {

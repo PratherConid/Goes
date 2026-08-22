@@ -142,7 +142,7 @@ export function quatRotateVector(q: Quaternion, v: Vec3): Vec3 {
 
 /**
  * The 3x3 rotation matrix for q (q assumed unit-length), in the same row-major number[][] shape
- * shared/boardConfig.ts's projectPoint() expects - so a camera rotation can be applied to an
+ * shared/types.ts's projectPoint() expects - so a camera rotation can be applied to an
  * already-projected (x, y, z) point via `projectPoint(quatToMat3(q), point)` directly, no separate
  * matrix-vector-multiply helper needed.
  */

@@ -1,9 +1,8 @@
-import type { BoardConfig } from './boardConfig.js';
-import { Embedding } from './boardConfig.js';
 import { MoveType, STONE_MAP, assert } from './types.js';
 import { NO_MOVE } from './types.js';
 import type {
     MoveInfo, Situation, HistoryEntry, BoardView, ScoreData, ScoreRule, KoRule, TurnInfo, FinishedGame, ReplayMove,
+    BoardConfig, Embedding,
 } from './types.js';
 import { LegalMovesData } from './types.js';
 import { AVLTree } from './avlTree.js';

@@ -13,7 +13,8 @@ import { setupDom, FakeWebSocket } from './domSetup.ts';
 setupDom();
 const { Renderer } = await import('../../src/renderer.ts');
 const { BoardState } = await import('../../shared/boardState.ts');
-const { rectangularBoard, numArg } = await import('../../shared/boardConfig.ts');
+const { rectangularBoard } = await import('../../shared/boardConfig.ts');
+const { numArg } = await import('../../shared/types.ts');
 
 const bc = rectangularBoard(3, 3);
 const initialGame = new BoardState(

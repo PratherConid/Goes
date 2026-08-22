@@ -5,9 +5,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    genericForm, triangleForm, squareForm, triangularBoard, rectangularBoard, parseModifier,
-    applyModifier, Embedding, type BoardConfig,
+    genericForm, triangleForm, squareForm, triangularBoard, rectangularBoard, parseModifier, applyModifier,
 } from '../shared/boardConfig.ts';
+import { Embedding, type BoardConfig } from '../shared/types.ts';
 import { parseFormSelectors, formatFormSelectors, parseTriangleSelector } from '../shared/selector.ts';
 
 function edgeCount(adj: number[][]): number {
