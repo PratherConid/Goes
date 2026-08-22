@@ -6,6 +6,6 @@
   ],
   "boardModifiers": [
     {"kind": "NodeInducedSubgraph", "sel": {"op": "rrmp", "type": "node", "frac": 0.1, "a": {"op": "all", "type": "node"}}},
-    {"kind": "NodeInducedSubgraph", "sel": {"op": "deg", "type": "node", "cmp": "gt", "n": 1}}
+    {"kind": "NodeInducedSubgraph", "sel": {"op": "tone", "type": "node", "from": "sq", "a": {"op": "fromna", "type": "sq", "a": {"op": "all", "type": "node"}}}}
   ]
 }

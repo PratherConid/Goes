@@ -56,10 +56,10 @@ test('parseModifier("nis", ...) round-trips through applyModifier the same as ca
 test('parseModifier("nis", ...) rejects too few arguments or a malformed selector', () => {
     assert.throws(() => parseModifier('nis', []), /nis takes at least 1 argument/);
     assert.throws(() => parseModifier('nis', ['(deg', 'eq']), /unexpected end of input/);
-    // (e2n ...) is edge-only - nis parses its argument via parseNodeSelector, which doesn't
-    // recognize e2n.
+    // (fromna ...) is edge/tri/sq-only - nis parses its argument via parseNodeSelector, which
+    // doesn't recognize fromna.
     assert.throws(
-        () => parseModifier('nis', ['(e2n', '(deg', 'eq', '3))']),
-        /unknown node-selector operator 'e2n'/,
+        () => parseModifier('nis', ['(fromna', '(deg', 'eq', '3))']),
+        /unknown node-selector operator 'fromna'/,
     );
 });

@@ -19,6 +19,39 @@ export function makeBoardEdge(a: number, b: number): BoardEdge {
     return a <= b ? { n1: a, n2: b } : { n1: b, n2: a };
 }
 
+/** One triangle {n1, n2, n3} of a board's adjacency graph, always normalized so n1 < n2 < n3 - see
+ * makeBoardTriangle - so the same triangle has a unique representation regardless of which vertex
+ * was found first (matches shared/topology.ts's findTriangles() own [u, v, w] convention). */
+export interface BoardTriangle {
+    n1: number;
+    n2: number;
+    n3: number;
+}
+
+/** Builds a BoardTriangle from three node indices in any order, normalizing n1 < n2 < n3. */
+export function makeBoardTriangle(a: number, b: number, c: number): BoardTriangle {
+    const [n1, n2, n3] = [a, b, c].sort((x, y) => x - y);
+    return { n1, n2, n3 };
+}
+
+/** One square (induced 4-cycle) {n1, n2, n3, n4} of a board's adjacency graph, always normalized so
+ * n1 < n2 < n3 < n4 - see makeBoardSquare - so the same square has a unique representation
+ * regardless of which vertex was found first or the cycle's own traversal order (unlike
+ * shared/topology.ts's findSquares(), which reports its own [a, b, c, d] in cycle order, not
+ * sorted). */
+export interface BoardSquare {
+    n1: number;
+    n2: number;
+    n3: number;
+    n4: number;
+}
+
+/** Builds a BoardSquare from four node indices in any order, normalizing n1 < n2 < n3 < n4. */
+export function makeBoardSquare(a: number, b: number, c: number, d: number): BoardSquare {
+    const [n1, n2, n3, n4] = [a, b, c, d].sort((x, y) => x - y);
+    return { n1, n2, n3, n4 };
+}
+
 export const enum MoveType {
     NOMOVE = 0,
     PLACE  = 1,

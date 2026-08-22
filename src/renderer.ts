@@ -112,10 +112,10 @@ const _boardConfigDescriptions = new Map([
     ['menger_4_2_011',
         'Order-4 Sierpinski carpet (the 2-dimensional case of the Menger-sponge-family flake '
         + 'fractal, indicator 011)'],
-    ['rect_19_19_nis_(rrmp_0.1_(all))_nis_(deg_gt_1)',
-        '19×19 rectangular board with 10% of its nodes randomly removed, then any node left with '
-        + 'degree 1 or less (an isolated node, or one only reachable via a since-removed neighbor) '
-        + 'dropped too'],
+    ['rect_19_19_nis_(rrmp_0.1_(all))_nis_(tone_sq_(fromna_(all)))',
+        '19×19 rectangular board with 10% of its nodes randomly removed, then any node no longer '
+        + 'part of at least one intact unit square (a 2×2 block with all 4 of its own grid edges '
+        + 'still present) dropped too'],
 ]);
 
 
@@ -1662,17 +1662,27 @@ export class Renderer {
             ${row('(union SEL SEL)', 'Set union')}
             ${row('(inter SEL SEL)', 'Set intersection')}
             ${row('(diff SEL SEL)', 'Set difference (left minus right)')}
-            ${row('(compl SEL)', 'Complement, within all nodes or all edges (whichever SEL selects from)')}
+            ${row('(compl SEL)',
+                'Complement, within all objects of whichever kind SEL selects from (node/edge/triangle/square)')}
             ${row('(more SEL)',
-                'Expands SEL to also include everything adjacent to it: for nodes, every node one edge '
-                + 'away from a selected node; for edges, every edge sharing a node with a selected edge - '
-                + 'either way SEL\'s own result stays included too')}
-            ${row('(all)', 'Every node, or every edge')}
-            ${row('(none)', 'No nodes, or no edges')}
-            ${row('(deg &lt;eq|gt|lt&gt; &lt;num&gt;)', 'Nodes whose degree is =/&gt;/&lt; num')}
-            ${row('(e2n SEL)', 'Node selector to edge selector: an edge is selected iff both its nodes are')}
-            ${row('(n2e SEL)',
-                'Edge selector to node selector: a node is selected iff it lies on a selected edge')}
+                'Nodes/edges only: expands SEL to also include everything adjacent to it: for nodes, every '
+                + 'node one edge away from a selected node; for edges, every edge sharing a node with a '
+                + 'selected edge - either way SEL\'s own result stays included too')}
+            ${row('(all)', 'Every object of whichever kind (node/edge/triangle/square) this SEL is')}
+            ${row('(none)', 'No objects of that kind')}
+            ${row('(deg &lt;eq|gt|lt&gt; &lt;num&gt;)', 'Nodes only: whose degree is =/&gt;/&lt; num')}
+            ${row('(fromna SEL)',
+                'Node selector to edge/triangle/square selector (whichever this SEL is): an object is '
+                + 'selected iff ALL of its nodes are selected')}
+            ${row('(fromne SEL)',
+                'Node selector to edge/triangle/square selector: an object is selected iff AT LEAST ONE '
+                + 'of its nodes is selected')}
+            ${row('(tona &lt;edge|tri|sq&gt; SEL)',
+                'Edge/triangle/square selector to node selector: a node is selected iff ALL objects of the '
+                + 'given kind containing it are selected (vacuously true if it\'s in none)')}
+            ${row('(tone &lt;edge|tri|sq&gt; SEL)',
+                'Edge/triangle/square selector to node selector: a node is selected iff AT LEAST ONE object '
+                + 'of the given kind containing it is selected (vacuously false if it\'s in none)')}
             ${row('(rrmn &lt;num&gt; SEL)',
                 'Randomly removes exactly num (a nonnegative integer) items from SEL, uniformly at random')}
             ${row('(rrmp &lt;num&gt; SEL)',
