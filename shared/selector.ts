@@ -21,17 +21,19 @@ import { findTriangles, findSquares } from './topology.js';
 //   (none)                  -- no objects of that kind
 //   (deg <eq|gt|lt> <num>)  -- node selector only: nodes whose degree is =/>/< a given nonnegative
 //                               integer
-//   (fromna SEL)            -- node selector -> edge/triangle/square selector (whichever kind this
-//                               SEL is being parsed/evaluated as): an object is selected iff ALL of
-//                               its nodes are selected
-//   (fromne SEL)            -- node selector -> edge/triangle/square selector: an object is
-//                               selected iff AT LEAST ONE of its nodes is selected
-//   (tona <edge|tri|sq> SEL) -- edge/triangle/square selector -> node selector: a node is selected
-//                               iff ALL objects of the given kind that contain it are selected by
-//                               SEL (vacuously true for a node contained in no such object at all)
-//   (tone <edge|tri|sq> SEL) -- edge/triangle/square selector -> node selector: a node is selected
-//                               iff AT LEAST ONE object of the given kind that contains it is
-//                               selected by SEL (vacuously false for a node contained in none)
+//   (conva <node|edge|tri|sq> SEL) -- converts SEL (of the given "from" kind) into whichever kind
+//                               this selector itself is (the "to" kind - inferred from parsing
+//                               context, same as all/none): a "to" object is selected iff ALL of its
+//                               associated "from" objects are selected. Two objects (of possibly
+//                               different kinds) are associated iff one's own node set is completely
+//                               contained in the other's - always well-defined for two differing
+//                               kinds, since node/edge/triangle/square have strictly increasing
+//                               arity (1/2/3/4), so containment can only run from the smaller-arity
+//                               one into the larger. Converting a kind to itself is a no-op (SEL is
+//                               returned as-is); triangle <-> square has no meaningful association
+//                               and is rejected.
+//   (conve <node|edge|tri|sq> SEL) -- same as conva, but a "to" object is selected iff AT LEAST ONE
+//                               of its associated "from" objects is selected
 //   (rrmn <num> SEL)        -- randomly removes exactly num (a nonnegative integer) items from SEL's
 //                               own result, uniformly at random
 //   (rrmp <num> SEL)        -- randomly removes a fixed portion of SEL's own result: num (a
@@ -39,29 +41,25 @@ import { findTriangles, findSquares } from './topology.js';
 //
 // `union`/`inter`/`diff`/`compl`/`all`/`none`/`rrmn`/`rrmp` are polymorphic across all four kinds;
 // `more` is polymorphic across node/edge only (no adjacency notion is defined here for triangles/
-// squares); `fromna`/`fromne` go from a node selector to any of the other three kinds; `tona`/`tone`
-// go from any of the other three kinds back to a node selector, naming which kind via their own
-// leading `edge`/`tri`/`sq` token (unlike `fromna`/`fromne`, there's more than one non-node kind to
-// choose from, so it can't be inferred purely from parsing context the way `all`/`none` are).
+// squares); `conva`/`conve` convert between any two kinds, naming the source kind via their own
+// leading node/edge/tri/sq token (unlike `all`/`none`, there's more than one *other* kind it could
+// mean, so it can't be inferred purely from parsing context) - except triangle <-> square, which is
+// rejected, and a kind converted to itself, which is a no-op (SEL passes through unchanged, not
+// wrapped in a conva/conve node at all).
 //
 // Every Selector node (one monolithic type, below) carries its own `type` (which kind of set it
 // denotes) - but rather than parse a type-less tree and infer/validate `type` bottom-up afterward,
 // parsing itself is done by four mutually recursive functions, parseNodeSelExpr/parseEdgeSelExpr/
 // parseTriangleSelExpr/parseSquareSelExpr (mirroring selectNode()/selectEdge()/selectTriangle()/
 // selectSquare()'s own mutual recursion below): each always produces Selectors of its own `type`,
-// recursing into parseNodeSelExpr for fromna/fromne's own operand (always a node selector) and into
-// the appropriate one of the four for tona/tone's own operand (per its explicit edge/tri/sq token).
-// This is what lets `all`/`none` skip spelling out which kind they mean: `type` comes from *which
-// parser reached them*, not from anything written in the expression itself. selectNode()/
+// recursing into whichever of the four conva/conve's own explicit source-kind token names for that
+// operand. This is what lets `all`/`none` skip spelling out which kind they mean: `type` comes from
+// *which parser reached them*, not from anything written in the expression itself. selectNode()/
 // selectEdge()/selectTriangle()/selectSquare() (this file's own separate mutually recursive
 // evaluators) still re-check `sel.type` themselves rather than trusting it, since a Selector need
 // not always come from this file's own parsers (e.g. a hand-built AST, or one round-tripped through
 // JSON).
 export type SelectorType = 'node' | 'edge' | 'tri' | 'sq';
-
-// The non-node kinds fromna/fromne convert a node selector into, and tona/tone convert back from -
-// named the same as their own leading grammar token ('edge'/'tri'/'sq').
-export type ObjectType = 'edge' | 'tri' | 'sq';
 
 export type Selector =
     | { op: 'union' | 'inter' | 'diff'; type: SelectorType; a: Selector; b: Selector }
@@ -69,8 +67,7 @@ export type Selector =
     | { op: 'more'; type: 'node' | 'edge'; a: Selector }
     | { op: 'all' | 'none'; type: SelectorType }
     | { op: 'deg'; type: 'node'; cmp: 'eq' | 'gt' | 'lt'; n: number }
-    | { op: 'fromna' | 'fromne'; type: ObjectType; a: Selector }
-    | { op: 'tona' | 'tone'; type: 'node'; from: ObjectType; a: Selector }
+    | { op: 'conva' | 'conve'; type: SelectorType; from: SelectorType; a: Selector }
     | { op: 'rrmn'; type: SelectorType; count: number; a: Selector }
     | { op: 'rrmp'; type: SelectorType; frac: number; a: Selector };
 
@@ -129,19 +126,28 @@ function nextNonnegNumber(c: ParseCursor, context: string): number {
     return n;
 }
 
-// Reads tona/tone's own leading edge/tri/sq token and parses its operand via the matching one of
-// parseEdgeSelExpr/parseTriangleSelExpr/parseSquareSelExpr - shared by parseNodeSelExpr's own
-// tona/tone case below (the only place either op appears, since both always produce `type: 'node'`).
-function parseObjectSelExprFor(c: ParseCursor, opName: string): { from: ObjectType; a: Selector } {
+// Reads conva/conve's own leading node/edge/tri/sq token (the "from" kind) and parses its operand
+// via the matching one of parseNodeSelExpr/parseEdgeSelExpr/parseTriangleSelExpr/
+// parseSquareSelExpr - shared by all four of those functions' own conva/conve case below, `toType`
+// being whichever of them called this (the "to" kind, from parsing context, same as all/none).
+// Throws if the (from, toType) pair is the one with no defined association (triangle <-> square -
+// see this file's own top comment); returns the parsed operand directly, unwrapped, for a same-kind
+// conversion (a no-op).
+function parseConversion(c: ParseCursor, op: 'conva' | 'conve', toType: SelectorType): Selector {
     const fromTok = c.next();
-    if (fromTok === 'edge') return { from: 'edge', a: parseEdgeSelExpr(c) };
-    if (fromTok === 'tri') return { from: 'tri', a: parseTriangleSelExpr(c) };
-    if (fromTok === 'sq') return { from: 'sq', a: parseSquareSelExpr(c) };
-    throw new Error(`selector: (${opName} ...) source kind must be 'edge', 'tri', or 'sq', got '${fromTok}'`);
+    if (fromTok !== 'node' && fromTok !== 'edge' && fromTok !== 'tri' && fromTok !== 'sq')
+        throw new Error(`selector: (${op} ...) source kind must be 'node', 'edge', 'tri', or 'sq', got '${fromTok}'`);
+    if ((fromTok === 'tri' && toType === 'sq') || (fromTok === 'sq' && toType === 'tri'))
+        throw new Error(`selector: (${op} ...) has no association defined between 'tri' and 'sq'`);
+    const parseFrom = fromTok === 'node' ? parseNodeSelExpr : fromTok === 'edge' ? parseEdgeSelExpr
+        : fromTok === 'tri' ? parseTriangleSelExpr : parseSquareSelExpr;
+    const a = parseFrom(c);
+    c.expect(')');
+    return fromTok === toType ? a : { op, type: toType, from: fromTok, a };
 }
 
 // Parses a node SEL - mutually recursive with parseEdgeSelExpr/parseTriangleSelExpr/
-// parseSquareSelExpr via tona/tone's own operand. Every Selector this returns has `type: 'node'`.
+// parseSquareSelExpr via conva/conve's own operand. Every Selector this returns has `type: 'node'`.
 function parseNodeSelExpr(c: ParseCursor): Selector {
     c.expect('(');
     const op = c.next();
@@ -176,11 +182,8 @@ function parseNodeSelExpr(c: ParseCursor): Selector {
             c.expect(')');
             return { op: 'deg', type: 'node', cmp: cmpTok, n };
         }
-        case 'tona': case 'tone': {
-            const { from, a } = parseObjectSelExprFor(c, op);
-            c.expect(')');
-            return { op, type: 'node', from, a };
-        }
+        case 'conva': case 'conve':
+            return parseConversion(c, op, 'node');
         case 'rrmn': {
             const count = nextNonnegInt(c, '(rrmn ...) count');
             const a = parseNodeSelExpr(c);
@@ -198,8 +201,8 @@ function parseNodeSelExpr(c: ParseCursor): Selector {
     }
 }
 
-// Parses an edge SEL - mutually recursive with parseNodeSelExpr via fromna/fromne's own operand.
-// Every Selector this returns has `type: 'edge'`.
+// Parses an edge SEL - mutually recursive with parseNodeSelExpr/parseTriangleSelExpr/
+// parseSquareSelExpr via conva/conve's own operand. Every Selector this returns has `type: 'edge'`.
 function parseEdgeSelExpr(c: ParseCursor): Selector {
     c.expect('(');
     const op = c.next();
@@ -226,11 +229,8 @@ function parseEdgeSelExpr(c: ParseCursor): Selector {
         case 'none':
             c.expect(')');
             return { op: 'none', type: 'edge' };
-        case 'fromna': case 'fromne': {
-            const a = parseNodeSelExpr(c);
-            c.expect(')');
-            return { op, type: 'edge', a };
-        }
+        case 'conva': case 'conve':
+            return parseConversion(c, op, 'edge');
         case 'rrmn': {
             const count = nextNonnegInt(c, '(rrmn ...) count');
             const a = parseEdgeSelExpr(c);
@@ -248,9 +248,10 @@ function parseEdgeSelExpr(c: ParseCursor): Selector {
     }
 }
 
-// Parses a triangle SEL - mutually recursive with parseNodeSelExpr via fromna/fromne's own operand.
-// Every Selector this returns has `type: 'tri'`. No `deg`/`more`/`tona`/`tone` here - see this
-// file's own top comment.
+// Parses a triangle SEL - mutually recursive with parseNodeSelExpr/parseEdgeSelExpr via conva/
+// conve's own operand (never parseSquareSelExpr - see this file's own top comment on why
+// triangle <-> square is rejected). Every Selector this returns has `type: 'tri'`. No `deg`/`more`
+// here.
 function parseTriangleSelExpr(c: ParseCursor): Selector {
     c.expect('(');
     const op = c.next();
@@ -272,11 +273,8 @@ function parseTriangleSelExpr(c: ParseCursor): Selector {
         case 'none':
             c.expect(')');
             return { op: 'none', type: 'tri' };
-        case 'fromna': case 'fromne': {
-            const a = parseNodeSelExpr(c);
-            c.expect(')');
-            return { op, type: 'tri', a };
-        }
+        case 'conva': case 'conve':
+            return parseConversion(c, op, 'tri');
         case 'rrmn': {
             const count = nextNonnegInt(c, '(rrmn ...) count');
             const a = parseTriangleSelExpr(c);
@@ -317,11 +315,8 @@ function parseSquareSelExpr(c: ParseCursor): Selector {
         case 'none':
             c.expect(')');
             return { op: 'none', type: 'sq' };
-        case 'fromna': case 'fromne': {
-            const a = parseNodeSelExpr(c);
-            c.expect(')');
-            return { op, type: 'sq', a };
-        }
+        case 'conva': case 'conve':
+            return parseConversion(c, op, 'sq');
         case 'rrmn': {
             const count = nextNonnegInt(c, '(rrmn ...) count');
             const a = parseSquareSelExpr(c);
@@ -391,9 +386,7 @@ export function formatSelector(sel: Selector): string {
             return `(${sel.op})`;
         case 'deg':
             return `(deg ${sel.cmp} ${sel.n})`;
-        case 'fromna': case 'fromne':
-            return `(${sel.op} ${formatSelector(sel.a)})`;
-        case 'tona': case 'tone':
+        case 'conva': case 'conve':
             return `(${sel.op} ${sel.from} ${formatSelector(sel.a)})`;
         case 'rrmn':
             return `(rrmn ${sel.count} ${formatSelector(sel.a)})`;
@@ -454,39 +447,40 @@ function randomlyRemove<T>(items: T[], removeCount: number): T[] {
     return shuffled.slice(toRemove);
 }
 
-// Shared by selectEdge/selectTriangle/selectSquare's own fromna/fromne case: filters `all` (every
-// object of that kind in the whole graph) down to those whose own `members(obj)` nodes are either
-// ALL in `nodeSet` (fromna) or at least ONE is (fromne).
-function objectsFromNodes<T>(all: T[], nodeSet: Set<number>, members: (obj: T) => number[], mode: 'all' | 'some'): T[] {
-    return all.filter(obj => {
-        const m = members(obj);
-        return mode === 'all' ? m.every(n => nodeSet.has(n)) : m.some(n => nodeSet.has(n));
-    });
+// True iff `a`'s own members are completely contained in `b`'s, or vice versa - the general
+// "association" test conva/conve rely on (see this file's own top comment). Every object kind here
+// has a fixed arity (node 1, edge 2, triangle 3, square 4) and every object's own members are
+// distinct node indices, so containment can only ever run from the smaller-arity list into the
+// larger one; this checks whichever direction applies rather than assuming a fixed order.
+function isAssociated(a: number[], b: number[]): boolean {
+    const [small, large] = a.length <= b.length ? [a, b] : [b, a];
+    const largeSet = new Set(large);
+    return small.every(x => largeSet.has(x));
 }
 
-// Shared by selectNode's own tona/tone case: for every node 0..N-1, looks at which of `all`
-// (every object of the given kind in the whole graph) contain it (via `members`), and selects it iff
-// ALL of those containing objects are in `selectedKeys` (tona) or at least ONE is (tone) - vacuously
-// true/false (respectively) for a node contained in no such object at all, per ordinary `.every()`/
-// `.some()` semantics on an empty array.
-function nodesFromObjects<T>(
-    N: number, all: T[], members: (obj: T) => number[], key: (obj: T) => string | number,
-    selectedKeys: Set<string | number>, mode: 'all' | 'some',
-): Set<number> {
-    const containingByNode: T[][] = Array.from({ length: N }, () => []);
-    for (const obj of all) for (const n of members(obj)) containingByNode[n].push(obj);
-    const out = new Set<number>();
-    for (let n = 0; n < N; n++) {
-        const isSelected = (obj: T) => selectedKeys.has(key(obj));
-        const matches = mode === 'all' ? containingByNode[n].every(isSelected) : containingByNode[n].some(isSelected);
-        if (matches) out.add(n);
-    }
-    return out;
+// Shared by every evaluator's own conva/conve case: `allTo`/`toMembers` enumerate every object of
+// THIS evaluator's own kind (the "to" kind) in the whole graph; `allFrom`/`fromMembers`/`fromKey` do
+// the same for SEL's own declared source kind, and `selectedFromKeys` is which of those SEL's own
+// operand selects. A "to" object is kept iff ALL (mode 'all', conva) or AT LEAST ONE (mode 'some',
+// conve) of its associated "from" objects (per isAssociated above) are selected - vacuously
+// true/false (respectively) for a "to" object with no associated "from" objects at all, per ordinary
+// `.every()`/`.some()` semantics on an empty array.
+function convertObjects<F, T>(
+    allTo: T[], toMembers: (to: T) => number[],
+    allFrom: F[], fromMembers: (from: F) => number[], fromKey: (from: F) => string | number,
+    selectedFromKeys: Set<string | number>, mode: 'all' | 'some',
+): T[] {
+    return allTo.filter(to => {
+        const toM = toMembers(to);
+        const associated = allFrom.filter(from => isAssociated(toM, fromMembers(from)));
+        const isSelected = (from: F) => selectedFromKeys.has(fromKey(from));
+        return mode === 'all' ? associated.every(isSelected) : associated.some(isSelected);
+    });
 }
 
 /**
  * Evaluates a node Selector against a board's adjacency matrix, returning the set of selected node
- * indices. Mutually recursive with selectEdge()/selectTriangle()/selectSquare() via the tona/tone
+ * indices. Mutually recursive with selectEdge()/selectTriangle()/selectSquare() via the conva/conve
  * operators. `pos` isn't used by any selector in the current grammar, but is threaded through
  * (matching the other three evaluators' own signatures) for future position-based selectors.
  */
@@ -537,21 +531,23 @@ export function selectNode(adj: number[][], pos: number[][], sel: Selector): Set
             }
             return out;
         }
-        case 'tona': case 'tone': {
-            const mode = sel.op === 'tona' ? 'all' : 'some';
+        case 'conva': case 'conve': {
+            const mode = sel.op === 'conva' ? 'all' : 'some';
+            if (sel.from === 'node') return selectNode(adj, pos, sel.a); // same-kind: no-op (defensive)
+            const toNodes = Array.from({ length: N }, (_, i) => i);
             if (sel.from === 'edge') {
-                const all = selectEdge(adj, pos, { op: 'all', type: 'edge' });
-                const selectedKeys = new Set(selectEdge(adj, pos, sel.a).map(edgeKey));
-                return nodesFromObjects(N, all, e => [e.n1, e.n2], edgeKey, selectedKeys, mode);
+                const allFrom = selectEdge(adj, pos, { op: 'all', type: 'edge' });
+                const selectedKeys = new Set<string | number>(selectEdge(adj, pos, sel.a).map(edgeKey));
+                return new Set(convertObjects(toNodes, n => [n], allFrom, e => [e.n1, e.n2], edgeKey, selectedKeys, mode));
             }
             if (sel.from === 'tri') {
-                const all = selectTriangle(adj, pos, { op: 'all', type: 'tri' });
-                const selectedKeys = new Set(selectTriangle(adj, pos, sel.a).map(triKey));
-                return nodesFromObjects(N, all, t => [t.n1, t.n2, t.n3], triKey, selectedKeys, mode);
+                const allFrom = selectTriangle(adj, pos, { op: 'all', type: 'tri' });
+                const selectedKeys = new Set<string | number>(selectTriangle(adj, pos, sel.a).map(triKey));
+                return new Set(convertObjects(toNodes, n => [n], allFrom, t => [t.n1, t.n2, t.n3], triKey, selectedKeys, mode));
             }
-            const all = selectSquare(adj, pos, { op: 'all', type: 'sq' });
-            const selectedKeys = new Set(selectSquare(adj, pos, sel.a).map(sqKey));
-            return nodesFromObjects(N, all, s => [s.n1, s.n2, s.n3, s.n4], sqKey, selectedKeys, mode);
+            const allFrom = selectSquare(adj, pos, { op: 'all', type: 'sq' });
+            const selectedKeys = new Set<string | number>(selectSquare(adj, pos, sel.a).map(sqKey));
+            return new Set(convertObjects(toNodes, n => [n], allFrom, s => [s.n1, s.n2, s.n3, s.n4], sqKey, selectedKeys, mode));
         }
         case 'rrmn': {
             const base = [...selectNode(adj, pos, sel.a)];
@@ -568,8 +564,8 @@ export function selectNode(adj: number[][], pos: number[][], sel: Selector): Set
 
 /**
  * Evaluates an edge Selector against a board's adjacency matrix, returning the list of selected
- * edges as BoardEdge values (deduplicated). Mutually recursive with selectNode() via the
- * fromna/fromne operators.
+ * edges as BoardEdge values (deduplicated). Mutually recursive with selectNode()/selectTriangle()/
+ * selectSquare() via the conva/conve operators.
  */
 export function selectEdge(adj: number[][], pos: number[][], sel: Selector): BoardEdge[] {
     if (sel.type !== 'edge')
@@ -618,10 +614,23 @@ export function selectEdge(adj: number[][], pos: number[][], sel: Selector): Boa
         }
         case 'none':
             return [];
-        case 'fromna': case 'fromne': {
-            const nodes = selectNode(adj, pos, sel.a);
-            const all = selectEdge(adj, pos, { op: 'all', type: 'edge' });
-            return objectsFromNodes(all, nodes, e => [e.n1, e.n2], sel.op === 'fromna' ? 'all' : 'some');
+        case 'conva': case 'conve': {
+            const mode = sel.op === 'conva' ? 'all' : 'some';
+            if (sel.from === 'edge') return selectEdge(adj, pos, sel.a); // same-kind: no-op (defensive)
+            const allEdges = selectEdge(adj, pos, { op: 'all', type: 'edge' });
+            if (sel.from === 'node') {
+                const selectedKeys = new Set<string | number>(selectNode(adj, pos, sel.a));
+                const allNodes = Array.from({ length: N }, (_, i) => i);
+                return convertObjects(allEdges, e => [e.n1, e.n2], allNodes, n => [n], n => n, selectedKeys, mode);
+            }
+            if (sel.from === 'tri') {
+                const allFrom = selectTriangle(adj, pos, { op: 'all', type: 'tri' });
+                const selectedKeys = new Set<string | number>(selectTriangle(adj, pos, sel.a).map(triKey));
+                return convertObjects(allEdges, e => [e.n1, e.n2], allFrom, t => [t.n1, t.n2, t.n3], triKey, selectedKeys, mode);
+            }
+            const allFrom = selectSquare(adj, pos, { op: 'all', type: 'sq' });
+            const selectedKeys = new Set<string | number>(selectSquare(adj, pos, sel.a).map(sqKey));
+            return convertObjects(allEdges, e => [e.n1, e.n2], allFrom, s => [s.n1, s.n2, s.n3, s.n4], sqKey, selectedKeys, mode);
         }
         case 'rrmn': {
             const base = selectEdge(adj, pos, sel.a);
@@ -640,7 +649,7 @@ export function selectEdge(adj: number[][], pos: number[][], sel: Selector): Boa
  * Evaluates a triangle Selector against a board's adjacency matrix, returning the list of selected
  * triangles as BoardTriangle values (deduplicated) - the triangle counterpart of selectEdge above.
  * `(all)` is every triangle shared/topology.ts's findTriangles() finds. Mutually recursive with
- * selectNode() via the fromna/fromne operators.
+ * selectNode()/selectEdge() via the conva/conve operators.
  */
 export function selectTriangle(adj: number[][], pos: number[][], sel: Selector): BoardTriangle[] {
     if (sel.type !== 'tri')
@@ -668,10 +677,20 @@ export function selectTriangle(adj: number[][], pos: number[][], sel: Selector):
             return findTriangles(adj).map(([u, v, w]) => makeBoardTriangle(u, v, w));
         case 'none':
             return [];
-        case 'fromna': case 'fromne': {
-            const nodes = selectNode(adj, pos, sel.a);
-            const all = selectTriangle(adj, pos, { op: 'all', type: 'tri' });
-            return objectsFromNodes(all, nodes, t => [t.n1, t.n2, t.n3], sel.op === 'fromna' ? 'all' : 'some');
+        case 'conva': case 'conve': {
+            if (sel.from === 'sq')
+                throw new Error(`selectTriangle: no association is defined between 'tri' and 'sq'`);
+            const mode = sel.op === 'conva' ? 'all' : 'some';
+            if (sel.from === 'tri') return selectTriangle(adj, pos, sel.a); // same-kind: no-op (defensive)
+            const allTri = selectTriangle(adj, pos, { op: 'all', type: 'tri' });
+            if (sel.from === 'node') {
+                const selectedKeys = new Set<string | number>(selectNode(adj, pos, sel.a));
+                const allNodes = Array.from({ length: adj.length }, (_, i) => i);
+                return convertObjects(allTri, t => [t.n1, t.n2, t.n3], allNodes, n => [n], n => n, selectedKeys, mode);
+            }
+            const allFrom = selectEdge(adj, pos, { op: 'all', type: 'edge' });
+            const selectedKeys = new Set<string | number>(selectEdge(adj, pos, sel.a).map(edgeKey));
+            return convertObjects(allTri, t => [t.n1, t.n2, t.n3], allFrom, e => [e.n1, e.n2], edgeKey, selectedKeys, mode);
         }
         case 'rrmn': {
             const base = selectTriangle(adj, pos, sel.a);
@@ -690,7 +709,7 @@ export function selectTriangle(adj: number[][], pos: number[][], sel: Selector):
  * Evaluates a square Selector against a board's adjacency matrix, returning the list of selected
  * squares as BoardSquare values (deduplicated) - the square counterpart of selectTriangle above.
  * `(all)` is every square shared/topology.ts's findSquares() finds. Mutually recursive with
- * selectNode() via the fromna/fromne operators.
+ * selectNode()/selectEdge() via the conva/conve operators.
  */
 export function selectSquare(adj: number[][], pos: number[][], sel: Selector): BoardSquare[] {
     if (sel.type !== 'sq')
@@ -718,10 +737,20 @@ export function selectSquare(adj: number[][], pos: number[][], sel: Selector): B
             return findSquares(adj).map(([a, b, c, d]) => makeBoardSquare(a, b, c, d));
         case 'none':
             return [];
-        case 'fromna': case 'fromne': {
-            const nodes = selectNode(adj, pos, sel.a);
-            const all = selectSquare(adj, pos, { op: 'all', type: 'sq' });
-            return objectsFromNodes(all, nodes, s => [s.n1, s.n2, s.n3, s.n4], sel.op === 'fromna' ? 'all' : 'some');
+        case 'conva': case 'conve': {
+            if (sel.from === 'tri')
+                throw new Error(`selectSquare: no association is defined between 'tri' and 'sq'`);
+            const mode = sel.op === 'conva' ? 'all' : 'some';
+            if (sel.from === 'sq') return selectSquare(adj, pos, sel.a); // same-kind: no-op (defensive)
+            const allSq = selectSquare(adj, pos, { op: 'all', type: 'sq' });
+            if (sel.from === 'node') {
+                const selectedKeys = new Set<string | number>(selectNode(adj, pos, sel.a));
+                const allNodes = Array.from({ length: adj.length }, (_, i) => i);
+                return convertObjects(allSq, s => [s.n1, s.n2, s.n3, s.n4], allNodes, n => [n], n => n, selectedKeys, mode);
+            }
+            const allFrom = selectEdge(adj, pos, { op: 'all', type: 'edge' });
+            const selectedKeys = new Set<string | number>(selectEdge(adj, pos, sel.a).map(edgeKey));
+            return convertObjects(allSq, s => [s.n1, s.n2, s.n3, s.n4], allFrom, e => [e.n1, e.n2], edgeKey, selectedKeys, mode);
         }
         case 'rrmn': {
             const base = selectSquare(adj, pos, sel.a);

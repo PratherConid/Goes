@@ -39,8 +39,8 @@ static void from_json(const json& j, BoardArgEntry& e) {
 
 // Same ADL convention as BoardArgEntry's own to_json/from_json above - matches shared/selector.ts's
 // Selector wire format exactly (op/type strings, "a"/"b" nested Selector objects, "cmp"/"n" for deg,
-// "count" for rrmn, "frac" for rrmp, "from" for tona/tone's own edge/tri/sq token - see that file's
-// own Selector type doc comment).
+// "count" for rrmn, "frac" for rrmp, "from" for conva/conve's own node/edge/tri/sq source-kind token -
+// see that file's own Selector type doc comment).
 static std::string selector_op_name(SelectorOp op) {
     switch (op) {
         case SelectorOp::Union:  return "union";
@@ -51,10 +51,8 @@ static std::string selector_op_name(SelectorOp op) {
         case SelectorOp::All:    return "all";
         case SelectorOp::None:   return "none";
         case SelectorOp::Deg:    return "deg";
-        case SelectorOp::Fromna: return "fromna";
-        case SelectorOp::Fromne: return "fromne";
-        case SelectorOp::Tona:   return "tona";
-        case SelectorOp::Tone:   return "tone";
+        case SelectorOp::Conva:  return "conva";
+        case SelectorOp::Conve:  return "conve";
         case SelectorOp::Rrmn:   return "rrmn";
         case SelectorOp::Rrmp:   return "rrmp";
     }
@@ -69,29 +67,21 @@ static std::string selector_type_name(SelectorType type) {
     }
     throw std::runtime_error("selector_type_name: unknown SelectorType");
 }
-static std::string object_type_name(ObjectType type) {
-    switch (type) {
-        case ObjectType::Edge: return "edge";
-        case ObjectType::Tri:  return "tri";
-        case ObjectType::Sq:   return "sq";
-    }
-    throw std::runtime_error("object_type_name: unknown ObjectType");
-}
 static void to_json(json& j, const Selector& sel) {
     j["op"] = selector_op_name(sel.op);
     j["type"] = selector_type_name(sel.type);
     switch (sel.op) {
         case SelectorOp::Union: case SelectorOp::Inter: case SelectorOp::Diff:
             j["a"] = *sel.a; j["b"] = *sel.b; break;
-        case SelectorOp::Compl: case SelectorOp::More: case SelectorOp::Fromna: case SelectorOp::Fromne:
+        case SelectorOp::Compl: case SelectorOp::More:
             j["a"] = *sel.a; break;
         case SelectorOp::All: case SelectorOp::None: break;
         case SelectorOp::Deg:
             j["cmp"] = sel.cmp == DegCmp::Eq ? "eq" : sel.cmp == DegCmp::Gt ? "gt" : "lt";
             j["n"] = sel.n;
             break;
-        case SelectorOp::Tona: case SelectorOp::Tone:
-            j["from"] = object_type_name(sel.from);
+        case SelectorOp::Conva: case SelectorOp::Conve:
+            j["from"] = selector_type_name(sel.from);
             j["a"] = *sel.a;
             break;
         case SelectorOp::Rrmn: j["count"] = sel.count; j["a"] = *sel.a; break;
@@ -126,14 +116,13 @@ static void from_json(const json& j, Selector& sel) {
         else throw std::runtime_error("Unknown Selector deg cmp: " + cmp);
         sel.n = j.at("n").get<int>();
     }
-    else if (op == "fromna") { sel.op = SelectorOp::Fromna; sel.a = get_a(); }
-    else if (op == "fromne") { sel.op = SelectorOp::Fromne; sel.a = get_a(); }
-    else if (op == "tona" || op == "tone") {
-        sel.op = op == "tona" ? SelectorOp::Tona : SelectorOp::Tone;
+    else if (op == "conva" || op == "conve") {
+        sel.op = op == "conva" ? SelectorOp::Conva : SelectorOp::Conve;
         std::string from = j.at("from").get<std::string>();
-        if (from == "edge") sel.from = ObjectType::Edge;
-        else if (from == "tri") sel.from = ObjectType::Tri;
-        else if (from == "sq") sel.from = ObjectType::Sq;
+        if (from == "node") sel.from = SelectorType::Node;
+        else if (from == "edge") sel.from = SelectorType::Edge;
+        else if (from == "tri") sel.from = SelectorType::Tri;
+        else if (from == "sq") sel.from = SelectorType::Sq;
         else throw std::runtime_error("Unknown Selector 'from' kind: " + from);
         sel.a = get_a();
     }

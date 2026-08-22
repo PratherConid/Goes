@@ -7,10 +7,16 @@
 
 // Mirrors shared/selector.ts - see that file's own top comment for the full grammar (SEL):
 //   (union SEL SEL) / (inter SEL SEL) / (diff SEL SEL) / (compl SEL) / (more SEL) / (all) / (none) /
-//   (deg <eq|gt|lt> <num>) / (fromna SEL) / (fromne SEL) / (tona <edge|tri|sq> SEL) /
-//   (tone <edge|tri|sq> SEL) / (rrmn <num> SEL) / (rrmp <num> SEL)
+//   (deg <eq|gt|lt> <num>) / (conva <node|edge|tri|sq> SEL) / (conve <node|edge|tri|sq> SEL) /
+//   (rrmn <num> SEL) / (rrmp <num> SEL)
 // selecting a subset of a board's nodes, edges, triangles, or squares (a "triangle"/"square" here is
-// exactly what game/topology.h's find_triangles()/find_squares() finds).
+// exactly what game/topology.h's find_triangles()/find_squares() finds). conva/conve convert
+// between any two kinds (naming the source kind via their own leading node/edge/tri/sq token): a
+// "to" object (whichever kind this Selector itself is) is selected iff ALL (conva) or AT LEAST ONE
+// (conve) of its associated "from" objects are selected - two objects are associated iff one's own
+// node set is completely contained in the other's (always well-defined for two differing kinds,
+// since node/edge/triangle/square have strictly increasing arity 1/2/3/4). Converting a kind to
+// itself is a no-op; triangle <-> square has no meaningful association and is rejected.
 
 // Mirrors shared/types.ts's BoardEdge: n1 <= n2 always (see make_board_edge below).
 struct BoardEdge {
@@ -51,13 +57,9 @@ inline BoardSquare make_board_square(int a, int b, int c, int d) {
 // Mirrors shared/selector.ts's SelectorType.
 enum class SelectorType { Node, Edge, Tri, Sq };
 
-// The non-node kinds fromna/fromne convert a node selector into, and tona/tone convert back from -
-// mirrors shared/selector.ts's ObjectType.
-enum class ObjectType { Edge, Tri, Sq };
-
 // The operator tag of a Selector node - mirrors the `op` field of shared/selector.ts's own
 // discriminated-union Selector type.
-enum class SelectorOp { Union, Inter, Diff, Compl, More, All, None, Deg, Fromna, Fromne, Tona, Tone, Rrmn, Rrmp };
+enum class SelectorOp { Union, Inter, Diff, Compl, More, All, None, Deg, Conva, Conve, Rrmn, Rrmp };
 
 // Mirrors the comparator argument of a Deg selector ('eq'/'gt'/'lt' in the TS grammar).
 enum class DegCmp { Eq, Gt, Lt };
@@ -78,7 +80,7 @@ struct Selector {
     int n = 0;                       // meaningful iff op == Deg
     int count = 0;                   // meaningful iff op == Rrmn
     double frac = 0.0;               // meaningful iff op == Rrmp
-    ObjectType from = ObjectType::Edge; // meaningful iff op == Tona/Tone (the leading edge/tri/sq token)
+    SelectorType from = SelectorType::Node; // meaningful iff op == Conva/Conve (the leading source-kind token)
 
     bool operator==(const Selector& other) const;
 };
@@ -87,7 +89,7 @@ struct Selector {
 // std::runtime_error if `s` doesn't follow the grammar (an operator not valid for nodes is simply
 // not recognized inside a node-selector context). Mirrors shared/selector.ts's parseNodeSelector(),
 // including its mutual recursion with parse_edge_selector/parse_triangle_selector/
-// parse_square_selector below (via tona/tone's own operand) - see the .cpp file's own
+// parse_square_selector below (via conva/conve's own operand) - see the .cpp file's own
 // parse_node_sel_expr/parse_edge_sel_expr/parse_triangle_sel_expr/parse_square_sel_expr.
 Selector parse_node_selector(const std::string& s);
 
@@ -108,7 +110,7 @@ Selector parse_square_selector(const std::string& s);
 std::string format_selector(const Selector& sel);
 
 // Evaluates a node Selector against a board's adjacency matrix, returning the set of selected node
-// indices. Mutually recursive with select_edge()/select_triangle()/select_square() via the tona/tone
+// indices. Mutually recursive with select_edge()/select_triangle()/select_square() via the conva/conve
 // operators. `pos` isn't used by any selector in the current grammar, but is threaded through
 // (matching the other three evaluators' own signatures) for future position-based selectors -
 // mirrors shared/selector.ts's selectNode() exactly, including this same unused-for-now parameter.
@@ -117,8 +119,8 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
                            const Selector& sel);
 
 // Evaluates an edge Selector against a board's adjacency matrix, returning the list of selected
-// edges as BoardEdge values (deduplicated). Mutually recursive with select_node() via the
-// fromna/fromne operators. Mirrors shared/selector.ts's selectEdge().
+// edges as BoardEdge values (deduplicated). Mutually recursive with select_node()/select_triangle()/
+// select_square() via the conva/conve operators. Mirrors shared/selector.ts's selectEdge().
 std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
                                     const std::vector<std::vector<unsigned>>& pos,
                                     const Selector& sel);
@@ -126,7 +128,7 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
 // Evaluates a triangle Selector against a board's adjacency matrix, returning the list of selected
 // triangles as BoardTriangle values (deduplicated) - the triangle counterpart of select_edge above.
 // `(all)` is every triangle game/topology.h's find_triangles() finds. Mutually recursive with
-// select_node() via the fromna/fromne operators. Mirrors shared/selector.ts's selectTriangle().
+// select_node() via the conva/conve operators. Mirrors shared/selector.ts's selectTriangle().
 std::vector<BoardTriangle> select_triangle(const std::vector<std::vector<int>>& adj,
                                             const std::vector<std::vector<unsigned>>& pos,
                                             const Selector& sel);
@@ -134,7 +136,7 @@ std::vector<BoardTriangle> select_triangle(const std::vector<std::vector<int>>& 
 // Evaluates a square Selector against a board's adjacency matrix, returning the list of selected
 // squares as BoardSquare values (deduplicated) - the square counterpart of select_triangle above.
 // `(all)` is every square game/topology.h's find_squares() finds. Mutually recursive with
-// select_node() via the fromna/fromne operators. Mirrors shared/selector.ts's selectSquare().
+// select_node() via the conva/conve operators. Mirrors shared/selector.ts's selectSquare().
 std::vector<BoardSquare> select_square(const std::vector<std::vector<int>>& adj,
                                         const std::vector<std::vector<unsigned>>& pos,
                                         const Selector& sel);

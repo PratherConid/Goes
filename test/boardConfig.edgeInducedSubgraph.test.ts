@@ -25,7 +25,7 @@ test('drops a node whose only original edges are non-selected, unlike nodeInduce
     );
     // Selects edges where both endpoints have degree > 1: the 3 triangle edges - NOT the pendant
     // edge (0,3), since node 3 has degree 1.
-    const sub = edgeInducedSubgraph(bc, parseEdgeSelector('(fromna (deg gt 1))'));
+    const sub = edgeInducedSubgraph(bc, parseEdgeSelector('(conva node (deg gt 1))'));
     // Node 3 is adjacent to a surviving node (0) via edge (0,3), but that edge was never selected,
     // so node 3 itself has no selected incident edge and does not survive.
     assert.equal(sub.N, 3);
@@ -47,18 +47,18 @@ test('parseModifier("eis", ...) round-trips through applyModifier the same as ca
     const bc = rectangularBoard(3, 3);
     // _parseCommand (src/renderer.ts) splits the whole command line on whitespace before calling
     // parseModifier, so a selector's own internal parens/spaces arrive pre-split like this.
-    const modifier = parseModifier('eis', ['(fromna', '(deg', 'eq', '3)', ')']);
+    const modifier = parseModifier('eis', ['(conva', 'node', '(deg', 'eq', '3)', ')']);
     assert.equal(modifier.kind, 'EdgeInducedSubgraph');
 
     const viaModifier = applyModifier(bc, modifier);
-    const direct = edgeInducedSubgraph(bc, parseEdgeSelector('(fromna (deg eq 3))'));
+    const direct = edgeInducedSubgraph(bc, parseEdgeSelector('(conva node (deg eq 3))'));
     assert.equal(viaModifier.N, direct.N);
     assert.deepEqual(viaModifier.adj, direct.adj);
 });
 
 test('parseModifier("eis", ...) rejects too few arguments or a malformed selector', () => {
     assert.throws(() => parseModifier('eis', []), /eis takes at least 1 argument/);
-    assert.throws(() => parseModifier('eis', ['(fromna', '(deg', 'eq']), /unexpected end of input/);
+    assert.throws(() => parseModifier('eis', ['(conva', 'node', '(deg', 'eq']), /unexpected end of input/);
     // (deg ...) is node-only - eis parses its argument via parseEdgeSelector, which doesn't
     // recognize deg.
     assert.throws(

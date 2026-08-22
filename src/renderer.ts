@@ -112,10 +112,14 @@ const _boardConfigDescriptions = new Map([
     ['menger_4_2_011',
         'Order-4 Sierpinski carpet (the 2-dimensional case of the Menger-sponge-family flake '
         + 'fractal, indicator 011)'],
-    ['rect_19_19_nis_(rrmp_0.1_(all))_nis_(tone_sq_(fromna_(all)))',
+    ['rect_19_19_nis_(rrmp_0.1_(all))_nis_(conve_sq_(conva_node_(all)))',
         '19×19 rectangular board with 10% of its nodes randomly removed, then any node no longer '
         + 'part of at least one intact unit square (a 2×2 block with all 4 of its own grid edges '
         + 'still present) dropped too'],
+    ['rect_5_5_fractaldrop_3_0.05',
+        '5×5 rectangular board put through 3 rounds of: randomly drop 5% of its edges, replace each '
+        + 'resulting square with a side-length-3 square board, then drop any edge not part of an '
+        + 'intact unit square'],
 ]);
 
 
@@ -1671,18 +1675,16 @@ export class Renderer {
             ${row('(all)', 'Every object of whichever kind (node/edge/triangle/square) this SEL is')}
             ${row('(none)', 'No objects of that kind')}
             ${row('(deg &lt;eq|gt|lt&gt; &lt;num&gt;)', 'Nodes only: whose degree is =/&gt;/&lt; num')}
-            ${row('(fromna SEL)',
-                'Node selector to edge/triangle/square selector (whichever this SEL is): an object is '
-                + 'selected iff ALL of its nodes are selected')}
-            ${row('(fromne SEL)',
-                'Node selector to edge/triangle/square selector: an object is selected iff AT LEAST ONE '
-                + 'of its nodes is selected')}
-            ${row('(tona &lt;edge|tri|sq&gt; SEL)',
-                'Edge/triangle/square selector to node selector: a node is selected iff ALL objects of the '
-                + 'given kind containing it are selected (vacuously true if it\'s in none)')}
-            ${row('(tone &lt;edge|tri|sq&gt; SEL)',
-                'Edge/triangle/square selector to node selector: a node is selected iff AT LEAST ONE object '
-                + 'of the given kind containing it is selected (vacuously false if it\'s in none)')}
+            ${row('(conva &lt;node|edge|tri|sq&gt; SEL)',
+                'Converts SEL (of the given source kind) into whichever kind this SEL itself is: a '
+                + '"to" object is selected iff ALL of its associated "from" objects are selected - two '
+                + 'objects are associated iff one\'s own node set is completely contained in the '
+                + 'other\'s (vacuously true for a "to" object with no associated "from" objects at '
+                + 'all). Converting a kind to itself is a no-op; triangle &lt;-&gt; square has no '
+                + 'defined association and is rejected')}
+            ${row('(conve &lt;node|edge|tri|sq&gt; SEL)',
+                'Same as conva, but a "to" object is selected iff AT LEAST ONE of its associated '
+                + '"from" objects is selected (vacuously false if it has none)')}
             ${row('(rrmn &lt;num&gt; SEL)',
                 'Randomly removes exactly num (a nonnegative integer) items from SEL, uniformly at random')}
             ${row('(rrmp &lt;num&gt; SEL)',

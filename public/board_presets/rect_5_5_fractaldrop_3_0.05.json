@@ -1,0 +1,18 @@
+{
+  "boardType": "rect",
+  "boardArgs": [
+    {"kind": "Number", "value": 5},
+    {"kind": "Number", "value": 5}
+  ],
+  "boardModifiers": [
+    {
+      "kind": "Repeat",
+      "count": 3,
+      "modifiers": [
+        {"kind": "EdgeInducedSubgraph", "sel": {"op": "rrmp", "type": "edge", "frac": 0.05, "a": {"op": "all", "type": "edge"}}},
+        {"kind": "SquareForm", "w": 3},
+        {"kind": "EdgeInducedSubgraph", "sel": {"op": "conve", "type": "edge", "from": "sq", "a": {"op": "conva", "type": "sq", "from": "node", "a": {"op": "all", "type": "node"}}}}
+      ]
+    }
+  ]
+}

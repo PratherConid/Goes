@@ -30,30 +30,44 @@ test('parseNodeSelector/parseEdgeSelector reject malformed input (grammar errors
     assert.throws(() => parseNodeSelector('(deg eq abc)'), /nonnegative integer/);
 });
 
-test('parseNodeSelector/parseEdgeSelector reject an operator of the wrong kind, wherever it appears', () => {
-    // fromna only exists in parseEdgeSelExpr/parseTriangleSelExpr/parseSquareSelExpr - unrecognized
-    // inside a node-selector context, whether at the top level or nested.
-    assert.throws(() => parseNodeSelector('(fromna (deg eq 1))'), /unknown node-selector operator 'fromna'/);
-    assert.throws(
-        () => parseNodeSelector('(union (deg eq 1) (fromna (deg eq 1)))'),
-        /unknown node-selector operator 'fromna'/,
-    );
-    // deg only exists in parseNodeSelExpr - unrecognized inside an edge-selector context.
+test('parseNodeSelector/parseEdgeSelector reject an operator not valid for that context', () => {
+    // deg only exists in parseNodeSelExpr - unrecognized inside an edge/triangle/square context.
     assert.throws(() => parseEdgeSelector('(deg eq 1)'), /unknown edge-selector operator 'deg'/);
-    // e2n/n2e no longer exist (replaced by fromna/fromne/tona/tone) - unrecognized anywhere.
+    assert.throws(() => parseTriangleSelector('(deg eq 1)'), /unknown triangle-selector operator 'deg'/);
+    assert.throws(() => parseSquareSelector('(deg eq 1)'), /unknown square-selector operator 'deg'/);
+    // e2n/n2e/fromna/fromne/tona/tone no longer exist (replaced by conva/conve) - unrecognized
+    // wherever they appear.
     assert.throws(() => parseEdgeSelector('(e2n (deg eq 1))'), /unknown edge-selector operator 'e2n'/);
     assert.throws(() => parseNodeSelector('(n2e (all))'), /unknown node-selector operator 'n2e'/);
+    assert.throws(() => parseEdgeSelector('(fromna (all))'), /unknown edge-selector operator 'fromna'/);
+    assert.throws(() => parseNodeSelector('(tona edge (all))'), /unknown node-selector operator 'tona'/);
 });
 
-test('fromna/fromne reject an operand of the wrong kind, and tona/tone reject a bad source token', () => {
-    // fromna/fromne's own operand is always parsed via parseNodeSelExpr, which doesn't recognize
-    // fromna itself.
-    assert.throws(() => parseEdgeSelector('(fromna (fromna (deg eq 1)))'), /unknown node-selector operator 'fromna'/);
-    // tona/tone require an 'edge'/'tri'/'sq' token right after the op name.
-    assert.throws(() => parseNodeSelector('(tona (all))'), /source kind must be 'edge', 'tri', or 'sq'/);
-    assert.throws(() => parseNodeSelector('(tona nope (all))'), /source kind must be 'edge', 'tri', or 'sq'/);
-    // and then an operand of THAT kind - (deg ...) is node-only, invalid as tona's edge operand.
-    assert.throws(() => parseNodeSelector('(tona edge (deg eq 1))'), /unknown edge-selector operator 'deg'/);
+test('conva/conve require a valid node|edge|tri|sq source token, and reject triangle <-> square', () => {
+    assert.throws(() => parseNodeSelector('(conva (all))'), /source kind must be 'node', 'edge', 'tri', or 'sq'/);
+    assert.throws(() => parseNodeSelector('(conva nope (all))'), /source kind must be 'node', 'edge', 'tri', or 'sq'/);
+    assert.throws(() => parseTriangleSelector('(conva sq (all))'), /no association defined between 'tri' and 'sq'/);
+    assert.throws(() => parseSquareSelector('(conve tri (all))'), /no association defined between 'tri' and 'sq'/);
+    // conva/conve's own operand is then parsed as the declared source kind - (deg ...) is node-only,
+    // invalid as conva's edge operand.
+    assert.throws(() => parseNodeSelector('(conva edge (deg eq 1))'), /unknown edge-selector operator 'deg'/);
+});
+
+test('converting a kind to itself is a no-op - conva/conve don\'t even appear in the parsed tree', () => {
+    const nodeSel = parseNodeSelector('(deg eq 2)');
+    assert.deepEqual(parseNodeSelector('(conva node (deg eq 2))'), nodeSel);
+    assert.deepEqual(parseNodeSelector('(conve node (deg eq 2))'), nodeSel);
+    const edgeSel = parseEdgeSelector('(all)');
+    assert.deepEqual(parseEdgeSelector('(conva edge (all))'), edgeSel);
+});
+
+test('conva/conve reject tri<->sq at evaluation time too (defensive, for a hand-built Selector)', () => {
+    const handBuilt = {
+        op: 'conva' as const, type: 'sq' as const, from: 'tri' as const,
+        a: { op: 'all' as const, type: 'tri' as const },
+    };
+    assert.throws(
+        () => selectSquare(adj, pos, handBuilt), /no association is defined between 'tri' and 'sq'/);
 });
 
 test('all/none select every object of whichever kind, resolved by which parser reaches them ' +
@@ -91,39 +105,40 @@ test('union/inter/diff/compl combine node selectors as plain set operations', ()
         selectNode(adj, pos, parseNodeSelector('(compl (deg eq 2))')), new Set([0, 3]));
 });
 
-test('fromna selects edges whose nodes are ALL selected, fromne whose nodes have AT LEAST ONE selected', () => {
-    // deg eq 2 selects {1, 2} - only edge (1,2) has both endpoints in that set (fromna); edges
-    // (0,1) and (1,2) each have at least one endpoint in it (fromne).
-    assert.deepEqual(selectEdge(adj, pos, parseEdgeSelector('(fromna (deg eq 2))')), [{ n1: 1, n2: 2 }]);
+test('conva(node) selects edges whose nodes are ALL selected, conve(node) whose nodes have AT ' +
+    'LEAST ONE selected', () => {
+    // deg eq 2 selects {1, 2} - only edge (1,2) has both endpoints in that set (conva); edges (0,1)
+    // and (1,2) each have at least one endpoint in it (conve).
+    assert.deepEqual(selectEdge(adj, pos, parseEdgeSelector('(conva node (deg eq 2))')), [{ n1: 1, n2: 2 }]);
     assert.deepEqual(
-        selectEdge(adj, pos, parseEdgeSelector('(fromne (deg eq 2))')),
+        selectEdge(adj, pos, parseEdgeSelector('(conve node (deg eq 2))')),
         [{ n1: 0, n2: 1 }, { n1: 1, n2: 2 }, { n1: 2, n2: 3 }]);
 });
 
-test('tona selects nodes whose every containing edge is selected, tone whose any containing edge is', () => {
-    // (fromna (deg eq 2)) = {(1,2)} only.
-    const selEdges = '(fromna (deg eq 2))';
-    // tone: node 0's only edge is (0,1), not selected -> excluded; node 1's edges are (0,1) [not
+test('conva(edge) selects nodes whose every associated edge is selected, conve(edge) whose any is', () => {
+    // (conva node (deg eq 2)) = {(1,2)} only.
+    const selEdges = '(conva node (deg eq 2))';
+    // conve: node 0's only edge is (0,1), not selected -> excluded; node 1's edges are (0,1) [not
     // selected] and (1,2) [selected] -> at least one selected -> included. Node 2 symmetric to 1.
     // Node 3's only edge (2,3) isn't selected -> excluded.
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(tone edge ${selEdges})`)), new Set([1, 2]));
-    // tona: node 1 has TWO containing edges, (0,1) and (1,2) - only one is selected, so not ALL are
-    // -> excluded. Same for node 2. Nodes 0/3 each have exactly one containing edge, not selected ->
-    // excluded too. Nothing in this graph has every containing edge selected.
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(tona edge ${selEdges})`)), new Set());
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(conve edge ${selEdges})`)), new Set([1, 2]));
+    // conva: node 1 has TWO associated edges, (0,1) and (1,2) - only one is selected, so not ALL are
+    // -> excluded. Same for node 2. Nodes 0/3 each have exactly one associated edge, not selected ->
+    // excluded too. Nothing in this graph has every associated edge selected.
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(conva edge ${selEdges})`)), new Set());
 });
 
-test('tona is vacuously true for a node with no containing objects of the given kind', () => {
-    // No triangles at all in this graph - every node "vacuously" satisfies tona (every one of its
-    // zero containing triangles is trivially selected), but tone (at least one) is vacuously false.
+test('conva is vacuously true for a node with no associated objects of the given kind', () => {
+    // No triangles at all in this graph - every node "vacuously" satisfies conva (every one of its
+    // zero associated triangles is trivially selected), but conve (at least one) is vacuously false.
     assert.deepEqual(
-        selectNode(adj, pos, parseNodeSelector('(tona tri (all))')), new Set([0, 1, 2, 3]));
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(tone tri (all))')), new Set());
+        selectNode(adj, pos, parseNodeSelector('(conva tri (all))')), new Set([0, 1, 2, 3]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(conve tri (all))')), new Set());
 });
 
 test('compl on an edge selector complements within all of the graph\'s edges', () => {
-    // All edges: (0,1), (1,2), (2,3). fromna(deg eq 2) = {(1,2)}.
-    const edges = selectEdge(adj, pos, parseEdgeSelector('(compl (fromna (deg eq 2)))'));
+    // All edges: (0,1), (1,2), (2,3). conva(node, deg eq 2) = {(1,2)}.
+    const edges = selectEdge(adj, pos, parseEdgeSelector('(compl (conva node (deg eq 2)))'));
     assert.deepEqual(edges, [{ n1: 0, n2: 1 }, { n1: 2, n2: 3 }]);
 });
 
@@ -156,9 +171,9 @@ test('more expands an edge selector to edges sharing a node, keeping the origina
         [0, 0, 0, 1, 0],
     ];
     const triPlusEdgePos = [[0], [1], [2], [3], [4]];
-    // fromna(deg eq 2) selects the 3 triangle edges; more re-adds every edge incident to nodes
+    // conva(node, deg eq 2) selects the 3 triangle edges; more re-adds every edge incident to nodes
     // 0/1/2 - still just those same 3 edges, since edge (3,4) isn't incident to any of them.
-    const edges = selectEdge(triPlusEdgeAdj, triPlusEdgePos, parseEdgeSelector('(more (fromna (deg eq 2)))'));
+    const edges = selectEdge(triPlusEdgeAdj, triPlusEdgePos, parseEdgeSelector('(more (conva node (deg eq 2)))'));
     assert.deepEqual(edges, [{ n1: 0, n2: 1 }, { n1: 0, n2: 2 }, { n1: 1, n2: 2 }]);
 });
 
@@ -169,13 +184,14 @@ test('more is rejected for triangle/square selectors (no adjacency notion is def
 
 test('more on an already-all selector is a no-op, and formatSelector round-trips it', () => {
     assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(more (all))')), new Set([0, 1, 2, 3]));
-    const sel = parseEdgeSelector('(more (fromna (deg eq 2)))');
-    assert.equal(formatSelector(sel), '(more (fromna (deg eq 2)))');
+    const sel = parseEdgeSelector('(more (conva node (deg eq 2)))');
+    assert.equal(formatSelector(sel), '(more (conva node (deg eq 2)))');
 });
 
 test('union/inter/diff combine edge selectors as plain (deduplicated) set operations', () => {
-    // (fromna (deg gt 0)) is every edge (every node has degree > 0); (fromna (deg eq 2)) is just (1,2).
-    const all = '(fromna (deg gt 0))', middle = '(fromna (deg eq 2))';
+    // (conva node (deg gt 0)) is every edge (every node has degree > 0); (conva node (deg eq 2)) is
+    // just (1,2).
+    const all = '(conva node (deg gt 0))', middle = '(conva node (deg eq 2))';
     assert.deepEqual(
         selectEdge(adj, pos, parseEdgeSelector(`(union ${all} ${middle})`)),
         [{ n1: 0, n2: 1 }, { n1: 1, n2: 2 }, { n1: 2, n2: 3 }]);
@@ -208,8 +224,9 @@ test('selectTriangle finds every triangle via (all), and none in a triangle-free
 });
 
 test('union/inter/diff/compl combine triangle selectors as plain (deduplicated) set operations', () => {
-    // Only node 0 has degree 3 - fromne(deg eq 3) selects exactly the triangle containing it, [0,1,2].
-    const first = '(fromne (deg eq 3))';
+    // Only node 0 has degree 3 - conve(node, deg eq 3) selects exactly the triangle containing it,
+    // [0,1,2].
+    const first = '(conve node (deg eq 3))';
     const second = 'diff (all) ' + first; // the other triangle, [2,3,4]
     assert.deepEqual(
         selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(first)), [{ n1: 0, n2: 1, n3: 2 }]);
@@ -224,34 +241,48 @@ test('union/inter/diff/compl combine triangle selectors as plain (deduplicated) 
         selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(compl ${first})`)), [{ n1: 2, n2: 3, n3: 4 }]);
 });
 
-test('fromna/fromne convert a node selector into a triangle selector', () => {
+test('conva/conve convert a node selector into a triangle selector', () => {
     // (deg eq 3) selects only node 0, which belongs to triangle [0,1,2] alone.
     assert.deepEqual(
-        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(fromne (deg eq 3))')),
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(conve node (deg eq 3))')),
         [{ n1: 0, n2: 1, n3: 2 }]);
-    // fromna needs ALL 3 nodes of a triangle selected - a single node is never enough.
-    assert.deepEqual(selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(fromna (deg eq 3))')), []);
-    // All 5 non-pendant nodes selected -> fromna now selects both triangles (all of each one's own
+    // conva needs ALL 3 nodes of a triangle selected - a single node is never enough.
+    assert.deepEqual(selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(conva node (deg eq 3))')), []);
+    // All 5 non-pendant nodes selected -> conva now selects both triangles (all of each one's own
     // 3 nodes are in {0,1,2,3,4}).
     assert.deepEqual(
-        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(fromna (deg gt 1))')),
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(conva node (deg gt 1))')),
         [{ n1: 0, n2: 1, n3: 2 }, { n1: 2, n2: 3, n3: 4 }]);
 });
 
-test('tona/tone convert a triangle selector back into a node selector, including the vacuous ' +
+test('conva/conve convert an edge selector into a triangle selector (a new cross-type conversion)', () => {
+    // Edges touching node 0: (0,1), (0,2), (0,5) - via conve(node, deg eq 3), since only node 0 has
+    // degree 3.
+    const someEdges = '(conve node (deg eq 3))';
+    // Triangle [0,1,2]'s own edges are (0,1), (0,2), (1,2) - only 2 of those 3 are in the selected
+    // set, so conva (ALL) excludes it; conve (SOME) includes it. Triangle [2,3,4]'s edges share none
+    // with the selected set, so neither op includes it.
+    assert.deepEqual(selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(conva edge ${someEdges})`)), []);
+    assert.deepEqual(
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(conve edge ${someEdges})`)),
+        [{ n1: 0, n2: 1, n3: 2 }]);
+});
+
+test('conva/conve convert a triangle selector back into a node selector, including the vacuous ' +
     'case for the pendant node that belongs to no triangle', () => {
-    // Exactly triangle [0,1,2] selected (see fromne(deg eq 3) above).
-    const selTri = '(fromne (deg eq 3))';
-    // tone: nodes 0/1/2 each have that triangle as a containing one -> selected. Nodes 3/4 only
+    // Exactly triangle [0,1,2] selected (see conve(node, deg eq 3) above, here parsed as a triangle
+    // selector instead: "at least one of the triangle's own 3 nodes has degree 3").
+    const selTri = '(conve node (deg eq 3))';
+    // conve: nodes 0/1/2 each have that triangle as an associated one -> selected. Nodes 3/4 only
     // belong to [2,3,4], not selected -> excluded. Node 5 belongs to no triangle -> vacuously false.
     assert.deepEqual(
-        selectNode(bowtieAdj, bowtiePos, parseNodeSelector(`(tone tri ${selTri})`)), new Set([0, 1, 2]));
-    // tona: nodes 0/1 belong ONLY to [0,1,2] (selected) -> all of their containing triangles are
+        selectNode(bowtieAdj, bowtiePos, parseNodeSelector(`(conve tri ${selTri})`)), new Set([0, 1, 2]));
+    // conva: nodes 0/1 belong ONLY to [0,1,2] (selected) -> all of their associated triangles are
     // selected -> included. Node 2 belongs to BOTH triangles, and [2,3,4] isn't selected -> excluded.
     // Nodes 3/4 belong only to the non-selected [2,3,4] -> excluded. Node 5 belongs to zero
     // triangles -> vacuously true -> included.
     assert.deepEqual(
-        selectNode(bowtieAdj, bowtiePos, parseNodeSelector(`(tona tri ${selTri})`)), new Set([0, 1, 5]));
+        selectNode(bowtieAdj, bowtiePos, parseNodeSelector(`(conva tri ${selTri})`)), new Set([0, 1, 5]));
 });
 
 // A single 4-cycle 0-1-2-3-0 (no diagonals - a genuine square), plus a pendant node 4 off node 0.
@@ -272,22 +303,31 @@ test('selectSquare finds the single induced 4-cycle via (all), and none in a squ
     assert.deepEqual(selectSquare(bowtieAdj, bowtiePos, parseSquareSelector('(all)')), []);
 });
 
-test('fromna/fromne/tona/tone work the same way for squares as for triangles', () => {
-    // fromne from the square's own corner nodes selects the square; fromna from just the pendant
-    // does not (it isn't part of the square at all).
+test('conva/conve work the same way for squares as for triangles, including edge -> square', () => {
+    // conve from the square's own corner nodes selects the square; conva from just the pendant does
+    // not (it isn't part of the square at all).
     assert.deepEqual(
-        selectSquare(squareAdj, squarePos, parseSquareSelector('(fromne (deg eq 2))')),
+        selectSquare(squareAdj, squarePos, parseSquareSelector('(conve node (deg eq 2))')),
         [{ n1: 0, n2: 1, n3: 2, n4: 3 }]);
-    assert.deepEqual(selectSquare(squareAdj, squarePos, parseSquareSelector('(fromna (deg gt 2))')), []);
+    assert.deepEqual(selectSquare(squareAdj, squarePos, parseSquareSelector('(conva node (deg gt 2))')), []);
 
-    // tona/tone from the (only, therefore trivially fully-selected) square: every corner is in it,
-    // so both tona and tone select {0,1,2,3}; the pendant node 4 belongs to no square, so tona
-    // includes it vacuously while tone excludes it.
+    // conva/conve from the (only, therefore trivially fully-selected) square: every corner is in it,
+    // so both conva and conve select {0,1,2,3}; the pendant node 4 belongs to no square, so conva
+    // includes it vacuously while conve excludes it.
     const selSq = '(all)';
     assert.deepEqual(
-        selectNode(squareAdj, squarePos, parseNodeSelector(`(tona sq ${selSq})`)), new Set([0, 1, 2, 3, 4]));
+        selectNode(squareAdj, squarePos, parseNodeSelector(`(conva sq ${selSq})`)), new Set([0, 1, 2, 3, 4]));
     assert.deepEqual(
-        selectNode(squareAdj, squarePos, parseNodeSelector(`(tone sq ${selSq})`)), new Set([0, 1, 2, 3]));
+        selectNode(squareAdj, squarePos, parseNodeSelector(`(conve sq ${selSq})`)), new Set([0, 1, 2, 3]));
+
+    // Edge -> square (a new cross-type conversion, mirroring edge -> triangle above): edges touching
+    // node 0 are (0,1), (0,3), (0,4) (only node 0 has degree 3) - only 2 of the square's own 4 edges
+    // ((0,1) and (0,3)), so conva (ALL) excludes it; conve (SOME) includes it.
+    const someEdges = '(conve node (deg eq 3))';
+    assert.deepEqual(selectSquare(squareAdj, squarePos, parseSquareSelector(`(conva edge ${someEdges})`)), []);
+    assert.deepEqual(
+        selectSquare(squareAdj, squarePos, parseSquareSelector(`(conve edge ${someEdges})`)),
+        [{ n1: 0, n2: 1, n3: 2, n4: 3 }]);
 });
 
 test('rrmn/rrmp reject a malformed count/portion argument', () => {
@@ -339,7 +379,7 @@ test('rrmn/rrmp also work over triangle/square selectors', () => {
 });
 
 test('selectNode/selectEdge/selectTriangle/selectSquare throw when given a selector of the wrong kind', () => {
-    const edgeSel = parseEdgeSelector('(fromna (deg eq 2))');
+    const edgeSel = parseEdgeSelector('(conva node (deg eq 2))');
     assert.throws(() => selectNode(adj, pos, edgeSel), /expected a node selector, got an edge selector/);
     const nodeSel = parseNodeSelector('(deg eq 2)');
     assert.throws(() => selectEdge(adj, pos, nodeSel), /expected an edge selector, got a node selector/);

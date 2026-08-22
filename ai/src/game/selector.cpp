@@ -85,22 +85,39 @@ static Selector parse_edge_sel_expr(ParseCursor& c);
 static Selector parse_triangle_sel_expr(ParseCursor& c);
 static Selector parse_square_sel_expr(ParseCursor& c);
 
-// Reads tona/tone's own leading edge/tri/sq token and parses its operand via the matching one of
-// parse_edge_sel_expr/parse_triangle_sel_expr/parse_square_sel_expr - shared by
-// parse_node_sel_expr's own tona/tone case below (the only place either op appears, since both
-// always produce type == SelectorType::Node). Mirrors shared/selector.ts's
-// parseObjectSelExprFor().
-static void parse_object_sel_expr_for(ParseCursor& c, const std::string& op_name, ObjectType& from, Selector& a) {
+// Reads conva/conve's own leading node/edge/tri/sq token (the "from" kind) and parses its operand
+// via the matching one of parse_node_sel_expr/parse_edge_sel_expr/parse_triangle_sel_expr/
+// parse_square_sel_expr - shared by all four of those functions' own conva/conve case below,
+// `to_type` being whichever of them called this (the "to" kind, from parsing context, same as
+// all/none). Throws if the (from, to_type) pair is the one with no defined association (triangle
+// <-> square - see selector.h's own top comment); returns the parsed operand directly, unwrapped,
+// for a same-kind conversion (a no-op). Mirrors shared/selector.ts's parseConversion().
+static Selector parse_conversion(ParseCursor& c, SelectorOp op, SelectorType to_type) {
     std::string from_tok = c.next();
-    if (from_tok == "edge") { from = ObjectType::Edge; a = parse_edge_sel_expr(c); return; }
-    if (from_tok == "tri")  { from = ObjectType::Tri;  a = parse_triangle_sel_expr(c); return; }
-    if (from_tok == "sq")   { from = ObjectType::Sq;   a = parse_square_sel_expr(c); return; }
-    throw std::runtime_error(
-        "selector: (" + op_name + " ...) source kind must be 'edge', 'tri', or 'sq', got '" + from_tok + "'");
+    SelectorType from;
+    Selector (*parse_from)(ParseCursor&);
+    if (from_tok == "node") { from = SelectorType::Node; parse_from = parse_node_sel_expr; }
+    else if (from_tok == "edge") { from = SelectorType::Edge; parse_from = parse_edge_sel_expr; }
+    else if (from_tok == "tri") { from = SelectorType::Tri; parse_from = parse_triangle_sel_expr; }
+    else if (from_tok == "sq") { from = SelectorType::Sq; parse_from = parse_square_sel_expr; }
+    else throw std::runtime_error(
+        "selector: (" + std::string(op == SelectorOp::Conva ? "conva" : "conve") +
+        " ...) source kind must be 'node', 'edge', 'tri', or 'sq', got '" + from_tok + "'");
+    if ((from == SelectorType::Tri && to_type == SelectorType::Sq) ||
+        (from == SelectorType::Sq && to_type == SelectorType::Tri))
+        throw std::runtime_error("selector: (" + std::string(op == SelectorOp::Conva ? "conva" : "conve") +
+            " ...) has no association defined between 'tri' and 'sq'");
+    Selector a = parse_from(c);
+    c.expect(")");
+    if (from == to_type) return a; // same-kind conversion is a no-op
+    Selector sel;
+    sel.op = op; sel.type = to_type; sel.from = from;
+    sel.a = std::make_shared<Selector>(std::move(a));
+    return sel;
 }
 
 // Parses a node SEL - mutually recursive with parse_edge_sel_expr/parse_triangle_sel_expr/
-// parse_square_sel_expr via tona/tone's own operand. Every Selector this returns has
+// parse_square_sel_expr via conva/conve's own operand. Every Selector this returns has
 // type == SelectorType::Node. Mirrors shared/selector.ts's parseNodeSelExpr().
 static Selector parse_node_sel_expr(ParseCursor& c) {
     c.expect("(");
@@ -146,16 +163,8 @@ static Selector parse_node_sel_expr(ParseCursor& c) {
         sel.op = SelectorOp::Deg; sel.type = SelectorType::Node; sel.cmp = cmp; sel.n = n;
         return sel;
     }
-    if (op == "tona" || op == "tone") {
-        Selector sel;
-        sel.op = op == "tona" ? SelectorOp::Tona : SelectorOp::Tone;
-        sel.type = SelectorType::Node;
-        Selector a;
-        parse_object_sel_expr_for(c, op, sel.from, a);
-        sel.a = std::make_shared<Selector>(std::move(a));
-        c.expect(")");
-        return sel;
-    }
+    if (op == "conva" || op == "conve")
+        return parse_conversion(c, op == "conva" ? SelectorOp::Conva : SelectorOp::Conve, SelectorType::Node);
     if (op == "rrmn") {
         int count = next_nonneg_int(c, "(rrmn ...) count");
         Selector sel;
@@ -175,9 +184,9 @@ static Selector parse_node_sel_expr(ParseCursor& c) {
     throw std::runtime_error("selector: unknown node-selector operator '" + op + "'");
 }
 
-// Parses an edge SEL - mutually recursive with parse_node_sel_expr via fromna/fromne's own operand.
-// Every Selector this returns has type == SelectorType::Edge. Mirrors shared/selector.ts's
-// parseEdgeSelExpr().
+// Parses an edge SEL - mutually recursive with parse_node_sel_expr/parse_triangle_sel_expr/
+// parse_square_sel_expr via conva/conve's own operand. Every Selector this returns has
+// type == SelectorType::Edge. Mirrors shared/selector.ts's parseEdgeSelExpr().
 static Selector parse_edge_sel_expr(ParseCursor& c) {
     c.expect("(");
     std::string op = c.next();
@@ -208,14 +217,8 @@ static Selector parse_edge_sel_expr(ParseCursor& c) {
     }
     if (op == "all") { c.expect(")"); return Selector{SelectorOp::All, SelectorType::Edge}; }
     if (op == "none") { c.expect(")"); return Selector{SelectorOp::None, SelectorType::Edge}; }
-    if (op == "fromna" || op == "fromne") {
-        Selector sel;
-        sel.op = op == "fromna" ? SelectorOp::Fromna : SelectorOp::Fromne;
-        sel.type = SelectorType::Edge;
-        sel.a = std::make_shared<Selector>(parse_node_sel_expr(c));
-        c.expect(")");
-        return sel;
-    }
+    if (op == "conva" || op == "conve")
+        return parse_conversion(c, op == "conva" ? SelectorOp::Conva : SelectorOp::Conve, SelectorType::Edge);
     if (op == "rrmn") {
         int count = next_nonneg_int(c, "(rrmn ...) count");
         Selector sel;
@@ -235,9 +238,10 @@ static Selector parse_edge_sel_expr(ParseCursor& c) {
     throw std::runtime_error("selector: unknown edge-selector operator '" + op + "'");
 }
 
-// Parses a triangle SEL - mutually recursive with parse_node_sel_expr via fromna/fromne's own
-// operand. Every Selector this returns has type == SelectorType::Tri. No deg/more/tona/tone here -
-// see selector.h's own top comment. Mirrors shared/selector.ts's parseTriangleSelExpr().
+// Parses a triangle SEL - mutually recursive with parse_node_sel_expr/parse_edge_sel_expr via
+// conva/conve's own operand (never parse_square_sel_expr - see selector.h's own top comment on why
+// triangle <-> square is rejected). Every Selector this returns has type == SelectorType::Tri. No
+// deg/more here. Mirrors shared/selector.ts's parseTriangleSelExpr().
 static Selector parse_triangle_sel_expr(ParseCursor& c) {
     c.expect("(");
     std::string op = c.next();
@@ -260,14 +264,8 @@ static Selector parse_triangle_sel_expr(ParseCursor& c) {
     }
     if (op == "all") { c.expect(")"); return Selector{SelectorOp::All, SelectorType::Tri}; }
     if (op == "none") { c.expect(")"); return Selector{SelectorOp::None, SelectorType::Tri}; }
-    if (op == "fromna" || op == "fromne") {
-        Selector sel;
-        sel.op = op == "fromna" ? SelectorOp::Fromna : SelectorOp::Fromne;
-        sel.type = SelectorType::Tri;
-        sel.a = std::make_shared<Selector>(parse_node_sel_expr(c));
-        c.expect(")");
-        return sel;
-    }
+    if (op == "conva" || op == "conve")
+        return parse_conversion(c, op == "conva" ? SelectorOp::Conva : SelectorOp::Conve, SelectorType::Tri);
     if (op == "rrmn") {
         int count = next_nonneg_int(c, "(rrmn ...) count");
         Selector sel;
@@ -312,14 +310,8 @@ static Selector parse_square_sel_expr(ParseCursor& c) {
     }
     if (op == "all") { c.expect(")"); return Selector{SelectorOp::All, SelectorType::Sq}; }
     if (op == "none") { c.expect(")"); return Selector{SelectorOp::None, SelectorType::Sq}; }
-    if (op == "fromna" || op == "fromne") {
-        Selector sel;
-        sel.op = op == "fromna" ? SelectorOp::Fromna : SelectorOp::Fromne;
-        sel.type = SelectorType::Sq;
-        sel.a = std::make_shared<Selector>(parse_node_sel_expr(c));
-        c.expect(")");
-        return sel;
-    }
+    if (op == "conva" || op == "conve")
+        return parse_conversion(c, op == "conva" ? SelectorOp::Conva : SelectorOp::Conve, SelectorType::Sq);
     if (op == "rrmn") {
         int count = next_nonneg_int(c, "(rrmn ...) count");
         Selector sel;
@@ -383,11 +375,10 @@ std::string format_selector(const Selector& sel) {
             std::string cmp = sel.cmp == DegCmp::Eq ? "eq" : sel.cmp == DegCmp::Gt ? "gt" : "lt";
             return "(deg " + cmp + " " + std::to_string(sel.n) + ")";
         }
-        case SelectorOp::Fromna: return "(fromna " + format_selector(*sel.a) + ")";
-        case SelectorOp::Fromne: return "(fromne " + format_selector(*sel.a) + ")";
-        case SelectorOp::Tona: case SelectorOp::Tone: {
-            std::string name = sel.op == SelectorOp::Tona ? "tona" : "tone";
-            std::string from = sel.from == ObjectType::Edge ? "edge" : sel.from == ObjectType::Tri ? "tri" : "sq";
+        case SelectorOp::Conva: case SelectorOp::Conve: {
+            std::string name = sel.op == SelectorOp::Conva ? "conva" : "conve";
+            std::string from = sel.from == SelectorType::Node ? "node" : sel.from == SelectorType::Edge ? "edge"
+                : sel.from == SelectorType::Tri ? "tri" : "sq";
             return "(" + name + " " + from + " " + format_selector(*sel.a) + ")";
         }
         case SelectorOp::Rrmn: return "(rrmn " + std::to_string(sel.count) + " " + format_selector(*sel.a) + ")";
@@ -406,7 +397,7 @@ bool Selector::operator==(const Selector& other) const {
     if (op == SelectorOp::Deg) return cmp == other.cmp && n == other.n;
     if (op == SelectorOp::Rrmn) return count == other.count;
     if (op == SelectorOp::Rrmp) return frac == other.frac;
-    if (op == SelectorOp::Tona || op == SelectorOp::Tone) return from == other.from;
+    if (op == SelectorOp::Conva || op == SelectorOp::Conve) return from == other.from;
     return true;
 }
 
@@ -451,7 +442,7 @@ static std::string sq_key(const BoardSquare& s) {
 // keyed directly by K (which would drop that first-seen ordering). Shared by every object kind's own
 // `union` case below.
 template <typename T, typename K>
-static std::vector<T> dedupe_by_key(const std::vector<T>& items, const std::function<K(const T&)>& key) {
+static std::vector<T> dedupe_by_key(const std::vector<T>& items, K (*key)(const T&)) {
     std::unordered_map<K, size_t> first_seen;
     std::vector<T> out;
     for (auto& item : items) {
@@ -480,46 +471,47 @@ static std::vector<T> randomly_remove(std::vector<T> items, int remove_count) {
     return items;
 }
 
-// Shared by select_edge/select_triangle/select_square's own fromna/fromne case: filters `all`
-// (every object of that kind in the whole graph) down to those whose own `members(obj)` nodes are
-// either ALL in `node_set` (fromna) or at least ONE is (fromne). Mirrors shared/selector.ts's
-// objectsFromNodes().
-template <typename T>
-static std::vector<T> objects_from_nodes(
-    const std::vector<T>& all, const std::set<int>& node_set,
-    std::vector<int> (*members)(const T&), bool require_all)
-{
-    std::vector<T> out;
-    for (auto& obj : all) {
-        auto m = members(obj);
-        bool matches = require_all
-            ? std::all_of(m.begin(), m.end(), [&](int n) { return node_set.count(n) > 0; })
-            : std::any_of(m.begin(), m.end(), [&](int n) { return node_set.count(n) > 0; });
-        if (matches) out.push_back(obj);
-    }
-    return out;
+// Mirrors shared/selector.ts's node member/key convention for edge/triangle/square (a plain node
+// index is its own key; a single-element member list) - used wherever "node" is conva/conve's own
+// "from" or "to" kind in convert_objects below.
+static std::vector<int> node_members(const int& n) { return { n }; }
+static int node_key(const int& n) { return n; }
+
+// True iff `a`'s own members are completely contained in `b`'s, or vice versa - the general
+// "association" test conva/conve rely on (see selector.h's own top comment). Every object kind here
+// has a fixed arity (node 1, edge 2, triangle 3, square 4) and every object's own members are
+// distinct node indices, so containment can only ever run from the smaller-arity list into the
+// larger one; this checks whichever direction applies rather than assuming a fixed order.
+static bool is_associated(const std::vector<int>& a, const std::vector<int>& b) {
+    const std::vector<int>& small = a.size() <= b.size() ? a : b;
+    const std::vector<int>& large = a.size() <= b.size() ? b : a;
+    std::set<int> large_set(large.begin(), large.end());
+    return std::all_of(small.begin(), small.end(), [&](int x) { return large_set.count(x) > 0; });
 }
 
-// Shared by select_node's own tona/tone case: for every node 0..N-1, looks at which of `all` (every
-// object of the given kind in the whole graph) contain it (via `members`), and selects it iff ALL of
-// those containing objects are in `selected_keys` (tona) or at least ONE is (tone) - vacuously
-// true/false (respectively) for a node contained in no such object at all, per ordinary
-// all_of/any_of semantics on an empty range. Mirrors shared/selector.ts's nodesFromObjects().
-template <typename T, typename K>
-static std::set<int> nodes_from_objects(
-    int N, const std::vector<T>& all, std::vector<int> (*members)(const T&),
-    const std::function<K(const T&)>& key, const std::set<K>& selected_keys, bool require_all)
+// Shared by every evaluator's own conva/conve case: `all_to`/`to_members` enumerate every object of
+// THIS evaluator's own kind (the "to" kind) in the whole graph; `all_from`/`from_members`/`from_key`
+// do the same for SEL's own declared source kind, and `selected_from_keys` is which of those SEL's
+// own operand selects. A "to" object is kept iff ALL (require_all, conva) or AT LEAST ONE (conve) of
+// its associated "from" objects (per is_associated above) are selected - vacuously true/false
+// (respectively) for a "to" object with no associated "from" objects at all, per ordinary
+// all_of/any_of semantics on an empty range. Mirrors shared/selector.ts's convertObjects().
+template <typename F, typename T, typename K>
+static std::vector<T> convert_objects(
+    const std::vector<T>& all_to, std::vector<int> (*to_members)(const T&),
+    const std::vector<F>& all_from, std::vector<int> (*from_members)(const F&),
+    K (*from_key)(const F&), const std::set<K>& selected_from_keys, bool require_all)
 {
-    std::vector<std::vector<const T*>> containing_by_node(N);
-    for (auto& obj : all) for (int n : members(obj)) containing_by_node[n].push_back(&obj);
-    std::set<int> out;
-    for (int n = 0; n < N; n++) {
-        auto is_selected = [&](const T* obj) { return selected_keys.count(key(*obj)) > 0; };
-        auto& containing = containing_by_node[n];
+    std::vector<T> out;
+    for (auto& to : all_to) {
+        auto to_m = to_members(to);
+        std::vector<const F*> associated;
+        for (auto& from : all_from) if (is_associated(to_m, from_members(from))) associated.push_back(&from);
+        auto is_selected = [&](const F* from) { return selected_from_keys.count(from_key(*from)) > 0; };
         bool matches = require_all
-            ? std::all_of(containing.begin(), containing.end(), is_selected)
-            : std::any_of(containing.begin(), containing.end(), is_selected);
-        if (matches) out.insert(n);
+            ? std::all_of(associated.begin(), associated.end(), is_selected)
+            : std::any_of(associated.begin(), associated.end(), is_selected);
+        if (matches) out.push_back(to);
     }
     return out;
 }
@@ -580,36 +572,39 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
             }
             return out;
         }
-        case SelectorOp::Tona: case SelectorOp::Tone: {
-            bool require_all = sel.op == SelectorOp::Tona;
-            if (sel.from == ObjectType::Edge) {
-                auto all = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType::Edge});
-                auto selected = select_edge(adj, pos, *sel.a);
+        case SelectorOp::Conva: case SelectorOp::Conve: {
+            bool require_all = sel.op == SelectorOp::Conva;
+            if (sel.from == SelectorType::Node) return select_node(adj, pos, *sel.a); // same-kind: no-op (defensive)
+            std::vector<int> to_nodes(N);
+            for (int i = 0; i < N; i++) to_nodes[i] = i;
+            if (sel.from == SelectorType::Edge) {
+                auto all_from = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType::Edge});
                 std::set<std::string> selected_keys;
-                for (auto& e : selected) selected_keys.insert(edge_key(e));
-                return nodes_from_objects<BoardEdge, std::string>(
-                    N, all,
+                for (auto& e : select_edge(adj, pos, *sel.a)) selected_keys.insert(edge_key(e));
+                auto result = convert_objects<BoardEdge, int, std::string>(
+                    to_nodes, node_members, all_from,
                     +[](const BoardEdge& e) -> std::vector<int> { return { e.n1, e.n2 }; },
                     edge_key, selected_keys, require_all);
+                return std::set<int>(result.begin(), result.end());
             }
-            if (sel.from == ObjectType::Tri) {
-                auto all = select_triangle(adj, pos, Selector{SelectorOp::All, SelectorType::Tri});
-                auto selected = select_triangle(adj, pos, *sel.a);
+            if (sel.from == SelectorType::Tri) {
+                auto all_from = select_triangle(adj, pos, Selector{SelectorOp::All, SelectorType::Tri});
                 std::set<std::string> selected_keys;
-                for (auto& t : selected) selected_keys.insert(tri_key(t));
-                return nodes_from_objects<BoardTriangle, std::string>(
-                    N, all,
+                for (auto& t : select_triangle(adj, pos, *sel.a)) selected_keys.insert(tri_key(t));
+                auto result = convert_objects<BoardTriangle, int, std::string>(
+                    to_nodes, node_members, all_from,
                     +[](const BoardTriangle& t) -> std::vector<int> { return { t.n1, t.n2, t.n3 }; },
                     tri_key, selected_keys, require_all);
+                return std::set<int>(result.begin(), result.end());
             }
-            auto all = select_square(adj, pos, Selector{SelectorOp::All, SelectorType::Sq});
-            auto selected = select_square(adj, pos, *sel.a);
+            auto all_from = select_square(adj, pos, Selector{SelectorOp::All, SelectorType::Sq});
             std::set<std::string> selected_keys;
-            for (auto& s : selected) selected_keys.insert(sq_key(s));
-            return nodes_from_objects<BoardSquare, std::string>(
-                N, all,
+            for (auto& s : select_square(adj, pos, *sel.a)) selected_keys.insert(sq_key(s));
+            auto result = convert_objects<BoardSquare, int, std::string>(
+                to_nodes, node_members, all_from,
                 +[](const BoardSquare& s) -> std::vector<int> { return { s.n1, s.n2, s.n3, s.n4 }; },
                 sq_key, selected_keys, require_all);
+            return std::set<int>(result.begin(), result.end());
         }
         case SelectorOp::Rrmn: {
             auto base_set = select_node(adj, pos, *sel.a);
@@ -695,12 +690,35 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
         }
         case SelectorOp::None:
             return {};
-        case SelectorOp::Fromna: case SelectorOp::Fromne: {
-            auto nodes = select_node(adj, pos, *sel.a);
-            auto all = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType::Edge});
-            return objects_from_nodes<BoardEdge>(
-                all, nodes, +[](const BoardEdge& e) -> std::vector<int> { return { e.n1, e.n2 }; },
-                sel.op == SelectorOp::Fromna);
+        case SelectorOp::Conva: case SelectorOp::Conve: {
+            bool require_all = sel.op == SelectorOp::Conva;
+            if (sel.from == SelectorType::Edge) return select_edge(adj, pos, *sel.a); // same-kind: no-op (defensive)
+            auto all_to = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType::Edge});
+            auto edge_members = +[](const BoardEdge& e) -> std::vector<int> { return { e.n1, e.n2 }; };
+            if (sel.from == SelectorType::Node) {
+                std::set<int> selected_keys;
+                for (int n : select_node(adj, pos, *sel.a)) selected_keys.insert(n);
+                std::vector<int> all_from(N);
+                for (int i = 0; i < N; i++) all_from[i] = i;
+                return convert_objects<int, BoardEdge, int>(
+                    all_to, edge_members, all_from, node_members, node_key, selected_keys, require_all);
+            }
+            if (sel.from == SelectorType::Tri) {
+                auto all_from = select_triangle(adj, pos, Selector{SelectorOp::All, SelectorType::Tri});
+                std::set<std::string> selected_keys;
+                for (auto& t : select_triangle(adj, pos, *sel.a)) selected_keys.insert(tri_key(t));
+                return convert_objects<BoardTriangle, BoardEdge, std::string>(
+                    all_to, edge_members, all_from,
+                    +[](const BoardTriangle& t) -> std::vector<int> { return { t.n1, t.n2, t.n3 }; },
+                    tri_key, selected_keys, require_all);
+            }
+            auto all_from = select_square(adj, pos, Selector{SelectorOp::All, SelectorType::Sq});
+            std::set<std::string> selected_keys;
+            for (auto& s : select_square(adj, pos, *sel.a)) selected_keys.insert(sq_key(s));
+            return convert_objects<BoardSquare, BoardEdge, std::string>(
+                all_to, edge_members, all_from,
+                +[](const BoardSquare& s) -> std::vector<int> { return { s.n1, s.n2, s.n3, s.n4 }; },
+                sq_key, selected_keys, require_all);
         }
         case SelectorOp::Rrmn: {
             auto base = select_edge(adj, pos, *sel.a);
@@ -765,13 +783,29 @@ std::vector<BoardTriangle> select_triangle(const std::vector<std::vector<int>>& 
         }
         case SelectorOp::None:
             return {};
-        case SelectorOp::Fromna: case SelectorOp::Fromne: {
-            auto nodes = select_node(adj, pos, *sel.a);
-            auto all = select_triangle(adj, pos, Selector{SelectorOp::All, SelectorType::Tri});
-            return objects_from_nodes<BoardTriangle>(
-                all, nodes,
-                +[](const BoardTriangle& t) -> std::vector<int> { return { t.n1, t.n2, t.n3 }; },
-                sel.op == SelectorOp::Fromna);
+        case SelectorOp::Conva: case SelectorOp::Conve: {
+            if (sel.from == SelectorType::Sq)
+                throw std::runtime_error("select_triangle: no association is defined between 'tri' and 'sq'");
+            bool require_all = sel.op == SelectorOp::Conva;
+            if (sel.from == SelectorType::Tri) return select_triangle(adj, pos, *sel.a); // same-kind: no-op (defensive)
+            auto all_to = select_triangle(adj, pos, Selector{SelectorOp::All, SelectorType::Tri});
+            auto tri_members = +[](const BoardTriangle& t) -> std::vector<int> { return { t.n1, t.n2, t.n3 }; };
+            if (sel.from == SelectorType::Node) {
+                std::set<int> selected_keys;
+                for (int n : select_node(adj, pos, *sel.a)) selected_keys.insert(n);
+                std::vector<int> all_from(adj.size());
+                for (size_t i = 0; i < adj.size(); i++) all_from[i] = static_cast<int>(i);
+                return convert_objects<int, BoardTriangle, int>(
+                    all_to, tri_members, all_from, node_members, node_key, selected_keys, require_all);
+            }
+            // sel.from == SelectorType::Edge
+            auto all_from = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType::Edge});
+            std::set<std::string> selected_keys;
+            for (auto& e : select_edge(adj, pos, *sel.a)) selected_keys.insert(edge_key(e));
+            return convert_objects<BoardEdge, BoardTriangle, std::string>(
+                all_to, tri_members, all_from,
+                +[](const BoardEdge& e) -> std::vector<int> { return { e.n1, e.n2 }; },
+                edge_key, selected_keys, require_all);
         }
         case SelectorOp::Rrmn: {
             auto base = select_triangle(adj, pos, *sel.a);
@@ -836,13 +870,29 @@ std::vector<BoardSquare> select_square(const std::vector<std::vector<int>>& adj,
         }
         case SelectorOp::None:
             return {};
-        case SelectorOp::Fromna: case SelectorOp::Fromne: {
-            auto nodes = select_node(adj, pos, *sel.a);
-            auto all = select_square(adj, pos, Selector{SelectorOp::All, SelectorType::Sq});
-            return objects_from_nodes<BoardSquare>(
-                all, nodes,
-                +[](const BoardSquare& s) -> std::vector<int> { return { s.n1, s.n2, s.n3, s.n4 }; },
-                sel.op == SelectorOp::Fromna);
+        case SelectorOp::Conva: case SelectorOp::Conve: {
+            if (sel.from == SelectorType::Tri)
+                throw std::runtime_error("select_square: no association is defined between 'tri' and 'sq'");
+            bool require_all = sel.op == SelectorOp::Conva;
+            if (sel.from == SelectorType::Sq) return select_square(adj, pos, *sel.a); // same-kind: no-op (defensive)
+            auto all_to = select_square(adj, pos, Selector{SelectorOp::All, SelectorType::Sq});
+            auto sq_members = +[](const BoardSquare& s) -> std::vector<int> { return { s.n1, s.n2, s.n3, s.n4 }; };
+            if (sel.from == SelectorType::Node) {
+                std::set<int> selected_keys;
+                for (int n : select_node(adj, pos, *sel.a)) selected_keys.insert(n);
+                std::vector<int> all_from(adj.size());
+                for (size_t i = 0; i < adj.size(); i++) all_from[i] = static_cast<int>(i);
+                return convert_objects<int, BoardSquare, int>(
+                    all_to, sq_members, all_from, node_members, node_key, selected_keys, require_all);
+            }
+            // sel.from == SelectorType::Edge
+            auto all_from = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType::Edge});
+            std::set<std::string> selected_keys;
+            for (auto& e : select_edge(adj, pos, *sel.a)) selected_keys.insert(edge_key(e));
+            return convert_objects<BoardEdge, BoardSquare, std::string>(
+                all_to, sq_members, all_from,
+                +[](const BoardEdge& e) -> std::vector<int> { return { e.n1, e.n2 }; },
+                edge_key, selected_keys, require_all);
         }
         case SelectorOp::Rrmn: {
             auto base = select_square(adj, pos, *sel.a);

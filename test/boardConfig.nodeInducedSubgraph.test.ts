@@ -56,10 +56,11 @@ test('parseModifier("nis", ...) round-trips through applyModifier the same as ca
 test('parseModifier("nis", ...) rejects too few arguments or a malformed selector', () => {
     assert.throws(() => parseModifier('nis', []), /nis takes at least 1 argument/);
     assert.throws(() => parseModifier('nis', ['(deg', 'eq']), /unexpected end of input/);
-    // (fromna ...) is edge/tri/sq-only - nis parses its argument via parseNodeSelector, which
-    // doesn't recognize fromna.
+    // (conva sq ...) is valid at the top level (converting a square selector into this node
+    // selector), but its own operand is then parsed as a SQUARE selector - and (deg ...) is
+    // node-only, so it's rejected one level down instead.
     assert.throws(
-        () => parseModifier('nis', ['(fromna', '(deg', 'eq', '3))']),
-        /unknown node-selector operator 'fromna'/,
+        () => parseModifier('nis', ['(conva', 'sq', '(deg', 'eq', '3))']),
+        /unknown square-selector operator 'deg'/,
     );
 });
