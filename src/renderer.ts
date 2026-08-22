@@ -1621,14 +1621,25 @@ export class Renderer {
             ${row('mc [dist]',
                 `MergeClose: merge every pair of nodes closer than dist into one node `
                 + `(default ${MC_DEFAULT_DIST})`)}
-            ${row('triform &lt;w&gt;',
-                'TriangleForm: replace every triangle (3 mutually-adjacent nodes) with a side-length-w '
-                + 'triangular board, gluing new corners to the old vertices and gluing shared triangle '
-                + 'edges together (w=1 collapses each triangle to a point; w=2 is a no-op)')}
-            ${row('sqform &lt;w&gt;',
-                'SquareForm: replace every square (4-cycle with no diagonal edges) with a w-by-w grid, '
-                + 'gluing new corners to the old vertices and gluing shared square edges together '
-                + '(w=1 collapses each square to a point; w=2 is a no-op)')}
+            ${row('triform &lt;w&gt; [SEL]',
+                'TriangleForm: replace every triangle (3 mutually-adjacent nodes) - or, if a triangle '
+                + 'selector SEL is given, only the ones it selects - with a side-length-w triangular '
+                + 'board, gluing new corners to the old vertices and gluing shared triangle edges '
+                + 'together (w=1 collapses each triangle to a point; w=2 is a no-op); an unselected '
+                + "triangle is left untouched, as if it weren't there at all")}
+            ${row('sqform &lt;w&gt; [SEL]',
+                'SquareForm: replace every square (4-cycle with no diagonal edges) - or, if a square '
+                + 'selector SEL is given, only the ones it selects - with a w-by-w grid, gluing new '
+                + 'corners to the old vertices and gluing shared square edges together (w=1 collapses '
+                + "each square to a point; w=2 is a no-op); an unselected square is left untouched, as if it weren't there at all")}
+            ${row('form &lt;w&gt; &lt;FSEL…&gt;',
+                'Form: generalizes triform/sqform to one or more form selectors at once (see Form '
+                + 'Selectors below), all sharing this one w - replaces every triangle/square any FSEL '
+                + 'names with its own side-length-w lattice, gluing new corners to the old vertices '
+                + 'and gluing every original edge\'s new boundary points together across every '
+                + 'lattice that has it as a side, regardless of whether that lattice came from a '
+                + 'triangle or a square FSEL (unlike calling triform/sqform separately, a triangle '
+                + 'and a square sharing an edge still glue seamlessly here)')}
             ${row('prod &lt;board-type&gt; &lt;args…&gt;',
                 'Prod: builds a second board (of the given type/args) and immediately multiplies it '
                 + 'into the current one (Cartesian product) - a one-shot shorthand for '
@@ -1690,6 +1701,13 @@ export class Renderer {
             ${row('(rrmp &lt;num&gt; SEL)',
                 'Randomly removes a portion of SEL: num (a nonnegative fraction) times SEL\'s own '
                 + 'size, rounded down')}
+            ${head('Form Selectors')}
+            ${row('(tri [SEL])',
+                'Names triangles for the form modifier (see Board Modifiers above): every triangle, '
+                + 'or (if a triangle selector SEL is given) only the ones it selects')}
+            ${row('(sq [SEL])',
+                'Names squares for the form modifier: every square, or (if a square selector SEL is '
+                + 'given) only the ones it selects')}
         </table>`;
     }
 

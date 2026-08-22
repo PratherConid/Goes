@@ -7,6 +7,7 @@ import {
     triangleForm, triangularBoard, icosahedronBoard, dodecahedronBoard, parseModifier, applyModifier,
     Embedding, type BoardConfig,
 } from '../shared/boardConfig.ts';
+import { parseTriangleSelector } from '../shared/selector.ts';
 
 function degreeSequence(adj: number[][]): number[] {
     return adj.map(row => row.reduce((s, v) => s + v, 0)).sort((a, b) => a - b);
@@ -123,4 +124,48 @@ test('applyModifier("TriangleForm", ...) round-trips through the same result as 
     const bc = triangularBoard(2);
     const modifier = parseModifier('triform', ['3']);
     assert.deepEqual(applyModifier(bc, modifier), triangleForm(bc, 3));
+});
+
+test('an optional trailing triangle selector restricts triform to only the triangles it selects', () => {
+    // _parseCommand (src/renderer.ts) splits the whole command line on whitespace before calling
+    // parseModifier, so a selector's own internal parens/spaces arrive pre-split like this.
+    const modifier = parseModifier('triform', ['3', '(conve', 'node', '(deg', 'eq', '3))']);
+    assert.deepEqual(modifier, {
+        kind: 'TriangleForm', w: 3, sel: parseTriangleSelector('(conve node (deg eq 3))'),
+    });
+    const bc = triangularBoard(2);
+    const direct = triangleForm(bc, 3, parseTriangleSelector('(conve node (deg eq 3))'));
+    assert.deepEqual(applyModifier(bc, modifier), direct);
+});
+
+test('sel restricts triangleForm to only the selected triangles - an unselected one is left ' +
+    'untouched, even where it would otherwise have shared a glued corner/edge', () => {
+    // Bowtie: triangles {0,1,2} and {2,3,4} sharing only vertex 2 (no shared edge - so an unselected
+    // triangle here has none of its own sides consumed by the selected one), plus a pendant node 5
+    // on node 0 alone, making node 0 the graph's unique degree-3 node.
+    const adj = [
+        [0, 1, 1, 0, 0, 1],
+        [1, 0, 1, 0, 0, 0],
+        [1, 1, 0, 1, 1, 0],
+        [0, 0, 1, 0, 1, 0],
+        [0, 0, 1, 1, 0, 0],
+        [1, 0, 0, 0, 0, 0],
+    ];
+    const emb = new Embedding(2, adj.map((_, i): [number, number] => [i, 0]), [[1, 0], [0, 1], [0, 0]]);
+    const bc: BoardConfig = { N: 6, adj, emb };
+    // Selects only the triangle containing the degree-3 node (0) - triangle {0,1,2}, not {2,3,4}.
+    const sel = parseTriangleSelector('(conve node (deg eq 3))');
+    const result = triangleForm(bc, 3, sel);
+    // All 6 original nodes survive (triangle {2,3,4} is untouched) plus triangularBoard(3)'s own 6
+    // face nodes for the one selected triangle, minus 3 corners glued back to nodes 0/1/2 = 9.
+    assert.equal(result.N, 9);
+    assertSymmetricNoSelfLoops(result.adj);
+    assertConnected(result.adj);
+    const edgeCount = (a: number[][]) => a.flat().reduce((s, v) => s + v, 0) / 2;
+    // Triangle {2,3,4}'s own 3 edges plus the 0-5 pendant edge (untouched) = 4, plus every edge of a
+    // triangularBoard(3) for the one subdivided triangle (its 3 corners are nodes 0,1,2 themselves).
+    assert.equal(edgeCount(result.adj), 4 + edgeCount(triangularBoard(3).adj));
+    // Selecting nothing (an empty selector) is a total no-op - no triangle qualifies.
+    const none = triangleForm(bc, 3, parseTriangleSelector('(none)'));
+    assert.deepEqual(none.adj, bc.adj);
 });
