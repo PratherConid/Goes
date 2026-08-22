@@ -322,19 +322,16 @@ export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): B
 
     for (const fs of sels) {
         if (fs.kind === 'tri') {
-            // findTriangles' own [A, B, C] (A < B < C) already matches BoardTriangle's canonical
-            // order, so a selected triangle's key is just its own A,B,C joined - no need to
-            // re-canonicalize via makeBoardTriangle.
-            let triangles = findTriangles(bc.adj); // each [A, B, C] with A < B < C
+            let triangles = findTriangles(bc.adj);
             if (fs.sel !== undefined) {
                 const selectedKeys =
                     new Set(selectTriangle(bc.adj, bc.emb.pos, fs.sel).map(t => `${t.n1},${t.n2},${t.n3}`));
-                triangles = triangles.filter(([a, b, c]) => selectedKeys.has(`${a},${b},${c}`));
+                triangles = triangles.filter(t => selectedKeys.has(`${t.n1},${t.n2},${t.n3}`));
             }
             const nFace = w * (w + 1) / 2;
             const localIdx = (i: number, j: number) => i * (i + 1) / 2 + j;
             const dirs: [number, number][] = [[1, 0], [1, 1], [0, 1], [-1, 0], [-1, -1], [0, -1]];
-            for (const [A, B, C] of triangles) {
+            for (const { n1: A, n2: B, n3: C } of triangles) {
                 const offset = nextIdx;
                 nextIdx += nFace;
                 const globalIdx = (i: number, j: number) => offset + localIdx(i, j);
@@ -359,20 +356,17 @@ export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): B
                 addSide(B, C, k => globalIdx(w - 1, k));
             }
         } else {
-            // Unlike findTriangles' A < B < C, findSquares' own [A, B, C, D] is in cycle order, not
-            // sorted - so a square's key must sort its own 4 members to match BoardSquare's
-            // canonical (sorted) n1..n4 order before comparing.
-            let squares = findSquares(bc.adj); // each [A, B, C, D] in cycle order
+            let squares = findSquares(bc.adj);
             if (fs.sel !== undefined) {
                 const selectedKeys =
                     new Set(selectSquare(bc.adj, bc.emb.pos, fs.sel).map(s => `${s.n1},${s.n2},${s.n3},${s.n4}`));
-                squares = squares.filter(([a, b, c, d]) => selectedKeys.has([a, b, c, d].sort((x, y) => x - y).join(',')));
+                squares = squares.filter(s => selectedKeys.has(`${s.n1},${s.n2},${s.n3},${s.n4}`));
             }
             const nFace = w * w;
             const localIdx = (i: number, j: number) => i * w + j;
             const dirs: [number, number][] = [[0, 1], [1, 0], [0, -1], [-1, 0]];
             const denom = (w - 1) * (w - 1);
-            for (const [A, B, C, D] of squares) {
+            for (const { n1: A, n2: B, n3: C, n4: D } of squares) {
                 const offset = nextIdx;
                 nextIdx += nFace;
                 const globalIdx = (i: number, j: number) => offset + localIdx(i, j);
@@ -530,7 +524,7 @@ export function sqOctarize(bc: BoardConfig): BoardConfig {
     const N = bc.N;
     const embDim = bc.emb.embDim;
     const newEmbDim = embDim + 1;
-    const squares = findSquares(bc.adj); // each [A, B, C, D] in cycle order
+    const squares = findSquares(bc.adj);
 
     const pos: number[][] = bc.emb.pos.map(p => [...p, 0]);
     const adj = zeroAdj(N + squares.length * 2);
@@ -542,7 +536,8 @@ export function sqOctarize(bc: BoardConfig): BoardConfig {
         }
 
     for (let s = 0; s < squares.length; s++) {
-        const corners = squares[s];
+        const sq = squares[s];
+        const corners = [sq.n1, sq.n2, sq.n3, sq.n4];
         const barycenter = new Array(embDim).fill(0);
         for (const idx of corners)
             for (let k = 0; k < embDim; k++) barycenter[k] += bc.emb.pos[idx][k] / 4;

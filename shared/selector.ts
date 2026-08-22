@@ -1,5 +1,5 @@
 import {
-    type BoardEdge, makeBoardEdge, type BoardTriangle, makeBoardTriangle, type BoardSquare, makeBoardSquare,
+    type BoardEdge, makeBoardEdge, type BoardTriangle, type BoardSquare,
 } from './types.js';
 import { findTriangles, findSquares } from './topology.js';
 
@@ -470,8 +470,10 @@ function dedupeByKey<T>(items: T[], key: (item: T) => string | number): T[] {
 
 // BoardEdge/BoardTriangle/BoardSquare aren't valid Set/Map keys themselves (two structurally-equal
 // values are different objects), so union/inter/diff/compl below key them by these canonical string
-// ids (n1 < n2 < ... already makes each one unique per object) whenever they need set-like
-// membership tests.
+// ids whenever they need set-like membership tests - each type's own canonical-construction
+// invariant (BoardEdge/BoardTriangle: n1 < n2 < ...; BoardSquare: the lexicographically-least of its
+// own cycle's 8 rotation/reflection relabelings - see makeBoardSquare, shared/types.ts) already makes
+// this unique per object, regardless of which vertex/direction it was found from.
 function edgeKey(e: BoardEdge): string {
     return `${e.n1},${e.n2}`;
 }
@@ -721,12 +723,10 @@ export function selectTriangle(adj: number[][], pos: number[][], sel: Selector):
         }
         case 'compl': {
             const aKeys = new Set(selectTriangle(adj, pos, sel.a).map(triKey));
-            return findTriangles(adj)
-                .map(([u, v, w]) => makeBoardTriangle(u, v, w))
-                .filter(t => !aKeys.has(triKey(t)));
+            return findTriangles(adj).filter(t => !aKeys.has(triKey(t)));
         }
         case 'all':
-            return findTriangles(adj).map(([u, v, w]) => makeBoardTriangle(u, v, w));
+            return findTriangles(adj);
         case 'none':
             return [];
         case 'conva': case 'conve': {
@@ -781,12 +781,10 @@ export function selectSquare(adj: number[][], pos: number[][], sel: Selector): B
         }
         case 'compl': {
             const aKeys = new Set(selectSquare(adj, pos, sel.a).map(sqKey));
-            return findSquares(adj)
-                .map(([a, b, c, d]) => makeBoardSquare(a, b, c, d))
-                .filter(s => !aKeys.has(sqKey(s)));
+            return findSquares(adj).filter(s => !aKeys.has(sqKey(s)));
         }
         case 'all':
-            return findSquares(adj).map(([a, b, c, d]) => makeBoardSquare(a, b, c, d));
+            return findSquares(adj);
         case 'none':
             return [];
         case 'conva': case 'conve': {

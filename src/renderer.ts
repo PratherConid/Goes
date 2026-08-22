@@ -126,6 +126,12 @@ const _boardConfigDescriptions = new Map([
         + 'and square faces), every one of those triangles and squares replaced by its own '
         + 'side-length-7 lattice (triangles and squares sharing an edge glue seamlessly), scaled to '
         + '75% size'],
+    ['cublat_3_3_3_es_1_rect_nice_form_4_sq_tri',
+        '3×3×3 cubical lattice, rectified (a node at each edge midpoint, connected via the '
+        + 'convex-hull figure around each original vertex), reduced to only the edges touching at '
+        + 'least one resulting square, then every triangle - and every one of those squares with a '
+        + 'degree-under-6 node - replaced by its own side-length-4 lattice (triangles and squares '
+        + 'sharing an edge glue seamlessly), scaled to 75% size'],
 ]);
 
 

@@ -34,11 +34,18 @@ export function makeBoardTriangle(a: number, b: number, c: number): BoardTriangl
     return { n1, n2, n3 };
 }
 
-/** One square (induced 4-cycle) {n1, n2, n3, n4} of a board's adjacency graph, always normalized so
- * n1 < n2 < n3 < n4 - see makeBoardSquare - so the same square has a unique representation
- * regardless of which vertex was found first or the cycle's own traversal order (unlike
- * shared/topology.ts's findSquares(), which reports its own [a, b, c, d] in cycle order, not
- * sorted). */
+/** One square (induced 4-cycle) {n1, n2, n3, n4} of a board's adjacency graph, n1-n2-n3-n4-n1 always
+ * a genuine cycle (n1-n2, n2-n3, n3-n4, n4-n1 are the 4 real graph edges; n1-n3/n2-n4 are the 2
+ * absent diagonals) - see makeBoardSquare. Unlike BoardTriangle (whose 3 members can always be
+ * sorted ascending with no loss, since a triangle's 3-cycle has full S3 symmetry - every permutation
+ * of 3 distinct elements is some rotation/reflection of it), a square's cycle structure is real
+ * information a plain ascending sort would destroy (turning a diagonal into an apparent edge). So a
+ * BoardSquare is instead normalized to whichever of its own cycle's 8 rotation/reflection-equivalent
+ * relabelings (see makeBoardSquare) is lexicographically smallest - still giving every square a
+ * unique representation regardless of which vertex/direction it was found from (the same guarantee
+ * BoardTriangle/BoardEdge have), while keeping n1-n2-n3-n4-n1 a genuine cycle (unlike
+ * shared/topology.ts's findSquares(), whose own [a, b, c, d] is *a* valid cycle order, but not
+ * necessarily this canonical one). */
 export interface BoardSquare {
     n1: number;
     n2: number;
@@ -46,9 +53,19 @@ export interface BoardSquare {
     n4: number;
 }
 
-/** Builds a BoardSquare from four node indices in any order, normalizing n1 < n2 < n3 < n4. */
+/** Builds a BoardSquare from four node indices already in cycle order (a-b-c-d-a, as
+ * shared/topology.ts's findSquares() reports them) - normalizes to the lexicographically smallest of
+ * the cycle's own 8 rotation/reflection-equivalent relabelings (see BoardSquare's own doc comment),
+ * NOT a plain sort of all 4 values. Since every rotation starts with a different one of the 4
+ * (distinct) node indices, the smallest-starting rotation is unique - so only the 2 candidates
+ * starting at the minimum (one per direction) ever need comparing, and since all 4 inputs are
+ * distinct, those two candidates' second element can never tie either. */
 export function makeBoardSquare(a: number, b: number, c: number, d: number): BoardSquare {
-    const [n1, n2, n3, n4] = [a, b, c, d].sort((x, y) => x - y);
+    const seq = [a, b, c, d];
+    const i = seq.indexOf(Math.min(...seq));
+    const fwd = [0, 1, 2, 3].map(k => seq[(i + k) % 4]);
+    const bwd = [0, 1, 2, 3].map(k => seq[(i - k + 4) % 4]);
+    const [n1, n2, n3, n4] = fwd[1] < bwd[1] ? fwd : bwd;
     return { n1, n2, n3, n4 };
 }
 

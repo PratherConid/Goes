@@ -2,6 +2,7 @@
  * Graph-topology utilities operating on plain N×N adjacency matrices (the same representation as
  * `BoardConfig.adj`), independent of any board-specific geometry.
  */
+import { type BoardTriangle, makeBoardTriangle, type BoardSquare, makeBoardSquare } from './types.js';
 
 /** An all-zero N×N adjacency matrix - the usual starting point before filling in edges. */
 export function zeroAdj(N: number): number[][] {
@@ -25,22 +26,24 @@ export function toAdjacencyList(adj: number[][]): AdjacencyList {
 
 /**
  * Finds every triangle (3 distinct, pairwise-adjacent vertices) in `adj`, each reported exactly
- * once as `[u, v, w]` with `u < v < w`. Converts to an adjacency list first (see toAdjacencyList),
- * then for each vertex `u` only looks at neighbors `v > u`, and for each such `v` only looks at
- * neighbors `w > v` of `v`, checking whether `w` is also a neighbor of `u` via an O(1) set lookup -
- * fixing this increasing order is what guarantees each triangle is found exactly once (via its
- * unique u < v < w labeling), with no separate deduplication pass needed.
+ * once as a BoardTriangle (already `n1 < n2 < n3` by construction - see makeBoardTriangle - since
+ * this always discovers a triangle's own 3 vertices in increasing order to begin with, so
+ * canonicalizing it costs nothing extra). Converts to an adjacency list first (see
+ * toAdjacencyList), then for each vertex `u` only looks at neighbors `v > u`, and for each such `v`
+ * only looks at neighbors `w > v` of `v`, checking whether `w` is also a neighbor of `u` via an O(1)
+ * set lookup - fixing this increasing order is what guarantees each triangle is found exactly once
+ * (via its unique u < v < w labeling), with no separate deduplication pass needed.
  */
-export function findTriangles(adj: number[][]): [number, number, number][] {
+export function findTriangles(adj: number[][]): BoardTriangle[] {
     const N = adj.length;
     const adjList = toAdjacencyList(adj);
-    const triangles: [number, number, number][] = [];
+    const triangles: BoardTriangle[] = [];
     for (let u = 0; u < N; u++)
         for (const v of adjList[u]) {
             if (v <= u) continue;
             for (const w of adjList[v]) {
                 if (w <= v) continue;
-                if (adjList[u].has(w)) triangles.push([u, v, w]);
+                if (adjList[u].has(w)) triangles.push(makeBoardTriangle(u, v, w));
             }
         }
     return triangles;
@@ -50,7 +53,10 @@ export function findTriangles(adj: number[][]): [number, number, number][] {
  * Finds every "square" - 4 distinct vertices `a, b, c, d` forming a cycle `a-b-c-d-a` (all 4 cycle
  * edges present) whose two diagonals `a-c` and `b-d` are BOTH absent (a proper induced 4-cycle, not
  * merely 4 vertices of a denser subgraph that happens to contain one) - each reported exactly once
- * as `[a, b, c, d]` in that cycle order.
+ * as a BoardSquare, canonicalized via makeBoardSquare (see its own doc comment, shared/types.ts) from
+ * the `p-r-q-s-p` cycle order this function itself discovers it in - that canonicalization is a
+ * genuine relabeling (not necessarily `p, r, q, s` verbatim), unlike findTriangles' own free ride,
+ * since a square's own discovery order isn't already the lexicographically-least one in general.
  *
  * Converts to an adjacency list first (see toAdjacencyList), then for every non-adjacent pair
  * `(p, q)` with `p < q` (a candidate diagonal), finds their common neighbors and, for every pair of
@@ -60,10 +66,10 @@ export function findTriangles(adj: number[][]): [number, number, number][] {
  * lexicographically smaller of the two (`p < min(r, s)`; the two diagonals can never share a vertex,
  * since all 4 square vertices are distinct, so this comparison is never ambiguous).
  */
-export function findSquares(adj: number[][]): [number, number, number, number][] {
+export function findSquares(adj: number[][]): BoardSquare[] {
     const N = adj.length;
     const adjList = toAdjacencyList(adj);
-    const squares: [number, number, number, number][] = [];
+    const squares: BoardSquare[] = [];
     for (let p = 0; p < N; p++)
         for (let q = p + 1; q < N; q++) {
             if (adjList[p].has(q)) continue; // p-q would be an edge, not a diagonal
@@ -74,7 +80,7 @@ export function findSquares(adj: number[][]): [number, number, number, number][]
                     const r = Math.min(common[i], common[j]);
                     const s = Math.max(common[i], common[j]);
                     if (adjList[r].has(s)) continue; // r-s would be an edge, not a diagonal
-                    if (p < r) squares.push([p, r, q, s]);
+                    if (p < r) squares.push(makeBoardSquare(p, r, q, s));
                 }
         }
     return squares;
