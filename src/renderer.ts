@@ -120,6 +120,12 @@ const _boardConfigDescriptions = new Map([
         '5×5 rectangular board put through 3 rounds of: randomly drop 5% of its edges, replace each '
         + 'resulting square with a side-length-3 square board, then drop any edge not part of an '
         + 'intact unit square'],
+    ['cublat_2_2_2_es_1_rect_form_7_(tri)_(sq)_scale_0.75',
+        '2×2×2 cubical lattice, rectified (a node at each edge midpoint, connected via the '
+        + "convex-hull figure around each original vertex - a cuboctahedron-like mix of triangular "
+        + 'and square faces), every one of those triangles and squares replaced by its own '
+        + 'side-length-7 lattice (triangles and squares sharing an edge glue seamlessly), scaled to '
+        + '75% size'],
 ]);
 
 

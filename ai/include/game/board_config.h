@@ -3,6 +3,7 @@
 #include <vector>
 #include <utility>
 #include <string>
+#include <optional>
 
 struct BoardConfig {
     int N;
@@ -48,22 +49,52 @@ BoardConfig rectify(const BoardConfig& bc);
 // there are no real coordinates to compute a distance from.
 BoardConfig merge_close(const BoardConfig& bc, double dist);
 
+// Mirrors shared/selector.ts's FormSelector - names which kind of face (triangle or square)
+// genericForm should look for, plus an optional restricting selector (nullopt = every one found,
+// matching the TS side's `sel === undefined`) - see genericForm's own doc comment (shared/
+// boardConfig.ts) for the full grammar/semantics this mirrors.
+enum class FormSelectorKind { Tri, Sq };
+struct FormSelector {
+    FormSelectorKind kind;
+    std::optional<Selector> sel;
+
+    bool operator==(const FormSelector& other) const { return kind == other.kind && sel == other.sel; }
+};
+
+// Mirrors shared/boardConfig.ts's genericForm(): replaces every triangle/square any of `sels` names
+// (each FormSelector's own optional selector restricts which ones of that kind qualify - default:
+// every one found) with its own w-sided lattice - a triangular_board(w)-shaped lattice for a
+// triangle, a w-by-w grid for a square - gluing new corners back to the original vertices and gluing
+// every original edge's own new boundary points together across every lattice that consumes that
+// edge as one of its own sides, regardless of whether that lattice came from a 'tri' or 'sq'
+// FormSelector (a triangle and a square sharing an edge still glue seamlessly, since gluing is
+// driven by shared ORIGINAL edges, not by matching kinds). `w` is shared by every FormSelector in
+// `sels`, since two lattices sharing an edge can only glue node-for-node if their own boundary
+// sequences are the same length. Like triangle_form/square_form below (each a single-FormSelector
+// special case of this), and for the same reason (see their own doc comments before this
+// generalization), this always produces an emb_dim = 0 board.
+BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSelector>& sels);
+
 // Replaces every triangle (3 mutually-adjacent, distinct vertices - see topology.h's
 // find_triangles) in bc with a triangular_board(w)-shaped lattice, gluing new corners back to the
-// original vertices and gluing any triangles that share an edge along that shared boundary too.
-// Mirrors shared/boardConfig.ts's triangleForm(), with one difference: the TS version
+// original vertices and gluing any triangles that share an edge along that shared boundary too -
+// the single-kind special case of generic_form (see its own doc comment) with `sel` (if given)
+// restricting this to only the triangles it selects, every other triangle left untouched. Mirrors
+// shared/boardConfig.ts's triangleForm(), with one difference: the TS version
 // computes real (generally irrational, since it divides by w-1) node positions, but every C++
 // board with a genuine (non-zero) emb_dim is an exact-integer invariant throughout this file, so
 // this always produces an emb_dim = 0 board instead (same reasoning as regular_polygon_board /
 // tetrahedron_board / dodecahedron_board / icosahedron_board) - adjacency only, regardless of
 // whether bc itself had a real embedding.
-BoardConfig triangle_form(const BoardConfig& bc, int w);
+BoardConfig triangle_form(const BoardConfig& bc, int w, std::optional<Selector> sel = std::nullopt);
 
 // Replaces every square (4 distinct vertices forming a cycle with no diagonal edges - see
 // topology.h's find_squares) in bc with a w-by-w grid, the same way triangle_form replaces
-// triangles with triangular_board(w)-shaped lattices - see that function's own doc comment for why
-// this always produces an emb_dim = 0 board. Mirrors shared/boardConfig.ts's squareForm().
-BoardConfig square_form(const BoardConfig& bc, int w);
+// triangles with triangular_board(w)-shaped lattices - the single-kind special case of generic_form
+// (see its own doc comment) with `sel` (if given) restricting this to only the squares it selects,
+// every other square left untouched - see triangle_form's own doc comment for why this always
+// produces an emb_dim = 0 board. Mirrors shared/boardConfig.ts's squareForm().
+BoardConfig square_form(const BoardConfig& bc, int w, std::optional<Selector> sel = std::nullopt);
 
 // Adds one new node connected to every existing node of bc, at the barycenter of bc's existing
 // node positions - mirrors shared/boardConfig.ts's globalCentralize() connectivity, but
@@ -171,15 +202,15 @@ std::string format_board_arg_entry(const BoardArgEntry& e);
 // parse_game_cfg (training/self_play.cpp) instead, which reads the already-tree-shaped JSON
 // directly (see parse_game_cfg's own parse_board_modifiers()).
 enum class ModifierKind {
-    Rectify, EdgeSplit, MergeClose, TriangleForm, SquareForm, Prod, Repeat,
+    Rectify, EdgeSplit, MergeClose, TriangleForm, SquareForm, Form, Prod, Repeat,
     GlobalCentralize, SqOctarize, Scale, NodeInducedSubgraph, EdgeInducedSubgraph
 };
 struct BoardModifier {
     ModifierKind kind;
-    // split_n is reused for TriangleForm/SquareForm's own single int parameter (its w), and for
-    // Repeat's own single int parameter (its count) - all four are "one plain int argument"
+    // split_n is reused for TriangleForm/SquareForm/Form's own single int parameter (its w), and for
+    // Repeat's own single int parameter (its count) - all five are "one plain int argument"
     // modifiers, same as Prod already shares board_type/board_args below.
-    int split_n = 0;   // meaningful when kind == ModifierKind::EdgeSplit/TriangleForm/SquareForm/Repeat
+    int split_n = 0;   // meaningful when kind == ModifierKind::EdgeSplit/TriangleForm/SquareForm/Form/Repeat
     // dist is reused for Scale's own single double parameter (its factor) - both are "one plain
     // double argument" modifiers.
     double dist = 0.0;             // meaningful when kind == ModifierKind::MergeClose / Scale
@@ -194,20 +225,30 @@ struct BoardModifier {
     // completeness requirement for its own element type.
     std::vector<BoardModifier> modifiers; // meaningful when kind == ModifierKind::Prod / Repeat
     // Only meaningful when kind == ModifierKind::NodeInducedSubgraph / EdgeInducedSubgraph - see
-    // game/selector.h.
+    // game/selector.h. Always present for these two (unlike form_sel below), matching the TS side's
+    // own non-optional `sel: Selector` field for those two variants.
     Selector sel;
+    // TriangleForm/SquareForm's own optional restricting selector (nullopt = every triangle/square
+    // found, matching the TS side's `sel?: Selector`) - see triangle_form/square_form's own doc
+    // comments (board_config.h). A separate field from `sel` above (rather than reusing it) since
+    // NodeInducedSubgraph/EdgeInducedSubgraph's own `sel` is mandatory, not optional.
+    std::optional<Selector> form_sel; // meaningful when kind == ModifierKind::TriangleForm/SquareForm
+    // Form's own form-selector list - see generic_form's own doc comment (board_config.h) and
+    // FormSelector's own doc comment above.
+    std::vector<FormSelector> form_sels; // meaningful when kind == ModifierKind::Form
 
     // Needed for std::vector<BoardModifier>::operator== (used by weak_equal, training/self_play.cpp)
     // - C++17 has no defaulted struct equality (that's a C++20 feature), so this is spelled out.
     bool operator==(const BoardModifier& other) const {
         return kind == other.kind && split_n == other.split_n && dist == other.dist &&
                board_type == other.board_type && board_args == other.board_args &&
-               modifiers == other.modifiers && sel == other.sel;
+               modifiers == other.modifiers && sel == other.sel &&
+               form_sel == other.form_sel && form_sels == other.form_sels;
     }
 };
 
 // Applies modifier to bc, dispatching to rectify / edge_split / merge_close / triangle_form /
-// square_form / global_centralize / sq_octarize / scale_board / node_induced_subgraph /
+// square_form / generic_form / global_centralize / sq_octarize / scale_board / node_induced_subgraph /
 // edge_induced_subgraph (Prod builds a fresh board from its own board_type/board_args via
 // build_board_config, applies its own nested modifiers to that fresh board via apply_modifiers, then
 // multiplies the result into bc; Repeat applies its own nested modifiers to bc, via apply_modifiers,

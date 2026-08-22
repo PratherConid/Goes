@@ -194,78 +194,132 @@ BoardConfig merge_close(const BoardConfig& bc, double dist) {
     return quotient_board(bc, quot);
 }
 
-BoardConfig triangle_form(const BoardConfig& bc, int w) {
+BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSelector>& sels) {
     assert(w >= 1 && "w must be at least 1");
     int N = bc.N;
-    auto triangles = find_triangles(bc.adj); // each {A, B, C} with A < B < C
 
-    int n_face = w * (w + 1) / 2;
-    auto local_idx = [](int i, int j) { return i * (i + 1) / 2 + j; };
-    auto global_idx = [&](int t, int i, int j) { return N + t * n_face + local_idx(i, j); };
+    std::set<std::pair<int,int>> is_face_side; // (p,q), p<q - an original edge consumed by some face
+    // canonical (p,q), p<q -> one boundary-index getter per face that has this original edge as a
+    // side, each already reoriented (see add_side) to run from p (k=0) to q (k=w-1) regardless of
+    // that face's own corner order - the single generalization of the old triangle_form's
+    // edge_to_triangles and square_form's edge_to_seqs, now spanning every face of every kind at once.
+    std::map<std::pair<int,int>, std::vector<std::function<int(int)>>> edge_to_seqs;
+    std::vector<std::pair<int,int>> quot; // corner glues, plus cross-edge glues appended below
 
-    std::set<std::pair<int,int>> is_triangle_side;
-    for (auto& tri : triangles) {
-        is_triangle_side.insert({tri[0], tri[1]});
-        is_triangle_side.insert({tri[0], tri[2]});
-        is_triangle_side.insert({tri[1], tri[2]});
+    auto add_side = [&](int p, int q, std::function<int(int)> at_k) {
+        auto key = std::pair{std::min(p, q), std::max(p, q)};
+        is_face_side.insert(key);
+        std::function<int(int)> oriented = p < q ? at_k : std::function<int(int)>(
+            [at_k, w](int k) { return at_k(w - 1 - k); });
+        edge_to_seqs[key].push_back(std::move(oriented));
+    };
+
+    // New nodes' own internal edges, collected face by face (a face's own global index range isn't
+    // known ahead of time, since it depends on how many triangles/squares each FormSelector
+    // selects) - merged into one adj array only once every face has been processed.
+    std::vector<std::pair<int,int>> extra_edges;
+    int next_idx = N;
+
+    for (auto& fs : sels) {
+        if (fs.kind == FormSelectorKind::Tri) {
+            // find_triangles' own {A, B, C} (A < B < C) already matches BoardTriangle's canonical
+            // order, so a selected triangle's key is just its own A,B,C - no need to re-sort.
+            auto triangles = find_triangles(bc.adj); // each {A, B, C} with A < B < C
+            if (fs.sel.has_value()) {
+                auto selected = select_triangle(bc.adj, bc.embed, *fs.sel);
+                std::set<std::array<int,3>> selected_keys;
+                for (auto& t : selected) selected_keys.insert({t.n1, t.n2, t.n3});
+                std::vector<std::array<int,3>> filtered;
+                for (auto& tri : triangles)
+                    if (selected_keys.count({tri[0], tri[1], tri[2]})) filtered.push_back(tri);
+                triangles = std::move(filtered);
+            }
+            int n_face = w * (w + 1) / 2;
+            auto local_idx = [](int i, int j) { return i * (i + 1) / 2 + j; };
+            const int dirs[6][2] = {{1,0},{1,1},{0,1},{-1,0},{-1,-1},{0,-1}};
+            for (auto& tri : triangles) {
+                int A = tri[0], B = tri[1], C = tri[2];
+                int offset = next_idx;
+                next_idx += n_face;
+                auto global_idx = [=](int i, int j) { return offset + local_idx(i, j); };
+                for (int i = 0; i < w; i++)
+                    for (int j = 0; j <= i; j++)
+                        for (auto& d : dirs) {
+                            int ni = i + d[0], nj = j + d[1];
+                            if (ni >= 0 && ni < w && nj >= 0 && nj <= ni)
+                                extra_edges.push_back({global_idx(i, j), global_idx(ni, nj)});
+                        }
+                quot.push_back({A, global_idx(0, 0)});
+                quot.push_back({B, global_idx(w - 1, 0)});
+                quot.push_back({C, global_idx(w - 1, w - 1)});
+                add_side(A, B, [=](int k) { return global_idx(k, 0); });
+                add_side(A, C, [=](int k) { return global_idx(k, k); });
+                add_side(B, C, [=](int k) { return global_idx(w - 1, k); });
+            }
+        } else {
+            // Unlike find_triangles' A < B < C, find_squares' own {A, B, C, D} is in cycle order,
+            // not sorted - so a square's key must sort its own 4 members to match BoardSquare's
+            // canonical (sorted) n1..n4 order before comparing.
+            auto squares = find_squares(bc.adj); // each {A, B, C, D} in cycle order
+            if (fs.sel.has_value()) {
+                auto selected = select_square(bc.adj, bc.embed, *fs.sel);
+                std::set<std::array<int,4>> selected_keys;
+                for (auto& s : selected) selected_keys.insert({s.n1, s.n2, s.n3, s.n4});
+                std::vector<std::array<int,4>> filtered;
+                for (auto& sq : squares) {
+                    std::array<int,4> sorted = {sq[0], sq[1], sq[2], sq[3]};
+                    std::sort(sorted.begin(), sorted.end());
+                    if (selected_keys.count(sorted)) filtered.push_back(sq);
+                }
+                squares = std::move(filtered);
+            }
+            int n_face = w * w;
+            auto local_idx = [&](int i, int j) { return i * w + j; };
+            const int dirs[4][2] = {{0,1},{1,0},{0,-1},{-1,0}};
+            for (auto& sq : squares) {
+                int A = sq[0], B = sq[1], C = sq[2], D = sq[3];
+                int offset = next_idx;
+                next_idx += n_face;
+                auto global_idx = [=](int i, int j) { return offset + local_idx(i, j); };
+                for (int i = 0; i < w; i++)
+                    for (int j = 0; j < w; j++)
+                        for (auto& d : dirs) {
+                            int ni = i + d[0], nj = j + d[1];
+                            if (ni >= 0 && ni < w && nj >= 0 && nj < w)
+                                extra_edges.push_back({global_idx(i, j), global_idx(ni, nj)});
+                        }
+                quot.push_back({A, global_idx(0, 0)});
+                quot.push_back({B, global_idx(0, w - 1)});
+                quot.push_back({C, global_idx(w - 1, w - 1)});
+                quot.push_back({D, global_idx(w - 1, 0)});
+                // Same top/right/bottom/left convention as the old square_form's own natural_seq -
+                // add_side itself handles the min/max reorientation, so these are always declared
+                // running from each side's first-listed corner to its second.
+                add_side(A, B, [=](int k) { return global_idx(0, k); });
+                add_side(B, C, [=](int k) { return global_idx(k, w - 1); });
+                add_side(C, D, [=](int k) { return global_idx(w - 1, w - 1 - k); });
+                add_side(D, A, [=](int k) { return global_idx(w - 1 - k, 0); });
+            }
+        }
     }
 
-    int total_n = N + (int)triangles.size() * n_face;
+    int total_n = next_idx;
     auto adj = zero_adj(total_n);
     for (int i = 0; i < N; i++)
         for (int j = i + 1; j < N; j++) {
-            if (!bc.adj[i][j] || is_triangle_side.count({i, j})) continue;
+            if (!bc.adj[i][j] || is_face_side.count({i, j})) continue;
             adj[i][j] = 1;
             adj[j][i] = 1;
         }
-
-    const int dirs[6][2] = {{1,0},{1,1},{0,1},{-1,0},{-1,-1},{0,-1}};
-    for (int t = 0; t < (int)triangles.size(); t++)
-        for (int i = 0; i < w; i++)
-            for (int j = 0; j <= i; j++)
-                for (auto& d : dirs) {
-                    int ni = i + d[0], nj = j + d[1];
-                    if (ni >= 0 && ni < w && nj >= 0 && nj <= ni)
-                        adj[global_idx(t, i, j)][global_idx(t, ni, nj)] = 1;
-                }
-
-    // Boundary node sequence (as (i,j) pairs) for triangle t's edge between vertex-pair (p, q) -
-    // same left/right/bottom convention as triangular_board's own row/col indexing.
-    auto boundary_seq = [&](int t, int p, int q) {
-        auto& tri = triangles[t];
-        int A = tri[0], B = tri[1], C = tri[2];
-        std::vector<std::pair<int,int>> seq(w);
-        if (p == A && q == B) { for (int i = 0; i < w; i++) seq[i] = {i, 0}; }
-        else if (p == A && q == C) { for (int i = 0; i < w; i++) seq[i] = {i, i}; }
-        else if (p == B && q == C) { for (int j = 0; j < w; j++) seq[j] = {w - 1, j}; }
-        else throw std::runtime_error("triangle_form: triangle has no such edge");
-        return seq;
-    };
-
-    std::vector<std::pair<int,int>> quot;
-    for (int t = 0; t < (int)triangles.size(); t++) {
-        auto& tri = triangles[t];
-        quot.push_back({tri[0], global_idx(t, 0, 0)});
-        quot.push_back({tri[1], global_idx(t, w - 1, 0)});
-        quot.push_back({tri[2], global_idx(t, w - 1, w - 1)});
+    for (auto& [a, b] : extra_edges) {
+        adj[a][b] = 1;
+        adj[b][a] = 1;
     }
-    std::map<std::pair<int,int>, std::vector<int>> edge_to_triangles;
-    for (int t = 0; t < (int)triangles.size(); t++) {
-        auto& tri = triangles[t];
-        for (auto& pq : {std::pair{tri[0], tri[1]}, std::pair{tri[0], tri[2]}, std::pair{tri[1], tri[2]}})
-            edge_to_triangles[pq].push_back(t);
-    }
-    for (auto& [pq, ts] : edge_to_triangles) {
-        if (ts.size() < 2) continue;
-        auto canonical = boundary_seq(ts[0], pq.first, pq.second);
-        for (size_t k = 1; k < ts.size(); k++) {
-            auto seq = boundary_seq(ts[k], pq.first, pq.second);
-            for (int idx = 0; idx < w; idx++)
-                quot.push_back({
-                    global_idx(ts[0], canonical[idx].first, canonical[idx].second),
-                    global_idx(ts[k], seq[idx].first, seq[idx].second),
-                });
-        }
+
+    for (auto& [key, seqs] : edge_to_seqs) {
+        if (seqs.size() < 2) continue;
+        for (size_t s = 1; s < seqs.size(); s++)
+            for (int k = 0; k < w; k++) quot.push_back({seqs[0](k), seqs[s](k)});
     }
 
     std::vector<std::vector<unsigned>> embed(total_n); // emb_dim=0 - see board_config.h's doc comment
@@ -273,94 +327,12 @@ BoardConfig triangle_form(const BoardConfig& bc, int w) {
     return quotient_board(combined, quot);
 }
 
-BoardConfig square_form(const BoardConfig& bc, int w) {
-    assert(w >= 1 && "w must be at least 1");
-    int N = bc.N;
-    auto squares = find_squares(bc.adj); // each {A, B, C, D} in cycle order
+BoardConfig triangle_form(const BoardConfig& bc, int w, std::optional<Selector> sel) {
+    return generic_form(bc, w, { FormSelector{ FormSelectorKind::Tri, std::move(sel) } });
+}
 
-    int n_face = w * w;
-    auto local_idx = [&](int i, int j) { return i * w + j; };
-    auto global_idx = [&](int t, int i, int j) { return N + t * n_face + local_idx(i, j); };
-
-    std::set<std::pair<int,int>> is_square_side;
-    for (auto& sq : squares) {
-        int A = sq[0], B = sq[1], C = sq[2], D = sq[3];
-        for (auto& pq : {std::pair{A, B}, std::pair{B, C}, std::pair{C, D}, std::pair{D, A}})
-            is_square_side.insert({std::min(pq.first, pq.second), std::max(pq.first, pq.second)});
-    }
-
-    int total_n = N + (int)squares.size() * n_face;
-    auto adj = zero_adj(total_n);
-    for (int i = 0; i < N; i++)
-        for (int j = i + 1; j < N; j++) {
-            if (!bc.adj[i][j] || is_square_side.count({i, j})) continue;
-            adj[i][j] = 1;
-            adj[j][i] = 1;
-        }
-
-    const int dirs[4][2] = {{0,1},{1,0},{0,-1},{-1,0}};
-    for (int t = 0; t < (int)squares.size(); t++)
-        for (int i = 0; i < w; i++)
-            for (int j = 0; j < w; j++)
-                for (auto& d : dirs) {
-                    int ni = i + d[0], nj = j + d[1];
-                    if (ni >= 0 && ni < w && nj >= 0 && nj < w)
-                        adj[global_idx(t, i, j)][global_idx(t, ni, nj)] = 1;
-                }
-
-    // The "natural" boundary sequence (local (i,j) pairs, k=0..w-1) for square t's side `side`
-    // (0=A-B top row, 1=B-C right col, 2=C-D bottom row, 3=D-A left col), running from that side's
-    // first-listed corner (k=0) to its second (k=w-1) - matches shared/boardConfig.ts's naturalSeq().
-    auto natural_seq = [&](int side) {
-        std::vector<std::pair<int,int>> seq(w);
-        if (side == 0) { for (int j = 0; j < w; j++) seq[j] = {0, j}; }
-        else if (side == 1) { for (int i = 0; i < w; i++) seq[i] = {i, w - 1}; }
-        else if (side == 2) { for (int k = 0; k < w; k++) seq[k] = {w - 1, w - 1 - k}; }
-        else { for (int k = 0; k < w; k++) seq[k] = {w - 1 - k, 0}; }
-        return seq;
-    };
-
-    std::vector<std::pair<int,int>> quot;
-    for (int t = 0; t < (int)squares.size(); t++) {
-        auto& sq = squares[t];
-        quot.push_back({sq[0], global_idx(t, 0, 0)});
-        quot.push_back({sq[1], global_idx(t, 0, w - 1)});
-        quot.push_back({sq[2], global_idx(t, w - 1, w - 1)});
-        quot.push_back({sq[3], global_idx(t, w - 1, 0)});
-    }
-    // Unlike triangle_form's A < B < C corner convention, a square's cycle order isn't globally
-    // monotonic in vertex index, so each side's natural sequence is explicitly re-oriented here to
-    // always run from min(endpoint) to max(endpoint) - the shared canonical direction every square
-    // touching that original edge agrees on, regardless of its own cycle orientation.
-    std::map<std::pair<int,int>, std::vector<std::pair<int, std::vector<std::pair<int,int>>>>> edge_to_seqs;
-    for (int t = 0; t < (int)squares.size(); t++) {
-        auto& sq = squares[t];
-        int A = sq[0], B = sq[1], C = sq[2], D = sq[3];
-        int sides[4][3] = {{A, B, 0}, {B, C, 1}, {C, D, 2}, {D, A, 3}};
-        for (auto& s : sides) {
-            int ep1 = s[0], ep2 = s[1], side = s[2];
-            auto key = std::pair{std::min(ep1, ep2), std::max(ep1, ep2)};
-            auto seq = natural_seq(side);
-            if (ep1 > ep2) std::reverse(seq.begin(), seq.end());
-            edge_to_seqs[key].push_back({t, seq});
-        }
-    }
-    for (auto& [key, entries] : edge_to_seqs) {
-        if (entries.size() < 2) continue;
-        auto& [t0, canonical] = entries[0];
-        for (size_t k = 1; k < entries.size(); k++) {
-            auto& [tk, seq] = entries[k];
-            for (int idx = 0; idx < w; idx++)
-                quot.push_back({
-                    global_idx(t0, canonical[idx].first, canonical[idx].second),
-                    global_idx(tk, seq[idx].first, seq[idx].second),
-                });
-        }
-    }
-
-    std::vector<std::vector<unsigned>> embed(total_n); // emb_dim=0 - see board_config.h's doc comment
-    BoardConfig combined = make_bc(std::move(adj), 0u, std::move(embed));
-    return quotient_board(combined, quot);
+BoardConfig square_form(const BoardConfig& bc, int w, std::optional<Selector> sel) {
+    return generic_form(bc, w, { FormSelector{ FormSelectorKind::Sq, std::move(sel) } });
 }
 
 BoardConfig global_centralize(const BoardConfig& bc) {
@@ -484,8 +456,9 @@ BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier)
         case ModifierKind::Rectify:    return rectify(bc);
         case ModifierKind::EdgeSplit:  return edge_split(bc, modifier.split_n);
         case ModifierKind::MergeClose: return merge_close(bc, modifier.dist);
-        case ModifierKind::TriangleForm: return triangle_form(bc, modifier.split_n);
-        case ModifierKind::SquareForm: return square_form(bc, modifier.split_n);
+        case ModifierKind::TriangleForm: return triangle_form(bc, modifier.split_n, modifier.form_sel);
+        case ModifierKind::SquareForm: return square_form(bc, modifier.split_n, modifier.form_sel);
+        case ModifierKind::Form: return generic_form(bc, modifier.split_n, modifier.form_sels);
         case ModifierKind::Prod: {
             BoardConfig sub = apply_modifiers(
                 build_board_config(modifier.board_type, modifier.board_args), modifier.modifiers);

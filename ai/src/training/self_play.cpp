@@ -131,6 +131,20 @@ static void from_json(const json& j, Selector& sel) {
     else throw std::runtime_error("Unknown Selector op: " + op);
 }
 
+// Same ADL convention as Selector's own to_json/from_json above - matches shared/selector.ts's
+// FormSelector wire format exactly ("kind": "tri"|"sq", optional "sel").
+static void to_json(json& j, const FormSelector& fs) {
+    j["kind"] = fs.kind == FormSelectorKind::Tri ? "tri" : "sq";
+    if (fs.sel.has_value()) j["sel"] = *fs.sel;
+}
+static void from_json(const json& j, FormSelector& fs) {
+    std::string kind = j.at("kind").get<std::string>();
+    if (kind == "tri") fs.kind = FormSelectorKind::Tri;
+    else if (kind == "sq") fs.kind = FormSelectorKind::Sq;
+    else throw std::runtime_error("Unknown FormSelector kind: " + kind);
+    fs.sel = j.contains("sel") ? std::optional<Selector>(j.at("sel").get<Selector>()) : std::nullopt;
+}
+
 bool weak_equal(const GameConfig& a, const GameConfig& b) {
     if (a.board_type != b.board_type) return false;
     if (a.board_args != b.board_args) return false;
@@ -179,8 +193,17 @@ static json board_modifiers_to_json(const std::vector<BoardModifier>& modifiers)
             case ModifierKind::Rectify:    mj["kind"] = "Rectify"; break;
             case ModifierKind::EdgeSplit:  mj["kind"] = "EdgeSplit"; mj["splitN"] = m.split_n; break;
             case ModifierKind::MergeClose: mj["kind"] = "MergeClose"; mj["dist"] = m.dist; break;
-            case ModifierKind::TriangleForm: mj["kind"] = "TriangleForm"; mj["w"] = m.split_n; break;
-            case ModifierKind::SquareForm: mj["kind"] = "SquareForm"; mj["w"] = m.split_n; break;
+            case ModifierKind::TriangleForm:
+                mj["kind"] = "TriangleForm"; mj["w"] = m.split_n;
+                if (m.form_sel.has_value()) mj["sel"] = *m.form_sel;
+                break;
+            case ModifierKind::SquareForm:
+                mj["kind"] = "SquareForm"; mj["w"] = m.split_n;
+                if (m.form_sel.has_value()) mj["sel"] = *m.form_sel;
+                break;
+            case ModifierKind::Form:
+                mj["kind"] = "Form"; mj["w"] = m.split_n; mj["sels"] = m.form_sels;
+                break;
             case ModifierKind::Prod:
                 mj["kind"] = "Prod";
                 mj["boardType"] = m.board_type;
@@ -308,10 +331,27 @@ static std::vector<BoardModifier> parse_board_modifiers(const json& j) {
         else if (kind == "EdgeSplit") out.push_back({ModifierKind::EdgeSplit, m["splitN"].get<int>()});
         else if (kind == "MergeClose")
             out.push_back({ModifierKind::MergeClose, 0, m["dist"].get<double>()});
-        else if (kind == "TriangleForm")
-            out.push_back({ModifierKind::TriangleForm, m["w"].get<int>()});
-        else if (kind == "SquareForm")
-            out.push_back({ModifierKind::SquareForm, m["w"].get<int>()});
+        else if (kind == "TriangleForm") {
+            BoardModifier bm;
+            bm.kind = ModifierKind::TriangleForm;
+            bm.split_n = m["w"].get<int>();
+            if (m.contains("sel")) bm.form_sel = m["sel"].get<Selector>();
+            out.push_back(std::move(bm));
+        }
+        else if (kind == "SquareForm") {
+            BoardModifier bm;
+            bm.kind = ModifierKind::SquareForm;
+            bm.split_n = m["w"].get<int>();
+            if (m.contains("sel")) bm.form_sel = m["sel"].get<Selector>();
+            out.push_back(std::move(bm));
+        }
+        else if (kind == "Form") {
+            BoardModifier bm;
+            bm.kind = ModifierKind::Form;
+            bm.split_n = m["w"].get<int>();
+            bm.form_sels = m["sels"].get<std::vector<FormSelector>>();
+            out.push_back(std::move(bm));
+        }
         else if (kind == "Prod") {
             BoardModifier bm;
             bm.kind = ModifierKind::Prod;
