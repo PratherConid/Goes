@@ -733,6 +733,15 @@ export class Renderer {
     private statusPanel:   HTMLDivElement;
     private chatPanel:     HTMLDivElement;
     private commandsPanel: HTMLDivElement;
+    private commandReferenceGamePanel:              HTMLDivElement;
+    private commandReferenceDisplayPanel:           HTMLDivElement;
+    private commandReferenceNewGameSetupPanel:      HTMLDivElement;
+    private commandReferenceGamePresetsPanel:       HTMLDivElement;
+    private commandReferenceOnlineMultiplayerPanel: HTMLDivElement;
+    private commandReferenceBoardTypesPanel:        HTMLDivElement;
+    private commandReferenceBoardModifiersPanel:    HTMLDivElement;
+    private commandReferenceSelectorsPanel:         HTMLDivElement;
+    private commandReferenceFormSelectorsPanel:     HTMLDivElement;
     private historyPanel:  HTMLDivElement;
     private panelDockBtn: HTMLButtonElement;
     private panelFullBtn: HTMLButtonElement;
@@ -795,6 +804,24 @@ export class Renderer {
         this.statusPanel   = document.getElementById('status-panel')    as HTMLDivElement;
         this.chatPanel     = document.getElementById('chat-panel')      as HTMLDivElement;
         this.commandsPanel = document.getElementById('commands-panel')  as HTMLDivElement;
+        this.commandReferenceGamePanel =
+            document.getElementById('cmdref-game-panel') as HTMLDivElement;
+        this.commandReferenceDisplayPanel =
+            document.getElementById('cmdref-display-panel') as HTMLDivElement;
+        this.commandReferenceNewGameSetupPanel =
+            document.getElementById('cmdref-new-game-setup-panel') as HTMLDivElement;
+        this.commandReferenceGamePresetsPanel =
+            document.getElementById('cmdref-game-presets-panel') as HTMLDivElement;
+        this.commandReferenceOnlineMultiplayerPanel =
+            document.getElementById('cmdref-online-multiplayer-panel') as HTMLDivElement;
+        this.commandReferenceBoardTypesPanel =
+            document.getElementById('cmdref-board-types-panel') as HTMLDivElement;
+        this.commandReferenceBoardModifiersPanel =
+            document.getElementById('cmdref-board-modifiers-panel') as HTMLDivElement;
+        this.commandReferenceSelectorsPanel =
+            document.getElementById('cmdref-selectors-panel') as HTMLDivElement;
+        this.commandReferenceFormSelectorsPanel =
+            document.getElementById('cmdref-form-selectors-panel') as HTMLDivElement;
         this.historyPanel  = document.getElementById('history-panel')   as HTMLDivElement;
         this.panelDockBtn = document.getElementById('panel-dock-btn') as HTMLButtonElement;
         this.panelFullBtn = document.getElementById('panel-full-btn') as HTMLButtonElement;
@@ -892,6 +919,15 @@ export class Renderer {
             statusPanel:          this.statusPanel,
             chatPanel:             this.chatPanel,
             commandsPanel:        this.commandsPanel,
+            commandReferenceGamePanel:              this.commandReferenceGamePanel,
+            commandReferenceDisplayPanel:           this.commandReferenceDisplayPanel,
+            commandReferenceNewGameSetupPanel:      this.commandReferenceNewGameSetupPanel,
+            commandReferenceGamePresetsPanel:       this.commandReferenceGamePresetsPanel,
+            commandReferenceOnlineMultiplayerPanel: this.commandReferenceOnlineMultiplayerPanel,
+            commandReferenceBoardTypesPanel:        this.commandReferenceBoardTypesPanel,
+            commandReferenceBoardModifiersPanel:    this.commandReferenceBoardModifiersPanel,
+            commandReferenceSelectorsPanel:         this.commandReferenceSelectorsPanel,
+            commandReferenceFormSelectorsPanel:     this.commandReferenceFormSelectorsPanel,
             currentGameSetupPanel: this.currentGameSetupPanel,
             newGamePanel:          this.newGamePanel,
             gameRecordsPanel:      this.gameRecordsPanel,
@@ -945,6 +981,12 @@ export class Renderer {
         this.gameRecordsPanel.innerHTML = '';
         if (this.currentSidePanel === SidePanelContent.GameRecords)
             for (const btn of childButtons(children, onNav)) this.gameRecordsPanel.appendChild(btn);
+
+        // CommandReference is likewise a pure hub - one child button per former section of the old
+        // single command-reference table, each now its own leaf page (see _initCommandsPanel()).
+        this.commandsPanel.innerHTML = '';
+        if (this.currentSidePanel === SidePanelContent.CommandReference)
+            for (const btn of childButtons(children, onNav)) this.commandsPanel.appendChild(btn);
 
         // Account has its own content (login form or logged-in view) built by
         // _renderAccountPanel(), not childButtons() - a leaf node, not a hub.
@@ -1518,11 +1560,10 @@ export class Renderer {
     private _initCommandsPanel() {
         const row = (cmd: string, desc: string) =>
             `<tr><td>${cmd}</td><td>${desc}</td></tr>`;
-        const head = (label: string) =>
-            `<tr><th colspan="2">${label}</th></tr>`;
-        this.commandsPanel.innerHTML = `<table>
-            <colgroup><col style="width:40%"><col style="width:60%"></colgroup>
-            ${head('Game')}
+        const table = (rows: string) =>
+            `<table><colgroup><col style="width:40%"><col style="width:60%"></colgroup>${rows}</table>`;
+
+        this.commandReferenceGamePanel.innerHTML = table(`
             ${row('new',              'Start new local game')}
             ${row('em [&lt;n&gt;]',  'Engine move (optional n consecutive moves)')}
             ${row('cem',             'Cancel current engine move')}
@@ -1532,7 +1573,9 @@ export class Renderer {
             ${row('w &lt;n&gt;', 'Withdraw n moves')}
             ${row('wcd',         'Withdraw moves until ply equals display position')}
             ${row('re &lt;n&gt;','Random evaluation over n playouts')}
-            ${head('Display')}
+        `);
+
+        this.commandReferenceDisplayPanel.innerHTML = table(`
             ${row('fw &lt;n&gt;','Step display forward n plies')}
             ${row('bw &lt;n&gt;','Step display backward n plies')}
             ${row('h &lt;n&gt;', 'Show n entries in the history panel')}
@@ -1549,8 +1592,10 @@ export class Renderer {
             ${row('aperture &lt;num&gt;',
                 'Set the camera\'s field of view in degrees; must be between 0 and 120')}
             ${row('scale &lt;num&gt;', 'Set the board\'s render-area-independent size ratio; must be &gt; 0')}
-            ${head('New Game Setup')}
-            ${row('preset &lt;name&gt;',      'Use the specified preset (see Game Presets, below, for available names)')}
+        `);
+
+        this.commandReferenceNewGameSetupPanel.innerHTML = table(`
+            ${row('preset &lt;name&gt;',      'Use the specified preset (see the Game Presets page for available names)')}
             ${row('fpo',                      'Toggle forced-pass-only for new games')}
             ${row('ascd',                     'Toggle allow-suicide for new games')}
             ${row('bt &lt;name&gt',           'Set board type for new game')}
@@ -1586,9 +1631,13 @@ export class Renderer {
             ${row('ko &lt;pos|sit&gt;',          'Set ko rule for new games: positional | situational')}
             ${row('komi &lt;k1&gt; &lt;k2&gt; …', 'Set per-player komi for new games. One value per player, each &gt;= 0')}
             ${row('mpl &lt;num|-&gt;',           "Set maximum number of plies for new games ('-' = unlimited)")}
-            ${head('Game Presets')}
-            ${[...this.presets.keys()].map(name => row(name, _presetDescriptions.get(name) ?? '')).join('\n            ')}
-            ${head('Online Multiplayer')}
+        `);
+
+        this.commandReferenceGamePresetsPanel.innerHTML = table(
+            [...this.presets.keys()].map(name => row(name, _presetDescriptions.get(name) ?? '')).join('\n            '),
+        );
+
+        this.commandReferenceOnlineMultiplayerPanel.innerHTML = table(`
             ${row('register &lt;name&gt; &lt;password&gt;', 'Create an account and log in as it')}
             ${row('login &lt;name&gt; &lt;password&gt;',    'Log in to play online games')}
             ${row('flogin &lt;name&gt; &lt;password&gt;',
@@ -1609,9 +1658,13 @@ export class Renderer {
             ${row('swl &lt;ID&gt;',       'Switch active view to a local game by ID')}
             ${row('swo &lt;ID&gt;',       'Switch active view to an online game by ID')}
             ${row('swf &lt;ID&gt;',       'Switch active view to a finished online game by ID')}
-            ${head('Board Types')}
-            ${[..._cmdToBoard.entries()].map(([cmd, { argStr, desc }]) => row(`${cmd} ${argStr}`, desc)).join('\n            ')}
-            ${head('Board Modifiers')}
+        `);
+
+        this.commandReferenceBoardTypesPanel.innerHTML = table(
+            [..._cmdToBoard.entries()].map(([cmd, { argStr, desc }]) => row(`${cmd} ${argStr}`, desc)).join('\n            '),
+        );
+
+        this.commandReferenceBoardModifiersPanel.innerHTML = table(`
             ${row('rect',
                 'Rectify: place a node at each edge midpoint, connected via the convex-hull vertex figure '
                 + 'around each original node')}
@@ -1633,8 +1686,8 @@ export class Renderer {
                 + 'corners to the old vertices and gluing shared square edges together (w=1 collapses '
                 + "each square to a point; w=2 is a no-op); an unselected square is left untouched, as if it weren't there at all")}
             ${row('form &lt;w&gt; &lt;FSEL…&gt;',
-                'Form: generalizes triform/sqform to one or more form selectors at once (see Form '
-                + 'Selectors below), all sharing this one w - replaces every triangle/square any FSEL '
+                'Form: generalizes triform/sqform to one or more form selectors at once (see the Form '
+                + 'Selectors page), all sharing this one w - replaces every triangle/square any FSEL '
                 + 'names with its own side-length-w lattice, gluing new corners to the old vertices '
                 + 'and gluing every original edge\'s new boundary points together across every '
                 + 'lattice that has it as a side, regardless of whether that lattice came from a '
@@ -1667,13 +1720,15 @@ export class Renderer {
             ${row('scale &lt;num&gt;', 'Scale: multiply every node\'s natural-dimension position by num')}
             ${row('nis &lt;node-selector&gt;',
                 'NodeInducedSubgraph: keep only the nodes the given node selector selects (see '
-                + 'Selectors below), dropping every other node and any edge touching one')}
+                + 'the Selectors page), dropping every other node and any edge touching one')}
             ${row('eis &lt;edge-selector&gt;',
                 'EdgeInducedSubgraph: keep only the edges the given edge selector selects (see '
-                + 'Selectors below), and only the nodes touched by at least one of them - unlike '
+                + 'the Selectors page), and only the nodes touched by at least one of them - unlike '
                 + 'nis, a node with no selected incident edge is dropped even if adjacent to a '
                 + 'surviving node via some other, non-selected edge')}
-            ${head('Selectors')}
+        `);
+
+        this.commandReferenceSelectorsPanel.innerHTML = table(`
             ${row('(union SEL SEL)', 'Set union')}
             ${row('(inter SEL SEL)', 'Set intersection')}
             ${row('(diff SEL SEL)', 'Set difference (left minus right)')}
@@ -1701,14 +1756,16 @@ export class Renderer {
             ${row('(rrmp &lt;num&gt; SEL)',
                 'Randomly removes a portion of SEL: num (a nonnegative fraction) times SEL\'s own '
                 + 'size, rounded down')}
-            ${head('Form Selectors')}
+        `);
+
+        this.commandReferenceFormSelectorsPanel.innerHTML = table(`
             ${row('(tri [SEL])',
-                'Names triangles for the form modifier (see Board Modifiers above): every triangle, '
+                'Names triangles for the form modifier (see Board Modifiers): every triangle, '
                 + 'or (if a triangle selector SEL is given) only the ones it selects')}
             ${row('(sq [SEL])',
                 'Names squares for the form modifier: every square, or (if a square selector SEL is '
                 + 'given) only the ones it selects')}
-        </table>`;
+        `);
     }
 
     // Makes `id` the active game and cancels any in-flight engine request for

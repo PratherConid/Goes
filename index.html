@@ -330,15 +330,18 @@
       .status-login-btn:hover { background: #d6a76f; }
     }
 
-    #commands-panel {
+    /* One instance per former section of the old single command-reference table (see
+       Renderer._initCommandsPanel()) - #commands-panel itself is now just the hub of buttons
+       leading to these, like #game-records-panel. */
+    .commands-subpanel {
       flex: 1 1 0;
       padding: 10px 12px;
       overflow-y: auto;
       font-size: 13px;
       line-height: 1.6;
     }
-    #commands-panel table { border-collapse: collapse; width: 100%; table-layout: fixed; }
-    #commands-panel th {
+    .commands-subpanel table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+    .commands-subpanel th {
       text-align: left;
       font-size: 12px;
       text-transform: uppercase;
@@ -347,15 +350,15 @@
       border-bottom: 1px solid #8a6830;
       color: #1a0a00;
     }
-    #commands-panel td { padding: 2px 6px 2px 4px; vertical-align: top; }
-    #commands-panel td:first-child {
+    .commands-subpanel td { padding: 2px 6px 2px 4px; vertical-align: top; }
+    .commands-subpanel td:first-child {
       font-family: Consolas, monospace;
       color: #000;
     }
-    #commands-panel td:last-child { color: #000; }
+    .commands-subpanel td:last-child { color: #000; }
 
     #home-panel, #history-panel, #status-panel, #current-game-setup-panel, #new-game-panel,
-    #game-records-panel, #game-preset-selection-panel, #board-preset-selection-panel,
+    #game-records-panel, #commands-panel, #game-preset-selection-panel, #board-preset-selection-panel,
     #active-local-games-panel, #pending-games-panel, #active-online-games-panel,
     #finished-online-games-panel, #account-panel, #configure-online-players-panel, #chat-panel {
       flex: 1 1 0;
@@ -451,7 +454,8 @@
       .nav-btn:hover { background: #d6a76f; }
     }
 
-    #home-panel, #status-panel, #current-game-setup-panel, #new-game-panel, #game-records-panel, #game-preset-selection-panel,
+    #home-panel, #status-panel, #current-game-setup-panel, #new-game-panel, #game-records-panel,
+    #commands-panel, #game-preset-selection-panel,
     #board-preset-selection-panel, #active-local-games-panel, #pending-games-panel, #active-online-games-panel,
     #finished-online-games-panel, #account-panel, #configure-online-players-panel {
       padding: 12px;
@@ -461,8 +465,8 @@
     }
 
     /* Same thumb/track treatment as #chat-log's scrollbar, but matching #side-panel's own
-       background (#b0895c) - neither #commands-panel nor the group above sets its own. */
-    #commands-panel,
+       background (#b0895c) - none of these sets its own. */
+    #commands-panel, .commands-subpanel,
     #home-panel, #status-panel, #current-game-setup-panel, #new-game-panel, #game-records-panel,
     #game-preset-selection-panel, #board-preset-selection-panel, #active-local-games-panel,
     #pending-games-panel, #active-online-games-panel, #finished-online-games-panel, #account-panel,
@@ -470,7 +474,7 @@
       scrollbar-width: thin;
       scrollbar-color: #5c442e #b0895c;
     }
-    #commands-panel::-webkit-scrollbar,
+    #commands-panel::-webkit-scrollbar, .commands-subpanel::-webkit-scrollbar,
     #home-panel::-webkit-scrollbar, #status-panel::-webkit-scrollbar,
     #current-game-setup-panel::-webkit-scrollbar, #new-game-panel::-webkit-scrollbar,
     #game-records-panel::-webkit-scrollbar, #game-preset-selection-panel::-webkit-scrollbar,
@@ -480,7 +484,7 @@
     #configure-online-players-panel::-webkit-scrollbar {
       width: 10px;
     }
-    #commands-panel::-webkit-scrollbar-track,
+    #commands-panel::-webkit-scrollbar-track, .commands-subpanel::-webkit-scrollbar-track,
     #home-panel::-webkit-scrollbar-track, #status-panel::-webkit-scrollbar-track,
     #current-game-setup-panel::-webkit-scrollbar-track, #new-game-panel::-webkit-scrollbar-track,
     #game-records-panel::-webkit-scrollbar-track, #game-preset-selection-panel::-webkit-scrollbar-track,
@@ -490,7 +494,7 @@
     #configure-online-players-panel::-webkit-scrollbar-track {
       background: #b0895c;
     }
-    #commands-panel::-webkit-scrollbar-thumb,
+    #commands-panel::-webkit-scrollbar-thumb, .commands-subpanel::-webkit-scrollbar-thumb,
     #home-panel::-webkit-scrollbar-thumb, #status-panel::-webkit-scrollbar-thumb,
     #current-game-setup-panel::-webkit-scrollbar-thumb, #new-game-panel::-webkit-scrollbar-thumb,
     #game-records-panel::-webkit-scrollbar-thumb, #game-preset-selection-panel::-webkit-scrollbar-thumb,
@@ -740,6 +744,15 @@
     <div id="status-panel" style="display:none"></div>
     <div id="chat-panel" style="display:none"></div>
     <div id="commands-panel" style="display:none"></div>
+    <div id="cmdref-game-panel" class="commands-subpanel" style="display:none"></div>
+    <div id="cmdref-display-panel" class="commands-subpanel" style="display:none"></div>
+    <div id="cmdref-new-game-setup-panel" class="commands-subpanel" style="display:none"></div>
+    <div id="cmdref-game-presets-panel" class="commands-subpanel" style="display:none"></div>
+    <div id="cmdref-online-multiplayer-panel" class="commands-subpanel" style="display:none"></div>
+    <div id="cmdref-board-types-panel" class="commands-subpanel" style="display:none"></div>
+    <div id="cmdref-board-modifiers-panel" class="commands-subpanel" style="display:none"></div>
+    <div id="cmdref-selectors-panel" class="commands-subpanel" style="display:none"></div>
+    <div id="cmdref-form-selectors-panel" class="commands-subpanel" style="display:none"></div>
     <div id="current-game-setup-panel" style="display:none">
       <div id="current-game-setup-details"></div>
       <div id="current-game-setup-buttons"></div>

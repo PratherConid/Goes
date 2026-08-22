@@ -15,6 +15,15 @@ export enum SidePanelContent {
     Status              = 'status',
     Chat                = 'chat',
     CommandReference    = 'commandReference',
+    CommandReferenceGame              = 'commandReferenceGame',
+    CommandReferenceDisplay           = 'commandReferenceDisplay',
+    CommandReferenceNewGameSetup      = 'commandReferenceNewGameSetup',
+    CommandReferenceGamePresets       = 'commandReferenceGamePresets',
+    CommandReferenceOnlineMultiplayer = 'commandReferenceOnlineMultiplayer',
+    CommandReferenceBoardTypes        = 'commandReferenceBoardTypes',
+    CommandReferenceBoardModifiers    = 'commandReferenceBoardModifiers',
+    CommandReferenceSelectors         = 'commandReferenceSelectors',
+    CommandReferenceFormSelectors     = 'commandReferenceFormSelectors',
     CurrentGameSetup    = 'currentGameSetup',
     NewGame             = 'newGame',
     GameRecords         = 'gameRecords',
@@ -48,7 +57,24 @@ export const SidePanelHierarchy: Record<SidePanelContent, [SidePanelContent | nu
     // generic childButtons() mechanism - same reason History's parent is CurrentGameSetup rather
     // than Home.
     [SidePanelContent.Chat]:              [SidePanelContent.Status, []],
-    [SidePanelContent.CommandReference]: [SidePanelContent.Home, []],
+    // CommandReference is a pure hub (like Home/GameRecords) - one child per former section of the
+    // old single command-reference table, each now its own leaf page (see Renderer._initCommandsPanel()).
+    [SidePanelContent.CommandReference]: [SidePanelContent.Home, [
+        SidePanelContent.CommandReferenceGame, SidePanelContent.CommandReferenceDisplay,
+        SidePanelContent.CommandReferenceNewGameSetup, SidePanelContent.CommandReferenceGamePresets,
+        SidePanelContent.CommandReferenceOnlineMultiplayer, SidePanelContent.CommandReferenceBoardTypes,
+        SidePanelContent.CommandReferenceBoardModifiers, SidePanelContent.CommandReferenceSelectors,
+        SidePanelContent.CommandReferenceFormSelectors,
+    ]],
+    [SidePanelContent.CommandReferenceGame]:              [SidePanelContent.CommandReference, []],
+    [SidePanelContent.CommandReferenceDisplay]:           [SidePanelContent.CommandReference, []],
+    [SidePanelContent.CommandReferenceNewGameSetup]:      [SidePanelContent.CommandReference, []],
+    [SidePanelContent.CommandReferenceGamePresets]:       [SidePanelContent.CommandReference, []],
+    [SidePanelContent.CommandReferenceOnlineMultiplayer]: [SidePanelContent.CommandReference, []],
+    [SidePanelContent.CommandReferenceBoardTypes]:        [SidePanelContent.CommandReference, []],
+    [SidePanelContent.CommandReferenceBoardModifiers]:    [SidePanelContent.CommandReference, []],
+    [SidePanelContent.CommandReferenceSelectors]:         [SidePanelContent.CommandReference, []],
+    [SidePanelContent.CommandReferenceFormSelectors]:     [SidePanelContent.CommandReference, []],
     [SidePanelContent.CurrentGameSetup]: [SidePanelContent.Home, [SidePanelContent.History]],
     // GamePresetSelection/BoardPresetSelection's nav buttons are likewise rendered by
     // Renderer._refreshSidePanel() - into #new-game-buttons, alongside the
@@ -84,6 +110,15 @@ export const SidePanelTitle: Record<SidePanelContent, string> = {
     [SidePanelContent.Status]:           'Status',
     [SidePanelContent.Chat]:             'Chat',
     [SidePanelContent.CommandReference]: 'Command Reference',
+    [SidePanelContent.CommandReferenceGame]:              'Game',
+    [SidePanelContent.CommandReferenceDisplay]:           'Display',
+    [SidePanelContent.CommandReferenceNewGameSetup]:      'New Game Setup',
+    [SidePanelContent.CommandReferenceGamePresets]:       'Game Presets',
+    [SidePanelContent.CommandReferenceOnlineMultiplayer]: 'Online Multiplayer',
+    [SidePanelContent.CommandReferenceBoardTypes]:        'Board Types',
+    [SidePanelContent.CommandReferenceBoardModifiers]:    'Board Modifiers',
+    [SidePanelContent.CommandReferenceSelectors]:         'Selectors',
+    [SidePanelContent.CommandReferenceFormSelectors]:     'Form Selectors',
     [SidePanelContent.CurrentGameSetup]: 'Current Game Info',
     [SidePanelContent.NewGame]:          'New Game',
     [SidePanelContent.GameRecords]:      'Game Records',
@@ -141,6 +176,15 @@ export interface SidePanelElements {
     statusPanel:           HTMLDivElement;
     chatPanel:             HTMLDivElement;
     commandsPanel:         HTMLDivElement;
+    commandReferenceGamePanel:              HTMLDivElement;
+    commandReferenceDisplayPanel:           HTMLDivElement;
+    commandReferenceNewGameSetupPanel:      HTMLDivElement;
+    commandReferenceGamePresetsPanel:       HTMLDivElement;
+    commandReferenceOnlineMultiplayerPanel: HTMLDivElement;
+    commandReferenceBoardTypesPanel:        HTMLDivElement;
+    commandReferenceBoardModifiersPanel:    HTMLDivElement;
+    commandReferenceSelectorsPanel:         HTMLDivElement;
+    commandReferenceFormSelectorsPanel:     HTMLDivElement;
     currentGameSetupPanel: HTMLDivElement;
     newGamePanel:          HTMLDivElement;
     gameRecordsPanel:      HTMLDivElement;
@@ -158,8 +202,8 @@ export interface SidePanelElements {
 // which content panel is visible - same "just rebuild, no diffing"
 // convention as _renderHistoryPanel/_initCommandsPanel in renderer.ts. Does
 // NOT render any children buttons - each node with a nonempty children list
-// (Home/CurrentGameSetup/NewGame) does that itself, via childButtons() below,
-// into its own panel/container (see Renderer._refreshSidePanel()).
+// (Home/CurrentGameSetup/NewGame/GameRecords/CommandReference) does that itself, via childButtons()
+// below, into its own panel/container (see Renderer._refreshSidePanel()).
 export function renderSidePanelChrome(current: SidePanelContent, els: SidePanelElements): void {
     const [parent] = SidePanelHierarchy[current];
 
@@ -171,6 +215,24 @@ export function renderSidePanelChrome(current: SidePanelContent, els: SidePanelE
     els.statusPanel.style.display              = current === SidePanelContent.Status              ? 'block' : 'none';
     els.chatPanel.style.display                 = current === SidePanelContent.Chat                ? 'flex'  : 'none';
     els.commandsPanel.style.display            = current === SidePanelContent.CommandReference    ? 'block' : 'none';
+    els.commandReferenceGamePanel.style.display =
+        current === SidePanelContent.CommandReferenceGame ? 'block' : 'none';
+    els.commandReferenceDisplayPanel.style.display =
+        current === SidePanelContent.CommandReferenceDisplay ? 'block' : 'none';
+    els.commandReferenceNewGameSetupPanel.style.display =
+        current === SidePanelContent.CommandReferenceNewGameSetup ? 'block' : 'none';
+    els.commandReferenceGamePresetsPanel.style.display =
+        current === SidePanelContent.CommandReferenceGamePresets ? 'block' : 'none';
+    els.commandReferenceOnlineMultiplayerPanel.style.display =
+        current === SidePanelContent.CommandReferenceOnlineMultiplayer ? 'block' : 'none';
+    els.commandReferenceBoardTypesPanel.style.display =
+        current === SidePanelContent.CommandReferenceBoardTypes ? 'block' : 'none';
+    els.commandReferenceBoardModifiersPanel.style.display =
+        current === SidePanelContent.CommandReferenceBoardModifiers ? 'block' : 'none';
+    els.commandReferenceSelectorsPanel.style.display =
+        current === SidePanelContent.CommandReferenceSelectors ? 'block' : 'none';
+    els.commandReferenceFormSelectorsPanel.style.display =
+        current === SidePanelContent.CommandReferenceFormSelectors ? 'block' : 'none';
     els.currentGameSetupPanel.style.display    = current === SidePanelContent.CurrentGameSetup    ? 'block' : 'none';
     els.newGamePanel.style.display             = current === SidePanelContent.NewGame             ? 'block' : 'none';
     els.gameRecordsPanel.style.display         = current === SidePanelContent.GameRecords         ? 'block' : 'none';
