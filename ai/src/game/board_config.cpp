@@ -222,23 +222,20 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
 
     for (auto& fs : sels) {
         if (fs.kind == FormSelectorKind::Tri) {
-            // find_triangles' own {A, B, C} (A < B < C) already matches BoardTriangle's canonical
-            // order, so a selected triangle's key is just its own A,B,C - no need to re-sort.
-            auto triangles = find_triangles(bc.adj); // each {A, B, C} with A < B < C
+            auto triangles = find_triangles(bc.adj);
             if (fs.sel.has_value()) {
                 auto selected = select_triangle(bc.adj, bc.embed, *fs.sel);
                 std::set<std::array<int,3>> selected_keys;
                 for (auto& t : selected) selected_keys.insert({t.n1, t.n2, t.n3});
-                std::vector<std::array<int,3>> filtered;
+                std::vector<BoardTriangle> filtered;
                 for (auto& tri : triangles)
-                    if (selected_keys.count({tri[0], tri[1], tri[2]})) filtered.push_back(tri);
+                    if (selected_keys.count({tri.n1, tri.n2, tri.n3})) filtered.push_back(tri);
                 triangles = std::move(filtered);
             }
             int n_face = w * (w + 1) / 2;
             auto local_idx = [](int i, int j) { return i * (i + 1) / 2 + j; };
             const int dirs[6][2] = {{1,0},{1,1},{0,1},{-1,0},{-1,-1},{0,-1}};
-            for (auto& tri : triangles) {
-                int A = tri[0], B = tri[1], C = tri[2];
+            for (auto& [A, B, C] : triangles) {
                 int offset = next_idx;
                 next_idx += n_face;
                 auto global_idx = [=](int i, int j) { return offset + local_idx(i, j); };
@@ -257,27 +254,20 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
                 add_side(B, C, [=](int k) { return global_idx(w - 1, k); });
             }
         } else {
-            // Unlike find_triangles' A < B < C, find_squares' own {A, B, C, D} is in cycle order,
-            // not sorted - so a square's key must sort its own 4 members to match BoardSquare's
-            // canonical (sorted) n1..n4 order before comparing.
-            auto squares = find_squares(bc.adj); // each {A, B, C, D} in cycle order
+            auto squares = find_squares(bc.adj);
             if (fs.sel.has_value()) {
                 auto selected = select_square(bc.adj, bc.embed, *fs.sel);
                 std::set<std::array<int,4>> selected_keys;
                 for (auto& s : selected) selected_keys.insert({s.n1, s.n2, s.n3, s.n4});
-                std::vector<std::array<int,4>> filtered;
-                for (auto& sq : squares) {
-                    std::array<int,4> sorted = {sq[0], sq[1], sq[2], sq[3]};
-                    std::sort(sorted.begin(), sorted.end());
-                    if (selected_keys.count(sorted)) filtered.push_back(sq);
-                }
+                std::vector<BoardSquare> filtered;
+                for (auto& sq : squares)
+                    if (selected_keys.count({sq.n1, sq.n2, sq.n3, sq.n4})) filtered.push_back(sq);
                 squares = std::move(filtered);
             }
             int n_face = w * w;
             auto local_idx = [&](int i, int j) { return i * w + j; };
             const int dirs[4][2] = {{0,1},{1,0},{0,-1},{-1,0}};
-            for (auto& sq : squares) {
-                int A = sq[0], B = sq[1], C = sq[2], D = sq[3];
+            for (auto& [A, B, C, D] : squares) {
                 int offset = next_idx;
                 next_idx += n_face;
                 auto global_idx = [=](int i, int j) { return offset + local_idx(i, j); };
@@ -356,7 +346,7 @@ BoardConfig global_centralize(const BoardConfig& bc) {
 
 BoardConfig sq_octarize(const BoardConfig& bc) {
     int N = bc.N;
-    auto squares = find_squares(bc.adj); // each {A, B, C, D} in cycle order
+    auto squares = find_squares(bc.adj);
 
     int total_n = N + (int)squares.size() * 2;
     auto adj = zero_adj(total_n);
@@ -369,7 +359,8 @@ BoardConfig sq_octarize(const BoardConfig& bc) {
 
     for (int s = 0; s < (int)squares.size(); s++) {
         int top = N + s * 2, bottom = top + 1;
-        for (int c : squares[s]) {
+        auto& sq = squares[s];
+        for (int c : {sq.n1, sq.n2, sq.n3, sq.n4}) {
             adj[c][top] = 1;
             adj[top][c] = 1;
             adj[c][bottom] = 1;

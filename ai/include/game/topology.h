@@ -1,9 +1,9 @@
 #pragma once
+#include "game/selector.h"
 #include <vector>
 #include <set>
 #include <map>
 #include <string>
-#include <array>
 #include <utility>
 
 // Graph-topology utilities operating on plain N×N adjacency matrices (the same representation as
@@ -49,12 +49,18 @@ using AdjacencyList = std::vector<std::set<int>>;
 AdjacencyList to_adjacency_list(const std::vector<std::vector<int>>& adj);
 
 // Finds every triangle (3 distinct, pairwise-adjacent vertices) in adj, each reported exactly once
-// as {u, v, w} with u < v < w. Mirrors shared/topology.ts's findTriangles() - see its own doc
-// comment for why the increasing-order search both dedupes and stays efficient on sparse graphs.
-std::vector<std::array<int, 3>> find_triangles(const std::vector<std::vector<int>>& adj);
+// as a BoardTriangle (already n1 < n2 < n3 by construction - see make_board_triangle - since this
+// always discovers a triangle's own 3 vertices in increasing order to begin with, so canonicalizing
+// it costs nothing extra). Mirrors shared/topology.ts's findTriangles() - see its own doc comment for
+// why the increasing-order search both dedupes and stays efficient on sparse graphs.
+std::vector<BoardTriangle> find_triangles(const std::vector<std::vector<int>>& adj);
 
 // Finds every "square" - 4 distinct vertices a, b, c, d forming a cycle a-b-c-d-a whose two
-// diagonals a-c and b-d are BOTH absent - each reported exactly once as {a, b, c, d} in that cycle
-// order. Mirrors shared/topology.ts's findSquares() - see its own doc comment for the
-// common-neighbor-pair search and its deduplication rule.
-std::vector<std::array<int, 4>> find_squares(const std::vector<std::vector<int>>& adj);
+// diagonals a-c and b-d are BOTH absent - each reported exactly once as a BoardSquare, canonicalized
+// via make_board_square (see its own doc comment, game/selector.h) from the a-b-c-d cycle order this
+// function itself discovers it in - that canonicalization is a genuine relabeling (not necessarily
+// a, b, c, d verbatim), unlike find_triangles' own free ride, since a square's own discovery order
+// isn't already the lexicographically-least one in general. Mirrors shared/topology.ts's
+// findSquares() - see its own doc comment for the common-neighbor-pair search and its deduplication
+// rule.
+std::vector<BoardSquare> find_squares(const std::vector<std::vector<int>>& adj);

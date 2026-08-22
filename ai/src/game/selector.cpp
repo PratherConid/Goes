@@ -770,17 +770,11 @@ std::vector<BoardTriangle> select_triangle(const std::vector<std::vector<int>>& 
             std::set<std::string> a_keys;
             for (auto& t : select_triangle(adj, pos, *sel.a)) a_keys.insert(tri_key(t));
             std::vector<BoardTriangle> out;
-            for (auto& uvw : find_triangles(adj)) {
-                BoardTriangle t = make_board_triangle(uvw[0], uvw[1], uvw[2]);
-                if (!a_keys.count(tri_key(t))) out.push_back(t);
-            }
+            for (auto& t : find_triangles(adj)) if (!a_keys.count(tri_key(t))) out.push_back(t);
             return out;
         }
-        case SelectorOp::All: {
-            std::vector<BoardTriangle> out;
-            for (auto& uvw : find_triangles(adj)) out.push_back(make_board_triangle(uvw[0], uvw[1], uvw[2]));
-            return out;
-        }
+        case SelectorOp::All:
+            return find_triangles(adj);
         case SelectorOp::None:
             return {};
         case SelectorOp::Conva: case SelectorOp::Conve: {
@@ -857,17 +851,11 @@ std::vector<BoardSquare> select_square(const std::vector<std::vector<int>>& adj,
             std::set<std::string> a_keys;
             for (auto& s : select_square(adj, pos, *sel.a)) a_keys.insert(sq_key(s));
             std::vector<BoardSquare> out;
-            for (auto& abcd : find_squares(adj)) {
-                BoardSquare s = make_board_square(abcd[0], abcd[1], abcd[2], abcd[3]);
-                if (!a_keys.count(sq_key(s))) out.push_back(s);
-            }
+            for (auto& s : find_squares(adj)) if (!a_keys.count(sq_key(s))) out.push_back(s);
             return out;
         }
-        case SelectorOp::All: {
-            std::vector<BoardSquare> out;
-            for (auto& abcd : find_squares(adj)) out.push_back(make_board_square(abcd[0], abcd[1], abcd[2], abcd[3]));
-            return out;
-        }
+        case SelectorOp::All:
+            return find_squares(adj);
         case SelectorOp::None:
             return {};
         case SelectorOp::Conva: case SelectorOp::Conve: {

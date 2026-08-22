@@ -39,19 +39,40 @@ inline BoardTriangle make_board_triangle(int a, int b, int c) {
     return BoardTriangle{ arr[0], arr[1], arr[2] };
 }
 
-// Mirrors shared/types.ts's BoardSquare: n1 < n2 < n3 < n4 always (see make_board_square below) -
-// unlike game/topology.h's find_squares(), which reports its own [a, b, c, d] in cycle order, not
-// sorted.
+// Mirrors shared/types.ts's BoardSquare: n1-n2-n3-n4-n1 always a genuine cycle (n1-n2, n2-n3, n3-n4,
+// n4-n1 the 4 real graph edges; n1-n3/n2-n4 the 2 absent diagonals) - see make_board_square below.
+// Unlike BoardTriangle (whose 3 members can always be sorted ascending with no loss, since a
+// triangle's 3-cycle has full S3 symmetry - every permutation of 3 distinct elements is some
+// rotation/reflection of it), a square's cycle structure is real information a plain ascending sort
+// would destroy (turning a diagonal into an apparent edge). So a BoardSquare is instead normalized to
+// whichever of its own cycle's 8 rotation/reflection-equivalent relabelings (see make_board_square)
+// is lexicographically smallest - still giving every square a unique representation regardless of
+// which vertex/direction it was found from (the same guarantee BoardTriangle/BoardEdge have), while
+// keeping n1-n2-n3-n4-n1 a genuine cycle (unlike game/topology.h's find_squares(), whose own
+// {a, b, c, d} is *a* valid cycle order, but not necessarily this canonical one).
 struct BoardSquare {
     int n1 = 0, n2 = 0, n3 = 0, n4 = 0;
     bool operator==(const BoardSquare& other) const {
         return n1 == other.n1 && n2 == other.n2 && n3 == other.n3 && n4 == other.n4;
     }
 };
+// Builds a BoardSquare from four node indices already in cycle order (a-b-c-d-a, as
+// game/topology.h's find_squares() reports them) - normalizes to the lexicographically smallest of
+// the cycle's own 8 rotation/reflection-equivalent relabelings (see BoardSquare's own doc comment),
+// NOT a plain sort of all 4 values. Since every rotation starts with a different one of the 4
+// (distinct) node indices, the smallest-starting rotation is unique - so only the 2 candidates
+// starting at the minimum (one per direction) ever need comparing, and since all 4 inputs are
+// distinct, those two candidates' second element can never tie either.
 inline BoardSquare make_board_square(int a, int b, int c, int d) {
-    int arr[4] = { a, b, c, d };
-    std::sort(arr, arr + 4);
-    return BoardSquare{ arr[0], arr[1], arr[2], arr[3] };
+    int seq[4] = { a, b, c, d };
+    int i = static_cast<int>(std::min_element(seq, seq + 4) - seq);
+    int fwd[4], bwd[4];
+    for (int k = 0; k < 4; k++) {
+        fwd[k] = seq[(i + k) % 4];
+        bwd[k] = seq[(i - k + 4) % 4];
+    }
+    int* best = fwd[1] < bwd[1] ? fwd : bwd;
+    return BoardSquare{ best[0], best[1], best[2], best[3] };
 }
 
 // Mirrors shared/selector.ts's SelectorType.
