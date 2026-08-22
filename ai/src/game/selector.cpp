@@ -103,6 +103,14 @@ static Selector parse_node_sel_expr(ParseCursor& c) {
         c.expect(")");
         return sel;
     }
+    if (op == "more") {
+        Selector sel;
+        sel.op = SelectorOp::More;
+        sel.type = SelectorType::Node;
+        sel.a = std::make_shared<Selector>(parse_node_sel_expr(c));
+        c.expect(")");
+        return sel;
+    }
     if (op == "all") { c.expect(")"); return Selector{SelectorOp::All, SelectorType::Node}; }
     if (op == "none") { c.expect(")"); return Selector{SelectorOp::None, SelectorType::Node}; }
     if (op == "deg") {
@@ -164,6 +172,14 @@ static Selector parse_edge_sel_expr(ParseCursor& c) {
     if (op == "compl") {
         Selector sel;
         sel.op = SelectorOp::Compl;
+        sel.type = SelectorType::Edge;
+        sel.a = std::make_shared<Selector>(parse_edge_sel_expr(c));
+        c.expect(")");
+        return sel;
+    }
+    if (op == "more") {
+        Selector sel;
+        sel.op = SelectorOp::More;
         sel.type = SelectorType::Edge;
         sel.a = std::make_shared<Selector>(parse_edge_sel_expr(c));
         c.expect(")");
@@ -232,6 +248,7 @@ std::string format_selector(const Selector& sel) {
         case SelectorOp::Inter: return "(inter " + format_selector(*sel.a) + " " + format_selector(*sel.b) + ")";
         case SelectorOp::Diff:  return "(diff " + format_selector(*sel.a) + " " + format_selector(*sel.b) + ")";
         case SelectorOp::Compl: return "(compl " + format_selector(*sel.a) + ")";
+        case SelectorOp::More:  return "(more " + format_selector(*sel.a) + ")";
         case SelectorOp::All:   return "(all)";
         case SelectorOp::None:  return "(none)";
         case SelectorOp::Deg: {
@@ -339,6 +356,14 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
             for (int i = 0; i < N; i++) if (!a.count(i)) out.insert(i);
             return out;
         }
+        case SelectorOp::More: {
+            auto a = select_node(adj, pos, *sel.a);
+            std::set<int> out = a;
+            for (int i : a)
+                for (int j = 0; j < N; j++)
+                    if (adj[i][j]) out.insert(j);
+            return out;
+        }
         case SelectorOp::All: {
             std::set<int> out;
             for (int i = 0; i < N; i++) out.insert(i);
@@ -423,6 +448,16 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
                     if (!a_keys.count(edge_key(N, e))) out.push_back(e);
                 }
             return out;
+        }
+        case SelectorOp::More: {
+            auto a = select_edge(adj, pos, *sel.a);
+            std::set<int> a_nodes;
+            for (auto& e : a) { a_nodes.insert(e.n1); a_nodes.insert(e.n2); }
+            std::vector<BoardEdge> out = a;
+            for (int i = 0; i < N; i++)
+                for (int j = i + 1; j < N; j++)
+                    if (adj[i][j] && (a_nodes.count(i) || a_nodes.count(j))) out.push_back(make_board_edge(i, j));
+            return dedupe_edges(N, out);
         }
         case SelectorOp::All: {
             std::vector<BoardEdge> out;

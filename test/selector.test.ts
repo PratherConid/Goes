@@ -4,7 +4,9 @@
 // graph 0-1-2-3.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseNodeSelector, parseEdgeSelector, selectNode, selectEdge } from '../shared/selector.ts';
+import {
+    parseNodeSelector, parseEdgeSelector, selectNode, selectEdge, formatSelector,
+} from '../shared/selector.ts';
 
 // 0-1-2-3: node 0/3 have degree 1, node 1/2 have degree 2. Edges (0,1), (1,2), (2,3).
 const adj = [
@@ -93,6 +95,47 @@ test('compl on an edge selector complements within all of the graph\'s edges', (
     // All edges: (0,1), (1,2), (2,3). e2n(deg eq 2) = {(1,2)}.
     const edges = selectEdge(adj, pos, parseEdgeSelector('(compl (e2n (deg eq 2)))'));
     assert.deepEqual(edges, [{ n1: 0, n2: 1 }, { n1: 2, n2: 3 }]);
+});
+
+test('more expands a node selector to one-edge-away neighbors, keeping the original selection ' +
+    'and nothing farther', () => {
+    // 5-node path 0-1-2-3-4: endpoints 0/4 have degree 1, nodes 1-3 have degree 2.
+    const path5Adj = [
+        [0, 1, 0, 0, 0],
+        [1, 0, 1, 0, 0],
+        [0, 1, 0, 1, 0],
+        [0, 0, 1, 0, 1],
+        [0, 0, 0, 1, 0],
+    ];
+    const path5Pos = [[0], [1], [2], [3], [4]];
+    // (deg eq 1) selects the two endpoints {0, 4}; more adds their neighbors {1, 3}, but not node 2
+    // (two edges away from both endpoints).
+    const nodes = selectNode(path5Adj, path5Pos, parseNodeSelector('(more (deg eq 1))'));
+    assert.deepEqual(nodes, new Set([0, 1, 3, 4]));
+});
+
+test('more expands an edge selector to edges sharing a node, keeping the original selection and ' +
+    'nothing from a disconnected component', () => {
+    // A triangle (nodes 0,1,2, each degree 2) plus a disjoint single edge (3,4, each degree 1) -
+    // no edges connect the two components.
+    const triPlusEdgeAdj = [
+        [0, 1, 1, 0, 0],
+        [1, 0, 1, 0, 0],
+        [1, 1, 0, 0, 0],
+        [0, 0, 0, 0, 1],
+        [0, 0, 0, 1, 0],
+    ];
+    const triPlusEdgePos = [[0], [1], [2], [3], [4]];
+    // e2n(deg eq 2) selects the 3 triangle edges; more re-adds every edge incident to nodes 0/1/2 -
+    // still just those same 3 edges, since edge (3,4) isn't incident to any of them.
+    const edges = selectEdge(triPlusEdgeAdj, triPlusEdgePos, parseEdgeSelector('(more (e2n (deg eq 2)))'));
+    assert.deepEqual(edges, [{ n1: 0, n2: 1 }, { n1: 0, n2: 2 }, { n1: 1, n2: 2 }]);
+});
+
+test('more on an already-all selector is a no-op, and formatSelector round-trips it', () => {
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(more (all))')), new Set([0, 1, 2, 3]));
+    const sel = parseEdgeSelector('(more (e2n (deg eq 2)))');
+    assert.equal(formatSelector(sel), '(more (e2n (deg eq 2)))');
 });
 
 test('union/inter/diff combine edge selectors as plain (deduplicated) set operations', () => {

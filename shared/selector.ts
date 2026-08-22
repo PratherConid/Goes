@@ -7,6 +7,10 @@ import { type BoardEdge, makeBoardEdge } from './types.js';
 //   (diff SEL SEL)          -- set difference (left minus right)
 //   (compl SEL)             -- complement, within all nodes or all edges (whichever kind of
 //                               selector this is)
+//   (more SEL)              -- expands SEL's own result to also include everything adjacent to it:
+//                               for a node selector, every node reachable via one edge from a
+//                               selected node; for an edge selector, every edge sharing a node with
+//                               a selected edge - either way, SEL's own result stays included too
 //   (all)                   -- every node, or every edge
 //   (none)                  -- no nodes, or no edges
 //   (deg <eq|gt|lt> <num>)  -- nodes whose degree is =/>/< a given nonnegative integer
@@ -19,7 +23,7 @@ import { type BoardEdge, makeBoardEdge } from './types.js';
 //   (rrmp <num> SEL)        -- randomly removes a fixed portion of SEL's own result: num (a
 //                               nonnegative float) times SEL's own result size, rounded down
 //
-// `union`/`inter`/`diff`/`compl`/`all`/`none`/`rrmn`/`rrmp` are polymorphic - the exact same syntax
+// `union`/`inter`/`diff`/`compl`/`more`/`all`/`none`/`rrmn`/`rrmp` are polymorphic - the exact same syntax
 // works over either node-sets or edge-sets. Every Selector node (one monolithic type, below) carries
 // its own `type` (which kind of set it denotes) - but rather than parse a type-less tree and infer/
 // validate `type` bottom-up afterward, parsing itself is done by two mutually recursive functions,
@@ -36,7 +40,7 @@ export type SelectorType = 'node' | 'edge';
 
 export type Selector =
     | { op: 'union' | 'inter' | 'diff'; type: SelectorType; a: Selector; b: Selector }
-    | { op: 'compl'; type: SelectorType; a: Selector }
+    | { op: 'compl' | 'more'; type: SelectorType; a: Selector }
     | { op: 'all' | 'none'; type: SelectorType }
     | { op: 'deg'; type: 'node'; cmp: 'eq' | 'gt' | 'lt'; n: number }
     | { op: 'e2n'; type: 'edge'; a: Selector }
@@ -116,6 +120,11 @@ function parseNodeSelExpr(c: ParseCursor): Selector {
             c.expect(')');
             return { op: 'compl', type: 'node', a };
         }
+        case 'more': {
+            const a = parseNodeSelExpr(c);
+            c.expect(')');
+            return { op: 'more', type: 'node', a };
+        }
         case 'all':
             c.expect(')');
             return { op: 'all', type: 'node' };
@@ -168,6 +177,11 @@ function parseEdgeSelExpr(c: ParseCursor): Selector {
             const a = parseEdgeSelExpr(c);
             c.expect(')');
             return { op: 'compl', type: 'edge', a };
+        }
+        case 'more': {
+            const a = parseEdgeSelExpr(c);
+            c.expect(')');
+            return { op: 'more', type: 'edge', a };
         }
         case 'all':
             c.expect(')');
@@ -230,6 +244,8 @@ export function formatSelector(sel: Selector): string {
             return `(${sel.op} ${formatSelector(sel.a)} ${formatSelector(sel.b)})`;
         case 'compl':
             return `(compl ${formatSelector(sel.a)})`;
+        case 'more':
+            return `(more ${formatSelector(sel.a)})`;
         case 'all': case 'none':
             return `(${sel.op})`;
         case 'deg':
@@ -310,6 +326,14 @@ export function selectNode(adj: number[][], pos: number[][], sel: Selector): Set
             for (let i = 0; i < N; i++) if (!a.has(i)) out.add(i);
             return out;
         }
+        case 'more': {
+            const a = selectNode(adj, pos, sel.a);
+            const out = new Set(a);
+            for (const i of a)
+                for (let j = 0; j < N; j++)
+                    if (adj[i][j]) out.add(j);
+            return out;
+        }
         case 'all': {
             const out = new Set<number>();
             for (let i = 0; i < N; i++) out.add(i);
@@ -376,6 +400,16 @@ export function selectEdge(adj: number[][], pos: number[][], sel: Selector): Boa
                     if (!aKeys.has(edgeKey(N, e))) out.push(e);
                 }
             return out;
+        }
+        case 'more': {
+            const a = selectEdge(adj, pos, sel.a);
+            const aNodes = new Set<number>();
+            for (const e of a) { aNodes.add(e.n1); aNodes.add(e.n2); }
+            const out: BoardEdge[] = [...a];
+            for (let i = 0; i < N; i++)
+                for (let j = i + 1; j < N; j++)
+                    if (adj[i][j] && (aNodes.has(i) || aNodes.has(j))) out.push(makeBoardEdge(i, j));
+            return dedupeEdges(N, out);
         }
         case 'all': {
             const out: BoardEdge[] = [];

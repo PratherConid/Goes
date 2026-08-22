@@ -1663,6 +1663,10 @@ export class Renderer {
             ${row('(inter SEL SEL)', 'Set intersection')}
             ${row('(diff SEL SEL)', 'Set difference (left minus right)')}
             ${row('(compl SEL)', 'Complement, within all nodes or all edges (whichever SEL selects from)')}
+            ${row('(more SEL)',
+                'Expands SEL to also include everything adjacent to it: for nodes, every node one edge '
+                + 'away from a selected node; for edges, every edge sharing a node with a selected edge - '
+                + 'either way SEL\'s own result stays included too')}
             ${row('(all)', 'Every node, or every edge')}
             ${row('(none)', 'No nodes, or no edges')}
             ${row('(deg &lt;eq|gt|lt&gt; &lt;num&gt;)', 'Nodes whose degree is =/&gt;/&lt; num')}

@@ -46,6 +46,7 @@ static std::string selector_op_name(SelectorOp op) {
         case SelectorOp::Inter: return "inter";
         case SelectorOp::Diff:  return "diff";
         case SelectorOp::Compl: return "compl";
+        case SelectorOp::More:  return "more";
         case SelectorOp::All:   return "all";
         case SelectorOp::None:  return "none";
         case SelectorOp::Deg:   return "deg";
@@ -62,7 +63,7 @@ static void to_json(json& j, const Selector& sel) {
     switch (sel.op) {
         case SelectorOp::Union: case SelectorOp::Inter: case SelectorOp::Diff:
             j["a"] = *sel.a; j["b"] = *sel.b; break;
-        case SelectorOp::Compl: case SelectorOp::E2N: case SelectorOp::N2E:
+        case SelectorOp::Compl: case SelectorOp::More: case SelectorOp::E2N: case SelectorOp::N2E:
             j["a"] = *sel.a; break;
         case SelectorOp::All: case SelectorOp::None: break;
         case SelectorOp::Deg:
@@ -87,6 +88,7 @@ static void from_json(const json& j, Selector& sel) {
     else if (op == "inter") { sel.op = SelectorOp::Inter; sel.a = get_a(); sel.b = get_b(); }
     else if (op == "diff") { sel.op = SelectorOp::Diff; sel.a = get_a(); sel.b = get_b(); }
     else if (op == "compl") { sel.op = SelectorOp::Compl; sel.a = get_a(); }
+    else if (op == "more") { sel.op = SelectorOp::More; sel.a = get_a(); }
     else if (op == "all") { sel.op = SelectorOp::All; }
     else if (op == "none") { sel.op = SelectorOp::None; }
     else if (op == "deg") {

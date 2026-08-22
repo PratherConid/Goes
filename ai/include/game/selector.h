@@ -5,7 +5,7 @@
 #include <vector>
 
 // Mirrors shared/selector.ts - see that file's own top comment for the full grammar (SEL):
-//   (union SEL SEL) / (inter SEL SEL) / (diff SEL SEL) / (compl SEL) / (all) / (none) /
+//   (union SEL SEL) / (inter SEL SEL) / (diff SEL SEL) / (compl SEL) / (more SEL) / (all) / (none) /
 //   (deg <eq|gt|lt> <num>) / (e2n SEL) / (n2e SEL) / (rrmn <num> SEL) / (rrmp <num> SEL)
 // selecting a subset of a board's nodes or edges.
 
@@ -21,7 +21,7 @@ enum class SelectorType { Node, Edge };
 
 // The operator tag of a Selector node - mirrors the `op` field of shared/selector.ts's own
 // discriminated-union Selector type.
-enum class SelectorOp { Union, Inter, Diff, Compl, All, None, Deg, E2N, N2E, Rrmn, Rrmp };
+enum class SelectorOp { Union, Inter, Diff, Compl, More, All, None, Deg, E2N, N2E, Rrmn, Rrmp };
 
 // Mirrors the comparator argument of a Deg selector ('eq'/'gt'/'lt' in the TS grammar).
 enum class DegCmp { Eq, Gt, Lt };
