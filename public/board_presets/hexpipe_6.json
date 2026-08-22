@@ -12,8 +12,10 @@
         "op": "conve", "type": "edge", "from": "quad",
         "a": {
           "op": "inter", "type": "quad",
-          "a": {"op": "conva", "type": "quad", "from": "node", "a": {"op": "deg", "type": "node", "cmp": "gt", "n": 4}},
-          "b": {"op": "conve", "type": "quad", "from": "node", "a": {"op": "deg", "type": "node", "cmp": "eq", "n": 5}}
+          "items": [
+            {"op": "conva", "type": "quad", "from": "node", "a": {"op": "deg", "type": "node", "cmp": "gt", "n": 4}},
+            {"op": "conve", "type": "quad", "from": "node", "a": {"op": "deg", "type": "node", "cmp": "eq", "n": 5}}
+          ]
         }
       }
     },
@@ -22,8 +24,10 @@
       "w": 6,
       "sel": {
         "op": "inter", "type": "quad",
-        "a": {"op": "conve", "type": "quad", "from": "node", "a": {"op": "deg", "type": "node", "cmp": "eq", "n": 3}},
-        "b": {"op": "conve", "type": "quad", "from": "node", "a": {"op": "deg", "type": "node", "cmp": "eq", "n": 6}}
+        "items": [
+          {"op": "conve", "type": "quad", "from": "node", "a": {"op": "deg", "type": "node", "cmp": "eq", "n": 3}},
+          {"op": "conve", "type": "quad", "from": "node", "a": {"op": "deg", "type": "node", "cmp": "eq", "n": 6}}
+        ]
       }
     }
   ]

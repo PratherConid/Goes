@@ -1750,15 +1750,17 @@ export class Renderer {
         `);
 
         this.commandReferenceSelectorsPanel.innerHTML = table(`
-            ${row('(union SEL SEL)', 'Set union')}
-            ${row('(inter SEL SEL)', 'Set intersection')}
+            ${row('(union SEL...)', 'Set union of zero or more operands (zero is the empty set)')}
+            ${row('(inter SEL...)',
+                'Set intersection of zero or more operands (zero is the universal set - same as (all))')}
             ${row('(diff SEL SEL)', 'Set difference (left minus right)')}
             ${row('(compl SEL)',
                 'Complement, within all objects of whichever kind SEL selects from (node/edge/triangle/quad)')}
-            ${row('(more SEL)',
-                'Nodes/edges only: expands SEL to also include everything adjacent to it: for nodes, every '
-                + 'node one edge away from a selected node; for edges, every edge sharing a node with a '
-                + 'selected edge - either way SEL\'s own result stays included too')}
+            ${row('(more [&lt;num&gt;] SEL)',
+                'Nodes/edges only: expands SEL outward by num steps (default 1 if omitted), repeating the '
+                + 'one-step expansion that many times: one step adds, for nodes, every node one edge away '
+                + 'from the current selection; for edges, every edge sharing a node with a currently '
+                + 'selected edge - either way SEL\'s own result stays included too, and 0 steps is a no-op')}
             ${row('(all)', 'Every object of whichever kind (node/edge/triangle/quad) this SEL is')}
             ${row('(none)', 'No objects of that kind')}
             ${row('(deg &lt;eq|gt|lt&gt; &lt;num&gt;)', 'Nodes only: whose degree is =/&gt;/&lt; num')}

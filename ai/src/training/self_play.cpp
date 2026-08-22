@@ -38,9 +38,10 @@ static void from_json(const json& j, BoardArgEntry& e) {
 }
 
 // Same ADL convention as BoardArgEntry's own to_json/from_json above - matches shared/selector.ts's
-// Selector wire format exactly (op/type strings, "a"/"b" nested Selector objects, "cmp"/"n" for deg,
-// "count" for rrmn, "frac" for rrmp, "from" for conva/conve's own node/edge/tri/quad source-kind token -
-// see that file's own Selector type doc comment).
+// Selector wire format exactly (op/type strings, "a"/"b" nested Selector objects, "items" (a nested
+// Selector array) for union/inter's own variadic operand list, "cmp"/"n" for deg, "count" for rrmn,
+// "frac" for rrmp, "from" for conva/conve's own node/edge/tri/quad source-kind token, optional
+// "steps" for more - see that file's own Selector type doc comment).
 static std::string selector_op_name(SelectorOp op) {
     switch (op) {
         case SelectorOp::Union:  return "union";
@@ -71,10 +72,16 @@ static void to_json(json& j, const Selector& sel) {
     j["op"] = selector_op_name(sel.op);
     j["type"] = selector_type_name(sel.type);
     switch (sel.op) {
-        case SelectorOp::Union: case SelectorOp::Inter: case SelectorOp::Diff:
+        case SelectorOp::Union: case SelectorOp::Inter:
+            j["items"] = sel.items; break;
+        case SelectorOp::Diff:
             j["a"] = *sel.a; j["b"] = *sel.b; break;
-        case SelectorOp::Compl: case SelectorOp::More:
+        case SelectorOp::Compl:
             j["a"] = *sel.a; break;
+        case SelectorOp::More:
+            if (sel.steps.has_value()) j["steps"] = *sel.steps;
+            j["a"] = *sel.a;
+            break;
         case SelectorOp::All: case SelectorOp::None: break;
         case SelectorOp::Deg:
             j["cmp"] = sel.cmp == DegCmp::Eq ? "eq" : sel.cmp == DegCmp::Gt ? "gt" : "lt";
@@ -100,11 +107,15 @@ static void from_json(const json& j, Selector& sel) {
     auto get_b = [&]() { return std::make_shared<Selector>(j.at("b").get<Selector>()); };
 
     std::string op = j.at("op").get<std::string>();
-    if (op == "union") { sel.op = SelectorOp::Union; sel.a = get_a(); sel.b = get_b(); }
-    else if (op == "inter") { sel.op = SelectorOp::Inter; sel.a = get_a(); sel.b = get_b(); }
+    if (op == "union") { sel.op = SelectorOp::Union; sel.items = j.at("items").get<std::vector<Selector>>(); }
+    else if (op == "inter") { sel.op = SelectorOp::Inter; sel.items = j.at("items").get<std::vector<Selector>>(); }
     else if (op == "diff") { sel.op = SelectorOp::Diff; sel.a = get_a(); sel.b = get_b(); }
     else if (op == "compl") { sel.op = SelectorOp::Compl; sel.a = get_a(); }
-    else if (op == "more") { sel.op = SelectorOp::More; sel.a = get_a(); }
+    else if (op == "more") {
+        sel.op = SelectorOp::More;
+        if (j.contains("steps")) sel.steps = j.at("steps").get<int>();
+        sel.a = get_a();
+    }
     else if (op == "all") { sel.op = SelectorOp::All; }
     else if (op == "none") { sel.op = SelectorOp::None; }
     else if (op == "deg") {

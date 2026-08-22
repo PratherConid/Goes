@@ -438,7 +438,8 @@ export type SelectorType = 'node' | 'edge' | 'tri' | 'quad';
  * A tiny S-expression language for selecting a subset of a board's nodes, edges, triangles, or
  * quads (a "triangle"/"quad" here is exactly what shared/topology.ts's findTriangles()/
  * findQuads() finds - see BoardTriangle/BoardQuad above) - see shared/selector.ts for the full
- * grammar (`(union SEL SEL)` / `(inter SEL SEL)` / `(diff SEL SEL)` / `(compl SEL)` / `(more SEL)` /
+ * grammar (`(union SEL...)` / `(inter SEL...)` / `(diff SEL SEL)` / `(compl SEL)` /
+ * `(more [<num>] SEL)` /
  * `(all)` / `(none)` / `(deg <eq|gt|lt> <num>)` / `(conva <node|edge|tri|quad> SEL)` /
  * `(conve <node|edge|tri|quad> SEL)` / `(rrmn <num> SEL)` / `(rrmp <num> SEL)`) and its own parsing
  * (parseNodeSelector/parseEdgeSelector/parseTriangleSelector/parseQuadSelector) and evaluation
@@ -448,9 +449,18 @@ export type SelectorType = 'node' | 'edge' | 'tri' | 'quad';
  * shared/selector.ts's own top comment for why).
  */
 export type Selector =
-    | { op: 'union' | 'inter' | 'diff'; type: SelectorType; a: Selector; b: Selector }
+    // `union`/`inter` take a variadic list of operands (zero or more) rather than a fixed two -
+    // `(union)` (zero operands) is the empty set; `(inter)` is the universal set (every object of
+    // whichever kind this Selector is - the same set `(all)` denotes), matching set-theoretic
+    // identity/absorbing-element convention for a fold over zero items.
+    | { op: 'union' | 'inter'; type: SelectorType; items: Selector[] }
+    | { op: 'diff'; type: SelectorType; a: Selector; b: Selector }
     | { op: 'compl'; type: SelectorType; a: Selector }
-    | { op: 'more'; type: 'node' | 'edge'; a: Selector }
+    // `steps` is the optional repeat count written after `more` in the grammar (`(more [<num>]
+    // SEL)`) - undefined means it was omitted (defaults to 1 at evaluation, see selectNode/
+    // selectEdge), kept undefined here (rather than eagerly filled in to 1) so formatSelector can
+    // round-trip the exact text a Selector was parsed from.
+    | { op: 'more'; type: 'node' | 'edge'; steps?: number; a: Selector }
     | { op: 'all' | 'none'; type: SelectorType }
     | { op: 'deg'; type: 'node'; cmp: 'eq' | 'gt' | 'lt'; n: number }
     | { op: 'conva' | 'conve'; type: SelectorType; from: SelectorType; a: Selector }

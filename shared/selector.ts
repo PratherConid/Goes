@@ -8,15 +8,19 @@ import { findTriangles, findQuads } from './topology.js';
 // quads (a "triangle"/"quad" here is exactly what shared/topology.ts's findTriangles()/
 // findQuads() finds - see BoardTriangle/BoardQuad in shared/types.ts). Grammar (SEL):
 //
-//   (union SEL SEL)         -- set union
-//   (inter SEL SEL)         -- set intersection
-//   (diff SEL SEL)          -- set difference (left minus right)
+//   (union SEL...)          -- set union of zero or more operands (zero operands is the empty set)
+//   (inter SEL...)          -- set intersection of zero or more operands (zero operands is the
+//                               universal set - every object of whichever kind this SEL is, same as
+//                               (all) - the usual absorbing-element convention for an empty fold)
+//   (diff SEL SEL)          -- set difference (left minus right) - always exactly two operands
 //   (compl SEL)             -- complement, within all objects of whichever kind SEL selects from
-//   (more SEL)              -- node/edge only: expands SEL's own result to also include everything
-//                               adjacent to it: for a node selector, every node reachable via one
-//                               edge from a selected node; for an edge selector, every edge sharing
-//                               a node with a selected edge - either way, SEL's own result stays
-//                               included too
+//   (more [<num>] SEL)      -- node/edge only: expands SEL's own result outward by <num> steps (a
+//                               nonnegative integer, default 1 if omitted), repeating the one-step
+//                               expansion that many times: for a node selector, one step adds every
+//                               node reachable via one edge from the current selection; for an edge
+//                               selector, one step adds every edge sharing a node with a currently
+//                               selected edge - either way, SEL's own result stays included too, and
+//                               0 steps is a no-op
 //   (all)                   -- every object of whichever kind (node/edge/triangle/quad) this SEL
 //                               is being parsed/evaluated as
 //   (none)                  -- no objects of that kind
@@ -141,11 +145,17 @@ function parseNodeSelExpr(c: ParseCursor): Selector {
     c.expect('(');
     const op = c.next();
     switch (op) {
-        case 'union': case 'inter': case 'diff': {
+        case 'union': case 'inter': {
+            const items: Selector[] = [];
+            while (c.peek() !== ')') items.push(parseNodeSelExpr(c));
+            c.expect(')');
+            return { op, type: 'node', items };
+        }
+        case 'diff': {
             const a = parseNodeSelExpr(c);
             const b = parseNodeSelExpr(c);
             c.expect(')');
-            return { op, type: 'node', a, b };
+            return { op: 'diff', type: 'node', a, b };
         }
         case 'compl': {
             const a = parseNodeSelExpr(c);
@@ -153,9 +163,10 @@ function parseNodeSelExpr(c: ParseCursor): Selector {
             return { op: 'compl', type: 'node', a };
         }
         case 'more': {
+            const steps = c.peek() === '(' ? undefined : nextNonnegInt(c, '(more ...) step count');
             const a = parseNodeSelExpr(c);
             c.expect(')');
-            return { op: 'more', type: 'node', a };
+            return steps === undefined ? { op: 'more', type: 'node', a } : { op: 'more', type: 'node', steps, a };
         }
         case 'all':
             c.expect(')');
@@ -196,11 +207,17 @@ function parseEdgeSelExpr(c: ParseCursor): Selector {
     c.expect('(');
     const op = c.next();
     switch (op) {
-        case 'union': case 'inter': case 'diff': {
+        case 'union': case 'inter': {
+            const items: Selector[] = [];
+            while (c.peek() !== ')') items.push(parseEdgeSelExpr(c));
+            c.expect(')');
+            return { op, type: 'edge', items };
+        }
+        case 'diff': {
             const a = parseEdgeSelExpr(c);
             const b = parseEdgeSelExpr(c);
             c.expect(')');
-            return { op, type: 'edge', a, b };
+            return { op: 'diff', type: 'edge', a, b };
         }
         case 'compl': {
             const a = parseEdgeSelExpr(c);
@@ -208,9 +225,10 @@ function parseEdgeSelExpr(c: ParseCursor): Selector {
             return { op: 'compl', type: 'edge', a };
         }
         case 'more': {
+            const steps = c.peek() === '(' ? undefined : nextNonnegInt(c, '(more ...) step count');
             const a = parseEdgeSelExpr(c);
             c.expect(')');
-            return { op: 'more', type: 'edge', a };
+            return steps === undefined ? { op: 'more', type: 'edge', a } : { op: 'more', type: 'edge', steps, a };
         }
         case 'all':
             c.expect(')');
@@ -245,11 +263,17 @@ function parseTriangleSelExpr(c: ParseCursor): Selector {
     c.expect('(');
     const op = c.next();
     switch (op) {
-        case 'union': case 'inter': case 'diff': {
+        case 'union': case 'inter': {
+            const items: Selector[] = [];
+            while (c.peek() !== ')') items.push(parseTriangleSelExpr(c));
+            c.expect(')');
+            return { op, type: 'tri', items };
+        }
+        case 'diff': {
             const a = parseTriangleSelExpr(c);
             const b = parseTriangleSelExpr(c);
             c.expect(')');
-            return { op, type: 'tri', a, b };
+            return { op: 'diff', type: 'tri', a, b };
         }
         case 'compl': {
             const a = parseTriangleSelExpr(c);
@@ -287,11 +311,17 @@ function parseQuadSelExpr(c: ParseCursor): Selector {
     c.expect('(');
     const op = c.next();
     switch (op) {
-        case 'union': case 'inter': case 'diff': {
+        case 'union': case 'inter': {
+            const items: Selector[] = [];
+            while (c.peek() !== ')') items.push(parseQuadSelExpr(c));
+            c.expect(')');
+            return { op, type: 'quad', items };
+        }
+        case 'diff': {
             const a = parseQuadSelExpr(c);
             const b = parseQuadSelExpr(c);
             c.expect(')');
-            return { op, type: 'quad', a, b };
+            return { op: 'diff', type: 'quad', a, b };
         }
         case 'compl': {
             const a = parseQuadSelExpr(c);
@@ -365,12 +395,17 @@ export function parseQuadSelector(s: string): Selector {
  * src/sidePanel.ts's fmtModifiers). */
 export function formatSelector(sel: Selector): string {
     switch (sel.op) {
-        case 'union': case 'inter': case 'diff':
-            return `(${sel.op} ${formatSelector(sel.a)} ${formatSelector(sel.b)})`;
+        case 'union': case 'inter': {
+            const inner = sel.items.map(formatSelector).join(' ');
+            return inner ? `(${sel.op} ${inner})` : `(${sel.op})`;
+        }
+        case 'diff':
+            return `(diff ${formatSelector(sel.a)} ${formatSelector(sel.b)})`;
         case 'compl':
             return `(compl ${formatSelector(sel.a)})`;
         case 'more':
-            return `(more ${formatSelector(sel.a)})`;
+            return sel.steps === undefined
+                ? `(more ${formatSelector(sel.a)})` : `(more ${sel.steps} ${formatSelector(sel.a)})`;
         case 'all': case 'none':
             return `(${sel.op})`;
         case 'deg':
@@ -523,12 +558,20 @@ export function selectNode(adj: number[][], pos: number[][], sel: Selector): Set
     const N = adj.length;
     switch (sel.op) {
         case 'union': {
-            const a = selectNode(adj, pos, sel.a), b = selectNode(adj, pos, sel.b);
-            return new Set([...a, ...b]);
+            const out = new Set<number>();
+            for (const item of sel.items) for (const x of selectNode(adj, pos, item)) out.add(x);
+            return out;
         }
         case 'inter': {
-            const a = selectNode(adj, pos, sel.a), b = selectNode(adj, pos, sel.b);
-            return new Set([...a].filter(x => b.has(x)));
+            // Zero operands is the universal set, matching (all) - see Selector's own doc comment
+            // (shared/types.ts) on why an empty inter is the identity for intersection's fold.
+            if (sel.items.length === 0) return selectNode(adj, pos, { op: 'all', type: 'node' });
+            let acc = selectNode(adj, pos, sel.items[0]);
+            for (let i = 1; i < sel.items.length; i++) {
+                const next = selectNode(adj, pos, sel.items[i]);
+                acc = new Set([...acc].filter(x => next.has(x)));
+            }
+            return acc;
         }
         case 'diff': {
             const a = selectNode(adj, pos, sel.a), b = selectNode(adj, pos, sel.b);
@@ -543,9 +586,19 @@ export function selectNode(adj: number[][], pos: number[][], sel: Selector): Set
         case 'more': {
             const a = selectNode(adj, pos, sel.a);
             const out = new Set(a);
-            for (const i of a)
-                for (let j = 0; j < N; j++)
-                    if (adj[i][j]) out.add(j);
+            // Repeats the one-step expansion `steps` times (default 1) - each step only walks
+            // `frontier` (the nodes newly added by the PREVIOUS step, not the whole accumulated `out`
+            // again), since a node's own neighbors were already fully explored the one time it itself
+            // became part of the frontier.
+            let frontier = [...a];
+            const steps = sel.steps ?? 1;
+            for (let s = 0; s < steps && frontier.length > 0; s++) {
+                const nextFrontier: number[] = [];
+                for (const i of frontier)
+                    for (let j = 0; j < N; j++)
+                        if (adj[i][j] && !out.has(j)) { out.add(j); nextFrontier.push(j); }
+                frontier = nextFrontier;
+            }
             return out;
         }
         case 'all': {
@@ -606,11 +659,15 @@ export function selectEdge(adj: number[][], pos: number[][], sel: Selector): Boa
     const N = adj.length;
     switch (sel.op) {
         case 'union':
-            return dedupeByKey([...selectEdge(adj, pos, sel.a), ...selectEdge(adj, pos, sel.b)], edgeKey);
+            return dedupeByKey(sel.items.flatMap(item => selectEdge(adj, pos, item)), edgeKey);
         case 'inter': {
-            const a = selectEdge(adj, pos, sel.a);
-            const bKeys = new Set(selectEdge(adj, pos, sel.b).map(edgeKey));
-            return a.filter(e => bKeys.has(edgeKey(e)));
+            if (sel.items.length === 0) return selectEdge(adj, pos, { op: 'all', type: 'edge' });
+            let acc = selectEdge(adj, pos, sel.items[0]);
+            for (let i = 1; i < sel.items.length; i++) {
+                const nextKeys = new Set(selectEdge(adj, pos, sel.items[i]).map(edgeKey));
+                acc = acc.filter(e => nextKeys.has(edgeKey(e)));
+            }
+            return acc;
         }
         case 'diff': {
             const a = selectEdge(adj, pos, sel.a);
@@ -630,13 +687,26 @@ export function selectEdge(adj: number[][], pos: number[][], sel: Selector): Boa
         }
         case 'more': {
             const a = selectEdge(adj, pos, sel.a);
-            const aNodes = new Set<number>();
-            for (const e of a) { aNodes.add(e.n1); aNodes.add(e.n2); }
-            const out: BoardEdge[] = [...a];
-            for (let i = 0; i < N; i++)
-                for (let j = i + 1; j < N; j++)
-                    if (adj[i][j] && (aNodes.has(i) || aNodes.has(j))) out.push(makeBoardEdge(i, j));
-            return dedupeByKey(out, edgeKey);
+            const outByKey = new Map<string | number, BoardEdge>(a.map(e => [edgeKey(e), e]));
+            const touchedNodes = new Set<number>();
+            for (const e of a) { touchedNodes.add(e.n1); touchedNodes.add(e.n2); }
+            // Repeats the one-step expansion `steps` times (default 1). Mirrors the node case's own
+            // frontier trick: `frontier` is only the nodes newly touched by the PREVIOUS step, since a
+            // node's own incident edges are all added to `outByKey` the one time it itself becomes
+            // part of the frontier - a later step never needs to re-scan an already-touched node.
+            let frontier = [...touchedNodes];
+            const steps = sel.steps ?? 1;
+            for (let s = 0; s < steps && frontier.length > 0; s++) {
+                const nextFrontier: number[] = [];
+                for (const i of frontier)
+                    for (let j = 0; j < N; j++) {
+                        if (!adj[i][j]) continue;
+                        outByKey.set(edgeKey(makeBoardEdge(i, j)), makeBoardEdge(i, j));
+                        if (!touchedNodes.has(j)) { touchedNodes.add(j); nextFrontier.push(j); }
+                    }
+                frontier = nextFrontier;
+            }
+            return [...outByKey.values()];
         }
         case 'all': {
             const out: BoardEdge[] = [];
@@ -689,11 +759,15 @@ export function selectTriangle(adj: number[][], pos: number[][], sel: Selector):
         throw new Error(`selectTriangle: expected a triangle selector, got ${describeSelectorType(sel.type)} selector (op '${sel.op}')`);
     switch (sel.op) {
         case 'union':
-            return dedupeByKey([...selectTriangle(adj, pos, sel.a), ...selectTriangle(adj, pos, sel.b)], triKey);
+            return dedupeByKey(sel.items.flatMap(item => selectTriangle(adj, pos, item)), triKey);
         case 'inter': {
-            const a = selectTriangle(adj, pos, sel.a);
-            const bKeys = new Set(selectTriangle(adj, pos, sel.b).map(triKey));
-            return a.filter(t => bKeys.has(triKey(t)));
+            if (sel.items.length === 0) return selectTriangle(adj, pos, { op: 'all', type: 'tri' });
+            let acc = selectTriangle(adj, pos, sel.items[0]);
+            for (let i = 1; i < sel.items.length; i++) {
+                const nextKeys = new Set(selectTriangle(adj, pos, sel.items[i]).map(triKey));
+                acc = acc.filter(t => nextKeys.has(triKey(t)));
+            }
+            return acc;
         }
         case 'diff': {
             const a = selectTriangle(adj, pos, sel.a);
@@ -747,11 +821,15 @@ export function selectQuad(adj: number[][], pos: number[][], sel: Selector): Boa
         throw new Error(`selectQuad: expected a quad selector, got ${describeSelectorType(sel.type)} selector (op '${sel.op}')`);
     switch (sel.op) {
         case 'union':
-            return dedupeByKey([...selectQuad(adj, pos, sel.a), ...selectQuad(adj, pos, sel.b)], quadKey);
+            return dedupeByKey(sel.items.flatMap(item => selectQuad(adj, pos, item)), quadKey);
         case 'inter': {
-            const a = selectQuad(adj, pos, sel.a);
-            const bKeys = new Set(selectQuad(adj, pos, sel.b).map(quadKey));
-            return a.filter(s => bKeys.has(quadKey(s)));
+            if (sel.items.length === 0) return selectQuad(adj, pos, { op: 'all', type: 'quad' });
+            let acc = selectQuad(adj, pos, sel.items[0]);
+            for (let i = 1; i < sel.items.length; i++) {
+                const nextKeys = new Set(selectQuad(adj, pos, sel.items[i]).map(quadKey));
+                acc = acc.filter(s => nextKeys.has(quadKey(s)));
+            }
+            return acc;
         }
         case 'diff': {
             const a = selectQuad(adj, pos, sel.a);

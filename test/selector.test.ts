@@ -105,6 +105,41 @@ test('union/inter/diff/compl combine node selectors as plain set operations', ()
         selectNode(adj, pos, parseNodeSelector('(compl (deg eq 2))')), new Set([0, 3]));
 });
 
+test('union/inter take a variadic list of operands: zero, one, and three-or-more, not just two', () => {
+    // Zero operands: union is the empty set, inter is the universal set (same as (all)).
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(union)')), new Set());
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(inter)')), new Set([0, 1, 2, 3]));
+    assert.deepEqual(selectEdge(adj, pos, parseEdgeSelector('(union)')), []);
+    assert.deepEqual(
+        selectEdge(adj, pos, parseEdgeSelector('(inter)')),
+        [{ n1: 0, n2: 1 }, { n1: 1, n2: 2 }, { n1: 2, n2: 3 }]);
+
+    // One operand is a plain pass-through for both.
+    assert.deepEqual(
+        selectNode(adj, pos, parseNodeSelector('(union (deg eq 2))')), new Set([1, 2]));
+    assert.deepEqual(
+        selectNode(adj, pos, parseNodeSelector('(inter (deg eq 2))')), new Set([1, 2]));
+
+    // Three-plus operands: union of {0}, {1}, {2} is {0,1,2}; a three-way inter that has no common
+    // element across all three is empty even though every pair overlaps.
+    assert.deepEqual(
+        selectNode(adj, pos, parseNodeSelector('(union (deg eq 1) (deg eq 2) (deg eq 1))')),
+        new Set([0, 1, 2, 3]));
+    assert.deepEqual(
+        selectNode(adj, pos, parseNodeSelector(
+            '(inter (deg lt 2) (deg gt 0) (deg eq 3))')), // {0,3} inter {1,2} inter {} = {}
+        new Set());
+});
+
+test('formatSelector round-trips union/inter at every arity, including zero and one', () => {
+    assert.equal(formatSelector(parseNodeSelector('(union)')), '(union)');
+    assert.equal(formatSelector(parseNodeSelector('(inter)')), '(inter)');
+    assert.equal(formatSelector(parseNodeSelector('(union (deg eq 1))')), '(union (deg eq 1))');
+    assert.equal(
+        formatSelector(parseNodeSelector('(union (deg eq 1) (deg eq 2) (deg eq 3))')),
+        '(union (deg eq 1) (deg eq 2) (deg eq 3))');
+});
+
 test('conva(node) selects edges whose nodes are ALL selected, conve(node) whose nodes have AT ' +
     'LEAST ONE selected', () => {
     // deg eq 2 selects {1, 2} - only edge (1,2) has both endpoints in that set (conva); edges (0,1)
@@ -188,6 +223,57 @@ test('more on an already-all selector is a no-op, and formatSelector round-trips
     assert.equal(formatSelector(sel), '(more (conva node (deg eq 2)))');
 });
 
+test('more takes an optional leading step count, repeating the one-step expansion that many times', () => {
+    // Same 5-node path as above: 0-1-2-3-4.
+    const path5Adj = [
+        [0, 1, 0, 0, 0],
+        [1, 0, 1, 0, 0],
+        [0, 1, 0, 1, 0],
+        [0, 0, 1, 0, 1],
+        [0, 0, 0, 1, 0],
+    ];
+    const path5Pos = [[0], [1], [2], [3], [4]];
+    // (deg eq 1) selects the endpoints {0, 4}. 1 step (the default, already covered above) reaches
+    // {0,1,3,4}; 2 steps also reaches node 2 (two edges from either endpoint) - the whole path.
+    assert.deepEqual(
+        selectNode(path5Adj, path5Pos, parseNodeSelector('(more 2 (deg eq 1))')), new Set([0, 1, 2, 3, 4]));
+    // 0 steps is a no-op - identical to the un-expanded selector.
+    assert.deepEqual(
+        selectNode(path5Adj, path5Pos, parseNodeSelector('(more 0 (deg eq 1))')), new Set([0, 4]));
+    // A step count far beyond the graph's diameter still terminates (the frontier empties out) and
+    // simply saturates at every reachable node.
+    assert.deepEqual(
+        selectNode(path5Adj, path5Pos, parseNodeSelector('(more 100 (deg eq 1))')), new Set([0, 1, 2, 3, 4]));
+});
+
+test('more\'s optional step count also works over edge selectors, and rejects a malformed count', () => {
+    // A 6-node path 0-1-2-3-4-5: only the two endpoints 0/5 have degree 1.
+    const path6Adj = [
+        [0, 1, 0, 0, 0, 0],
+        [1, 0, 1, 0, 0, 0],
+        [0, 1, 0, 1, 0, 0],
+        [0, 0, 1, 0, 1, 0],
+        [0, 0, 0, 1, 0, 1],
+        [0, 0, 0, 0, 1, 0],
+    ];
+    const path6Pos = path6Adj.map((_, i) => [i]);
+    // conve(node, deg eq 1) selects every edge touching either endpoint: (0,1) and (4,5) only. 1 step
+    // adds every edge touching THOSE edges' own nodes - (1,2) and (3,4) - but not the middle edge
+    // (2,3), which is 2 hops from either endpoint; a 2nd step reaches it. This is what proves the
+    // step count actually chains the expansion rather than saturating after a single hop.
+    const oneStep = selectEdge(path6Adj, path6Pos, parseEdgeSelector('(more (conve node (deg eq 1)))'));
+    assert.deepEqual(oneStep, [{ n1: 0, n2: 1 }, { n1: 4, n2: 5 }, { n1: 1, n2: 2 }, { n1: 3, n2: 4 }]);
+    const twoSteps = selectEdge(path6Adj, path6Pos, parseEdgeSelector('(more 2 (conve node (deg eq 1)))'));
+    assert.deepEqual(twoSteps, [
+        { n1: 0, n2: 1 }, { n1: 4, n2: 5 }, { n1: 1, n2: 2 }, { n1: 3, n2: 4 }, { n1: 2, n2: 3 },
+    ]);
+    // formatSelector round-trips an explicit step count exactly as written.
+    assert.equal(formatSelector(parseEdgeSelector('(more 2 (all))')), '(more 2 (all))');
+
+    assert.throws(() => parseNodeSelector('(more -1 (all))'), /nonnegative integer/);
+    assert.throws(() => parseNodeSelector('(more abc (all))'), /nonnegative integer/);
+});
+
 test('union/inter/diff combine edge selectors as plain (deduplicated) set operations', () => {
     // (conva node (deg gt 0)) is every edge (every node has degree > 0); (conva node (deg eq 2)) is
     // just (1,2).
@@ -239,6 +325,12 @@ test('union/inter/diff/compl combine triangle selectors as plain (deduplicated) 
         selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(inter ${first} (${second}))`)), []);
     assert.deepEqual(
         selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(compl ${first})`)), [{ n1: 2, n2: 3, n3: 4 }]);
+    // union/inter are variadic for triangles/quads too - zero operands is the empty set for union,
+    // the universal set (same as (all)) for inter.
+    assert.deepEqual(selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(union)')), []);
+    assert.deepEqual(
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(inter)')),
+        [{ n1: 0, n2: 1, n3: 2 }, { n1: 2, n2: 3, n3: 4 }]);
 });
 
 test('conva/conve convert a node selector into a triangle selector', () => {

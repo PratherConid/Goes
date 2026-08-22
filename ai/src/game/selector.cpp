@@ -122,9 +122,17 @@ static Selector parse_conversion(ParseCursor& c, SelectorOp op, SelectorType to_
 static Selector parse_node_sel_expr(ParseCursor& c) {
     c.expect("(");
     std::string op = c.next();
-    if (op == "union" || op == "inter" || op == "diff") {
+    if (op == "union" || op == "inter") {
         Selector sel;
-        sel.op = op == "union" ? SelectorOp::Union : op == "inter" ? SelectorOp::Inter : SelectorOp::Diff;
+        sel.op = op == "union" ? SelectorOp::Union : SelectorOp::Inter;
+        sel.type = SelectorType::Node;
+        while (c.peek() != ")") sel.items.push_back(parse_node_sel_expr(c));
+        c.expect(")");
+        return sel;
+    }
+    if (op == "diff") {
+        Selector sel;
+        sel.op = SelectorOp::Diff;
         sel.type = SelectorType::Node;
         sel.a = std::make_shared<Selector>(parse_node_sel_expr(c));
         sel.b = std::make_shared<Selector>(parse_node_sel_expr(c));
@@ -143,6 +151,7 @@ static Selector parse_node_sel_expr(ParseCursor& c) {
         Selector sel;
         sel.op = SelectorOp::More;
         sel.type = SelectorType::Node;
+        if (c.peek() != "(") sel.steps = next_nonneg_int(c, "(more ...) step count");
         sel.a = std::make_shared<Selector>(parse_node_sel_expr(c));
         c.expect(")");
         return sel;
@@ -190,9 +199,17 @@ static Selector parse_node_sel_expr(ParseCursor& c) {
 static Selector parse_edge_sel_expr(ParseCursor& c) {
     c.expect("(");
     std::string op = c.next();
-    if (op == "union" || op == "inter" || op == "diff") {
+    if (op == "union" || op == "inter") {
         Selector sel;
-        sel.op = op == "union" ? SelectorOp::Union : op == "inter" ? SelectorOp::Inter : SelectorOp::Diff;
+        sel.op = op == "union" ? SelectorOp::Union : SelectorOp::Inter;
+        sel.type = SelectorType::Edge;
+        while (c.peek() != ")") sel.items.push_back(parse_edge_sel_expr(c));
+        c.expect(")");
+        return sel;
+    }
+    if (op == "diff") {
+        Selector sel;
+        sel.op = SelectorOp::Diff;
         sel.type = SelectorType::Edge;
         sel.a = std::make_shared<Selector>(parse_edge_sel_expr(c));
         sel.b = std::make_shared<Selector>(parse_edge_sel_expr(c));
@@ -211,6 +228,7 @@ static Selector parse_edge_sel_expr(ParseCursor& c) {
         Selector sel;
         sel.op = SelectorOp::More;
         sel.type = SelectorType::Edge;
+        if (c.peek() != "(") sel.steps = next_nonneg_int(c, "(more ...) step count");
         sel.a = std::make_shared<Selector>(parse_edge_sel_expr(c));
         c.expect(")");
         return sel;
@@ -245,9 +263,17 @@ static Selector parse_edge_sel_expr(ParseCursor& c) {
 static Selector parse_triangle_sel_expr(ParseCursor& c) {
     c.expect("(");
     std::string op = c.next();
-    if (op == "union" || op == "inter" || op == "diff") {
+    if (op == "union" || op == "inter") {
         Selector sel;
-        sel.op = op == "union" ? SelectorOp::Union : op == "inter" ? SelectorOp::Inter : SelectorOp::Diff;
+        sel.op = op == "union" ? SelectorOp::Union : SelectorOp::Inter;
+        sel.type = SelectorType::Tri;
+        while (c.peek() != ")") sel.items.push_back(parse_triangle_sel_expr(c));
+        c.expect(")");
+        return sel;
+    }
+    if (op == "diff") {
+        Selector sel;
+        sel.op = SelectorOp::Diff;
         sel.type = SelectorType::Tri;
         sel.a = std::make_shared<Selector>(parse_triangle_sel_expr(c));
         sel.b = std::make_shared<Selector>(parse_triangle_sel_expr(c));
@@ -291,9 +317,17 @@ static Selector parse_triangle_sel_expr(ParseCursor& c) {
 static Selector parse_quad_sel_expr(ParseCursor& c) {
     c.expect("(");
     std::string op = c.next();
-    if (op == "union" || op == "inter" || op == "diff") {
+    if (op == "union" || op == "inter") {
         Selector sel;
-        sel.op = op == "union" ? SelectorOp::Union : op == "inter" ? SelectorOp::Inter : SelectorOp::Diff;
+        sel.op = op == "union" ? SelectorOp::Union : SelectorOp::Inter;
+        sel.type = SelectorType::Quad;
+        while (c.peek() != ")") sel.items.push_back(parse_quad_sel_expr(c));
+        c.expect(")");
+        return sel;
+    }
+    if (op == "diff") {
+        Selector sel;
+        sel.op = SelectorOp::Diff;
         sel.type = SelectorType::Quad;
         sel.a = std::make_shared<Selector>(parse_quad_sel_expr(c));
         sel.b = std::make_shared<Selector>(parse_quad_sel_expr(c));
@@ -364,11 +398,21 @@ static std::string format_double(double d) {
 // Mirrors shared/selector.ts's formatSelector() - the inverse of parsing.
 std::string format_selector(const Selector& sel) {
     switch (sel.op) {
-        case SelectorOp::Union: return "(union " + format_selector(*sel.a) + " " + format_selector(*sel.b) + ")";
-        case SelectorOp::Inter: return "(inter " + format_selector(*sel.a) + " " + format_selector(*sel.b) + ")";
+        case SelectorOp::Union: case SelectorOp::Inter: {
+            std::string name = sel.op == SelectorOp::Union ? "union" : "inter";
+            std::string inner;
+            for (size_t i = 0; i < sel.items.size(); i++) {
+                if (i) inner += " ";
+                inner += format_selector(sel.items[i]);
+            }
+            return inner.empty() ? "(" + name + ")" : "(" + name + " " + inner + ")";
+        }
         case SelectorOp::Diff:  return "(diff " + format_selector(*sel.a) + " " + format_selector(*sel.b) + ")";
         case SelectorOp::Compl: return "(compl " + format_selector(*sel.a) + ")";
-        case SelectorOp::More:  return "(more " + format_selector(*sel.a) + ")";
+        case SelectorOp::More:
+            return sel.steps.has_value()
+                ? "(more " + std::to_string(*sel.steps) + " " + format_selector(*sel.a) + ")"
+                : "(more " + format_selector(*sel.a) + ")";
         case SelectorOp::All:   return "(all)";
         case SelectorOp::None:  return "(none)";
         case SelectorOp::Deg: {
@@ -398,6 +442,8 @@ bool Selector::operator==(const Selector& other) const {
     if (op == SelectorOp::Rrmn) return count == other.count;
     if (op == SelectorOp::Rrmp) return frac == other.frac;
     if (op == SelectorOp::Conva || op == SelectorOp::Conve) return from == other.from;
+    if (op == SelectorOp::More) return steps == other.steps;
+    if (op == SelectorOp::Union || op == SelectorOp::Inter) return items == other.items;
     return true;
 }
 
@@ -524,15 +570,23 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
     int N = static_cast<int>(adj.size());
     switch (sel.op) {
         case SelectorOp::Union: {
-            auto a = select_node(adj, pos, *sel.a), b = select_node(adj, pos, *sel.b);
-            a.insert(b.begin(), b.end());
-            return a;
+            std::set<int> out;
+            for (auto& item : sel.items) {
+                auto s = select_node(adj, pos, item);
+                out.insert(s.begin(), s.end());
+            }
+            return out;
         }
         case SelectorOp::Inter: {
-            auto a = select_node(adj, pos, *sel.a), b = select_node(adj, pos, *sel.b);
-            std::set<int> out;
-            for (int x : a) if (b.count(x)) out.insert(x);
-            return out;
+            if (sel.items.empty()) return select_node(adj, pos, Selector{SelectorOp::All, SelectorType::Node});
+            auto acc = select_node(adj, pos, sel.items[0]);
+            for (size_t i = 1; i < sel.items.size(); i++) {
+                auto next = select_node(adj, pos, sel.items[i]);
+                std::set<int> out;
+                for (int x : acc) if (next.count(x)) out.insert(x);
+                acc = std::move(out);
+            }
+            return acc;
         }
         case SelectorOp::Diff: {
             auto a = select_node(adj, pos, *sel.a), b = select_node(adj, pos, *sel.b);
@@ -549,9 +603,19 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
         case SelectorOp::More: {
             auto a = select_node(adj, pos, *sel.a);
             std::set<int> out = a;
-            for (int i : a)
-                for (int j = 0; j < N; j++)
-                    if (adj[i][j]) out.insert(j);
+            // Repeats the one-step expansion sel.steps times (default 1, see selector.h's own doc
+            // comment on Selector::steps) - each step only walks `frontier` (the nodes newly added by
+            // the PREVIOUS step, not the whole accumulated `out` again), since a node's own neighbors
+            // were already fully explored the one time it itself became part of the frontier.
+            std::vector<int> frontier(a.begin(), a.end());
+            int steps = sel.steps.value_or(1);
+            for (int s = 0; s < steps && !frontier.empty(); s++) {
+                std::vector<int> next_frontier;
+                for (int i : frontier)
+                    for (int j = 0; j < N; j++)
+                        if (adj[i][j] && !out.count(j)) { out.insert(j); next_frontier.push_back(j); }
+                frontier = std::move(next_frontier);
+            }
             return out;
         }
         case SelectorOp::All: {
@@ -632,19 +696,25 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
     int N = static_cast<int>(adj.size());
     switch (sel.op) {
         case SelectorOp::Union: {
-            auto a = select_edge(adj, pos, *sel.a);
-            auto b = select_edge(adj, pos, *sel.b);
-            a.insert(a.end(), b.begin(), b.end());
-            return dedupe_by_key<BoardEdge, std::string>(a, edge_key);
+            std::vector<BoardEdge> all;
+            for (auto& item : sel.items) {
+                auto s = select_edge(adj, pos, item);
+                all.insert(all.end(), s.begin(), s.end());
+            }
+            return dedupe_by_key<BoardEdge, std::string>(all, edge_key);
         }
         case SelectorOp::Inter: {
-            auto a = select_edge(adj, pos, *sel.a);
-            auto b = select_edge(adj, pos, *sel.b);
-            std::set<std::string> b_keys;
-            for (auto& e : b) b_keys.insert(edge_key(e));
-            std::vector<BoardEdge> out;
-            for (auto& e : a) if (b_keys.count(edge_key(e))) out.push_back(e);
-            return out;
+            if (sel.items.empty()) return select_edge(adj, pos, Selector{SelectorOp::All, SelectorType::Edge});
+            auto acc = select_edge(adj, pos, sel.items[0]);
+            for (size_t i = 1; i < sel.items.size(); i++) {
+                auto next = select_edge(adj, pos, sel.items[i]);
+                std::set<std::string> next_keys;
+                for (auto& e : next) next_keys.insert(edge_key(e));
+                std::vector<BoardEdge> out;
+                for (auto& e : acc) if (next_keys.count(edge_key(e))) out.push_back(e);
+                acc = std::move(out);
+            }
+            return acc;
         }
         case SelectorOp::Diff: {
             auto a = select_edge(adj, pos, *sel.a);
@@ -670,16 +740,29 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
         }
         case SelectorOp::More: {
             auto a = select_edge(adj, pos, *sel.a);
-            std::set<int> a_nodes;
-            for (auto& e : a) { a_nodes.insert(e.n1); a_nodes.insert(e.n2); }
             std::vector<BoardEdge> out = a;
-            for (int i = 0; i < N; i++)
-                for (int j = i + 1; j < N; j++)
-                    if (adj[i][j] && (a_nodes.count(i) || a_nodes.count(j))) out.push_back(make_board_edge(i, j));
             std::set<std::string> seen;
-            std::vector<BoardEdge> deduped;
-            for (auto& e : out) { std::string k = edge_key(e); if (seen.insert(k).second) deduped.push_back(e); }
-            return deduped;
+            for (auto& e : a) seen.insert(edge_key(e));
+            std::set<int> touched_nodes;
+            for (auto& e : a) { touched_nodes.insert(e.n1); touched_nodes.insert(e.n2); }
+            // Repeats the one-step expansion sel.steps times (default 1). Mirrors select_node's own
+            // frontier trick: `frontier` is only the nodes newly touched by the PREVIOUS step, since a
+            // node's own incident edges are all added to `out`/`seen` the one time it itself becomes
+            // part of the frontier - a later step never needs to re-scan an already-touched node.
+            std::vector<int> frontier(touched_nodes.begin(), touched_nodes.end());
+            int steps = sel.steps.value_or(1);
+            for (int s = 0; s < steps && !frontier.empty(); s++) {
+                std::vector<int> next_frontier;
+                for (int i : frontier)
+                    for (int j = 0; j < N; j++) {
+                        if (!adj[i][j]) continue;
+                        BoardEdge e = make_board_edge(i, j);
+                        if (seen.insert(edge_key(e)).second) out.push_back(e);
+                        if (!touched_nodes.count(j)) { touched_nodes.insert(j); next_frontier.push_back(j); }
+                    }
+                frontier = std::move(next_frontier);
+            }
+            return out;
         }
         case SelectorOp::All: {
             std::vector<BoardEdge> out;
@@ -742,21 +825,28 @@ std::vector<BoardTriangle> select_triangle(const std::vector<std::vector<int>>& 
             "select_triangle: expected a triangle selector, got " + describe_selector_type(sel.type));
     switch (sel.op) {
         case SelectorOp::Union: {
-            auto a = select_triangle(adj, pos, *sel.a);
-            auto b = select_triangle(adj, pos, *sel.b);
-            a.insert(a.end(), b.begin(), b.end());
+            std::vector<BoardTriangle> all;
+            for (auto& item : sel.items) {
+                auto s = select_triangle(adj, pos, item);
+                all.insert(all.end(), s.begin(), s.end());
+            }
             std::set<std::string> seen;
             std::vector<BoardTriangle> deduped;
-            for (auto& t : a) if (seen.insert(tri_key(t)).second) deduped.push_back(t);
+            for (auto& t : all) if (seen.insert(tri_key(t)).second) deduped.push_back(t);
             return deduped;
         }
         case SelectorOp::Inter: {
-            auto a = select_triangle(adj, pos, *sel.a);
-            std::set<std::string> b_keys;
-            for (auto& t : select_triangle(adj, pos, *sel.b)) b_keys.insert(tri_key(t));
-            std::vector<BoardTriangle> out;
-            for (auto& t : a) if (b_keys.count(tri_key(t))) out.push_back(t);
-            return out;
+            if (sel.items.empty()) return select_triangle(adj, pos, Selector{SelectorOp::All, SelectorType::Tri});
+            auto acc = select_triangle(adj, pos, sel.items[0]);
+            for (size_t i = 1; i < sel.items.size(); i++) {
+                auto next = select_triangle(adj, pos, sel.items[i]);
+                std::set<std::string> next_keys;
+                for (auto& t : next) next_keys.insert(tri_key(t));
+                std::vector<BoardTriangle> out;
+                for (auto& t : acc) if (next_keys.count(tri_key(t))) out.push_back(t);
+                acc = std::move(out);
+            }
+            return acc;
         }
         case SelectorOp::Diff: {
             auto a = select_triangle(adj, pos, *sel.a);
@@ -823,21 +913,28 @@ std::vector<BoardQuad> select_quad(const std::vector<std::vector<int>>& adj,
             "select_quad: expected a quad selector, got " + describe_selector_type(sel.type));
     switch (sel.op) {
         case SelectorOp::Union: {
-            auto a = select_quad(adj, pos, *sel.a);
-            auto b = select_quad(adj, pos, *sel.b);
-            a.insert(a.end(), b.begin(), b.end());
+            std::vector<BoardQuad> all;
+            for (auto& item : sel.items) {
+                auto s = select_quad(adj, pos, item);
+                all.insert(all.end(), s.begin(), s.end());
+            }
             std::set<std::string> seen;
             std::vector<BoardQuad> deduped;
-            for (auto& s : a) if (seen.insert(quad_key(s)).second) deduped.push_back(s);
+            for (auto& s : all) if (seen.insert(quad_key(s)).second) deduped.push_back(s);
             return deduped;
         }
         case SelectorOp::Inter: {
-            auto a = select_quad(adj, pos, *sel.a);
-            std::set<std::string> b_keys;
-            for (auto& s : select_quad(adj, pos, *sel.b)) b_keys.insert(quad_key(s));
-            std::vector<BoardQuad> out;
-            for (auto& s : a) if (b_keys.count(quad_key(s))) out.push_back(s);
-            return out;
+            if (sel.items.empty()) return select_quad(adj, pos, Selector{SelectorOp::All, SelectorType::Quad});
+            auto acc = select_quad(adj, pos, sel.items[0]);
+            for (size_t i = 1; i < sel.items.size(); i++) {
+                auto next = select_quad(adj, pos, sel.items[i]);
+                std::set<std::string> next_keys;
+                for (auto& s : next) next_keys.insert(quad_key(s));
+                std::vector<BoardQuad> out;
+                for (auto& s : acc) if (next_keys.count(quad_key(s))) out.push_back(s);
+                acc = std::move(out);
+            }
+            return acc;
         }
         case SelectorOp::Diff: {
             auto a = select_quad(adj, pos, *sel.a);

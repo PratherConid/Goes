@@ -1,14 +1,15 @@
 #pragma once
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
 
 // Mirrors shared/selector.ts - see that file's own top comment for the full grammar (SEL):
-//   (union SEL SEL) / (inter SEL SEL) / (diff SEL SEL) / (compl SEL) / (more SEL) / (all) / (none) /
-//   (deg <eq|gt|lt> <num>) / (conva <node|edge|tri|quad> SEL) / (conve <node|edge|tri|quad> SEL) /
-//   (rrmn <num> SEL) / (rrmp <num> SEL)
+//   (union SEL...) / (inter SEL...) / (diff SEL SEL) / (compl SEL) / (more [<num>] SEL) / (all) /
+//   (none) / (deg <eq|gt|lt> <num>) / (conva <node|edge|tri|quad> SEL) /
+//   (conve <node|edge|tri|quad> SEL) / (rrmn <num> SEL) / (rrmp <num> SEL)
 // selecting a subset of a board's nodes, edges, triangles, or quads (a "triangle"/"quad" here is
 // exactly what game/topology.h's find_triangles()/find_quads() finds). conva/conve convert
 // between any two kinds (naming the source kind via their own leading node/edge/tri/quad token): a
@@ -88,20 +89,33 @@ enum class DegCmp { Eq, Gt, Lt };
 // Mirrors shared/selector.ts's Selector - one monolithic recursive type (see that file's own top
 // comment for why `type` is a plain field filled in by the parser, not a separate TS type per kind).
 // Unlike BoardModifier's own self-recursive `modifiers` (a plain std::vector<BoardModifier> - always
-// legal for a complete type since C++17, see board_config.h), a Selector's own children are a fixed
-// 0/1/2-per-op arity, not a list - `a`/`b` are shared_ptr rather than Selector-by-value or a vector,
-// since a Selector is only ever built once (by parse_node_selector/parse_edge_selector/etc. or from
-// JSON) and never mutated afterward, so sharing sub-trees is exactly as safe as the TS side's own
-// object sharing and avoids writing a deep-copy constructor by hand.
+// legal for a complete type since C++17, see board_config.h), most of a Selector's own children are a
+// fixed 0/1/2-per-op arity, not a list - `a`/`b` are shared_ptr rather than Selector-by-value or a
+// vector, since a Selector is only ever built once (by parse_node_selector/parse_edge_selector/etc. or
+// from JSON) and never mutated afterward, so sharing sub-trees is exactly as safe as the TS side's own
+// object sharing and avoids writing a deep-copy constructor by hand. Union/Inter are the one exception
+// - a genuine variadic operand list (`items`, below), since `(union SEL...)`/`(inter SEL...)` take
+// zero or more operands rather than a fixed arity.
 struct Selector {
     SelectorOp op = SelectorOp::All;
     SelectorType type = SelectorType::Node;
     std::shared_ptr<Selector> a, b;  // meaningful per op - see each op's own case in select_node/select_edge/etc.
+    // meaningful iff op == Union/Inter - the variadic operand list from `(union SEL...)`/
+    // `(inter SEL...)` (a/b above are unused for these two ops). Zero items is the empty set for
+    // Union, the universal set (every object of `type` - same as `(all)`) for Inter. A plain
+    // std::vector<Selector> (not a vector of shared_ptr) is fine here for the same reason `a`/`b`
+    // being shared_ptr is safe: a Selector is built once and never mutated afterward.
+    std::vector<Selector> items;
     DegCmp cmp = DegCmp::Eq;         // meaningful iff op == Deg
     int n = 0;                       // meaningful iff op == Deg
     int count = 0;                   // meaningful iff op == Rrmn
     double frac = 0.0;               // meaningful iff op == Rrmp
     SelectorType from = SelectorType::Node; // meaningful iff op == Conva/Conve (the leading source-kind token)
+    // meaningful iff op == More - the optional step count from `(more [<num>] SEL)`; nullopt means it
+    // was omitted (defaults to 1 at evaluation, see select_node/select_edge), kept as nullopt rather
+    // than eagerly filled in to 1 so format_selector can round-trip the exact text a Selector was
+    // parsed from.
+    std::optional<int> steps;
 
     bool operator==(const Selector& other) const;
 };
