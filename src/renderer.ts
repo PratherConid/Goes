@@ -132,6 +132,12 @@ const _boardConfigDescriptions = new Map([
         + 'least one resulting square, then every triangle - and every one of those squares with a '
         + 'degree-under-6 node - replaced by its own side-length-4 lattice (triangles and squares '
         + 'sharing an edge glue seamlessly), scaled to 75% size'],
+    ['hexpipe_6',
+        '4×4×4 cubical lattice, reduced to only the edges belonging to a square whose 4 nodes all '
+        + 'have degree above 4 and at least one has degree exactly 5 (the near-surface sheet of '
+        + 'squares just under each face), then every one of those squares with both a degree-3 and a '
+        + 'degree-6 node (evaluated after that reduction) replaced by a side-length-6 square board'],
+    ['cublat_4_4_4_cub_0010_sqform_4', 'sqform 4 applied to 0010 position cubes on 4x4x4 cubical lattice'],
 ]);
 
 
