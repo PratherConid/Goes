@@ -31,33 +31,33 @@ export function makeBoardTriangle(a: number, b: number, c: number): BoardTriangl
     return { n1, n2, n3 };
 }
 
-/** One square (induced 4-cycle) {n1, n2, n3, n4} of a board's adjacency graph, n1-n2-n3-n4-n1 always
- * a genuine cycle (n1-n2, n2-n3, n3-n4, n4-n1 are the 4 real graph edges; n1-n3/n2-n4 are the 2
- * absent diagonals) - see makeBoardSquare. Unlike BoardTriangle (whose 3 members can always be
- * sorted ascending with no loss, since a triangle's 3-cycle has full S3 symmetry - every permutation
- * of 3 distinct elements is some rotation/reflection of it), a square's cycle structure is real
- * information a plain ascending sort would destroy (turning a diagonal into an apparent edge). So a
- * BoardSquare is instead normalized to whichever of its own cycle's 8 rotation/reflection-equivalent
- * relabelings (see makeBoardSquare) is lexicographically smallest - still giving every square a
- * unique representation regardless of which vertex/direction it was found from (the same guarantee
- * BoardTriangle/BoardEdge have), while keeping n1-n2-n3-n4-n1 a genuine cycle (unlike
- * shared/topology.ts's findSquares(), whose own [a, b, c, d] is *a* valid cycle order, but not
- * necessarily this canonical one). */
-export interface BoardSquare {
+/** One quad (induced 4-cycle - 4 distinct vertices forming a cycle with no diagonal edges) {n1, n2,
+ * n3, n4} of a board's adjacency graph, n1-n2-n3-n4-n1 always a genuine cycle (n1-n2, n2-n3, n3-n4,
+ * n4-n1 are the 4 real graph edges; n1-n3/n2-n4 are the 2 absent diagonals) - see makeBoardQuad.
+ * Unlike BoardTriangle (whose 3 members can always be sorted ascending with no loss, since a
+ * triangle's 3-cycle has full S3 symmetry - every permutation of 3 distinct elements is some
+ * rotation/reflection of it), a quad's cycle structure is real information a plain ascending sort
+ * would destroy (turning a diagonal into an apparent edge). So a BoardQuad is instead normalized to
+ * whichever of its own cycle's 8 rotation/reflection-equivalent relabelings (see makeBoardQuad) is
+ * lexicographically smallest - still giving every quad a unique representation regardless of which
+ * vertex/direction it was found from (the same guarantee BoardTriangle/BoardEdge have), while
+ * keeping n1-n2-n3-n4-n1 a genuine cycle (unlike shared/topology.ts's findQuads(), whose own
+ * [a, b, c, d] is *a* valid cycle order, but not necessarily this canonical one). */
+export interface BoardQuad {
     n1: number;
     n2: number;
     n3: number;
     n4: number;
 }
 
-/** Builds a BoardSquare from four node indices already in cycle order (a-b-c-d-a, as
- * shared/topology.ts's findSquares() reports them) - normalizes to the lexicographically smallest of
- * the cycle's own 8 rotation/reflection-equivalent relabelings (see BoardSquare's own doc comment),
+/** Builds a BoardQuad from four node indices already in cycle order (a-b-c-d-a, as
+ * shared/topology.ts's findQuads() reports them) - normalizes to the lexicographically smallest of
+ * the cycle's own 8 rotation/reflection-equivalent relabelings (see BoardQuad's own doc comment),
  * NOT a plain sort of all 4 values. Since every rotation starts with a different one of the 4
  * (distinct) node indices, the smallest-starting rotation is unique - so only the 2 candidates
  * starting at the minimum (one per direction) ever need comparing, and since all 4 inputs are
  * distinct, those two candidates' second element can never tie either. */
-export function makeBoardSquare(a: number, b: number, c: number, d: number): BoardSquare {
+export function makeBoardQuad(a: number, b: number, c: number, d: number): BoardQuad {
     const seq = [a, b, c, d];
     const i = seq.indexOf(Math.min(...seq));
     const fwd = [0, 1, 2, 3].map(k => seq[(i + k) % 4]);
@@ -432,17 +432,17 @@ export function cloneBoardArgEntry(e: BoardArgEntry): BoardArgEntry {
 
 /** The four kinds of object a Selector/FormSelector can denote - see shared/selector.ts's own top
  * comment for the full grammar this drives. */
-export type SelectorType = 'node' | 'edge' | 'tri' | 'sq';
+export type SelectorType = 'node' | 'edge' | 'tri' | 'quad';
 
 /**
  * A tiny S-expression language for selecting a subset of a board's nodes, edges, triangles, or
- * squares (a "triangle"/"square" here is exactly what shared/topology.ts's findTriangles()/
- * findSquares() finds - see BoardTriangle/BoardSquare above) - see shared/selector.ts for the full
+ * quads (a "triangle"/"quad" here is exactly what shared/topology.ts's findTriangles()/
+ * findQuads() finds - see BoardTriangle/BoardQuad above) - see shared/selector.ts for the full
  * grammar (`(union SEL SEL)` / `(inter SEL SEL)` / `(diff SEL SEL)` / `(compl SEL)` / `(more SEL)` /
- * `(all)` / `(none)` / `(deg <eq|gt|lt> <num>)` / `(conva <node|edge|tri|sq> SEL)` /
- * `(conve <node|edge|tri|sq> SEL)` / `(rrmn <num> SEL)` / `(rrmp <num> SEL)`) and its own parsing
- * (parseNodeSelector/parseEdgeSelector/parseTriangleSelector/parseSquareSelector) and evaluation
- * (selectNode/selectEdge/selectTriangle/selectSquare) functions. Every Selector carries its own
+ * `(all)` / `(none)` / `(deg <eq|gt|lt> <num>)` / `(conva <node|edge|tri|quad> SEL)` /
+ * `(conve <node|edge|tri|quad> SEL)` / `(rrmn <num> SEL)` / `(rrmp <num> SEL)`) and its own parsing
+ * (parseNodeSelector/parseEdgeSelector/parseTriangleSelector/parseQuadSelector) and evaluation
+ * (selectNode/selectEdge/selectTriangle/selectQuad) functions. Every Selector carries its own
  * `type` (which of the four kinds it denotes) - assigned by whichever of the four mutually recursive
  * parsers reaches it, not inferred from anything written in the expression itself (see
  * shared/selector.ts's own top comment for why).
@@ -459,16 +459,16 @@ export type Selector =
 
 /**
  * A tiny extension of the Selector grammar above for shared/boardConfig.ts's `genericForm` - a
- * FormSelector names which KIND of object (triangle or square) genericForm should look for, plus an
+ * FormSelector names which KIND of object (triangle or quad) genericForm should look for, plus an
  * optional inner SEL (of that same kind) restricting which ones of that kind qualify (default: every
- * one found). Written as its own small S-expression, `(tri [SEL])` / `(sq [SEL])` (see
+ * one found). Written as its own small S-expression, `(tri [SEL])` / `(quad [SEL])` (see
  * shared/selector.ts's own parseFormSelectors/formatFormSelector(s)) - distinct from a plain
  * Selector, since a FormSelector isn't itself selecting FROM an existing known-kind set; it's
  * declaring which kind to look for in the first place.
  */
 export type FormSelector =
     | { kind: 'tri'; sel?: Selector }
-    | { kind: 'sq'; sel?: Selector };
+    | { kind: 'quad'; sel?: Selector };
 
 /**
  * A BoardConfig-transforming operation - see shared/boardConfig.ts's applyModifier()/
@@ -482,12 +482,12 @@ export type BoardModifier =
     | { kind: 'EdgeSplit'; splitN: number }
     | { kind: 'MergeClose'; dist: number }
     | { kind: 'TriangleForm'; w: number; sel?: Selector }
-    | { kind: 'SquareForm'; w: number; sel?: Selector }
+    | { kind: 'QuadForm'; w: number; sel?: Selector }
     | { kind: 'Form'; w: number; sels: FormSelector[] }
     | { kind: 'Prod'; boardType: string; boardArgs: BoardArgEntry[]; modifiers: BoardModifier[] }
     | { kind: 'Repeat'; count: number; modifiers: BoardModifier[] }
     | { kind: 'GlobalCentralize' }
-    | { kind: 'SqOctarize' }
+    | { kind: 'QuadOctarize' }
     | { kind: 'Scale'; factor: number }
     | { kind: 'NodeInducedSubgraph'; sel: Selector }
     | { kind: 'EdgeInducedSubgraph'; sel: Selector };

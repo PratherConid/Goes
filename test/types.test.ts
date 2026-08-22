@@ -1,8 +1,8 @@
-// Regression tests for shared/types.ts's makeBoardTriangle/makeBoardSquare - the canonical
-// constructors BoardTriangle/BoardSquare values are built through.
+// Regression tests for shared/types.ts's makeBoardTriangle/makeBoardQuad - the canonical
+// constructors BoardTriangle/BoardQuad values are built through.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeBoardTriangle, makeBoardSquare } from '../shared/types.ts';
+import { makeBoardTriangle, makeBoardQuad } from '../shared/types.ts';
 
 test('makeBoardTriangle normalizes any permutation of the same 3 nodes to n1 < n2 < n3', () => {
     const expected = { n1: 2, n2: 5, n3: 9 };
@@ -13,8 +13,8 @@ test('makeBoardTriangle normalizes any permutation of the same 3 nodes to n1 < n
 });
 
 // Given a cycle a-b-c-d-a, all 8 of its rotation/reflection-equivalent relabelings (4 rotations x 2
-// directions) name the exact same square - makeBoardSquare must canonicalize every one of them to
-// the identical BoardSquare.
+// directions) name the exact same quad - makeBoardQuad must canonicalize every one of them to
+// the identical BoardQuad.
 function allCycleRelabelings(a: number, b: number, c: number, d: number): [number, number, number, number][] {
     const fwd = [a, b, c, d];
     const bwd = [a, d, c, b];
@@ -26,18 +26,18 @@ function allCycleRelabelings(a: number, b: number, c: number, d: number): [numbe
     return out;
 }
 
-test('makeBoardSquare canonicalizes all 8 rotation/reflection relabelings of the same cycle identically', () => {
+test('makeBoardQuad canonicalizes all 8 rotation/reflection relabelings of the same cycle identically', () => {
     for (const [a, b, c, d] of allCycleRelabelings(2, 8, 5, 9))
-        assert.deepEqual(makeBoardSquare(a, b, c, d), { n1: 2, n2: 8, n3: 5, n4: 9 });
+        assert.deepEqual(makeBoardQuad(a, b, c, d), { n1: 2, n2: 8, n3: 5, n4: 9 });
 });
 
-test('makeBoardSquare preserves cycle structure - unlike a plain sort, it never turns a diagonal into an apparent edge', () => {
+test('makeBoardQuad preserves cycle structure - unlike a plain sort, it never turns a diagonal into an apparent edge', () => {
     // Cycle 2-8-5-9-2: real edges are (2,8), (8,5), (5,9), (9,2); diagonals are (2,5) and (8,9). A
     // plain ascending sort would give {n1:2,n2:5,n3:8,n4:9}, whose own "edges" (2,5),(5,8),(8,9),(9,2)
     // wrongly include both actual diagonals and drop a real edge.
-    const sq = makeBoardSquare(2, 8, 5, 9);
+    const q = makeBoardQuad(2, 8, 5, 9);
     const cycleEdges = new Set([
-        `${sq.n1},${sq.n2}`, `${sq.n2},${sq.n3}`, `${sq.n3},${sq.n4}`, `${sq.n4},${sq.n1}`,
+        `${q.n1},${q.n2}`, `${q.n2},${q.n3}`, `${q.n3},${q.n4}`, `${q.n4},${q.n1}`,
     ]);
     assert.ok(cycleEdges.has('2,8') || cycleEdges.has('8,2'));
     assert.ok(cycleEdges.has('8,5') || cycleEdges.has('5,8'));

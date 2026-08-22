@@ -6,9 +6,6 @@
     {"kind": "Number", "value": 2}
   ],
   "boardModifiers": [
-    {"kind": "EdgeSplit", "splitN": 1},
-    {"kind": "Rectify"},
-    {"kind": "Form", "w": 7, "sels": [{"kind": "tri"}, {"kind": "sq"}]},
-    {"kind": "Scale", "factor": 0.75}
+    {"kind": "QuadForm", "w": 9}
   ]
 }

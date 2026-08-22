@@ -384,7 +384,7 @@ function fmtModifier(m: BoardModifier): string {
         case 'EdgeSplit': return `es ${m.splitN}`;
         case 'MergeClose': return `mc ${m.dist}`;
         case 'TriangleForm': return m.sel === undefined ? `triform ${m.w}` : `triform ${m.w} ${formatSelector(m.sel)}`;
-        case 'SquareForm': return m.sel === undefined ? `sqform ${m.w}` : `sqform ${m.w} ${formatSelector(m.sel)}`;
+        case 'QuadForm': return m.sel === undefined ? `quadform ${m.w}` : `quadform ${m.w} ${formatSelector(m.sel)}`;
         case 'Prod': {
             const head = `${m.boardType} ${m.boardArgs.map(formatBoardArgEntry).join(' ')}`;
             return m.modifiers.length === 0
@@ -394,7 +394,7 @@ function fmtModifier(m: BoardModifier): string {
         case 'Repeat':
             return [`repeat ${m.count}`, ...m.modifiers.map(fmtModifier), 'endrepeat'].join('; ');
         case 'GlobalCentralize': return 'gcent';
-        case 'SqOctarize': return 'sqocta';
+        case 'QuadOctarize': return 'quadocta';
         case 'Scale': return `scale ${m.factor}`;
         case 'NodeInducedSubgraph': return `nis ${formatSelector(m.sel)}`;
         case 'EdgeInducedSubgraph': return `eis ${formatSelector(m.sel)}`;
@@ -402,8 +402,8 @@ function fmtModifier(m: BoardModifier): string {
     }
 }
 
-// Renders e.g. "rect; es 3; mc 0.5; triform 3; form 4 (tri) (sq (deg gt 2)); prod rect 3 3;
-// beginprod rect 3 3; es 2; endprod; repeat 3; es 2; endrepeat; gcent; sqocta; scale 2;
+// Renders e.g. "rect; es 3; mc 0.5; triform 3; form 4 (tri) (quad (deg gt 2)); prod rect 3 3;
+// beginprod rect 3 3; es 2; endprod; repeat 3; es 2; endrepeat; gcent; quadocta; scale 2;
 // nis (deg gt 2); eis (all)" - see fmtModifier above, joined by "; ".
 export const fmtModifiers = (modifiers: BoardModifier[]) => modifiers.map(fmtModifier).join('; ');
 

@@ -2,7 +2,7 @@
  * Graph-topology utilities operating on plain N×N adjacency matrices (the same representation as
  * `BoardConfig.adj`), independent of any board-specific geometry.
  */
-import { type BoardTriangle, makeBoardTriangle, type BoardSquare, makeBoardSquare } from './types.js';
+import { type BoardTriangle, makeBoardTriangle, type BoardQuad, makeBoardQuad } from './types.js';
 
 /** An all-zero N×N adjacency matrix - the usual starting point before filling in edges. */
 export function zeroAdj(N: number): number[][] {
@@ -13,7 +13,7 @@ export function zeroAdj(N: number): number[][] {
 export type AdjacencyList = Set<number>[];
 
 /** Converts an N×N adjacency matrix into an adjacency list, each node's neighbors stored as a
- * `Set` (not an array) so membership checks - the hot path for both findTriangles/findSquares
+ * `Set` (not an array) so membership checks - the hot path for both findTriangles/findQuads
  * below - are O(1) instead of O(degree). */
 export function toAdjacencyList(adj: number[][]): AdjacencyList {
     const N = adj.length;
@@ -50,26 +50,26 @@ export function findTriangles(adj: number[][]): BoardTriangle[] {
 }
 
 /**
- * Finds every "square" - 4 distinct vertices `a, b, c, d` forming a cycle `a-b-c-d-a` (all 4 cycle
+ * Finds every "quad" - 4 distinct vertices `a, b, c, d` forming a cycle `a-b-c-d-a` (all 4 cycle
  * edges present) whose two diagonals `a-c` and `b-d` are BOTH absent (a proper induced 4-cycle, not
  * merely 4 vertices of a denser subgraph that happens to contain one) - each reported exactly once
- * as a BoardSquare, canonicalized via makeBoardSquare (see its own doc comment, shared/types.ts) from
+ * as a BoardQuad, canonicalized via makeBoardQuad (see its own doc comment, shared/types.ts) from
  * the `p-r-q-s-p` cycle order this function itself discovers it in - that canonicalization is a
  * genuine relabeling (not necessarily `p, r, q, s` verbatim), unlike findTriangles' own free ride,
- * since a square's own discovery order isn't already the lexicographically-least one in general.
+ * since a quad's own discovery order isn't already the lexicographically-least one in general.
  *
  * Converts to an adjacency list first (see toAdjacencyList), then for every non-adjacent pair
  * `(p, q)` with `p < q` (a candidate diagonal), finds their common neighbors and, for every pair of
  * common neighbors `(r, s)` that are themselves non-adjacent (the other candidate diagonal), reports
- * the square `p-r-q-s-p`. A square has exactly two diagonals, so this raw scan finds each one twice
+ * the quad `p-r-q-s-p`. A quad has exactly two diagonals, so this raw scan finds each one twice
  * - once starting from each diagonal - which is resolved by only emitting when `(p, q)` is the
  * lexicographically smaller of the two (`p < min(r, s)`; the two diagonals can never share a vertex,
- * since all 4 square vertices are distinct, so this comparison is never ambiguous).
+ * since all 4 quad vertices are distinct, so this comparison is never ambiguous).
  */
-export function findSquares(adj: number[][]): BoardSquare[] {
+export function findQuads(adj: number[][]): BoardQuad[] {
     const N = adj.length;
     const adjList = toAdjacencyList(adj);
-    const squares: BoardSquare[] = [];
+    const quads: BoardQuad[] = [];
     for (let p = 0; p < N; p++)
         for (let q = p + 1; q < N; q++) {
             if (adjList[p].has(q)) continue; // p-q would be an edge, not a diagonal
@@ -80,10 +80,10 @@ export function findSquares(adj: number[][]): BoardSquare[] {
                     const r = Math.min(common[i], common[j]);
                     const s = Math.max(common[i], common[j]);
                     if (adjList[r].has(s)) continue; // r-s would be an edge, not a diagonal
-                    if (p < r) squares.push(makeBoardSquare(p, r, q, s));
+                    if (p < r) quads.push(makeBoardQuad(p, r, q, s));
                 }
         }
-    return squares;
+    return quads;
 }
 
 /**

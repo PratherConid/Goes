@@ -1,0 +1,27 @@
+{
+  "boardType": "cublat",
+  "boardArgs": [
+    {"kind": "Number", "value": 4},
+    {"kind": "Number", "value": 4},
+    {"kind": "Number", "value": 4}
+  ],
+  "boardModifiers": [
+    {
+      "kind": "QuadForm",
+      "w": 4,
+      "sel": {
+        "op": "compl", "type": "quad",
+        "a": {
+          "op": "union", "type": "quad",
+          "a": {"op": "conva", "type": "quad", "from": "node", "a": {"op": "deg", "type": "node", "cmp": "eq", "n": 5}},
+          "b": {
+            "op": "union", "type": "quad",
+            "a": {"op": "conve", "type": "quad", "from": "node", "a": {"op": "deg", "type": "node", "cmp": "eq", "n": 3}},
+            "b": {"op": "conva", "type": "quad", "from": "node", "a": {"op": "deg", "type": "node", "cmp": "eq", "n": 6}}
+          }
+        }
+      }
+    },
+    {"kind": "EdgeInducedSubgraph", "sel": {"op": "conve", "type": "edge", "from": "quad", "a": {"op": "all", "type": "quad"}}}
+  ]
+}

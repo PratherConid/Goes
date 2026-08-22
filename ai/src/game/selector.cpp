@@ -83,14 +83,14 @@ static double next_nonneg_number(ParseCursor& c, const std::string& context) {
 static Selector parse_node_sel_expr(ParseCursor& c);
 static Selector parse_edge_sel_expr(ParseCursor& c);
 static Selector parse_triangle_sel_expr(ParseCursor& c);
-static Selector parse_square_sel_expr(ParseCursor& c);
+static Selector parse_quad_sel_expr(ParseCursor& c);
 
-// Reads conva/conve's own leading node/edge/tri/sq token (the "from" kind) and parses its operand
+// Reads conva/conve's own leading node/edge/tri/quad token (the "from" kind) and parses its operand
 // via the matching one of parse_node_sel_expr/parse_edge_sel_expr/parse_triangle_sel_expr/
-// parse_square_sel_expr - shared by all four of those functions' own conva/conve case below,
+// parse_quad_sel_expr - shared by all four of those functions' own conva/conve case below,
 // `to_type` being whichever of them called this (the "to" kind, from parsing context, same as
 // all/none). Throws if the (from, to_type) pair is the one with no defined association (triangle
-// <-> square - see selector.h's own top comment); returns the parsed operand directly, unwrapped,
+// <-> quad - see selector.h's own top comment); returns the parsed operand directly, unwrapped,
 // for a same-kind conversion (a no-op). Mirrors shared/selector.ts's parseConversion().
 static Selector parse_conversion(ParseCursor& c, SelectorOp op, SelectorType to_type) {
     std::string from_tok = c.next();
@@ -99,14 +99,14 @@ static Selector parse_conversion(ParseCursor& c, SelectorOp op, SelectorType to_
     if (from_tok == "node") { from = SelectorType::Node; parse_from = parse_node_sel_expr; }
     else if (from_tok == "edge") { from = SelectorType::Edge; parse_from = parse_edge_sel_expr; }
     else if (from_tok == "tri") { from = SelectorType::Tri; parse_from = parse_triangle_sel_expr; }
-    else if (from_tok == "sq") { from = SelectorType::Sq; parse_from = parse_square_sel_expr; }
+    else if (from_tok == "quad") { from = SelectorType::Quad; parse_from = parse_quad_sel_expr; }
     else throw std::runtime_error(
         "selector: (" + std::string(op == SelectorOp::Conva ? "conva" : "conve") +
-        " ...) source kind must be 'node', 'edge', 'tri', or 'sq', got '" + from_tok + "'");
-    if ((from == SelectorType::Tri && to_type == SelectorType::Sq) ||
-        (from == SelectorType::Sq && to_type == SelectorType::Tri))
+        " ...) source kind must be 'node', 'edge', 'tri', or 'quad', got '" + from_tok + "'");
+    if ((from == SelectorType::Tri && to_type == SelectorType::Quad) ||
+        (from == SelectorType::Quad && to_type == SelectorType::Tri))
         throw std::runtime_error("selector: (" + std::string(op == SelectorOp::Conva ? "conva" : "conve") +
-            " ...) has no association defined between 'tri' and 'sq'");
+            " ...) has no association defined between 'tri' and 'quad'");
     Selector a = parse_from(c);
     c.expect(")");
     if (from == to_type) return a; // same-kind conversion is a no-op
@@ -117,7 +117,7 @@ static Selector parse_conversion(ParseCursor& c, SelectorOp op, SelectorType to_
 }
 
 // Parses a node SEL - mutually recursive with parse_edge_sel_expr/parse_triangle_sel_expr/
-// parse_square_sel_expr via conva/conve's own operand. Every Selector this returns has
+// parse_quad_sel_expr via conva/conve's own operand. Every Selector this returns has
 // type == SelectorType::Node. Mirrors shared/selector.ts's parseNodeSelExpr().
 static Selector parse_node_sel_expr(ParseCursor& c) {
     c.expect("(");
@@ -185,7 +185,7 @@ static Selector parse_node_sel_expr(ParseCursor& c) {
 }
 
 // Parses an edge SEL - mutually recursive with parse_node_sel_expr/parse_triangle_sel_expr/
-// parse_square_sel_expr via conva/conve's own operand. Every Selector this returns has
+// parse_quad_sel_expr via conva/conve's own operand. Every Selector this returns has
 // type == SelectorType::Edge. Mirrors shared/selector.ts's parseEdgeSelExpr().
 static Selector parse_edge_sel_expr(ParseCursor& c) {
     c.expect("(");
@@ -239,8 +239,8 @@ static Selector parse_edge_sel_expr(ParseCursor& c) {
 }
 
 // Parses a triangle SEL - mutually recursive with parse_node_sel_expr/parse_edge_sel_expr via
-// conva/conve's own operand (never parse_square_sel_expr - see selector.h's own top comment on why
-// triangle <-> square is rejected). Every Selector this returns has type == SelectorType::Tri. No
+// conva/conve's own operand (never parse_quad_sel_expr - see selector.h's own top comment on why
+// triangle <-> quad is rejected). Every Selector this returns has type == SelectorType::Tri. No
 // deg/more here. Mirrors shared/selector.ts's parseTriangleSelExpr().
 static Selector parse_triangle_sel_expr(ParseCursor& c) {
     c.expect("(");
@@ -285,53 +285,53 @@ static Selector parse_triangle_sel_expr(ParseCursor& c) {
     throw std::runtime_error("selector: unknown triangle-selector operator '" + op + "'");
 }
 
-// Parses a square SEL - the square counterpart of parse_triangle_sel_expr above (see its own doc
-// comment). Every Selector this returns has type == SelectorType::Sq. Mirrors shared/selector.ts's
-// parseSquareSelExpr().
-static Selector parse_square_sel_expr(ParseCursor& c) {
+// Parses a quad SEL - the quad counterpart of parse_triangle_sel_expr above (see its own doc
+// comment). Every Selector this returns has type == SelectorType::Quad. Mirrors shared/selector.ts's
+// parseQuadSelExpr().
+static Selector parse_quad_sel_expr(ParseCursor& c) {
     c.expect("(");
     std::string op = c.next();
     if (op == "union" || op == "inter" || op == "diff") {
         Selector sel;
         sel.op = op == "union" ? SelectorOp::Union : op == "inter" ? SelectorOp::Inter : SelectorOp::Diff;
-        sel.type = SelectorType::Sq;
-        sel.a = std::make_shared<Selector>(parse_square_sel_expr(c));
-        sel.b = std::make_shared<Selector>(parse_square_sel_expr(c));
+        sel.type = SelectorType::Quad;
+        sel.a = std::make_shared<Selector>(parse_quad_sel_expr(c));
+        sel.b = std::make_shared<Selector>(parse_quad_sel_expr(c));
         c.expect(")");
         return sel;
     }
     if (op == "compl") {
         Selector sel;
         sel.op = SelectorOp::Compl;
-        sel.type = SelectorType::Sq;
-        sel.a = std::make_shared<Selector>(parse_square_sel_expr(c));
+        sel.type = SelectorType::Quad;
+        sel.a = std::make_shared<Selector>(parse_quad_sel_expr(c));
         c.expect(")");
         return sel;
     }
-    if (op == "all") { c.expect(")"); return Selector{SelectorOp::All, SelectorType::Sq}; }
-    if (op == "none") { c.expect(")"); return Selector{SelectorOp::None, SelectorType::Sq}; }
+    if (op == "all") { c.expect(")"); return Selector{SelectorOp::All, SelectorType::Quad}; }
+    if (op == "none") { c.expect(")"); return Selector{SelectorOp::None, SelectorType::Quad}; }
     if (op == "conva" || op == "conve")
-        return parse_conversion(c, op == "conva" ? SelectorOp::Conva : SelectorOp::Conve, SelectorType::Sq);
+        return parse_conversion(c, op == "conva" ? SelectorOp::Conva : SelectorOp::Conve, SelectorType::Quad);
     if (op == "rrmn") {
         int count = next_nonneg_int(c, "(rrmn ...) count");
         Selector sel;
-        sel.op = SelectorOp::Rrmn; sel.type = SelectorType::Sq; sel.count = count;
-        sel.a = std::make_shared<Selector>(parse_square_sel_expr(c));
+        sel.op = SelectorOp::Rrmn; sel.type = SelectorType::Quad; sel.count = count;
+        sel.a = std::make_shared<Selector>(parse_quad_sel_expr(c));
         c.expect(")");
         return sel;
     }
     if (op == "rrmp") {
         double frac = next_nonneg_number(c, "(rrmp ...) portion");
         Selector sel;
-        sel.op = SelectorOp::Rrmp; sel.type = SelectorType::Sq; sel.frac = frac;
-        sel.a = std::make_shared<Selector>(parse_square_sel_expr(c));
+        sel.op = SelectorOp::Rrmp; sel.type = SelectorType::Quad; sel.frac = frac;
+        sel.a = std::make_shared<Selector>(parse_quad_sel_expr(c));
         c.expect(")");
         return sel;
     }
-    throw std::runtime_error("selector: unknown square-selector operator '" + op + "'");
+    throw std::runtime_error("selector: unknown quad-selector operator '" + op + "'");
 }
 
-// Shared by parse_node_selector/parse_edge_selector/parse_triangle_selector/parse_square_selector:
+// Shared by parse_node_selector/parse_edge_selector/parse_triangle_selector/parse_quad_selector:
 // tokenizes s, runs parse_expr over the whole thing, and rejects any leftover trailing input.
 // Mirrors shared/selector.ts's parseTopLevel().
 static Selector parse_top_level(const std::string& s, Selector (*parse_expr)(ParseCursor&)) {
@@ -347,7 +347,7 @@ static Selector parse_top_level(const std::string& s, Selector (*parse_expr)(Par
 Selector parse_node_selector(const std::string& s) { return parse_top_level(s, parse_node_sel_expr); }
 Selector parse_edge_selector(const std::string& s) { return parse_top_level(s, parse_edge_sel_expr); }
 Selector parse_triangle_selector(const std::string& s) { return parse_top_level(s, parse_triangle_sel_expr); }
-Selector parse_square_selector(const std::string& s) { return parse_top_level(s, parse_square_sel_expr); }
+Selector parse_quad_selector(const std::string& s) { return parse_top_level(s, parse_quad_sel_expr); }
 
 // Renders a double the way JS's default Number->string conversion would for the plain decimal
 // literals (rrmp) actually seen in board presets ("0.1", "0.6666", "1", ...) - an integral value
@@ -378,7 +378,7 @@ std::string format_selector(const Selector& sel) {
         case SelectorOp::Conva: case SelectorOp::Conve: {
             std::string name = sel.op == SelectorOp::Conva ? "conva" : "conve";
             std::string from = sel.from == SelectorType::Node ? "node" : sel.from == SelectorType::Edge ? "edge"
-                : sel.from == SelectorType::Tri ? "tri" : "sq";
+                : sel.from == SelectorType::Tri ? "tri" : "quad";
             return "(" + name + " " + from + " " + format_selector(*sel.a) + ")";
         }
         case SelectorOp::Rrmn: return "(rrmn " + std::to_string(sel.count) + " " + format_selector(*sel.a) + ")";
@@ -403,13 +403,13 @@ bool Selector::operator==(const Selector& other) const {
 
 // ── evaluation ───────────────────────────────────────────────────────────────
 
-// "a node"/"an edge"/"a tri"/"a sq" - shared by each evaluator's own wrong-kind error message below.
+// "a node"/"an edge"/"a tri"/"a quad" - shared by each evaluator's own wrong-kind error message below.
 static std::string describe_selector_type(SelectorType type) {
     switch (type) {
         case SelectorType::Node: return "a node";
         case SelectorType::Edge: return "an edge";
         case SelectorType::Tri:  return "a tri";
-        case SelectorType::Sq:   return "a sq";
+        case SelectorType::Quad: return "a quad";
     }
     throw std::runtime_error("describe_selector_type: unknown type");
 }
@@ -420,7 +420,7 @@ static int degree(const std::vector<std::vector<int>>& adj, int i) {
     return d;
 }
 
-// BoardEdge/BoardTriangle/BoardSquare aren't valid std::set/std::unordered_map keys themselves (two
+// BoardEdge/BoardTriangle/BoardQuad aren't valid std::set/std::unordered_map keys themselves (two
 // structurally-equal values are different objects, and none has an operator< or std::hash), so
 // union/inter/diff/compl below key them by these canonical string ids (n1 < n2 < ... already makes
 // each one unique per object) whenever they need set-like membership tests. Mirrors
@@ -431,7 +431,7 @@ static std::string edge_key(const BoardEdge& e) {
 static std::string tri_key(const BoardTriangle& t) {
     return std::to_string(t.n1) + "," + std::to_string(t.n2) + "," + std::to_string(t.n3);
 }
-static std::string sq_key(const BoardSquare& s) {
+static std::string quad_key(const BoardQuad& s) {
     return std::to_string(s.n1) + "," + std::to_string(s.n2) + "," + std::to_string(s.n3) + "," + std::to_string(s.n4);
 }
 
@@ -471,7 +471,7 @@ static std::vector<T> randomly_remove(std::vector<T> items, int remove_count) {
     return items;
 }
 
-// Mirrors shared/selector.ts's node member/key convention for edge/triangle/square (a plain node
+// Mirrors shared/selector.ts's node member/key convention for edge/triangle/quad (a plain node
 // index is its own key; a single-element member list) - used wherever "node" is conva/conve's own
 // "from" or "to" kind in convert_objects below.
 static std::vector<int> node_members(const int& n) { return { n }; }
@@ -479,7 +479,7 @@ static int node_key(const int& n) { return n; }
 
 // True iff `a`'s own members are completely contained in `b`'s, or vice versa - the general
 // "association" test conva/conve rely on (see selector.h's own top comment). Every object kind here
-// has a fixed arity (node 1, edge 2, triangle 3, square 4) and every object's own members are
+// has a fixed arity (node 1, edge 2, triangle 3, quad 4) and every object's own members are
 // distinct node indices, so containment can only ever run from the smaller-arity list into the
 // larger one; this checks whichever direction applies rather than assuming a fixed order.
 static bool is_associated(const std::vector<int>& a, const std::vector<int>& b) {
@@ -597,13 +597,13 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
                     tri_key, selected_keys, require_all);
                 return std::set<int>(result.begin(), result.end());
             }
-            auto all_from = select_square(adj, pos, Selector{SelectorOp::All, SelectorType::Sq});
+            auto all_from = select_quad(adj, pos, Selector{SelectorOp::All, SelectorType::Quad});
             std::set<std::string> selected_keys;
-            for (auto& s : select_square(adj, pos, *sel.a)) selected_keys.insert(sq_key(s));
-            auto result = convert_objects<BoardSquare, int, std::string>(
+            for (auto& s : select_quad(adj, pos, *sel.a)) selected_keys.insert(quad_key(s));
+            auto result = convert_objects<BoardQuad, int, std::string>(
                 to_nodes, node_members, all_from,
-                +[](const BoardSquare& s) -> std::vector<int> { return { s.n1, s.n2, s.n3, s.n4 }; },
-                sq_key, selected_keys, require_all);
+                +[](const BoardQuad& s) -> std::vector<int> { return { s.n1, s.n2, s.n3, s.n4 }; },
+                quad_key, selected_keys, require_all);
             return std::set<int>(result.begin(), result.end());
         }
         case SelectorOp::Rrmn: {
@@ -712,13 +712,13 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
                     +[](const BoardTriangle& t) -> std::vector<int> { return { t.n1, t.n2, t.n3 }; },
                     tri_key, selected_keys, require_all);
             }
-            auto all_from = select_square(adj, pos, Selector{SelectorOp::All, SelectorType::Sq});
+            auto all_from = select_quad(adj, pos, Selector{SelectorOp::All, SelectorType::Quad});
             std::set<std::string> selected_keys;
-            for (auto& s : select_square(adj, pos, *sel.a)) selected_keys.insert(sq_key(s));
-            return convert_objects<BoardSquare, BoardEdge, std::string>(
+            for (auto& s : select_quad(adj, pos, *sel.a)) selected_keys.insert(quad_key(s));
+            return convert_objects<BoardQuad, BoardEdge, std::string>(
                 all_to, edge_members, all_from,
-                +[](const BoardSquare& s) -> std::vector<int> { return { s.n1, s.n2, s.n3, s.n4 }; },
-                sq_key, selected_keys, require_all);
+                +[](const BoardQuad& s) -> std::vector<int> { return { s.n1, s.n2, s.n3, s.n4 }; },
+                quad_key, selected_keys, require_all);
         }
         case SelectorOp::Rrmn: {
             auto base = select_edge(adj, pos, *sel.a);
@@ -778,8 +778,8 @@ std::vector<BoardTriangle> select_triangle(const std::vector<std::vector<int>>& 
         case SelectorOp::None:
             return {};
         case SelectorOp::Conva: case SelectorOp::Conve: {
-            if (sel.from == SelectorType::Sq)
-                throw std::runtime_error("select_triangle: no association is defined between 'tri' and 'sq'");
+            if (sel.from == SelectorType::Quad)
+                throw std::runtime_error("select_triangle: no association is defined between 'tri' and 'quad'");
             bool require_all = sel.op == SelectorOp::Conva;
             if (sel.from == SelectorType::Tri) return select_triangle(adj, pos, *sel.a); // same-kind: no-op (defensive)
             auto all_to = select_triangle(adj, pos, Selector{SelectorOp::All, SelectorType::Tri});
@@ -815,83 +815,83 @@ std::vector<BoardTriangle> select_triangle(const std::vector<std::vector<int>>& 
     }
 }
 
-std::vector<BoardSquare> select_square(const std::vector<std::vector<int>>& adj,
+std::vector<BoardQuad> select_quad(const std::vector<std::vector<int>>& adj,
                                         const std::vector<std::vector<unsigned>>& pos,
                                         const Selector& sel) {
-    if (sel.type != SelectorType::Sq)
+    if (sel.type != SelectorType::Quad)
         throw std::runtime_error(
-            "select_square: expected a square selector, got " + describe_selector_type(sel.type));
+            "select_quad: expected a quad selector, got " + describe_selector_type(sel.type));
     switch (sel.op) {
         case SelectorOp::Union: {
-            auto a = select_square(adj, pos, *sel.a);
-            auto b = select_square(adj, pos, *sel.b);
+            auto a = select_quad(adj, pos, *sel.a);
+            auto b = select_quad(adj, pos, *sel.b);
             a.insert(a.end(), b.begin(), b.end());
             std::set<std::string> seen;
-            std::vector<BoardSquare> deduped;
-            for (auto& s : a) if (seen.insert(sq_key(s)).second) deduped.push_back(s);
+            std::vector<BoardQuad> deduped;
+            for (auto& s : a) if (seen.insert(quad_key(s)).second) deduped.push_back(s);
             return deduped;
         }
         case SelectorOp::Inter: {
-            auto a = select_square(adj, pos, *sel.a);
+            auto a = select_quad(adj, pos, *sel.a);
             std::set<std::string> b_keys;
-            for (auto& s : select_square(adj, pos, *sel.b)) b_keys.insert(sq_key(s));
-            std::vector<BoardSquare> out;
-            for (auto& s : a) if (b_keys.count(sq_key(s))) out.push_back(s);
+            for (auto& s : select_quad(adj, pos, *sel.b)) b_keys.insert(quad_key(s));
+            std::vector<BoardQuad> out;
+            for (auto& s : a) if (b_keys.count(quad_key(s))) out.push_back(s);
             return out;
         }
         case SelectorOp::Diff: {
-            auto a = select_square(adj, pos, *sel.a);
+            auto a = select_quad(adj, pos, *sel.a);
             std::set<std::string> b_keys;
-            for (auto& s : select_square(adj, pos, *sel.b)) b_keys.insert(sq_key(s));
-            std::vector<BoardSquare> out;
-            for (auto& s : a) if (!b_keys.count(sq_key(s))) out.push_back(s);
+            for (auto& s : select_quad(adj, pos, *sel.b)) b_keys.insert(quad_key(s));
+            std::vector<BoardQuad> out;
+            for (auto& s : a) if (!b_keys.count(quad_key(s))) out.push_back(s);
             return out;
         }
         case SelectorOp::Compl: {
             std::set<std::string> a_keys;
-            for (auto& s : select_square(adj, pos, *sel.a)) a_keys.insert(sq_key(s));
-            std::vector<BoardSquare> out;
-            for (auto& s : find_squares(adj)) if (!a_keys.count(sq_key(s))) out.push_back(s);
+            for (auto& s : select_quad(adj, pos, *sel.a)) a_keys.insert(quad_key(s));
+            std::vector<BoardQuad> out;
+            for (auto& s : find_quads(adj)) if (!a_keys.count(quad_key(s))) out.push_back(s);
             return out;
         }
         case SelectorOp::All:
-            return find_squares(adj);
+            return find_quads(adj);
         case SelectorOp::None:
             return {};
         case SelectorOp::Conva: case SelectorOp::Conve: {
             if (sel.from == SelectorType::Tri)
-                throw std::runtime_error("select_square: no association is defined between 'tri' and 'sq'");
+                throw std::runtime_error("select_quad: no association is defined between 'tri' and 'quad'");
             bool require_all = sel.op == SelectorOp::Conva;
-            if (sel.from == SelectorType::Sq) return select_square(adj, pos, *sel.a); // same-kind: no-op (defensive)
-            auto all_to = select_square(adj, pos, Selector{SelectorOp::All, SelectorType::Sq});
-            auto sq_members = +[](const BoardSquare& s) -> std::vector<int> { return { s.n1, s.n2, s.n3, s.n4 }; };
+            if (sel.from == SelectorType::Quad) return select_quad(adj, pos, *sel.a); // same-kind: no-op (defensive)
+            auto all_to = select_quad(adj, pos, Selector{SelectorOp::All, SelectorType::Quad});
+            auto quad_members = +[](const BoardQuad& s) -> std::vector<int> { return { s.n1, s.n2, s.n3, s.n4 }; };
             if (sel.from == SelectorType::Node) {
                 std::set<int> selected_keys;
                 for (int n : select_node(adj, pos, *sel.a)) selected_keys.insert(n);
                 std::vector<int> all_from(adj.size());
                 for (size_t i = 0; i < adj.size(); i++) all_from[i] = static_cast<int>(i);
-                return convert_objects<int, BoardSquare, int>(
-                    all_to, sq_members, all_from, node_members, node_key, selected_keys, require_all);
+                return convert_objects<int, BoardQuad, int>(
+                    all_to, quad_members, all_from, node_members, node_key, selected_keys, require_all);
             }
             // sel.from == SelectorType::Edge
             auto all_from = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType::Edge});
             std::set<std::string> selected_keys;
             for (auto& e : select_edge(adj, pos, *sel.a)) selected_keys.insert(edge_key(e));
-            return convert_objects<BoardEdge, BoardSquare, std::string>(
-                all_to, sq_members, all_from,
+            return convert_objects<BoardEdge, BoardQuad, std::string>(
+                all_to, quad_members, all_from,
                 +[](const BoardEdge& e) -> std::vector<int> { return { e.n1, e.n2 }; },
                 edge_key, selected_keys, require_all);
         }
         case SelectorOp::Rrmn: {
-            auto base = select_square(adj, pos, *sel.a);
+            auto base = select_quad(adj, pos, *sel.a);
             return randomly_remove(base, sel.count);
         }
         case SelectorOp::Rrmp: {
-            auto base = select_square(adj, pos, *sel.a);
+            auto base = select_quad(adj, pos, *sel.a);
             int remove_count = static_cast<int>(std::floor(sel.frac * static_cast<double>(base.size())));
             return randomly_remove(base, remove_count);
         }
         default:
-            throw std::runtime_error("select_square: unexpected square-selector op");
+            throw std::runtime_error("select_quad: unexpected quad-selector op");
     }
 }

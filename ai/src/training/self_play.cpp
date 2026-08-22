@@ -39,7 +39,7 @@ static void from_json(const json& j, BoardArgEntry& e) {
 
 // Same ADL convention as BoardArgEntry's own to_json/from_json above - matches shared/selector.ts's
 // Selector wire format exactly (op/type strings, "a"/"b" nested Selector objects, "cmp"/"n" for deg,
-// "count" for rrmn, "frac" for rrmp, "from" for conva/conve's own node/edge/tri/sq source-kind token -
+// "count" for rrmn, "frac" for rrmp, "from" for conva/conve's own node/edge/tri/quad source-kind token -
 // see that file's own Selector type doc comment).
 static std::string selector_op_name(SelectorOp op) {
     switch (op) {
@@ -63,7 +63,7 @@ static std::string selector_type_name(SelectorType type) {
         case SelectorType::Node: return "node";
         case SelectorType::Edge: return "edge";
         case SelectorType::Tri:  return "tri";
-        case SelectorType::Sq:   return "sq";
+        case SelectorType::Quad: return "quad";
     }
     throw std::runtime_error("selector_type_name: unknown SelectorType");
 }
@@ -93,7 +93,7 @@ static void from_json(const json& j, Selector& sel) {
     if (type == "node") sel.type = SelectorType::Node;
     else if (type == "edge") sel.type = SelectorType::Edge;
     else if (type == "tri") sel.type = SelectorType::Tri;
-    else if (type == "sq") sel.type = SelectorType::Sq;
+    else if (type == "quad") sel.type = SelectorType::Quad;
     else throw std::runtime_error("Unknown Selector type: " + type);
 
     auto get_a = [&]() { return std::make_shared<Selector>(j.at("a").get<Selector>()); };
@@ -122,7 +122,7 @@ static void from_json(const json& j, Selector& sel) {
         if (from == "node") sel.from = SelectorType::Node;
         else if (from == "edge") sel.from = SelectorType::Edge;
         else if (from == "tri") sel.from = SelectorType::Tri;
-        else if (from == "sq") sel.from = SelectorType::Sq;
+        else if (from == "quad") sel.from = SelectorType::Quad;
         else throw std::runtime_error("Unknown Selector 'from' kind: " + from);
         sel.a = get_a();
     }
@@ -132,15 +132,15 @@ static void from_json(const json& j, Selector& sel) {
 }
 
 // Same ADL convention as Selector's own to_json/from_json above - matches shared/selector.ts's
-// FormSelector wire format exactly ("kind": "tri"|"sq", optional "sel").
+// FormSelector wire format exactly ("kind": "tri"|"quad", optional "sel").
 static void to_json(json& j, const FormSelector& fs) {
-    j["kind"] = fs.kind == FormSelectorKind::Tri ? "tri" : "sq";
+    j["kind"] = fs.kind == FormSelectorKind::Tri ? "tri" : "quad";
     if (fs.sel.has_value()) j["sel"] = *fs.sel;
 }
 static void from_json(const json& j, FormSelector& fs) {
     std::string kind = j.at("kind").get<std::string>();
     if (kind == "tri") fs.kind = FormSelectorKind::Tri;
-    else if (kind == "sq") fs.kind = FormSelectorKind::Sq;
+    else if (kind == "quad") fs.kind = FormSelectorKind::Quad;
     else throw std::runtime_error("Unknown FormSelector kind: " + kind);
     fs.sel = j.contains("sel") ? std::optional<Selector>(j.at("sel").get<Selector>()) : std::nullopt;
 }
@@ -197,8 +197,8 @@ static json board_modifiers_to_json(const std::vector<BoardModifier>& modifiers)
                 mj["kind"] = "TriangleForm"; mj["w"] = m.split_n;
                 if (m.form_sel.has_value()) mj["sel"] = *m.form_sel;
                 break;
-            case ModifierKind::SquareForm:
-                mj["kind"] = "SquareForm"; mj["w"] = m.split_n;
+            case ModifierKind::QuadForm:
+                mj["kind"] = "QuadForm"; mj["w"] = m.split_n;
                 if (m.form_sel.has_value()) mj["sel"] = *m.form_sel;
                 break;
             case ModifierKind::Form:
@@ -216,7 +216,7 @@ static json board_modifiers_to_json(const std::vector<BoardModifier>& modifiers)
                 mj["modifiers"] = board_modifiers_to_json(m.modifiers);
                 break;
             case ModifierKind::GlobalCentralize: mj["kind"] = "GlobalCentralize"; break;
-            case ModifierKind::SqOctarize: mj["kind"] = "SqOctarize"; break;
+            case ModifierKind::QuadOctarize: mj["kind"] = "QuadOctarize"; break;
             case ModifierKind::Scale: mj["kind"] = "Scale"; mj["factor"] = m.dist; break;
             case ModifierKind::NodeInducedSubgraph:
                 mj["kind"] = "NodeInducedSubgraph";
@@ -338,9 +338,9 @@ static std::vector<BoardModifier> parse_board_modifiers(const json& j) {
             if (m.contains("sel")) bm.form_sel = m["sel"].get<Selector>();
             out.push_back(std::move(bm));
         }
-        else if (kind == "SquareForm") {
+        else if (kind == "QuadForm") {
             BoardModifier bm;
-            bm.kind = ModifierKind::SquareForm;
+            bm.kind = ModifierKind::QuadForm;
             bm.split_n = m["w"].get<int>();
             if (m.contains("sel")) bm.form_sel = m["sel"].get<Selector>();
             out.push_back(std::move(bm));
@@ -368,7 +368,7 @@ static std::vector<BoardModifier> parse_board_modifiers(const json& j) {
             out.push_back(std::move(bm));
         }
         else if (kind == "GlobalCentralize") out.push_back({ModifierKind::GlobalCentralize});
-        else if (kind == "SqOctarize") out.push_back({ModifierKind::SqOctarize});
+        else if (kind == "QuadOctarize") out.push_back({ModifierKind::QuadOctarize});
         else if (kind == "Scale")
             out.push_back({ModifierKind::Scale, 0, m["factor"].get<double>()});
         else if (kind == "NodeInducedSubgraph") {

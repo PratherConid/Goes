@@ -202,7 +202,7 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
     // canonical (p,q), p<q -> one boundary-index getter per face that has this original edge as a
     // side, each already reoriented (see add_side) to run from p (k=0) to q (k=w-1) regardless of
     // that face's own corner order - the single generalization of the old triangle_form's
-    // edge_to_triangles and square_form's edge_to_seqs, now spanning every face of every kind at once.
+    // edge_to_triangles and quad_form's edge_to_seqs, now spanning every face of every kind at once.
     std::map<std::pair<int,int>, std::vector<std::function<int(int)>>> edge_to_seqs;
     std::vector<std::pair<int,int>> quot; // corner glues, plus cross-edge glues appended below
 
@@ -215,7 +215,7 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
     };
 
     // New nodes' own internal edges, collected face by face (a face's own global index range isn't
-    // known ahead of time, since it depends on how many triangles/squares each FormSelector
+    // known ahead of time, since it depends on how many triangles/quads each FormSelector
     // selects) - merged into one adj array only once every face has been processed.
     std::vector<std::pair<int,int>> extra_edges;
     int next_idx = N;
@@ -254,20 +254,20 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
                 add_side(B, C, [=](int k) { return global_idx(w - 1, k); });
             }
         } else {
-            auto squares = find_squares(bc.adj);
+            auto quads = find_quads(bc.adj);
             if (fs.sel.has_value()) {
-                auto selected = select_square(bc.adj, bc.embed, *fs.sel);
+                auto selected = select_quad(bc.adj, bc.embed, *fs.sel);
                 std::set<std::array<int,4>> selected_keys;
                 for (auto& s : selected) selected_keys.insert({s.n1, s.n2, s.n3, s.n4});
-                std::vector<BoardSquare> filtered;
-                for (auto& sq : squares)
-                    if (selected_keys.count({sq.n1, sq.n2, sq.n3, sq.n4})) filtered.push_back(sq);
-                squares = std::move(filtered);
+                std::vector<BoardQuad> filtered;
+                for (auto& q : quads)
+                    if (selected_keys.count({q.n1, q.n2, q.n3, q.n4})) filtered.push_back(q);
+                quads = std::move(filtered);
             }
             int n_face = w * w;
             auto local_idx = [&](int i, int j) { return i * w + j; };
             const int dirs[4][2] = {{0,1},{1,0},{0,-1},{-1,0}};
-            for (auto& [A, B, C, D] : squares) {
+            for (auto& [A, B, C, D] : quads) {
                 int offset = next_idx;
                 next_idx += n_face;
                 auto global_idx = [=](int i, int j) { return offset + local_idx(i, j); };
@@ -282,7 +282,7 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
                 quot.push_back({B, global_idx(0, w - 1)});
                 quot.push_back({C, global_idx(w - 1, w - 1)});
                 quot.push_back({D, global_idx(w - 1, 0)});
-                // Same top/right/bottom/left convention as the old square_form's own natural_seq -
+                // Same top/right/bottom/left convention as the old quad_form's own natural_seq -
                 // add_side itself handles the min/max reorientation, so these are always declared
                 // running from each side's first-listed corner to its second.
                 add_side(A, B, [=](int k) { return global_idx(0, k); });
@@ -321,8 +321,8 @@ BoardConfig triangle_form(const BoardConfig& bc, int w, std::optional<Selector> 
     return generic_form(bc, w, { FormSelector{ FormSelectorKind::Tri, std::move(sel) } });
 }
 
-BoardConfig square_form(const BoardConfig& bc, int w, std::optional<Selector> sel) {
-    return generic_form(bc, w, { FormSelector{ FormSelectorKind::Sq, std::move(sel) } });
+BoardConfig quad_form(const BoardConfig& bc, int w, std::optional<Selector> sel) {
+    return generic_form(bc, w, { FormSelector{ FormSelectorKind::Quad, std::move(sel) } });
 }
 
 BoardConfig global_centralize(const BoardConfig& bc) {
@@ -344,11 +344,11 @@ BoardConfig global_centralize(const BoardConfig& bc) {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-BoardConfig sq_octarize(const BoardConfig& bc) {
+BoardConfig quad_octarize(const BoardConfig& bc) {
     int N = bc.N;
-    auto squares = find_squares(bc.adj);
+    auto quads = find_quads(bc.adj);
 
-    int total_n = N + (int)squares.size() * 2;
+    int total_n = N + (int)quads.size() * 2;
     auto adj = zero_adj(total_n);
     for (int i = 0; i < N; i++)
         for (int j = i + 1; j < N; j++) {
@@ -357,10 +357,10 @@ BoardConfig sq_octarize(const BoardConfig& bc) {
             adj[j][i] = 1;
         }
 
-    for (int s = 0; s < (int)squares.size(); s++) {
+    for (int s = 0; s < (int)quads.size(); s++) {
         int top = N + s * 2, bottom = top + 1;
-        auto& sq = squares[s];
-        for (int c : {sq.n1, sq.n2, sq.n3, sq.n4}) {
+        auto& q = quads[s];
+        for (int c : {q.n1, q.n2, q.n3, q.n4}) {
             adj[c][top] = 1;
             adj[top][c] = 1;
             adj[c][bottom] = 1;
@@ -448,7 +448,7 @@ BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier)
         case ModifierKind::EdgeSplit:  return edge_split(bc, modifier.split_n);
         case ModifierKind::MergeClose: return merge_close(bc, modifier.dist);
         case ModifierKind::TriangleForm: return triangle_form(bc, modifier.split_n, modifier.form_sel);
-        case ModifierKind::SquareForm: return square_form(bc, modifier.split_n, modifier.form_sel);
+        case ModifierKind::QuadForm: return quad_form(bc, modifier.split_n, modifier.form_sel);
         case ModifierKind::Form: return generic_form(bc, modifier.split_n, modifier.form_sels);
         case ModifierKind::Prod: {
             BoardConfig sub = apply_modifiers(
@@ -461,7 +461,7 @@ BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier)
             return current;
         }
         case ModifierKind::GlobalCentralize: return global_centralize(bc);
-        case ModifierKind::SqOctarize: return sq_octarize(bc);
+        case ModifierKind::QuadOctarize: return quad_octarize(bc);
         case ModifierKind::Scale: return scale_board(bc, modifier.dist);
         case ModifierKind::NodeInducedSubgraph: return node_induced_subgraph(bc, modifier.sel);
         case ModifierKind::EdgeInducedSubgraph: return edge_induced_subgraph(bc, modifier.sel);

@@ -8,13 +8,13 @@
   "boardModifiers": [
     {"kind": "EdgeSplit", "splitN": 1},
     {"kind": "Rectify"},
-    {"kind": "EdgeInducedSubgraph", "sel": {"op": "conve", "type": "edge", "from": "sq", "a": {"op": "all", "type": "sq"}}},
+    {"kind": "EdgeInducedSubgraph", "sel": {"op": "conve", "type": "edge", "from": "quad", "a": {"op": "all", "type": "quad"}}},
     {
       "kind": "Form",
       "w": 4,
       "sels": [
         {"kind": "tri"},
-        {"kind": "sq", "sel": {"op": "conve", "type": "sq", "from": "node", "a": {"op": "deg", "type": "node", "cmp": "lt", "n": 6}}}
+        {"kind": "quad", "sel": {"op": "conve", "type": "quad", "from": "node", "a": {"op": "deg", "type": "node", "cmp": "lt", "n": 6}}}
       ]
     },
     {"kind": "Scale", "factor": 0.75}

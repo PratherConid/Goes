@@ -8,6 +8,6 @@
     {"kind": "Prod", "boardType": "line", "boardArgs": [
       {"kind": "Number", "value": 2}
     ], "modifiers": []},
-    {"kind": "SquareForm", "w": 7}
+    {"kind": "QuadForm", "w": 7}
   ]
 }

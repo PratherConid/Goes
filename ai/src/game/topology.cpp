@@ -105,10 +105,10 @@ std::vector<BoardTriangle> find_triangles(const std::vector<std::vector<int>>& a
     return triangles;
 }
 
-std::vector<BoardSquare> find_squares(const std::vector<std::vector<int>>& adj) {
+std::vector<BoardQuad> find_quads(const std::vector<std::vector<int>>& adj) {
     int N = (int)adj.size();
     auto adj_list = to_adjacency_list(adj);
-    std::vector<BoardSquare> squares;
+    std::vector<BoardQuad> quads;
     for (int p = 0; p < N; p++)
         for (int q = p + 1; q < N; q++) {
             if (adj_list[p].count(q)) continue; // p-q would be an edge, not a diagonal
@@ -119,8 +119,8 @@ std::vector<BoardSquare> find_squares(const std::vector<std::vector<int>>& adj) 
                     int r = std::min(common[i], common[j]);
                     int s = std::max(common[i], common[j]);
                     if (adj_list[r].count(s)) continue; // r-s would be an edge, not a diagonal
-                    if (p < r) squares.push_back(make_board_square(p, r, q, s));
+                    if (p < r) quads.push_back(make_board_quad(p, r, q, s));
                 }
         }
-    return squares;
+    return quads;
 }

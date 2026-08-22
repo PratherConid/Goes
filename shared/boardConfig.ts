@@ -3,10 +3,10 @@ import {
     assert, BoardArgType, boardArgNumber, boardArgList, parseBoardArgToken, Embedding, projectPoint,
 } from './types.js';
 import { convexHullEdges } from './geometry.js';
-import { findTriangles, findSquares, zeroAdj, mergeBoards } from './topology.js';
+import { findTriangles, findQuads, zeroAdj, mergeBoards } from './topology.js';
 import {
     parseNodeSelector, parseEdgeSelector, parseTriangleSelector,
-    parseSquareSelector, parseFormSelectors, selectNode, selectEdge, selectTriangle, selectSquare,
+    parseQuadSelector, parseFormSelectors, selectNode, selectEdge, selectTriangle, selectQuad,
 } from './selector.js';
 // The FractalDescr/nodeEdgeMergeFlakeRec recursive core, and each "flake" shape's own static
 // *FractalDescr() builder, live in fractal.ts (see git history) - the actual BoardConfig-returning
@@ -233,18 +233,18 @@ export function edgeInducedSubgraph(bc: BoardConfig, sel: Selector): BoardConfig
 }
 
 /**
- * Replaces every selected triangle and/or square (see topology.ts's findTriangles/findSquares) in
+ * Replaces every selected triangle and/or quad (see topology.ts's findTriangles/findQuads) in
  * `bc` with its own w-sided lattice - a `triangularBoard(w)`-shaped lattice for a triangle, a
- * `w`-by-`w` grid for a square - gluing new corners back to the original vertices and gluing every
+ * `w`-by-`w` grid for a quad - gluing new corners back to the original vertices and gluing every
  * original edge's own new boundary points together across every lattice that consumes that edge as
- * one of its own sides, regardless of whether that lattice came from a 'tri' or 'sq' FormSelector -
- * this is what makes a mixed `sels` list meaningful: a triangle and a square sharing an edge still
+ * one of its own sides, regardless of whether that lattice came from a 'tri' or 'quad' FormSelector -
+ * this is what makes a mixed `sels` list meaningful: a triangle and a quad sharing an edge still
  * glue seamlessly, since gluing is driven by shared ORIGINAL edges, not by matching kinds. Each
  * FormSelector names which kind to look for and an optional selector restricting which ones of that
  * kind qualify (default: every one found - see FormSelector's own doc comment, shared/selector.ts);
- * an unselected/not-looked-for triangle or square is left untouched, as if it didn't exist. `w` is
+ * an unselected/not-looked-for triangle or quad is left untouched, as if it didn't exist. `w` is
  * shared by every FormSelector, since two lattices sharing an edge can only glue node-for-node if
- * their own boundary sequences are the same length. triangleForm/squareForm below are the
+ * their own boundary sequences are the same length. triangleForm/quadForm below are the
  * single-kind special cases, each just calling this with one FormSelector.
  */
 export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): BoardConfig {
@@ -259,7 +259,7 @@ export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): B
     // canonical "p,q" (p < q) -> one boundary-index getter per face that has this original edge as a
     // side, each already reoriented (see addSide) to run from p (k=0) to q (k=w-1) regardless of
     // that face's own corner order - the single generalization of the old triangleForm's
-    // edgeToTriangles and squareForm's edgeToSeqs, now spanning every face of every kind at once.
+    // edgeToTriangles and quadForm's edgeToSeqs, now spanning every face of every kind at once.
     const edgeToSeqs = new Map<string, ((k: number) => number)[]>();
 
     function addSide(p: number, q: number, atK: (k: number) => number) {
@@ -271,7 +271,7 @@ export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): B
     }
 
     // New nodes' own positions/internal edges, collected face by face (a face's own global index
-    // range isn't known ahead of time, since it depends on how many triangles/squares each
+    // range isn't known ahead of time, since it depends on how many triangles/quads each
     // FormSelector selects) - merged into one pos/adj array only once every face has been processed.
     const extraPos: number[][] = [];
     const extraEdges: [number, number][] = [];
@@ -313,17 +313,17 @@ export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): B
                 addSide(B, C, k => globalIdx(w - 1, k));
             }
         } else {
-            let squares = findSquares(bc.adj);
+            let quads = findQuads(bc.adj);
             if (fs.sel !== undefined) {
                 const selectedKeys =
-                    new Set(selectSquare(bc.adj, bc.emb.pos, fs.sel).map(s => `${s.n1},${s.n2},${s.n3},${s.n4}`));
-                squares = squares.filter(s => selectedKeys.has(`${s.n1},${s.n2},${s.n3},${s.n4}`));
+                    new Set(selectQuad(bc.adj, bc.emb.pos, fs.sel).map(s => `${s.n1},${s.n2},${s.n3},${s.n4}`));
+                quads = quads.filter(s => selectedKeys.has(`${s.n1},${s.n2},${s.n3},${s.n4}`));
             }
             const nFace = w * w;
             const localIdx = (i: number, j: number) => i * w + j;
             const dirs: [number, number][] = [[0, 1], [1, 0], [0, -1], [-1, 0]];
             const denom = (w - 1) * (w - 1);
-            for (const { n1: A, n2: B, n3: C, n4: D } of squares) {
+            for (const { n1: A, n2: B, n3: C, n4: D } of quads) {
                 const offset = nextIdx;
                 nextIdx += nFace;
                 const globalIdx = (i: number, j: number) => offset + localIdx(i, j);
@@ -348,7 +348,7 @@ export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): B
                     [A, globalIdx(0, 0)], [B, globalIdx(0, w - 1)],
                     [C, globalIdx(w - 1, w - 1)], [D, globalIdx(w - 1, 0)],
                 );
-                // Same top/right/bottom/left convention as the old squareForm's own naturalSeq -
+                // Same top/right/bottom/left convention as the old quadForm's own naturalSeq -
                 // addSide itself handles the min/max reorientation, so these are always declared
                 // running from each side's first-listed corner to its second.
                 addSide(A, B, k => globalIdx(0, k));
@@ -400,21 +400,21 @@ export function triangleForm(bc: BoardConfig, w: number, sel?: Selector): BoardC
 }
 
 /**
- * Replaces every square (4 distinct vertices forming a cycle with no diagonal edges - see
- * topology.ts's findSquares) in `bc` with a `w`-by-`w` grid - the single-kind special case of
+ * Replaces every quad (4 distinct vertices forming a cycle with no diagonal edges - see
+ * topology.ts's findQuads) in `bc` with a `w`-by-`w` grid - the single-kind special case of
  * genericForm (see its own doc comment), the same way triangleForm is. `sel`, if given, restricts
- * this to only the squares it selects (evaluated against `bc`'s own adj/pos) - every other square is
+ * this to only the quads it selects (evaluated against `bc`'s own adj/pos) - every other quad is
  * left untouched, as if it didn't exist (its own sides stay plain edges, even where they'd otherwise
- * have been consumed by/glued to a selected square's new subdivided boundary).
+ * have been consumed by/glued to a selected quad's new subdivided boundary).
  */
-export function squareForm(bc: BoardConfig, w: number, sel?: Selector): BoardConfig {
-    return genericForm(bc, w, [{ kind: 'sq', sel }]);
+export function quadForm(bc: BoardConfig, w: number, sel?: Selector): BoardConfig {
+    return genericForm(bc, w, [{ kind: 'quad', sel }]);
 }
 
 /**
  * Adds one new node at `bc`'s barycenter (the component-wise average of every existing node's
  * natural-dimension position), connected to every existing node - a single hub adjacent to the
- * whole board at once, unlike squareForm/triangleForm's per-face subdivision. Existing nodes/edges
+ * whole board at once, unlike quadForm/triangleForm's per-face subdivision. Existing nodes/edges
  * are otherwise untouched.
  */
 export function globalCentralize(bc: BoardConfig): BoardConfig {
@@ -441,7 +441,7 @@ export function globalCentralize(bc: BoardConfig): BoardConfig {
 }
 
 /**
- * The default projMat assigned to a freshly-`product()`-ed or `sqOctarize()`-d board (see below):
+ * The default projMat assigned to a freshly-`product()`-ed or `quadOctarize()`-d board (see below):
  * dims 0, 1, 2 map straight to x, y, z (identity - the whole matrix is exactly DEFAULT_3D_PROJMAT
  * when embDim <= 3), and every triple of dims beyond that cycles through x/y/z again at a
  * halved-again magnitude, e.g. embDim=8 gives `[[1, 0, 0, 1/2, 0, 0, 1/4, 0], [0, 1, 0, 0, 1/2, 0,
@@ -459,32 +459,32 @@ function defaultProductProjMat(embDim: number): number[][] {
 }
 
 /**
- * Adds one new dimension to `bc`'s embedding, then replaces every square (4-cycle with no diagonal
- * edges - see topology.ts's `findSquares`, same squares `squareForm` finds) with an octahedron: two
- * new "apex" nodes, one on each side of the square along the new dimension, each connected to all 4
- * of that square's corners - the square's own 4-cycle edges (already present, untouched) become the
+ * Adds one new dimension to `bc`'s embedding, then replaces every quad (4-cycle with no diagonal
+ * edges - see topology.ts's `findQuads`, same quads `quadForm` finds) with an octahedron: two
+ * new "apex" nodes, one on each side of the quad along the new dimension, each connected to all 4
+ * of that quad's corners - the quad's own 4-cycle edges (already present, untouched) become the
  * octahedron's equatorial ring, and the two apexes are NOT connected to each other (antipodal, same
- * as `octahedronBoard()`'s own apex pairs - a plain square graph plus two such apex nodes is exactly
+ * as `octahedronBoard()`'s own apex pairs - a plain quad graph plus two such apex nodes is exactly
  * an octahedron's edge set, see that function's doc comment).
  *
- * Each apex sits, in the original `embDim` dimensions, at its square's barycenter (the
+ * Each apex sits, in the original `embDim` dimensions, at its quad's barycenter (the
  * component-wise average of its 4 corners), and at +-`dist` along the new dimension, where `dist`
- * is the average distance from each of the square's 4 corners to that same barycenter (the exact
- * circumradius for a geometrically regular square, since all 4 corners are then equidistant from
- * it - averaging just keeps this well-defined for a square whose corners aren't quite equidistant
+ * is the average distance from each of the quad's 4 corners to that same barycenter (the exact
+ * circumradius for a geometrically regular quad, since all 4 corners are then equidistant from
+ * it - averaging just keeps this well-defined for a quad whose corners aren't quite equidistant
  * from their own barycenter).
  *
  * Uses a fresh default projMat (`defaultProductProjMat`, shared with `product()`) rather than
  * `bc.emb.projMat`, since the extra dimension has no meaning in the old projMat.
  */
-export function sqOctarize(bc: BoardConfig): BoardConfig {
+export function quadOctarize(bc: BoardConfig): BoardConfig {
     const N = bc.N;
     const embDim = bc.emb.embDim;
     const newEmbDim = embDim + 1;
-    const squares = findSquares(bc.adj);
+    const quads = findQuads(bc.adj);
 
     const pos: number[][] = bc.emb.pos.map(p => [...p, 0]);
-    const adj = zeroAdj(N + squares.length * 2);
+    const adj = zeroAdj(N + quads.length * 2);
     for (let i = 0; i < N; i++)
         for (let j = i + 1; j < N; j++) {
             if (!bc.adj[i][j]) continue;
@@ -492,9 +492,9 @@ export function sqOctarize(bc: BoardConfig): BoardConfig {
             adj[j][i] = 1;
         }
 
-    for (let s = 0; s < squares.length; s++) {
-        const sq = squares[s];
-        const corners = [sq.n1, sq.n2, sq.n3, sq.n4];
+    for (let s = 0; s < quads.length; s++) {
+        const q = quads[s];
+        const corners = [q.n1, q.n2, q.n3, q.n4];
         const barycenter = new Array(embDim).fill(0);
         for (const idx of corners)
             for (let k = 0; k < embDim; k++) barycenter[k] += bc.emb.pos[idx][k] / 4;
@@ -1736,18 +1736,18 @@ function parseBoardTypeArgs(cmdName: string, args: string[]): { boardType: strin
 }
 
 /**
- * Parses a BoardModifier from its command name ('rect', 'es', 'mc', 'triform', 'sqform', 'form',
- * 'prod', 'gcent', 'sqocta', 'scale', 'nis', 'eis') and string args - see
+ * Parses a BoardModifier from its command name ('rect', 'es', 'mc', 'triform', 'quadform', 'form',
+ * 'prod', 'gcent', 'quadocta', 'scale', 'nis', 'eis') and string args - see
  * applyModifier/applyModifiers. mc's arg is optional: with none, `dist` defaults to
  * MC_DEFAULT_DIST. prod's first arg is a board-type command name and the rest are that type's own
  * positional dimension args - see parseBoardTypeArgs; parsed this way, prod's own `modifiers` is
  * always empty (the one-shot case). nis/eis's arg is a node/edge selector (see shared/selector.ts) -
- * see nodeInducedSubgraph/edgeInducedSubgraph. triform/sqform's `w` may be followed by an optional
- * triangle/square selector restricting which ones get replaced (default: every one found) - see
- * triangleForm/squareForm, each a single-kind special case of genericForm. form's `w` is followed by
- * one or more form selectors (`(tri [SEL])`/`(sq [SEL])`, see FormSelector's own doc comment in
+ * see nodeInducedSubgraph/edgeInducedSubgraph. triform/quadform's `w` may be followed by an optional
+ * triangle/quad selector restricting which ones get replaced (default: every one found) - see
+ * triangleForm/quadForm, each a single-kind special case of genericForm. form's `w` is followed by
+ * one or more form selectors (`(tri [SEL])`/`(quad [SEL])`, see FormSelector's own doc comment in
  * shared/selector.ts) naming every kind/subset to replace at once, sharing that one `w` - see
- * genericForm; unlike triform/sqform, its own edge-gluing spans mixed triangle/square selections
+ * genericForm; unlike triform/quadform, its own edge-gluing spans mixed triangle/quad selections
  * that share an original edge. Does NOT accept 'beginprod'/'endprod' or
  * 'repeat'/'endrepeat' - unlike every other name, resolving those isn't possible from one command in
  * isolation (a 'beginprod'/'repeat' needs everything up to its own matching closer, however many
@@ -1763,9 +1763,9 @@ export function parseModifier(name: string, args: string[]): BoardModifier {
         assert(args.length === 0, `gcent takes no arguments, got ${args.length}`);
         return { kind: 'GlobalCentralize' };
     }
-    if (name === 'sqocta') {
-        assert(args.length === 0, `sqocta takes no arguments, got ${args.length}`);
-        return { kind: 'SqOctarize' };
+    if (name === 'quadocta') {
+        assert(args.length === 0, `quadocta takes no arguments, got ${args.length}`);
+        return { kind: 'QuadOctarize' };
     }
     if (name === 'scale') {
         assert(args.length === 1, `scale takes exactly 1 argument (factor), got ${args.length}`);
@@ -1792,12 +1792,12 @@ export function parseModifier(name: string, args: string[]): BoardModifier {
         if (args.length === 1) return { kind: 'TriangleForm', w };
         return { kind: 'TriangleForm', w, sel: parseTriangleSelector(args.slice(1).join(' ')) };
     }
-    if (name === 'sqform') {
-        assert(args.length >= 1, `sqform takes at least 1 argument (w), got ${args.length}`);
+    if (name === 'quadform') {
+        assert(args.length >= 1, `quadform takes at least 1 argument (w), got ${args.length}`);
         const w = Number(args[0]);
-        assert(Number.isInteger(w) && w >= 1, `sqform: w must be a positive integer, got "${args[0]}"`);
-        if (args.length === 1) return { kind: 'SquareForm', w };
-        return { kind: 'SquareForm', w, sel: parseSquareSelector(args.slice(1).join(' ')) };
+        assert(Number.isInteger(w) && w >= 1, `quadform: w must be a positive integer, got "${args[0]}"`);
+        if (args.length === 1) return { kind: 'QuadForm', w };
+        return { kind: 'QuadForm', w, sel: parseQuadSelector(args.slice(1).join(' ')) };
     }
     if (name === 'form') {
         assert(args.length >= 1, `form takes at least 1 argument (w), got ${args.length}`);
@@ -1895,7 +1895,7 @@ export function parseModifiers(text: string): BoardModifier[] {
 
 /**
  * Applies `modifier` to `bc`, dispatching to `rectify` / `edgeSplit` / `mergeClose` /
- * `triangleForm` / `squareForm` / `globalCentralize` / `sqOctarize` / `scaleBoard` /
+ * `triangleForm` / `quadForm` / `globalCentralize` / `quadOctarize` / `scaleBoard` /
  * `nodeInducedSubgraph` / `edgeInducedSubgraph` (Prod builds a fresh board from its own
  * boardType/boardArgs via buildPrescribedBoard, applies its own nested `modifiers` to that fresh
  * board via applyModifiers, then multiplies the result into `bc`; Repeat applies its own nested
@@ -1907,7 +1907,7 @@ export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardCo
         case 'EdgeSplit': return edgeSplit(bc, modifier.splitN);
         case 'MergeClose': return mergeClose(bc, modifier.dist);
         case 'TriangleForm': return triangleForm(bc, modifier.w, modifier.sel);
-        case 'SquareForm': return squareForm(bc, modifier.w, modifier.sel);
+        case 'QuadForm': return quadForm(bc, modifier.w, modifier.sel);
         case 'Form': return genericForm(bc, modifier.w, modifier.sels);
         case 'Prod': {
             const sub = applyModifiers(buildPrescribedBoard(modifier.boardType, modifier.boardArgs), modifier.modifiers);
@@ -1919,7 +1919,7 @@ export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardCo
             return current;
         }
         case 'GlobalCentralize': return globalCentralize(bc);
-        case 'SqOctarize': return sqOctarize(bc);
+        case 'QuadOctarize': return quadOctarize(bc);
         case 'Scale': return scaleBoard(bc, modifier.factor);
         case 'NodeInducedSubgraph': return nodeInducedSubgraph(bc, modifier.sel);
         case 'EdgeInducedSubgraph': return edgeInducedSubgraph(bc, modifier.sel);

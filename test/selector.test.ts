@@ -1,16 +1,16 @@
 // Covers shared/selector.ts's tiny S-expression selector language: parseNodeSelector()/
-// parseEdgeSelector()/parseTriangleSelector()/parseSquareSelector() (four mutually recursive
+// parseEdgeSelector()/parseTriangleSelector()/parseQuadSelector() (four mutually recursive
 // parsers - see the file's own top comment) and selectNode()/selectEdge()/selectTriangle()/
-// selectSquare() (evaluation against a real adjacency matrix).
+// selectQuad() (evaluation against a real adjacency matrix).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    parseNodeSelector, parseEdgeSelector, parseTriangleSelector, parseSquareSelector,
-    selectNode, selectEdge, selectTriangle, selectSquare, formatSelector,
+    parseNodeSelector, parseEdgeSelector, parseTriangleSelector, parseQuadSelector,
+    selectNode, selectEdge, selectTriangle, selectQuad, formatSelector,
 } from '../shared/selector.ts';
 
 // 0-1-2-3: node 0/3 have degree 1, node 1/2 have degree 2. Edges (0,1), (1,2), (2,3). No
-// triangles/squares.
+// triangles/quads.
 const adj = [
     [0, 1, 0, 0],
     [1, 0, 1, 0],
@@ -31,10 +31,10 @@ test('parseNodeSelector/parseEdgeSelector reject malformed input (grammar errors
 });
 
 test('parseNodeSelector/parseEdgeSelector reject an operator not valid for that context', () => {
-    // deg only exists in parseNodeSelExpr - unrecognized inside an edge/triangle/square context.
+    // deg only exists in parseNodeSelExpr - unrecognized inside an edge/triangle/quad context.
     assert.throws(() => parseEdgeSelector('(deg eq 1)'), /unknown edge-selector operator 'deg'/);
     assert.throws(() => parseTriangleSelector('(deg eq 1)'), /unknown triangle-selector operator 'deg'/);
-    assert.throws(() => parseSquareSelector('(deg eq 1)'), /unknown square-selector operator 'deg'/);
+    assert.throws(() => parseQuadSelector('(deg eq 1)'), /unknown quad-selector operator 'deg'/);
     // e2n/n2e/fromna/fromne/tona/tone no longer exist (replaced by conva/conve) - unrecognized
     // wherever they appear.
     assert.throws(() => parseEdgeSelector('(e2n (deg eq 1))'), /unknown edge-selector operator 'e2n'/);
@@ -43,11 +43,11 @@ test('parseNodeSelector/parseEdgeSelector reject an operator not valid for that 
     assert.throws(() => parseNodeSelector('(tona edge (all))'), /unknown node-selector operator 'tona'/);
 });
 
-test('conva/conve require a valid node|edge|tri|sq source token, and reject triangle <-> square', () => {
-    assert.throws(() => parseNodeSelector('(conva (all))'), /source kind must be 'node', 'edge', 'tri', or 'sq'/);
-    assert.throws(() => parseNodeSelector('(conva nope (all))'), /source kind must be 'node', 'edge', 'tri', or 'sq'/);
-    assert.throws(() => parseTriangleSelector('(conva sq (all))'), /no association defined between 'tri' and 'sq'/);
-    assert.throws(() => parseSquareSelector('(conve tri (all))'), /no association defined between 'tri' and 'sq'/);
+test('conva/conve require a valid node|edge|tri|quad source token, and reject triangle <-> quad', () => {
+    assert.throws(() => parseNodeSelector('(conva (all))'), /source kind must be 'node', 'edge', 'tri', or 'quad'/);
+    assert.throws(() => parseNodeSelector('(conva nope (all))'), /source kind must be 'node', 'edge', 'tri', or 'quad'/);
+    assert.throws(() => parseTriangleSelector('(conva quad (all))'), /no association defined between 'tri' and 'quad'/);
+    assert.throws(() => parseQuadSelector('(conve tri (all))'), /no association defined between 'tri' and 'quad'/);
     // conva/conve's own operand is then parsed as the declared source kind - (deg ...) is node-only,
     // invalid as conva's edge operand.
     assert.throws(() => parseNodeSelector('(conva edge (deg eq 1))'), /unknown edge-selector operator 'deg'/);
@@ -61,13 +61,13 @@ test('converting a kind to itself is a no-op - conva/conve don\'t even appear in
     assert.deepEqual(parseEdgeSelector('(conva edge (all))'), edgeSel);
 });
 
-test('conva/conve reject tri<->sq at evaluation time too (defensive, for a hand-built Selector)', () => {
+test('conva/conve reject tri<->quad at evaluation time too (defensive, for a hand-built Selector)', () => {
     const handBuilt = {
-        op: 'conva' as const, type: 'sq' as const, from: 'tri' as const,
+        op: 'conva' as const, type: 'quad' as const, from: 'tri' as const,
         a: { op: 'all' as const, type: 'tri' as const },
     };
     assert.throws(
-        () => selectSquare(adj, pos, handBuilt), /no association is defined between 'tri' and 'sq'/);
+        () => selectQuad(adj, pos, handBuilt), /no association is defined between 'tri' and 'quad'/);
 });
 
 test('all/none select every object of whichever kind, resolved by which parser reaches them ' +
@@ -78,9 +78,9 @@ test('all/none select every object of whichever kind, resolved by which parser r
         selectEdge(adj, pos, parseEdgeSelector('(all)')),
         [{ n1: 0, n2: 1 }, { n1: 1, n2: 2 }, { n1: 2, n2: 3 }]);
     assert.deepEqual(selectEdge(adj, pos, parseEdgeSelector('(none)')), []);
-    // No triangles/squares in this path graph.
+    // No triangles/quads in this path graph.
     assert.deepEqual(selectTriangle(adj, pos, parseTriangleSelector('(all)')), []);
-    assert.deepEqual(selectSquare(adj, pos, parseSquareSelector('(all)')), []);
+    assert.deepEqual(selectQuad(adj, pos, parseQuadSelector('(all)')), []);
 
     // (all)/(none) take no argument at all - anything extra before the closing paren is a grammar
     // error.
@@ -177,9 +177,9 @@ test('more expands an edge selector to edges sharing a node, keeping the origina
     assert.deepEqual(edges, [{ n1: 0, n2: 1 }, { n1: 0, n2: 2 }, { n1: 1, n2: 2 }]);
 });
 
-test('more is rejected for triangle/square selectors (no adjacency notion is defined for them)', () => {
+test('more is rejected for triangle/quad selectors (no adjacency notion is defined for them)', () => {
     assert.throws(() => parseTriangleSelector('(more (all))'), /unknown triangle-selector operator 'more'/);
-    assert.throws(() => parseSquareSelector('(more (all))'), /unknown square-selector operator 'more'/);
+    assert.throws(() => parseQuadSelector('(more (all))'), /unknown quad-selector operator 'more'/);
 });
 
 test('more on an already-all selector is a no-op, and formatSelector round-trips it', () => {
@@ -205,7 +205,7 @@ test('union/inter/diff combine edge selectors as plain (deduplicated) set operat
 
 // A "bowtie" graph: triangle 0-1-2 and triangle 2-3-4 sharing node 2, plus a pendant node 5 hanging
 // off node 0. Degrees: 0:3 (1,2,5), 1:2, 2:4 (0,1,3,4), 3:2, 4:2, 5:1 (belongs to no triangle).
-// Triangles (see findTriangles's own u<v<w convention): [0,1,2] and [2,3,4]. No squares.
+// Triangles (see findTriangles's own u<v<w convention): [0,1,2] and [2,3,4]. No quads.
 const bowtieAdj = [
     [0, 1, 1, 0, 0, 1],
     [1, 0, 1, 0, 0, 0],
@@ -285,48 +285,48 @@ test('conva/conve convert a triangle selector back into a node selector, includi
         selectNode(bowtieAdj, bowtiePos, parseNodeSelector(`(conva tri ${selTri})`)), new Set([0, 1, 5]));
 });
 
-// A single 4-cycle 0-1-2-3-0 (no diagonals - a genuine square), plus a pendant node 4 off node 0.
-// Degrees: 0:3 (1,3,4), 1:2, 2:2, 3:2, 4:1 (belongs to no square). Exactly one square: [0,1,2,3].
-const squareAdj = [
+// A single 4-cycle 0-1-2-3-0 (no diagonals - a genuine quad), plus a pendant node 4 off node 0.
+// Degrees: 0:3 (1,3,4), 1:2, 2:2, 3:2, 4:1 (belongs to no quad). Exactly one quad: [0,1,2,3].
+const quadAdj = [
     [0, 1, 0, 1, 1],
     [1, 0, 1, 0, 0],
     [0, 1, 0, 1, 0],
     [1, 0, 1, 0, 0],
     [1, 0, 0, 0, 0],
 ];
-const squarePos = squareAdj.map((_, i) => [i]);
+const quadPos = quadAdj.map((_, i) => [i]);
 
-test('selectSquare finds the single induced 4-cycle via (all), and none in a square-free graph', () => {
+test('selectQuad finds the single induced 4-cycle via (all), and none in a quad-free graph', () => {
     assert.deepEqual(
-        selectSquare(squareAdj, squarePos, parseSquareSelector('(all)')),
+        selectQuad(quadAdj, quadPos, parseQuadSelector('(all)')),
         [{ n1: 0, n2: 1, n3: 2, n4: 3 }]);
-    assert.deepEqual(selectSquare(bowtieAdj, bowtiePos, parseSquareSelector('(all)')), []);
+    assert.deepEqual(selectQuad(bowtieAdj, bowtiePos, parseQuadSelector('(all)')), []);
 });
 
-test('conva/conve work the same way for squares as for triangles, including edge -> square', () => {
-    // conve from the square's own corner nodes selects the square; conva from just the pendant does
-    // not (it isn't part of the square at all).
+test('conva/conve work the same way for quads as for triangles, including edge -> quad', () => {
+    // conve from the quad's own corner nodes selects the quad; conva from just the pendant does
+    // not (it isn't part of the quad at all).
     assert.deepEqual(
-        selectSquare(squareAdj, squarePos, parseSquareSelector('(conve node (deg eq 2))')),
+        selectQuad(quadAdj, quadPos, parseQuadSelector('(conve node (deg eq 2))')),
         [{ n1: 0, n2: 1, n3: 2, n4: 3 }]);
-    assert.deepEqual(selectSquare(squareAdj, squarePos, parseSquareSelector('(conva node (deg gt 2))')), []);
+    assert.deepEqual(selectQuad(quadAdj, quadPos, parseQuadSelector('(conva node (deg gt 2))')), []);
 
-    // conva/conve from the (only, therefore trivially fully-selected) square: every corner is in it,
-    // so both conva and conve select {0,1,2,3}; the pendant node 4 belongs to no square, so conva
+    // conva/conve from the (only, therefore trivially fully-selected) quad: every corner is in it,
+    // so both conva and conve select {0,1,2,3}; the pendant node 4 belongs to no quad, so conva
     // includes it vacuously while conve excludes it.
-    const selSq = '(all)';
+    const selQuad = '(all)';
     assert.deepEqual(
-        selectNode(squareAdj, squarePos, parseNodeSelector(`(conva sq ${selSq})`)), new Set([0, 1, 2, 3, 4]));
+        selectNode(quadAdj, quadPos, parseNodeSelector(`(conva quad ${selQuad})`)), new Set([0, 1, 2, 3, 4]));
     assert.deepEqual(
-        selectNode(squareAdj, squarePos, parseNodeSelector(`(conve sq ${selSq})`)), new Set([0, 1, 2, 3]));
+        selectNode(quadAdj, quadPos, parseNodeSelector(`(conve quad ${selQuad})`)), new Set([0, 1, 2, 3]));
 
-    // Edge -> square (a new cross-type conversion, mirroring edge -> triangle above): edges touching
-    // node 0 are (0,1), (0,3), (0,4) (only node 0 has degree 3) - only 2 of the square's own 4 edges
+    // Edge -> quad (a new cross-type conversion, mirroring edge -> triangle above): edges touching
+    // node 0 are (0,1), (0,3), (0,4) (only node 0 has degree 3) - only 2 of the quad's own 4 edges
     // ((0,1) and (0,3)), so conva (ALL) excludes it; conve (SOME) includes it.
     const someEdges = '(conve node (deg eq 3))';
-    assert.deepEqual(selectSquare(squareAdj, squarePos, parseSquareSelector(`(conva edge ${someEdges})`)), []);
+    assert.deepEqual(selectQuad(quadAdj, quadPos, parseQuadSelector(`(conva edge ${someEdges})`)), []);
     assert.deepEqual(
-        selectSquare(squareAdj, squarePos, parseSquareSelector(`(conve edge ${someEdges})`)),
+        selectQuad(quadAdj, quadPos, parseQuadSelector(`(conve edge ${someEdges})`)),
         [{ n1: 0, n2: 1, n3: 2, n4: 3 }]);
 });
 
@@ -368,21 +368,21 @@ test('rrmn/rrmp also work over edge selectors', () => {
     assert.equal(keptFrac.length, 2);
 });
 
-test('rrmn/rrmp also work over triangle/square selectors', () => {
+test('rrmn/rrmp also work over triangle/quad selectors', () => {
     const keptTri = selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(rrmn 1 (all))'));
     assert.equal(keptTri.length, 1);
     const allTri = selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(all)'));
     for (const t of keptTri) assert.ok(allTri.some(a => a.n1 === t.n1 && a.n2 === t.n2 && a.n3 === t.n3));
 
-    const keptSq = selectSquare(squareAdj, squarePos, parseSquareSelector('(rrmp 1 (all))'));
-    assert.equal(keptSq.length, 0);
+    const keptQuad = selectQuad(quadAdj, quadPos, parseQuadSelector('(rrmp 1 (all))'));
+    assert.equal(keptQuad.length, 0);
 });
 
-test('selectNode/selectEdge/selectTriangle/selectSquare throw when given a selector of the wrong kind', () => {
+test('selectNode/selectEdge/selectTriangle/selectQuad throw when given a selector of the wrong kind', () => {
     const edgeSel = parseEdgeSelector('(conva node (deg eq 2))');
     assert.throws(() => selectNode(adj, pos, edgeSel), /expected a node selector, got an edge selector/);
     const nodeSel = parseNodeSelector('(deg eq 2)');
     assert.throws(() => selectEdge(adj, pos, nodeSel), /expected an edge selector, got a node selector/);
     assert.throws(() => selectTriangle(adj, pos, nodeSel), /expected a triangle selector, got a node selector/);
-    assert.throws(() => selectSquare(adj, pos, nodeSel), /expected a square selector, got a node selector/);
+    assert.throws(() => selectQuad(adj, pos, nodeSel), /expected a quad selector, got a node selector/);
 });

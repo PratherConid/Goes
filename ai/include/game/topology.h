@@ -44,7 +44,7 @@ std::pair<RawBoard, std::vector<std::vector<int>>> merge_boards(
 using AdjacencyList = std::vector<std::set<int>>;
 
 // Converts an N×N adjacency matrix into an adjacency list, each node's neighbors stored as a
-// std::set (not a vector) so membership checks - the hot path for both find_triangles/find_squares
+// std::set (not a vector) so membership checks - the hot path for both find_triangles/find_quads
 // below - are O(log degree) instead of O(degree).
 AdjacencyList to_adjacency_list(const std::vector<std::vector<int>>& adj);
 
@@ -55,12 +55,12 @@ AdjacencyList to_adjacency_list(const std::vector<std::vector<int>>& adj);
 // why the increasing-order search both dedupes and stays efficient on sparse graphs.
 std::vector<BoardTriangle> find_triangles(const std::vector<std::vector<int>>& adj);
 
-// Finds every "square" - 4 distinct vertices a, b, c, d forming a cycle a-b-c-d-a whose two
-// diagonals a-c and b-d are BOTH absent - each reported exactly once as a BoardSquare, canonicalized
-// via make_board_square (see its own doc comment, game/selector.h) from the a-b-c-d cycle order this
+// Finds every "quad" - 4 distinct vertices a, b, c, d forming a cycle a-b-c-d-a whose two
+// diagonals a-c and b-d are BOTH absent - each reported exactly once as a BoardQuad, canonicalized
+// via make_board_quad (see its own doc comment, game/selector.h) from the a-b-c-d cycle order this
 // function itself discovers it in - that canonicalization is a genuine relabeling (not necessarily
-// a, b, c, d verbatim), unlike find_triangles' own free ride, since a square's own discovery order
+// a, b, c, d verbatim), unlike find_triangles' own free ride, since a quad's own discovery order
 // isn't already the lexicographically-least one in general. Mirrors shared/topology.ts's
-// findSquares() - see its own doc comment for the common-neighbor-pair search and its deduplication
+// findQuads() - see its own doc comment for the common-neighbor-pair search and its deduplication
 // rule.
-std::vector<BoardSquare> find_squares(const std::vector<std::vector<int>>& adj);
+std::vector<BoardQuad> find_quads(const std::vector<std::vector<int>>& adj);

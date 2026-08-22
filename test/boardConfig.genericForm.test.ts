@@ -1,11 +1,11 @@
 // Regression tests for genericForm and the "form" board modifier: the generalization of
-// triangleForm/squareForm to an arbitrary list of FormSelectors (each naming a kind - 'tri' or 'sq'
+// triangleForm/quadForm to an arbitrary list of FormSelectors (each naming a kind - 'tri' or 'quad'
 // - plus an optional inner selector), gluing shared ORIGINAL edges across every selected face
 // regardless of kind.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    genericForm, triangleForm, squareForm, triangularBoard, rectangularBoard, parseModifier, applyModifier,
+    genericForm, triangleForm, quadForm, triangularBoard, rectangularBoard, parseModifier, applyModifier,
 } from '../shared/boardConfig.ts';
 import { Embedding, type BoardConfig } from '../shared/types.ts';
 import { parseFormSelectors, formatFormSelectors, parseTriangleSelector } from '../shared/selector.ts';
@@ -37,13 +37,13 @@ test('genericForm with a single (tri) selector is identical to triangleForm', ()
     assert.deepEqual(genericForm(bc, 3, [{ kind: 'tri' }]), triangleForm(bc, 3));
 });
 
-test('genericForm with a single (sq) selector is identical to squareForm', () => {
+test('genericForm with a single (quad) selector is identical to quadForm', () => {
     const bc = rectangularBoard(2, 2);
-    assert.deepEqual(genericForm(bc, 3, [{ kind: 'sq' }]), squareForm(bc, 3));
+    assert.deepEqual(genericForm(bc, 3, [{ kind: 'quad' }]), quadForm(bc, 3));
 });
 
-test('a triangle and a square sharing an edge glue seamlessly across kinds', () => {
-    // Triangle 0-1-2 and square (cycle) 1-3-4-2 share edge (1,2).
+test('a triangle and a quad sharing an edge glue seamlessly across kinds', () => {
+    // Triangle 0-1-2 and quad (cycle) 1-3-4-2 share edge (1,2).
     const N = 5;
     const adj: number[][] = Array.from({ length: N }, () => new Array(N).fill(0));
     const edge = (i: number, j: number) => { adj[i][j] = 1; adj[j][i] = 1; };
@@ -53,15 +53,15 @@ test('a triangle and a square sharing an edge glue seamlessly across kinds', () 
     const bc: BoardConfig = { N, adj, emb };
 
     const triOnly = genericForm(bc, 3, parseFormSelectors('(tri)'));
-    const sqOnly = genericForm(bc, 3, parseFormSelectors('(sq)'));
-    const both = genericForm(bc, 3, parseFormSelectors('(tri) (sq)'));
+    const quadOnly = genericForm(bc, 3, parseFormSelectors('(quad)'));
+    const both = genericForm(bc, 3, parseFormSelectors('(tri) (quad)'));
     assertSymmetricNoSelfLoops(both.adj);
     assertConnected(both.adj);
     // If the shared edge (1,2) weren't glued across kinds, `both` would just be the disjoint union
-    // of triOnly and sqOnly's own new nodes (minus the N originals double-counted) - one node fewer
+    // of triOnly and quadOnly's own new nodes (minus the N originals double-counted) - one node fewer
     // than that proves the shared edge's own midpoint (w=3 -> 1 interior boundary point) was merged
     // into a single node instead of being duplicated once per face.
-    assert.equal(both.N, triOnly.N + sqOnly.N - N - 1);
+    assert.equal(both.N, triOnly.N + quadOnly.N - N - 1);
 });
 
 test('an empty sels list is a total no-op', () => {
@@ -73,8 +73,8 @@ test('an empty sels list is a total no-op', () => {
 test('parseModifier("form", ...) parses w and one or more form selectors, rejecting malformed input', () => {
     assert.deepEqual(parseModifier('form', ['3', '(tri)']), { kind: 'Form', w: 3, sels: [{ kind: 'tri' }] });
     assert.deepEqual(
-        parseModifier('form', ['4', '(tri)', '(sq)']),
-        { kind: 'Form', w: 4, sels: [{ kind: 'tri' }, { kind: 'sq' }] },
+        parseModifier('form', ['4', '(tri)', '(quad)']),
+        { kind: 'Form', w: 4, sels: [{ kind: 'tri' }, { kind: 'quad' }] },
     );
     assert.deepEqual(
         parseModifier('form', ['4', '(tri', '(conve', 'node', '(deg', 'gt', '1)))']),
@@ -84,7 +84,7 @@ test('parseModifier("form", ...) parses w and one or more form selectors, reject
     assert.throws(() => parseModifier('form', ['0', '(tri)']));
     assert.throws(() => parseModifier('form', ['abc', '(tri)']));
     assert.throws(() => parseModifier('form', ['3']), /at least 1 form selector/);
-    assert.throws(() => parseModifier('form', ['3', '(rect)']), /expected 'tri' or 'sq'/);
+    assert.throws(() => parseModifier('form', ['3', '(rect)']), /expected 'tri' or 'quad'/);
 });
 
 test('applyModifier("Form", ...) round-trips through the same result as calling genericForm directly', () => {
@@ -94,7 +94,7 @@ test('applyModifier("Form", ...) round-trips through the same result as calling 
 });
 
 test('formatFormSelectors round-trips parseFormSelectors', () => {
-    const text = '(tri (conve node (deg gt 1))) (sq)';
+    const text = '(tri (conve node (deg gt 1))) (quad)';
     assert.equal(formatFormSelectors(parseFormSelectors(text)), text);
     assert.equal(formatFormSelectors(parseFormSelectors('')), '');
 });

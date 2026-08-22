@@ -1,12 +1,12 @@
 import {
-    type BoardEdge, makeBoardEdge, type BoardTriangle, type BoardSquare,
+    type BoardEdge, makeBoardEdge, type BoardTriangle, type BoardQuad,
     type Selector, type FormSelector, type SelectorType,
 } from './types.js';
-import { findTriangles, findSquares } from './topology.js';
+import { findTriangles, findQuads } from './topology.js';
 
 // A tiny S-expression language for selecting a subset of a board's nodes, edges, triangles, or
-// squares (a "triangle"/"square" here is exactly what shared/topology.ts's findTriangles()/
-// findSquares() finds - see BoardTriangle/BoardSquare in shared/types.ts). Grammar (SEL):
+// quads (a "triangle"/"quad" here is exactly what shared/topology.ts's findTriangles()/
+// findQuads() finds - see BoardTriangle/BoardQuad in shared/types.ts). Grammar (SEL):
 //
 //   (union SEL SEL)         -- set union
 //   (inter SEL SEL)         -- set intersection
@@ -17,23 +17,23 @@ import { findTriangles, findSquares } from './topology.js';
 //                               edge from a selected node; for an edge selector, every edge sharing
 //                               a node with a selected edge - either way, SEL's own result stays
 //                               included too
-//   (all)                   -- every object of whichever kind (node/edge/triangle/square) this SEL
+//   (all)                   -- every object of whichever kind (node/edge/triangle/quad) this SEL
 //                               is being parsed/evaluated as
 //   (none)                  -- no objects of that kind
 //   (deg <eq|gt|lt> <num>)  -- node selector only: nodes whose degree is =/>/< a given nonnegative
 //                               integer
-//   (conva <node|edge|tri|sq> SEL) -- converts SEL (of the given "from" kind) into whichever kind
+//   (conva <node|edge|tri|quad> SEL) -- converts SEL (of the given "from" kind) into whichever kind
 //                               this selector itself is (the "to" kind - inferred from parsing
 //                               context, same as all/none): a "to" object is selected iff ALL of its
 //                               associated "from" objects are selected. Two objects (of possibly
 //                               different kinds) are associated iff one's own node set is completely
 //                               contained in the other's - always well-defined for two differing
-//                               kinds, since node/edge/triangle/square have strictly increasing
+//                               kinds, since node/edge/triangle/quad have strictly increasing
 //                               arity (1/2/3/4), so containment can only run from the smaller-arity
 //                               one into the larger. Converting a kind to itself is a no-op (SEL is
-//                               returned as-is); triangle <-> square has no meaningful association
+//                               returned as-is); triangle <-> quad has no meaningful association
 //                               and is rejected.
-//   (conve <node|edge|tri|sq> SEL) -- same as conva, but a "to" object is selected iff AT LEAST ONE
+//   (conve <node|edge|tri|quad> SEL) -- same as conva, but a "to" object is selected iff AT LEAST ONE
 //                               of its associated "from" objects is selected
 //   (rrmn <num> SEL)        -- randomly removes exactly num (a nonnegative integer) items from SEL's
 //                               own result, uniformly at random
@@ -42,21 +42,21 @@ import { findTriangles, findSquares } from './topology.js';
 //
 // `union`/`inter`/`diff`/`compl`/`all`/`none`/`rrmn`/`rrmp` are polymorphic across all four kinds;
 // `more` is polymorphic across node/edge only (no adjacency notion is defined here for triangles/
-// squares); `conva`/`conve` convert between any two kinds, naming the source kind via their own
-// leading node/edge/tri/sq token (unlike `all`/`none`, there's more than one *other* kind it could
-// mean, so it can't be inferred purely from parsing context) - except triangle <-> square, which is
+// quads); `conva`/`conve` convert between any two kinds, naming the source kind via their own
+// leading node/edge/tri/quad token (unlike `all`/`none`, there's more than one *other* kind it could
+// mean, so it can't be inferred purely from parsing context) - except triangle <-> quad, which is
 // rejected, and a kind converted to itself, which is a no-op (SEL passes through unchanged, not
 // wrapped in a conva/conve node at all).
 //
 // Every Selector node (one monolithic type, below) carries its own `type` (which kind of set it
 // denotes) - but rather than parse a type-less tree and infer/validate `type` bottom-up afterward,
 // parsing itself is done by four mutually recursive functions, parseNodeSelExpr/parseEdgeSelExpr/
-// parseTriangleSelExpr/parseSquareSelExpr (mirroring selectNode()/selectEdge()/selectTriangle()/
-// selectSquare()'s own mutual recursion below): each always produces Selectors of its own `type`,
+// parseTriangleSelExpr/parseQuadSelExpr (mirroring selectNode()/selectEdge()/selectTriangle()/
+// selectQuad()'s own mutual recursion below): each always produces Selectors of its own `type`,
 // recursing into whichever of the four conva/conve's own explicit source-kind token names for that
 // operand. This is what lets `all`/`none` skip spelling out which kind they mean: `type` comes from
 // *which parser reached them*, not from anything written in the expression itself. selectNode()/
-// selectEdge()/selectTriangle()/selectSquare() (this file's own separate mutually recursive
+// selectEdge()/selectTriangle()/selectQuad() (this file's own separate mutually recursive
 // evaluators) still re-check `sel.type` themselves rather than trusting it, since a Selector need
 // not always come from this file's own parsers (e.g. a hand-built AST, or one round-tripped through
 // JSON).
@@ -115,28 +115,28 @@ function nextNonnegNumber(c: ParseCursor, context: string): number {
     return n;
 }
 
-// Reads conva/conve's own leading node/edge/tri/sq token (the "from" kind) and parses its operand
+// Reads conva/conve's own leading node/edge/tri/quad token (the "from" kind) and parses its operand
 // via the matching one of parseNodeSelExpr/parseEdgeSelExpr/parseTriangleSelExpr/
-// parseSquareSelExpr - shared by all four of those functions' own conva/conve case below, `toType`
+// parseQuadSelExpr - shared by all four of those functions' own conva/conve case below, `toType`
 // being whichever of them called this (the "to" kind, from parsing context, same as all/none).
-// Throws if the (from, toType) pair is the one with no defined association (triangle <-> square -
+// Throws if the (from, toType) pair is the one with no defined association (triangle <-> quad -
 // see this file's own top comment); returns the parsed operand directly, unwrapped, for a same-kind
 // conversion (a no-op).
 function parseConversion(c: ParseCursor, op: 'conva' | 'conve', toType: SelectorType): Selector {
     const fromTok = c.next();
-    if (fromTok !== 'node' && fromTok !== 'edge' && fromTok !== 'tri' && fromTok !== 'sq')
-        throw new Error(`selector: (${op} ...) source kind must be 'node', 'edge', 'tri', or 'sq', got '${fromTok}'`);
-    if ((fromTok === 'tri' && toType === 'sq') || (fromTok === 'sq' && toType === 'tri'))
-        throw new Error(`selector: (${op} ...) has no association defined between 'tri' and 'sq'`);
+    if (fromTok !== 'node' && fromTok !== 'edge' && fromTok !== 'tri' && fromTok !== 'quad')
+        throw new Error(`selector: (${op} ...) source kind must be 'node', 'edge', 'tri', or 'quad', got '${fromTok}'`);
+    if ((fromTok === 'tri' && toType === 'quad') || (fromTok === 'quad' && toType === 'tri'))
+        throw new Error(`selector: (${op} ...) has no association defined between 'tri' and 'quad'`);
     const parseFrom = fromTok === 'node' ? parseNodeSelExpr : fromTok === 'edge' ? parseEdgeSelExpr
-        : fromTok === 'tri' ? parseTriangleSelExpr : parseSquareSelExpr;
+        : fromTok === 'tri' ? parseTriangleSelExpr : parseQuadSelExpr;
     const a = parseFrom(c);
     c.expect(')');
     return fromTok === toType ? a : { op, type: toType, from: fromTok, a };
 }
 
 // Parses a node SEL - mutually recursive with parseEdgeSelExpr/parseTriangleSelExpr/
-// parseSquareSelExpr via conva/conve's own operand. Every Selector this returns has `type: 'node'`.
+// parseQuadSelExpr via conva/conve's own operand. Every Selector this returns has `type: 'node'`.
 function parseNodeSelExpr(c: ParseCursor): Selector {
     c.expect('(');
     const op = c.next();
@@ -191,7 +191,7 @@ function parseNodeSelExpr(c: ParseCursor): Selector {
 }
 
 // Parses an edge SEL - mutually recursive with parseNodeSelExpr/parseTriangleSelExpr/
-// parseSquareSelExpr via conva/conve's own operand. Every Selector this returns has `type: 'edge'`.
+// parseQuadSelExpr via conva/conve's own operand. Every Selector this returns has `type: 'edge'`.
 function parseEdgeSelExpr(c: ParseCursor): Selector {
     c.expect('(');
     const op = c.next();
@@ -238,8 +238,8 @@ function parseEdgeSelExpr(c: ParseCursor): Selector {
 }
 
 // Parses a triangle SEL - mutually recursive with parseNodeSelExpr/parseEdgeSelExpr via conva/
-// conve's own operand (never parseSquareSelExpr - see this file's own top comment on why
-// triangle <-> square is rejected). Every Selector this returns has `type: 'tri'`. No `deg`/`more`
+// conve's own operand (never parseQuadSelExpr - see this file's own top comment on why
+// triangle <-> quad is rejected). Every Selector this returns has `type: 'tri'`. No `deg`/`more`
 // here.
 function parseTriangleSelExpr(c: ParseCursor): Selector {
     c.expect('(');
@@ -281,49 +281,49 @@ function parseTriangleSelExpr(c: ParseCursor): Selector {
     }
 }
 
-// Parses a square SEL - the square counterpart of parseTriangleSelExpr above (see its own doc
-// comment). Every Selector this returns has `type: 'sq'`.
-function parseSquareSelExpr(c: ParseCursor): Selector {
+// Parses a quad SEL - the quad counterpart of parseTriangleSelExpr above (see its own doc
+// comment). Every Selector this returns has `type: 'quad'`.
+function parseQuadSelExpr(c: ParseCursor): Selector {
     c.expect('(');
     const op = c.next();
     switch (op) {
         case 'union': case 'inter': case 'diff': {
-            const a = parseSquareSelExpr(c);
-            const b = parseSquareSelExpr(c);
+            const a = parseQuadSelExpr(c);
+            const b = parseQuadSelExpr(c);
             c.expect(')');
-            return { op, type: 'sq', a, b };
+            return { op, type: 'quad', a, b };
         }
         case 'compl': {
-            const a = parseSquareSelExpr(c);
+            const a = parseQuadSelExpr(c);
             c.expect(')');
-            return { op: 'compl', type: 'sq', a };
+            return { op: 'compl', type: 'quad', a };
         }
         case 'all':
             c.expect(')');
-            return { op: 'all', type: 'sq' };
+            return { op: 'all', type: 'quad' };
         case 'none':
             c.expect(')');
-            return { op: 'none', type: 'sq' };
+            return { op: 'none', type: 'quad' };
         case 'conva': case 'conve':
-            return parseConversion(c, op, 'sq');
+            return parseConversion(c, op, 'quad');
         case 'rrmn': {
             const count = nextNonnegInt(c, '(rrmn ...) count');
-            const a = parseSquareSelExpr(c);
+            const a = parseQuadSelExpr(c);
             c.expect(')');
-            return { op: 'rrmn', type: 'sq', count, a };
+            return { op: 'rrmn', type: 'quad', count, a };
         }
         case 'rrmp': {
             const frac = nextNonnegNumber(c, '(rrmp ...) portion');
-            const a = parseSquareSelExpr(c);
+            const a = parseQuadSelExpr(c);
             c.expect(')');
-            return { op: 'rrmp', type: 'sq', frac, a };
+            return { op: 'rrmp', type: 'quad', frac, a };
         }
         default:
-            throw new Error(`selector: unknown square-selector operator '${op}'`);
+            throw new Error(`selector: unknown quad-selector operator '${op}'`);
     }
 }
 
-// Shared by parseNodeSelector/parseEdgeSelector/parseTriangleSelector/parseSquareSelector:
+// Shared by parseNodeSelector/parseEdgeSelector/parseTriangleSelector/parseQuadSelector:
 // tokenizes `s`, runs `parseExpr` over the whole thing, and rejects any leftover trailing input.
 function parseTopLevel(s: string, parseExpr: (c: ParseCursor) => Selector): Selector {
     const tokens = tokenize(s);
@@ -353,14 +353,14 @@ export function parseTriangleSelector(s: string): Selector {
     return parseTopLevel(s, parseTriangleSelExpr);
 }
 
-/** Parses `s` as a square selector (see this file's own top comment for the grammar) - throws if `s`
+/** Parses `s` as a quad selector (see this file's own top comment for the grammar) - throws if `s`
  * doesn't follow the grammar. */
-export function parseSquareSelector(s: string): Selector {
-    return parseTopLevel(s, parseSquareSelExpr);
+export function parseQuadSelector(s: string): Selector {
+    return parseTopLevel(s, parseQuadSelExpr);
 }
 
 /** Formats `sel` back into the S-expression syntax parseNodeSelector()/parseEdgeSelector()/
- * parseTriangleSelector()/parseSquareSelector() accept - the inverse of parsing. Used e.g. to
+ * parseTriangleSelector()/parseQuadSelector() accept - the inverse of parsing. Used e.g. to
  * round-trip a BoardModifier's own selector back into command-line text for display (see
  * src/sidePanel.ts's fmtModifiers). */
 export function formatSelector(sel: Selector): string {
@@ -384,22 +384,22 @@ export function formatSelector(sel: Selector): string {
     }
 }
 
-// Parses one `(tri [SEL])` / `(sq [SEL])` - mirrors parseNodeSelExpr/etc.'s own "consume '(', read a
-// leading token, dispatch" shape, but there's no mutual recursion here: a FormSelector's own SEL is
-// parsed via the ordinary parseTriangleSelExpr/parseSquareSelExpr, not another parseFormSelExpr.
+// Parses one `(tri [SEL])` / `(quad [SEL])` - mirrors parseNodeSelExpr/etc.'s own "consume '(', read
+// a leading token, dispatch" shape, but there's no mutual recursion here: a FormSelector's own SEL
+// is parsed via the ordinary parseTriangleSelExpr/parseQuadSelExpr, not another parseFormSelExpr.
 function parseFormSelExpr(c: ParseCursor): FormSelector {
     c.expect('(');
     const kind = c.next();
-    if (kind !== 'tri' && kind !== 'sq')
-        throw new Error(`form selector: expected 'tri' or 'sq', got '${kind}'`);
+    if (kind !== 'tri' && kind !== 'quad')
+        throw new Error(`form selector: expected 'tri' or 'quad', got '${kind}'`);
     if (c.peek() === ')') { c.next(); return { kind }; }
-    const sel = kind === 'tri' ? parseTriangleSelExpr(c) : parseSquareSelExpr(c);
+    const sel = kind === 'tri' ? parseTriangleSelExpr(c) : parseQuadSelExpr(c);
     c.expect(')');
     return { kind, sel };
 }
 
 /**
- * Parses `s` as zero or more back-to-back form selectors (`(tri [SEL])` / `(sq [SEL])`, see
+ * Parses `s` as zero or more back-to-back form selectors (`(tri [SEL])` / `(quad [SEL])`, see
  * FormSelector's own doc comment) - unlike parseNodeSelector/parseEdgeSelector/etc. above, which
  * each parse exactly one SEL and reject any leftover input, this keeps parsing form selectors until
  * the input is exhausted (an empty/whitespace-only `s` yields an empty list). Used by
@@ -413,7 +413,7 @@ export function parseFormSelectors(s: string): FormSelector[] {
     return out;
 }
 
-/** Formats one FormSelector back into the `(tri [SEL])` / `(sq [SEL])` syntax parseFormSelectors()
+/** Formats one FormSelector back into the `(tri [SEL])` / `(quad [SEL])` syntax parseFormSelectors()
  * accepts - the inverse of parsing. */
 export function formatFormSelector(fs: FormSelector): string {
     return fs.sel === undefined ? `(${fs.kind})` : `(${fs.kind} ${formatSelector(fs.sel)})`;
@@ -428,7 +428,7 @@ export function formatFormSelectors(fss: FormSelector[]): string {
 
 // ── evaluation ───────────────────────────────────────────────────────────────
 
-// "a node"/"an edge"/"a tri"/"a sq" - shared by each evaluator's own wrong-kind error message below.
+// "a node"/"an edge"/"a tri"/"a quad" - shared by each evaluator's own wrong-kind error message below.
 function describeSelectorType(type: SelectorType): string {
     return `${type === 'edge' ? 'an' : 'a'} ${type}`;
 }
@@ -447,11 +447,11 @@ function dedupeByKey<T>(items: T[], key: (item: T) => string | number): T[] {
     return [...byKey.values()];
 }
 
-// BoardEdge/BoardTriangle/BoardSquare aren't valid Set/Map keys themselves (two structurally-equal
+// BoardEdge/BoardTriangle/BoardQuad aren't valid Set/Map keys themselves (two structurally-equal
 // values are different objects), so union/inter/diff/compl below key them by these canonical string
 // ids whenever they need set-like membership tests - each type's own canonical-construction
-// invariant (BoardEdge/BoardTriangle: n1 < n2 < ...; BoardSquare: the lexicographically-least of its
-// own cycle's 8 rotation/reflection relabelings - see makeBoardSquare, shared/types.ts) already makes
+// invariant (BoardEdge/BoardTriangle: n1 < n2 < ...; BoardQuad: the lexicographically-least of its
+// own cycle's 8 rotation/reflection relabelings - see makeBoardQuad, shared/types.ts) already makes
 // this unique per object, regardless of which vertex/direction it was found from.
 function edgeKey(e: BoardEdge): string {
     return `${e.n1},${e.n2}`;
@@ -459,7 +459,7 @@ function edgeKey(e: BoardEdge): string {
 function triKey(t: BoardTriangle): string {
     return `${t.n1},${t.n2},${t.n3}`;
 }
-function sqKey(s: BoardSquare): string {
+function quadKey(s: BoardQuad): string {
     return `${s.n1},${s.n2},${s.n3},${s.n4}`;
 }
 
@@ -482,7 +482,7 @@ function randomlyRemove<T>(items: T[], removeCount: number): T[] {
 
 // True iff `a`'s own members are completely contained in `b`'s, or vice versa - the general
 // "association" test conva/conve rely on (see this file's own top comment). Every object kind here
-// has a fixed arity (node 1, edge 2, triangle 3, square 4) and every object's own members are
+// has a fixed arity (node 1, edge 2, triangle 3, quad 4) and every object's own members are
 // distinct node indices, so containment can only ever run from the smaller-arity list into the
 // larger one; this checks whichever direction applies rather than assuming a fixed order.
 function isAssociated(a: number[], b: number[]): boolean {
@@ -513,7 +513,7 @@ function convertObjects<F, T>(
 
 /**
  * Evaluates a node Selector against a board's adjacency matrix, returning the set of selected node
- * indices. Mutually recursive with selectEdge()/selectTriangle()/selectSquare() via the conva/conve
+ * indices. Mutually recursive with selectEdge()/selectTriangle()/selectQuad() via the conva/conve
  * operators. `pos` isn't used by any selector in the current grammar, but is threaded through
  * (matching the other three evaluators' own signatures) for future position-based selectors.
  */
@@ -578,9 +578,9 @@ export function selectNode(adj: number[][], pos: number[][], sel: Selector): Set
                 const selectedKeys = new Set<string | number>(selectTriangle(adj, pos, sel.a).map(triKey));
                 return new Set(convertObjects(toNodes, n => [n], allFrom, t => [t.n1, t.n2, t.n3], triKey, selectedKeys, mode));
             }
-            const allFrom = selectSquare(adj, pos, { op: 'all', type: 'sq' });
-            const selectedKeys = new Set<string | number>(selectSquare(adj, pos, sel.a).map(sqKey));
-            return new Set(convertObjects(toNodes, n => [n], allFrom, s => [s.n1, s.n2, s.n3, s.n4], sqKey, selectedKeys, mode));
+            const allFrom = selectQuad(adj, pos, { op: 'all', type: 'quad' });
+            const selectedKeys = new Set<string | number>(selectQuad(adj, pos, sel.a).map(quadKey));
+            return new Set(convertObjects(toNodes, n => [n], allFrom, s => [s.n1, s.n2, s.n3, s.n4], quadKey, selectedKeys, mode));
         }
         case 'rrmn': {
             const base = [...selectNode(adj, pos, sel.a)];
@@ -598,7 +598,7 @@ export function selectNode(adj: number[][], pos: number[][], sel: Selector): Set
 /**
  * Evaluates an edge Selector against a board's adjacency matrix, returning the list of selected
  * edges as BoardEdge values (deduplicated). Mutually recursive with selectNode()/selectTriangle()/
- * selectSquare() via the conva/conve operators.
+ * selectQuad() via the conva/conve operators.
  */
 export function selectEdge(adj: number[][], pos: number[][], sel: Selector): BoardEdge[] {
     if (sel.type !== 'edge')
@@ -661,9 +661,9 @@ export function selectEdge(adj: number[][], pos: number[][], sel: Selector): Boa
                 const selectedKeys = new Set<string | number>(selectTriangle(adj, pos, sel.a).map(triKey));
                 return convertObjects(allEdges, e => [e.n1, e.n2], allFrom, t => [t.n1, t.n2, t.n3], triKey, selectedKeys, mode);
             }
-            const allFrom = selectSquare(adj, pos, { op: 'all', type: 'sq' });
-            const selectedKeys = new Set<string | number>(selectSquare(adj, pos, sel.a).map(sqKey));
-            return convertObjects(allEdges, e => [e.n1, e.n2], allFrom, s => [s.n1, s.n2, s.n3, s.n4], sqKey, selectedKeys, mode);
+            const allFrom = selectQuad(adj, pos, { op: 'all', type: 'quad' });
+            const selectedKeys = new Set<string | number>(selectQuad(adj, pos, sel.a).map(quadKey));
+            return convertObjects(allEdges, e => [e.n1, e.n2], allFrom, s => [s.n1, s.n2, s.n3, s.n4], quadKey, selectedKeys, mode);
         }
         case 'rrmn': {
             const base = selectEdge(adj, pos, sel.a);
@@ -709,8 +709,8 @@ export function selectTriangle(adj: number[][], pos: number[][], sel: Selector):
         case 'none':
             return [];
         case 'conva': case 'conve': {
-            if (sel.from === 'sq')
-                throw new Error(`selectTriangle: no association is defined between 'tri' and 'sq'`);
+            if (sel.from === 'quad')
+                throw new Error(`selectTriangle: no association is defined between 'tri' and 'quad'`);
             const mode = sel.op === 'conva' ? 'all' : 'some';
             if (sel.from === 'tri') return selectTriangle(adj, pos, sel.a); // same-kind: no-op (defensive)
             const allTri = selectTriangle(adj, pos, { op: 'all', type: 'tri' });
@@ -737,59 +737,59 @@ export function selectTriangle(adj: number[][], pos: number[][], sel: Selector):
 }
 
 /**
- * Evaluates a square Selector against a board's adjacency matrix, returning the list of selected
- * squares as BoardSquare values (deduplicated) - the square counterpart of selectTriangle above.
- * `(all)` is every square shared/topology.ts's findSquares() finds. Mutually recursive with
+ * Evaluates a quad Selector against a board's adjacency matrix, returning the list of selected
+ * quads as BoardQuad values (deduplicated) - the quad counterpart of selectTriangle above.
+ * `(all)` is every quad shared/topology.ts's findQuads() finds. Mutually recursive with
  * selectNode()/selectEdge() via the conva/conve operators.
  */
-export function selectSquare(adj: number[][], pos: number[][], sel: Selector): BoardSquare[] {
-    if (sel.type !== 'sq')
-        throw new Error(`selectSquare: expected a square selector, got ${describeSelectorType(sel.type)} selector (op '${sel.op}')`);
+export function selectQuad(adj: number[][], pos: number[][], sel: Selector): BoardQuad[] {
+    if (sel.type !== 'quad')
+        throw new Error(`selectQuad: expected a quad selector, got ${describeSelectorType(sel.type)} selector (op '${sel.op}')`);
     switch (sel.op) {
         case 'union':
-            return dedupeByKey([...selectSquare(adj, pos, sel.a), ...selectSquare(adj, pos, sel.b)], sqKey);
+            return dedupeByKey([...selectQuad(adj, pos, sel.a), ...selectQuad(adj, pos, sel.b)], quadKey);
         case 'inter': {
-            const a = selectSquare(adj, pos, sel.a);
-            const bKeys = new Set(selectSquare(adj, pos, sel.b).map(sqKey));
-            return a.filter(s => bKeys.has(sqKey(s)));
+            const a = selectQuad(adj, pos, sel.a);
+            const bKeys = new Set(selectQuad(adj, pos, sel.b).map(quadKey));
+            return a.filter(s => bKeys.has(quadKey(s)));
         }
         case 'diff': {
-            const a = selectSquare(adj, pos, sel.a);
-            const bKeys = new Set(selectSquare(adj, pos, sel.b).map(sqKey));
-            return a.filter(s => !bKeys.has(sqKey(s)));
+            const a = selectQuad(adj, pos, sel.a);
+            const bKeys = new Set(selectQuad(adj, pos, sel.b).map(quadKey));
+            return a.filter(s => !bKeys.has(quadKey(s)));
         }
         case 'compl': {
-            const aKeys = new Set(selectSquare(adj, pos, sel.a).map(sqKey));
-            return findSquares(adj).filter(s => !aKeys.has(sqKey(s)));
+            const aKeys = new Set(selectQuad(adj, pos, sel.a).map(quadKey));
+            return findQuads(adj).filter(s => !aKeys.has(quadKey(s)));
         }
         case 'all':
-            return findSquares(adj);
+            return findQuads(adj);
         case 'none':
             return [];
         case 'conva': case 'conve': {
             if (sel.from === 'tri')
-                throw new Error(`selectSquare: no association is defined between 'tri' and 'sq'`);
+                throw new Error(`selectQuad: no association is defined between 'tri' and 'quad'`);
             const mode = sel.op === 'conva' ? 'all' : 'some';
-            if (sel.from === 'sq') return selectSquare(adj, pos, sel.a); // same-kind: no-op (defensive)
-            const allSq = selectSquare(adj, pos, { op: 'all', type: 'sq' });
+            if (sel.from === 'quad') return selectQuad(adj, pos, sel.a); // same-kind: no-op (defensive)
+            const allQuad = selectQuad(adj, pos, { op: 'all', type: 'quad' });
             if (sel.from === 'node') {
                 const selectedKeys = new Set<string | number>(selectNode(adj, pos, sel.a));
                 const allNodes = Array.from({ length: adj.length }, (_, i) => i);
-                return convertObjects(allSq, s => [s.n1, s.n2, s.n3, s.n4], allNodes, n => [n], n => n, selectedKeys, mode);
+                return convertObjects(allQuad, s => [s.n1, s.n2, s.n3, s.n4], allNodes, n => [n], n => n, selectedKeys, mode);
             }
             const allFrom = selectEdge(adj, pos, { op: 'all', type: 'edge' });
             const selectedKeys = new Set<string | number>(selectEdge(adj, pos, sel.a).map(edgeKey));
-            return convertObjects(allSq, s => [s.n1, s.n2, s.n3, s.n4], allFrom, e => [e.n1, e.n2], edgeKey, selectedKeys, mode);
+            return convertObjects(allQuad, s => [s.n1, s.n2, s.n3, s.n4], allFrom, e => [e.n1, e.n2], edgeKey, selectedKeys, mode);
         }
         case 'rrmn': {
-            const base = selectSquare(adj, pos, sel.a);
+            const base = selectQuad(adj, pos, sel.a);
             return randomlyRemove(base, sel.count);
         }
         case 'rrmp': {
-            const base = selectSquare(adj, pos, sel.a);
+            const base = selectQuad(adj, pos, sel.a);
             return randomlyRemove(base, Math.floor(sel.frac * base.length));
         }
         default:
-            throw new Error(`selectSquare: unexpected square-selector op '${(sel as Selector).op}'`);
+            throw new Error(`selectQuad: unexpected quad-selector op '${(sel as Selector).op}'`);
     }
 }

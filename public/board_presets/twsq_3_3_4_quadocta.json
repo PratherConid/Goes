@@ -6,6 +6,6 @@
     {"kind": "Number", "value": 4}
   ],
   "boardModifiers": [
-    {"kind": "SqOctarize"}
+    {"kind": "QuadOctarize"}
   ]
 }

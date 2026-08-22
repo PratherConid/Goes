@@ -77,26 +77,26 @@ const _boardConfigDescriptions = new Map([
         '3×3×2 twisted-square board, each edge split into 3, then multiplied by a 4-node line'],
     ['regpoly_5_es_5_prod_lin_6',
         '5-sided regular polygon board, each edge split into 5, then multiplied by a 6-node line'],
-    ['cublat_2_2_2_sqform_9', '2×2×2 cubical board with every square face subdivided into a 9x9 grid'],
-    ['cublat_3_3_3_sel_(deg_gt_3)_sqform_6',
+    ['cublat_2_2_2_quadform_9', '2×2×2 cubical board with every quad face subdivided into a 9x9 grid'],
+    ['cublat_3_3_3_sel_(deg_gt_3)_quadform_6',
         '3×3×3 cubical board, keeping only nodes with degree above 3 (drops the 8 corners), each '
-        + 'resulting square replaced by a side-length-6 square board'],
+        + 'resulting quad replaced by a side-length-6 square board'],
     ['regpoly_13_prod_regpoly_13', 'Product of two 13-sided regular polygon boards'],
     ['star_5_es_6_prod_line_5',
         '5-armed star board, each edge split into 6, then multiplied by a 5-node line'],
     ['regpoly_5_prod_line_2_gcent_triform_7',
         '5-sided regular polygon board multiplied by a 2-node line (a pentagonal prism), plus a '
         + 'central hub node, each resulting triangle replaced by a side-length-7 triangular board'],
-    ['regpoly_5_gcent_prod_line_2_sqform_7',
+    ['regpoly_5_gcent_prod_line_2_quadform_7',
         '5-sided regular polygon board with a central hub node, multiplied by a 2-node line, each '
-        + 'resulting square replaced by a side-length-7 square board'],
+        + 'resulting quad replaced by a side-length-7 square board'],
     ['dodeca_gcent_triform_6',
         'Regular dodecahedron with a central hub node, each resulting triangle replaced by a '
         + 'side-length-6 triangular board'],
-    ['twsq_3_3_4_sqocta',
-        '3×3×4 twisted-square board with every square replaced by an octahedron along a new dimension'],
-    ['octa_triform_4_sqform_4_triform_4',
-        'Regular octahedron, each triangular face subdivided (side length 4), any resulting squares '
+    ['twsq_3_3_4_quadocta',
+        '3×3×4 twisted-square board with every quad replaced by an octahedron along a new dimension'],
+    ['octa_triform_4_quadform_4_triform_4',
+        'Regular octahedron, each triangular face subdivided (side length 4), any resulting quads '
         + 'subdivided too (side length 4), subdivided into triangles again (side length 4), then '
         + 'scaled down by 0.33'],
     ['sier_3_5', 'Order-5 Sierpinski tetrahedron (3-dimensional Sierpinski gasket)'],
@@ -115,32 +115,32 @@ const _boardConfigDescriptions = new Map([
     ['menger_4_2_011',
         'Order-4 Sierpinski carpet (the 2-dimensional case of the Menger-sponge-family flake '
         + 'fractal, indicator 011)'],
-    ['rect_19_19_nis_(rrmp_0.1_(all))_nis_(conve_sq_(conva_node_(all)))',
+    ['rect_19_19_nis_(rrmp_0.1_(all))_nis_(conve_quad_(conva_node_(all)))',
         '19×19 rectangular board with 10% of its nodes randomly removed, then any node no longer '
-        + 'part of at least one intact unit square (a 2×2 block with all 4 of its own grid edges '
+        + 'part of at least one intact unit quad (a 2×2 block with all 4 of its own grid edges '
         + 'still present) dropped too'],
     ['rect_5_5_fractaldrop_3_0.05',
         '5×5 rectangular board put through 3 rounds of: randomly drop 5% of its edges, replace each '
-        + 'resulting square with a side-length-3 square board, then drop any edge not part of an '
-        + 'intact unit square'],
-    ['cublat_2_2_2_es_1_rect_form_7_(tri)_(sq)_scale_0.75',
+        + 'resulting quad with a side-length-3 square board, then drop any edge not part of an '
+        + 'intact unit quad'],
+    ['cublat_2_2_2_es_1_rect_form_7_(tri)_(quad)_scale_0.75',
         '2×2×2 cubical lattice, rectified (a node at each edge midpoint, connected via the '
         + "convex-hull figure around each original vertex - a cuboctahedron-like mix of triangular "
-        + 'and square faces), every one of those triangles and squares replaced by its own '
-        + 'side-length-7 lattice (triangles and squares sharing an edge glue seamlessly), scaled to '
+        + 'and quad faces), every one of those triangles and quads replaced by its own '
+        + 'side-length-7 lattice (triangles and quads sharing an edge glue seamlessly), scaled to '
         + '75% size'],
-    ['cublat_3_3_3_es_1_rect_nice_form_4_sq_tri',
+    ['cublat_3_3_3_es_1_rect_nice_form_4_quad_tri',
         '3×3×3 cubical lattice, rectified (a node at each edge midpoint, connected via the '
         + 'convex-hull figure around each original vertex), reduced to only the edges touching at '
-        + 'least one resulting square, then every triangle - and every one of those squares with a '
-        + 'degree-under-6 node - replaced by its own side-length-4 lattice (triangles and squares '
+        + 'least one resulting quad, then every triangle - and every one of those quads with a '
+        + 'degree-under-6 node - replaced by its own side-length-4 lattice (triangles and quads '
         + 'sharing an edge glue seamlessly), scaled to 75% size'],
     ['hexpipe_6',
-        '4×4×4 cubical lattice, reduced to only the edges belonging to a square whose 4 nodes all '
+        '4×4×4 cubical lattice, reduced to only the edges belonging to a quad whose 4 nodes all '
         + 'have degree above 4 and at least one has degree exactly 5 (the near-surface sheet of '
-        + 'squares just under each face), then every one of those squares with both a degree-3 and a '
+        + 'quads just under each face), then every one of those quads with both a degree-3 and a '
         + 'degree-6 node (evaluated after that reduction) replaced by a side-length-6 square board'],
-    ['cublat_4_4_4_cub_0010_sqform_4', 'sqform 4 applied to 0010 position cubes on 4x4x4 cubical lattice'],
+    ['cublat_4_4_4_cub_0010_quadform_4', 'quadform 4 applied to 0010 position cubes on 4x4x4 cubical lattice'],
 ]);
 
 
@@ -1701,19 +1701,19 @@ export class Renderer {
                 + 'board, gluing new corners to the old vertices and gluing shared triangle edges '
                 + 'together (w=1 collapses each triangle to a point; w=2 is a no-op); an unselected '
                 + "triangle is left untouched, as if it weren't there at all")}
-            ${row('sqform &lt;w&gt; [SEL]',
-                'SquareForm: replace every square (4-cycle with no diagonal edges) - or, if a square '
+            ${row('quadform &lt;w&gt; [SEL]',
+                'QuadForm: replace every quad (4-cycle with no diagonal edges) - or, if a quad '
                 + 'selector SEL is given, only the ones it selects - with a w-by-w grid, gluing new '
-                + 'corners to the old vertices and gluing shared square edges together (w=1 collapses '
-                + "each square to a point; w=2 is a no-op); an unselected square is left untouched, as if it weren't there at all")}
+                + 'corners to the old vertices and gluing shared quad edges together (w=1 collapses '
+                + "each quad to a point; w=2 is a no-op); an unselected quad is left untouched, as if it weren't there at all")}
             ${row('form &lt;w&gt; &lt;FSEL…&gt;',
-                'Form: generalizes triform/sqform to one or more form selectors at once (see the Form '
-                + 'Selectors page), all sharing this one w - replaces every triangle/square any FSEL '
+                'Form: generalizes triform/quadform to one or more form selectors at once (see the Form '
+                + 'Selectors page), all sharing this one w - replaces every triangle/quad any FSEL '
                 + 'names with its own side-length-w lattice, gluing new corners to the old vertices '
                 + 'and gluing every original edge\'s new boundary points together across every '
                 + 'lattice that has it as a side, regardless of whether that lattice came from a '
-                + 'triangle or a square FSEL (unlike calling triform/sqform separately, a triangle '
-                + 'and a square sharing an edge still glue seamlessly here)')}
+                + 'triangle or a quad FSEL (unlike calling triform/quadform separately, a triangle '
+                + 'and a quad sharing an edge still glue seamlessly here)')}
             ${row('prod &lt;board-type&gt; &lt;args…&gt;',
                 'Prod: builds a second board (of the given type/args) and immediately multiplies it '
                 + 'into the current one (Cartesian product) - a one-shot shorthand for '
@@ -1734,10 +1734,10 @@ export class Renderer {
             ${row('gcent',
                 'GlobalCentralize: add one new node at the barycenter of every existing node, connected '
                 + 'to all of them')}
-            ${row('sqocta',
-                'SqOctarize: add a new dimension, then replace every square (4-cycle with no diagonal '
+            ${row('quadocta',
+                'QuadOctarize: add a new dimension, then replace every quad (4-cycle with no diagonal '
                 + 'edges) with an octahedron - two new apex nodes, one on each side along the new '
-                + "dimension, each connected to that square's 4 corners")}
+                + "dimension, each connected to that quad's 4 corners")}
             ${row('scale &lt;num&gt;', 'Scale: multiply every node\'s natural-dimension position by num')}
             ${row('nis &lt;node-selector&gt;',
                 'NodeInducedSubgraph: keep only the nodes the given node selector selects (see '
@@ -1754,22 +1754,22 @@ export class Renderer {
             ${row('(inter SEL SEL)', 'Set intersection')}
             ${row('(diff SEL SEL)', 'Set difference (left minus right)')}
             ${row('(compl SEL)',
-                'Complement, within all objects of whichever kind SEL selects from (node/edge/triangle/square)')}
+                'Complement, within all objects of whichever kind SEL selects from (node/edge/triangle/quad)')}
             ${row('(more SEL)',
                 'Nodes/edges only: expands SEL to also include everything adjacent to it: for nodes, every '
                 + 'node one edge away from a selected node; for edges, every edge sharing a node with a '
                 + 'selected edge - either way SEL\'s own result stays included too')}
-            ${row('(all)', 'Every object of whichever kind (node/edge/triangle/square) this SEL is')}
+            ${row('(all)', 'Every object of whichever kind (node/edge/triangle/quad) this SEL is')}
             ${row('(none)', 'No objects of that kind')}
             ${row('(deg &lt;eq|gt|lt&gt; &lt;num&gt;)', 'Nodes only: whose degree is =/&gt;/&lt; num')}
-            ${row('(conva &lt;node|edge|tri|sq&gt; SEL)',
+            ${row('(conva &lt;node|edge|tri|quad&gt; SEL)',
                 'Converts SEL (of the given source kind) into whichever kind this SEL itself is: a '
                 + '"to" object is selected iff ALL of its associated "from" objects are selected - two '
                 + 'objects are associated iff one\'s own node set is completely contained in the '
                 + 'other\'s (vacuously true for a "to" object with no associated "from" objects at '
-                + 'all). Converting a kind to itself is a no-op; triangle &lt;-&gt; square has no '
+                + 'all). Converting a kind to itself is a no-op; triangle &lt;-&gt; quad has no '
                 + 'defined association and is rejected')}
-            ${row('(conve &lt;node|edge|tri|sq&gt; SEL)',
+            ${row('(conve &lt;node|edge|tri|quad&gt; SEL)',
                 'Same as conva, but a "to" object is selected iff AT LEAST ONE of its associated '
                 + '"from" objects is selected (vacuously false if it has none)')}
             ${row('(rrmn &lt;num&gt; SEL)',
@@ -1783,8 +1783,8 @@ export class Renderer {
             ${row('(tri [SEL])',
                 'Names triangles for the form modifier (see Board Modifiers): every triangle, '
                 + 'or (if a triangle selector SEL is given) only the ones it selects')}
-            ${row('(sq [SEL])',
-                'Names squares for the form modifier: every square, or (if a square selector SEL is '
+            ${row('(quad [SEL])',
+                'Names quads for the form modifier: every quad, or (if a quad selector SEL is '
                 + 'given) only the ones it selects')}
         `);
     }

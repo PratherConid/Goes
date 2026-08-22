@@ -7,6 +7,6 @@
   ],
   "boardModifiers": [
     {"kind": "NodeInducedSubgraph", "sel": {"op": "deg", "type": "node", "cmp": "gt", "n": 3}},
-    {"kind": "SquareForm", "w": 6}
+    {"kind": "QuadForm", "w": 6}
   ]
 }
