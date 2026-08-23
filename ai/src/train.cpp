@@ -871,7 +871,7 @@ static Losses compute_losses(const torch::Tensor& policy, const torch::Tensor& o
     // both board size and stone count, so this keeps the loss magnitude
     // comparable across differently sized action spaces.
     auto log_policy  = torch::log(policy.clamp_min(1e-8f));
-    auto policy_loss = -(p_tgt * log_policy).sum(-1).mean() / std::log(static_cast<float>(N * num_stones));
+    auto policy_loss = -(p_tgt * log_policy).sum(-1).mean() / std::log(static_cast<float>(N * num_stones + 1));
 
     // ownership: (B, 2, N, num_stones+1) - index 0 = stone estimate, index 1 = territory estimate
     auto stone_est     = ownership.select(1, 0);   // (B, N, num_stones+1)
@@ -1230,7 +1230,7 @@ int main(int argc, char* argv[]) {
         // trajectory_iterations_desc returns newest-first (mirrors resume()'s
         // own use of it); reversed here for the ascending order this phase needs.
         std::vector<int> iters_desc = trajectory_iterations_desc(retrain_source_dir, model_cfg->model_type);
-        int prev_it = -1;
+        int prev_it = 0; // iteration numbering starts at 1, so 0 is "before any training"
         bool hit_iteration_cap = false;
         for (auto it_rit = iters_desc.rbegin(); it_rit != iters_desc.rend() && !hit_iteration_cap; ++it_rit) {
             int it = *it_rit;

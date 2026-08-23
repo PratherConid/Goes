@@ -1283,6 +1283,7 @@ export class Renderer {
         // so the server will reject these until the user logs back in - reset userName
         // to reflect that, and surface it once rather than failing silently.
         conn.onEvent('open', () => {
+            const previousUserName = this.userName;
             this.userName = null;
             this._render();
             let warnedStaleLogin = false;
@@ -1303,10 +1304,10 @@ export class Renderer {
             for (const [id, ag] of this.activeGames)
                 if (id.startsWith('O_'))
                     for (const [slot, pi] of ag.config.players)
-                        if (pi.name === this.userName) resub(id.slice(2), slot);
+                        if (pi.name === previousUserName) resub(id.slice(2), slot);
             for (const [id, pg] of this.pendingGames)
                 for (const [slot, pi] of pg.config.players)
-                    if (pi.name === this.userName) resub(id, slot);
+                    if (pi.name === previousUserName) resub(id, slot);
         });
     }
 
