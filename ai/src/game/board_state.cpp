@@ -211,11 +211,9 @@ static int ko_ply_mod(KoRule ko_rule, int ply, int ltl) {
     return ko_rule == KoRule::Situational ? (ply % ltl) : 0;
 }
 
-// A turn may offer more than one stone color (TurnInfo.stones); legality and
-// captures are computed separately for every offered color, since which color
-// is placed can change both (protected/friendly are per-stone-color). Always
-// returns a num_stones+1-wide table regardless of how many stones are offered
-// this turn - unoffered stones are simply all-nullopt.
+// Mirrors shared/boardState.ts's calculateLegalMoves() - see LegalMovesData (board_state.h) for the
+// returned shape. Same num_stones+1-wide, 1-indexed captures table as the TS side; unoffered stones
+// are all-nullopt rather than all-null.
 static LegalMovesData calculate_legal_moves(
     const std::vector<int>& board_in,
     const std::vector<std::vector<int>>& adj,

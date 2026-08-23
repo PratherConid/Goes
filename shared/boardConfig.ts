@@ -1247,7 +1247,14 @@ export function trihexBoard(d: number): BoardConfig {
     return make(pos, adj);
 }
 
-/** Auxiliary function for `twistedSquareBoard` and `glueTwistedSquareBoard`. Not used by the renderer directly. */
+/**
+ * A `w × h` grid of `g × g` squares, each rotated 45° and internally connected as an ordinary
+ * grid, but with NO connections between squares yet - `gap` is the extra distance (beyond the
+ * squares' own natural closest-corner distance) separating adjacent squares. Returns `pos`/`adj`
+ * for the disconnected squares plus `interConn`: for every pair of horizontally/vertically
+ * adjacent squares, the pair of their own closest corner node indices, left for a caller to glue
+ * or connect as it sees fit (see `glueTwistedSquareBoard`/`twistedSquareBoard`, gap=0/1 respectively).
+ */
 function tiltedDisconnectedSquareBoard(w: number, h: number, g: number, gap: number) {
     const rm = Math.SQRT2 / 2;
     const sqWidth = (g - 1) * Math.SQRT2 + gap;

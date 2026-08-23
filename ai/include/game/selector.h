@@ -6,18 +6,11 @@
 #include <string>
 #include <vector>
 
-// Mirrors shared/selector.ts - see that file's own top comment for the full grammar (SEL):
+// Mirrors shared/selector.ts - see that file's own top comment for the full grammar and semantics
+// (conva/conve's association rule, etc.); repeated here only as a compact grammar reference (SEL):
 //   (union SEL...) / (inter SEL...) / (diff SEL SEL) / (compl SEL) / (more [<num>] SEL) / (all) /
 //   (none) / (deg <eq|gt|lt> <num>) / (conva <node|edge|tri|quad> SEL) /
 //   (conve <node|edge|tri|quad> SEL) / (rrmn <num> SEL) / (rrmp <num> SEL)
-// selecting a subset of a board's nodes, edges, triangles, or quads (a "triangle"/"quad" here is
-// exactly what game/topology.h's find_triangles()/find_quads() finds). conva/conve convert
-// between any two kinds (naming the source kind via their own leading node/edge/tri/quad token): a
-// "to" object (whichever kind this Selector itself is) is selected iff ALL (conva) or AT LEAST ONE
-// (conve) of its associated "from" objects are selected - two objects are associated iff one's own
-// node set is completely contained in the other's (always well-defined for two differing kinds,
-// since node/edge/triangle/quad have strictly increasing arity 1/2/3/4). Converting a kind to
-// itself is a no-op; triangle <-> quad has no meaningful association and is rejected.
 
 // Mirrors shared/types.ts's BoardEdge: n1 <= n2 always (see make_board_edge below).
 struct BoardEdge {
@@ -40,30 +33,17 @@ inline BoardTriangle make_board_triangle(int a, int b, int c) {
     return BoardTriangle{ arr[0], arr[1], arr[2] };
 }
 
-// Mirrors shared/types.ts's BoardQuad: n1-n2-n3-n4-n1 always a genuine cycle (n1-n2, n2-n3, n3-n4,
-// n4-n1 the 4 real graph edges; n1-n3/n2-n4 the 2 absent diagonals) - see make_board_quad below.
-// Unlike BoardTriangle (whose 3 members can always be sorted ascending with no loss, since a
-// triangle's 3-cycle has full S3 symmetry - every permutation of 3 distinct elements is some
-// rotation/reflection of it), a quad's cycle structure is real information a plain ascending sort
-// would destroy (turning a diagonal into an apparent edge). So a BoardQuad is instead normalized to
-// whichever of its own cycle's 8 rotation/reflection-equivalent relabelings (see make_board_quad)
-// is lexicographically smallest - still giving every quad a unique representation regardless of
-// which vertex/direction it was found from (the same guarantee BoardTriangle/BoardEdge have), while
-// keeping n1-n2-n3-n4-n1 a genuine cycle (unlike game/topology.h's find_quads(), whose own
-// {a, b, c, d} is *a* valid cycle order, but not necessarily this canonical one).
+// Mirrors shared/types.ts's BoardQuad: n1-n2-n3-n4-n1 always a genuine cycle - see that type's own
+// doc comment for why (unlike BoardTriangle) this can't just be sorted ascending, and make_board_quad
+// below for the canonicalization. No delta from the TS version beyond int fields instead of number.
 struct BoardQuad {
     int n1 = 0, n2 = 0, n3 = 0, n4 = 0;
     bool operator==(const BoardQuad& other) const {
         return n1 == other.n1 && n2 == other.n2 && n3 == other.n3 && n4 == other.n4;
     }
 };
-// Builds a BoardQuad from four node indices already in cycle order (a-b-c-d-a, as
-// game/topology.h's find_quads() reports them) - normalizes to the lexicographically smallest of
-// the cycle's own 8 rotation/reflection-equivalent relabelings (see BoardQuad's own doc comment),
-// NOT a plain sort of all 4 values. Since every rotation starts with a different one of the 4
-// (distinct) node indices, the smallest-starting rotation is unique - so only the 2 candidates
-// starting at the minimum (one per direction) ever need comparing, and since all 4 inputs are
-// distinct, those two candidates' second element can never tie either.
+// Mirrors shared/types.ts's makeBoardQuad() - same algorithm (see its own doc comment for the
+// derivation), just plain arrays/a loop in place of .map().
 inline BoardQuad make_board_quad(int a, int b, int c, int d) {
     int seq[4] = { a, b, c, d };
     int i = static_cast<int>(std::min_element(seq, seq + 4) - seq);

@@ -85,13 +85,8 @@ static Selector parse_edge_sel_expr(ParseCursor& c);
 static Selector parse_triangle_sel_expr(ParseCursor& c);
 static Selector parse_quad_sel_expr(ParseCursor& c);
 
-// Reads conva/conve's own leading node/edge/tri/quad token (the "from" kind) and parses its operand
-// via the matching one of parse_node_sel_expr/parse_edge_sel_expr/parse_triangle_sel_expr/
-// parse_quad_sel_expr - shared by all four of those functions' own conva/conve case below,
-// `to_type` being whichever of them called this (the "to" kind, from parsing context, same as
-// all/none). Throws if the (from, to_type) pair is the one with no defined association (triangle
-// <-> quad - see selector.h's own top comment); returns the parsed operand directly, unwrapped,
-// for a same-kind conversion (a no-op). Mirrors shared/selector.ts's parseConversion().
+// Mirrors shared/selector.ts's parseConversion() - same logic, just an explicit from_tok ->
+// (SelectorType, function-pointer) if/else chain in place of TS's inline ternary of named functions.
 static Selector parse_conversion(ParseCursor& c, SelectorOp op, SelectorType to_type) {
     std::string from_tok = c.next();
     SelectorType from;

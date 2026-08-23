@@ -127,13 +127,8 @@ struct HistoryEntry {
     std::vector<std::vector<int>> player_stone_place_cnt;
 };
 
-// group        - list of node indices belonging to the group
-// liberties    - empty node indices adjacent to the group, plus any occupied
-//                neighbor whose color is friendly this turn (see friendly_stones
-//                in group_liberty() - such a neighbor doesn't block a liberty)
-// non_liberties - occupied, non-friendly node indices (belonging to another
-//                group) adjacent to the group - used to detect when capturing a
-//                neighboring group frees a liberty for this one (see calculate_legal_moves)
+// Mirrors shared/boardState.ts's GroupEntry - see group_liberty() below for what each field means.
+// std::vector in place of Set.
 struct GroupEntry {
     std::vector<int> group;
     std::vector<int> liberties;
@@ -142,10 +137,17 @@ struct GroupEntry {
 using GroupLib = std::vector<GroupEntry>;
 using GroupDict = std::unordered_map<int, GroupLib>;
 
-// Returns stone_color -> list of groups of that color, each with its
-// liberties/non_liberties (see GroupEntry). A group may legitimately have
-// zero liberties - a protected color (see calculate_legal_moves) can be left
-// on the board at zero liberties instead of being captured.
+// Mirrors shared/boardState.ts's groupLiberty(). Returns stone_color -> list of groups of that
+// color, each as a GroupEntry:
+//   group         - list of node indices belonging to the group
+//   liberties     - empty node indices adjacent to the group, plus any occupied neighbor whose
+//                   color is friendly this turn (see friendly_stones - such a neighbor doesn't
+//                   block a liberty)
+//   non_liberties - occupied, non-friendly node indices (belonging to another group) adjacent to
+//                   the group - used to detect when capturing a neighboring group frees a liberty
+//                   for this one (see calculate_legal_moves)
+// A group may legitimately have zero liberties - a protected color (see calculate_legal_moves) can
+// be left on the board at zero liberties instead of being captured.
 GroupDict group_liberty(const std::vector<int>& board,
                         const std::vector<std::vector<int>>& adj,
                         int N,

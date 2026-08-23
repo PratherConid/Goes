@@ -517,16 +517,13 @@ BoardConfig cube_lattice_board(int w, int h, int d) {
     return hypercuboid_board(3, {w, h, d});
 }
 
-// Mirrors shared/boardConfig.ts's hypercuboidBoard() exactly: a node survives (occurs on the
-// board) iff at most `meshdim` of its coordinates are strictly interior to their own axis (not 0,
-// not dims[i]-1); surviving nodes keep the plain grid adjacency (connected iff they differ by
-// exactly 1 in exactly one coordinate). Unlike the TS side (which centers positions at the origin
-// via `- (dims[i]-1)/2`), this keeps the plain uncentered [0, dims[i]) integer coordinates - same
-// convention rectangular_board/cube_lattice_board already used before becoming thin wrappers
-// around this function (centering would need exact-half-integer coordinates for an even-sized
-// dimension, which this file's exact-integer embed[] can't represent - see merge_close's own doc
-// comment). See the TS side's own doc comment for what `meshdim` means geometrically (the
-// m-skeleton of the hypercuboid) and its worked examples.
+// Mirrors shared/boardConfig.ts's hypercuboidBoard() exactly - see its own doc comment for what
+// `meshdim` means geometrically, the survival/adjacency rules, and worked examples. Unlike the TS
+// side (which centers positions at the origin via `- (dims[i]-1)/2`), this keeps the plain
+// uncentered [0, dims[i]) integer coordinates - same convention rectangular_board/cube_lattice_board
+// already used before becoming thin wrappers around this function (centering would need exact-
+// half-integer coordinates for an even-sized dimension, which this file's exact-integer embed[]
+// can't represent - see merge_close's own doc comment).
 BoardConfig hypercuboid_board(int meshdim, const std::vector<int>& dims) {
     assert(!dims.empty() && "dims must have at least 1 entry");
     for (int d : dims) assert(d > 0 && "every dimension must be positive");

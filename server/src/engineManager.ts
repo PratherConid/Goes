@@ -15,7 +15,8 @@ class EngineManager {
     private _ckptDir = '';
     private _nextPort = 8765;
 
-    // Call once from index.ts after the binary path is resolved.
+    // Records the AI engine binary/checkpoint-dir paths that getOrCreate() spawns processes with;
+    // `ready` stays false until this has run.
     init(exePath: string, ckptDir: string): void {
         this._aiExe   = exePath;
         this._ckptDir = ckptDir;

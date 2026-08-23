@@ -2035,21 +2035,11 @@ export class Renderer {
             .catch((e: any) => this._setCmdOutput(`Chat failed: ${e.message}`));
     }
 
-    // Same action as the 'newo' command (_parseCommand) - creates an online
-    // game from the current newCfg/onlinePlayerRequest; _createOnlineGame()
-    // already handles the not-logged-in/error cases (via _setCmdOutput) and
-    // calls _render() itself on success. Deliberately does NOT navigate to
-    // Status - a created online game may still be "waiting" on other players
-    // (see _createOnlineGame()'s status field), so there's no game to show
-    // yet; navigate to Pending Games instead once creation actually
-    // succeeds. The panel only jumps to Status once the game actually starts
-    // (see _activatePendingGame(), triggered by the game/start event) - the
-    // panel display mode switches immediately regardless, same as "Start New
-    // Game". Shared by #new-game-buttons (_refreshSidePanel()) and the
-    // Configure Online Players panel (_renderConfigureOnlinePlayers()).
-    // Shared by #new-game-buttons (_refreshSidePanel()) and the Configure
-    // Players panel (_renderConfigureOnlinePlayers()) - same pattern as
-    // _buildStartOnlineGameBtn() just below.
+    // Creates a local game via _startNewGame() and, once it actually starts, sets the panel mode
+    // and navigates to Status - same shape as _buildStartOnlineGameBtn() below (see its own comment
+    // for why an online game's own equivalent navigates to Pending Games instead). Shared by
+    // #new-game-buttons (_refreshSidePanel()) and the Configure Players panel
+    // (_renderConfigureOnlinePlayers()).
     private _buildStartLocalGameBtn(): HTMLButtonElement {
         const btn = document.createElement('button');
         btn.className = 'panel-child-btn';
@@ -2074,6 +2064,18 @@ export class Renderer {
         return btn;
     }
 
+    // Same action as the 'newo' command (_parseCommand) - creates an online
+    // game from the current newCfg/onlinePlayerRequest; _createOnlineGame()
+    // already handles the not-logged-in/error cases (via _setCmdOutput) and
+    // calls _render() itself on success. Deliberately does NOT navigate to
+    // Status - a created online game may still be "waiting" on other players
+    // (see _createOnlineGame()'s status field), so there's no game to show
+    // yet; navigate to Pending Games instead once creation actually
+    // succeeds. The panel only jumps to Status once the game actually starts
+    // (see _activatePendingGame(), triggered by the game/start event) - the
+    // panel display mode switches immediately regardless, same as "Start New
+    // Game". Shared by #new-game-buttons (_refreshSidePanel()) and the
+    // Configure Online Players panel (_renderConfigureOnlinePlayers()).
     private _buildStartOnlineGameBtn(): HTMLButtonElement {
         const btn = document.createElement('button');
         btn.className = 'panel-child-btn';
