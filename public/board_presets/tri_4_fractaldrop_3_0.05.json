@@ -1,0 +1,17 @@
+{
+  "boardType": "tri",
+  "boardArgs": [
+    {"kind": "Number", "value": 4}
+  ],
+  "boardModifiers": [
+    {
+      "kind": "Repeat",
+      "count": 3,
+      "modifiers": [
+        {"kind": "EdgeInducedSubgraph", "sel": {"op": "rrmp", "type": "edge", "frac": 0.05, "a": {"op": "all", "type": "edge"}}},
+        {"kind": "TriangleForm", "w": 3},
+        {"kind": "EdgeInducedSubgraph", "sel": {"op": "conve", "type": "edge", "from": "tri", "a": {"op": "conva", "type": "tri", "from": "node", "a": {"op": "all", "type": "node"}}}}
+      ]
+    }
+  ]
+}

@@ -81,6 +81,12 @@ const _boardConfigDescriptions = new Map([
     ['cublat_3_3_3_sel_(deg_gt_3)_quadform_6',
         '3×3×3 cubical board, keeping only nodes with degree above 3 (drops the 8 corners), each '
         + 'resulting quad replaced by a side-length-6 square board'],
+    ['cublat_3_3_3_quadform_5_nice_drop_0.1',
+        '3×3×3 cubical board with every quad replaced by a side-length-5 square board, then 10% of '
+        + 'its nodes randomly removed, then any edge not part of an intact unit quad dropped too'],
+    ['cublat_9_9_9_nice_drop_0.2',
+        '9×9×9 cubical board with 20% of its nodes randomly removed, then any edge not part of an '
+        + 'intact unit quad (a natural cube-face square) dropped too'],
     ['regpoly_13_prod_regpoly_13', 'Product of two 13-sided regular polygon boards'],
     ['star_5_es_6_prod_line_5',
         '5-armed star board, each edge split into 6, then multiplied by a 5-node line'],
@@ -123,6 +129,10 @@ const _boardConfigDescriptions = new Map([
         '5×5 rectangular board put through 3 rounds of: randomly drop 5% of its edges, replace each '
         + 'resulting quad with a side-length-3 square board, then drop any edge not part of an '
         + 'intact unit quad'],
+    ['tri_4_fractaldrop_3_0.05',
+        'Side-length-4 triangular board put through 3 rounds of: randomly drop 5% of its edges, '
+        + 'replace each resulting triangle with a side-length-3 triangular board, then drop any '
+        + 'edge not part of an intact unit triangle'],
     ['cublat_2_2_2_es_1_rect_form_7_(tri)_(quad)_scale_0.75',
         '2×2×2 cubical lattice, rectified (a node at each edge midpoint, connected via the '
         + "convex-hull figure around each original vertex - a cuboctahedron-like mix of triangular "
