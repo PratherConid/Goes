@@ -94,27 +94,58 @@ test('opposite-direction rolls cancel out', () => {
     assertVecClose([back.w, back.x, back.y, back.z], [q0.w, q0.x, q0.y, q0.z], 'roll then un-roll');
 });
 
-test('computeAlpha: an object nearer than the origin never fades, regardless of rate', () => {
-    assertClose(computeAlpha(8, 10, { init: 0, rate: 1 }), 1, 'positive depth (near camera) stays opaque');
-    assertClose(computeAlpha(0, 10, { init: 0, rate: 1 }), 1, 'depth exactly at the origin stays opaque');
+test('computeAlpha (clamp): an object nearer than the origin never fades, regardless of rate', () => {
+    assertClose(computeAlpha(8, 10, { kind: 'clamp', init: 0, rate: 1 }), 1, 'positive depth (near camera) stays opaque');
+    assertClose(computeAlpha(0, 10, { kind: 'clamp', init: 0, rate: 1 }), 1, 'depth exactly at the origin stays opaque');
 });
 
-test('computeAlpha: an object receding behind the origin fades, not one in front of it', () => {
-    const alpha = computeAlpha(-8, 10, { init: 0, rate: 1 });
+test('computeAlpha (clamp): an object receding behind the origin fades, not one in front of it', () => {
+    const alpha = computeAlpha(-8, 10, { kind: 'clamp', init: 0, rate: 1 });
     assertClose(alpha, 0.2, 'depth=-8, dmax=10, init=0, rate=1 -> alpha = 1 - 8*1/10');
 });
 
-test('computeAlpha: fading is clamped to [0, 1]', () => {
-    assertClose(computeAlpha(-100, 10, { init: 0, rate: 1 }), 0, 'far past full fade clamps to 0');
-    assertClose(computeAlpha(-1, 10, { init: 0, rate: -5 }), 1, 'a negative rate cannot push alpha above 1');
+test('computeAlpha (clamp): fading is clamped to [0, 1]', () => {
+    assertClose(computeAlpha(-100, 10, { kind: 'clamp', init: 0, rate: 1 }), 0, 'far past full fade clamps to 0');
+    assertClose(computeAlpha(-1, 10, { kind: 'clamp', init: 0, rate: -5 }), 1, 'a negative rate cannot push alpha above 1');
 });
 
-test('computeAlpha: fading only starts once recession exceeds init * dmax', () => {
-    const fadecfg = { init: 0.5, rate: 1 };
+test('computeAlpha (clamp): fading only starts once recession exceeds init * dmax', () => {
+    const fadecfg = { kind: 'clamp' as const, init: 0.5, rate: 1 };
     assertClose(computeAlpha(-4, 10, fadecfg), 1, 'recession=4 is within the init=0.5*dmax=5 threshold');
     assertClose(computeAlpha(-6, 10, fadecfg), 0.9, 'recession=6 exceeds the threshold by 1, so alpha = 1 - 1/10');
 });
 
-test('computeAlpha: dmax <= 0 never fades, even with a nonzero rate', () => {
-    assertClose(computeAlpha(-5, 0, { init: 0, rate: 1 }), 1, 'degenerate single-point board');
+test('computeAlpha (clamp): dmax <= 0 never fades, even with a nonzero rate', () => {
+    assertClose(computeAlpha(-5, 0, { kind: 'clamp', init: 0, rate: 1 }), 1, 'degenerate single-point board');
+});
+
+test('computeAlpha (slice): full opacity within solidThick/2 of z', () => {
+    // z=0.2, dmax=10 -> center depth = 2. solidThick=0.4 -> solid half-width = 0.2*dmax = 2, so
+    // depths in [0, 4] are fully opaque.
+    const fadecfg = { kind: 'slice' as const, z: 0.2, solidThick: 0.4, falloffThick: 0.2 };
+    assertClose(computeAlpha(2, 10, fadecfg), 1, 'depth exactly at the slice center');
+    assertClose(computeAlpha(0, 10, fadecfg), 1, 'depth at the near edge of the solid region');
+    assertClose(computeAlpha(4, 10, fadecfg), 1, 'depth at the far edge of the solid region');
+});
+
+test('computeAlpha (slice): falls off linearly from 1 to 0 over falloffThick/2 past the solid region', () => {
+    // Same slice as above: solid region is depth in [0, 4] (depth/dmax in [0, 0.4]);
+    // falloffThick=0.2 -> falloff half-width = 0.1*dmax = 1, so alpha reaches 0 exactly at depth 5
+    // (and depth -1, on the near side).
+    const fadecfg = { kind: 'slice' as const, z: 0.2, solidThick: 0.4, falloffThick: 0.2 };
+    assertClose(computeAlpha(4.5, 10, fadecfg), 0.5, 'halfway through the far falloff region');
+    assertClose(computeAlpha(5, 10, fadecfg), 0, 'exactly at the far edge of visibility');
+    assertClose(computeAlpha(6, 10, fadecfg), 0, 'past the far edge stays at 0, not negative');
+    assertClose(computeAlpha(-0.5, 10, fadecfg), 0.5, 'halfway through the near falloff region');
+    assertClose(computeAlpha(-1, 10, fadecfg), 0, 'exactly at the near edge of visibility');
+});
+
+test('computeAlpha (slice): falloffThick <= 0 is a hard cutoff right at the solid region, no division by zero', () => {
+    const fadecfg = { kind: 'slice' as const, z: 0, solidThick: 0.2, falloffThick: 0 };
+    assertClose(computeAlpha(1, 10, fadecfg), 1, 'depth=1 is within the solid half-width (0.1*10=1)');
+    assertClose(computeAlpha(1.01, 10, fadecfg), 0, 'just past the solid region drops straight to 0');
+});
+
+test('computeAlpha (slice): dmax <= 0 never fades', () => {
+    assertClose(computeAlpha(-5, 0, { kind: 'slice', z: 0, solidThick: 0.1, falloffThick: 0.1 }), 1, 'degenerate single-point board');
 });

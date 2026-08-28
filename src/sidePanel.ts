@@ -34,6 +34,7 @@ export enum SidePanelContent {
     FinishedOnlineGames = 'finishedOnlineGames',
     Account             = 'account',
     ConfigureOnlinePlayers = 'configureOnlinePlayers',
+    ConfigureViewport   = 'configureViewport',
 }
 
 // [parent, children] per node - parent is null only for Home (VOID: no
@@ -56,6 +57,9 @@ export const SidePanelHierarchy: Record<SidePanelContent, [SidePanelContent | nu
     // generic childButtons() mechanism - same reason History's parent is CurrentGameSetup rather
     // than Home.
     [SidePanelContent.Chat]:              [SidePanelContent.Status, []],
+    // ConfigureViewport's own "Configure" button likewise lives inside Status's own template
+    // (Renderer._renderStatus()), same reason as Chat's above.
+    [SidePanelContent.ConfigureViewport]: [SidePanelContent.Status, []],
     // CommandReference is a pure hub (like Home/GameRecords) - one child per former section of the
     // old single command-reference table, each now its own leaf page (see Renderer._initCommandsPanel()).
     [SidePanelContent.CommandReference]: [SidePanelContent.Home, [
@@ -129,6 +133,7 @@ export const SidePanelTitle: Record<SidePanelContent, string> = {
     [SidePanelContent.FinishedOnlineGames]: 'Finished Online Games',
     [SidePanelContent.Account]:             'Account',
     [SidePanelContent.ConfigureOnlinePlayers]: 'Configure Players',
+    [SidePanelContent.ConfigureViewport]:      'Configure Viewport',
 };
 
 // Button-label overrides for nodes whose nav-button text should read
@@ -195,6 +200,7 @@ export interface SidePanelElements {
     finishedOnlineGamesPanel: HTMLDivElement;
     accountPanel:             HTMLDivElement;
     configureOnlinePlayersPanel: HTMLDivElement;
+    configureViewportPanel:  HTMLDivElement;
 }
 
 // Rebuilds the nav chrome (title, Up-button disabled state) and toggles
@@ -244,6 +250,7 @@ export function renderSidePanelChrome(current: SidePanelContent, els: SidePanelE
     els.finishedOnlineGamesPanel.style.display = current === SidePanelContent.FinishedOnlineGames ? 'block' : 'none';
     els.accountPanel.style.display             = current === SidePanelContent.Account             ? 'block' : 'none';
     els.configureOnlinePlayersPanel.style.display = current === SidePanelContent.ConfigureOnlinePlayers ? 'flex' : 'none';
+    els.configureViewportPanel.style.display   = current === SidePanelContent.ConfigureViewport   ? 'block' : 'none';
 }
 
 // Builds one full-width nav button per entry in `children` (dataset.child =

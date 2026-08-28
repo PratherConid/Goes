@@ -6,11 +6,24 @@ export interface Quaternion { w: number; x: number; y: number; z: number; }
 
 export const QUAT_IDENTITY: Quaternion = { w: 1, x: 0, y: 0, z: 0 };
 
-// init: fraction of dmax (see computeAlpha) beyond which fading starts - 0 means fading starts
-// right at the origin's own depth, 1 means it never starts (dmax is the farthest any point can be
-// from the origin, so no point's depth can exceed it). rate: how fast alpha falls off per dmax of
-// further depth past that point - 0 disables fading entirely (alpha always 1).
-export interface FadingConfig { init: number; rate: number; }
+// Two ways to fade objects by depth (see computeAlpha) - all distances below are in units of dmax
+// (the board's own farthest node distance from the origin), same normalization computeAlpha's
+// `depth`/`dmax` params already use elsewhere.
+//
+// 'clamp': the original behavior. init: fraction of dmax beyond which fading starts - 0 means
+// fading starts right at the origin's own depth, 1 means it never starts (dmax is the farthest any
+// point can be from the origin, so no point's depth can exceed it). rate: how fast alpha falls off
+// per dmax of further depth past that point - 0 disables fading entirely (alpha always 1).
+//
+// 'slice': a movable, bounded band of visibility instead of an open-ended fade. z is the band's own
+// center, in the same normalized depth units as `depth`/dmax (meaningful range -1 to 1, matching
+// dmax's own bound on any real depth - out-of-range values are accepted, they just describe a band
+// centered beyond the board entirely). Depths within solidThick/2 of z are fully opaque; alpha then
+// falls linearly from 1 to 0 over the next falloffThick/2 on both sides, reaching 0 (and staying
+// there) once the depth is more than (solidThick + falloffThick)/2 from z.
+export type FadingConfig =
+    | { kind: 'clamp'; init: number; rate: number }
+    | { kind: 'slice'; z: number; solidThick: number; falloffThick: number };
 
 // The natural-space point (in units of dmax - see computeAlpha's own doc comment - along each of
 // the board's x/y/z render axes, before camera rotation) the camera looks at, instead of the
@@ -39,11 +52,12 @@ export interface Viewport {
 }
 
 // A fresh object per call (not a shared constant) - each ActiveGame needs its own independent
-// Viewport, since fi/fr (Renderer._parseCommand) mutate fadecfg's fields in place; sharing one
-// instance across games would leak one game's fade settings into every other game.
+// Viewport, since the status panel's fading editor (Renderer._renderStatusPanel) mutates fadecfg's
+// fields in place; sharing one instance across games would leak one game's fade settings into
+// every other game.
 export function defaultViewport(): Viewport {
     return {
-        quat: QUAT_IDENTITY, fadecfg: { init: 0.0, rate: 0.8 }, focus: [0, 0, 0],
+        quat: QUAT_IDENTITY, fadecfg: { kind: 'clamp', init: 0.0, rate: 0.8 }, focus: [0, 0, 0],
         distToFocus: 3, aperture: 60, scale: 0,
     };
 }
@@ -52,19 +66,34 @@ export function defaultViewport(): Viewport {
  * The alpha (0-1) an object at `depth` (its z after camera rotation - larger is nearer, see
  * boardLayout()) should render at, given `fadecfg` and `dmax` (the board's own farthest node
  * distance from the origin - rotation-invariant, so the same value regardless of camera
- * orientation). Fading is a depth-cueing effect: objects recede AWAY from the camera (into the
- * screen) as they fade, so what matters is how far *behind* the origin an object sits, i.e.
- * -depth (the origin's own depth is always 0, since rotation is linear and never moves it).
- * Fading starts once -depth exceeds fadecfg.init * dmax, then falls off linearly at fadecfg.rate
- * per dmax of further recession, clamped to [0, 1]. dmax <= 0 (a degenerate single-point board)
- * means no fading, since there's no meaningful distance scale to fade over.
+ * orientation). dmax <= 0 (a degenerate single-point board) means no fading, since there's no
+ * meaningful distance scale to fade over - true for either fadecfg.kind.
+ *
+ * 'clamp': a depth-cueing effect - objects recede AWAY from the camera (into the screen) as they
+ * fade, so what matters is how far *behind* the origin an object sits, i.e. -depth (the origin's
+ * own depth is always 0, since rotation is linear and never moves it). Fading starts once -depth
+ * exceeds fadecfg.init * dmax, then falls off linearly at fadecfg.rate per dmax of further
+ * recession, clamped to [0, 1].
+ *
+ * 'slice': a bounded band of visibility centered at fadecfg.z (in the same normalized depth/dmax
+ * units) - full opacity within fadecfg.solidThick/2 of z, then a linear falloff to 0 over the next
+ * fadecfg.falloffThick/2 on either side (see FadingConfig's own doc comment for the derivation).
  */
 export function computeAlpha(depth: number, dmax: number, fadecfg: FadingConfig): number {
     if (dmax <= 0) return 1;
-    const recession = -depth; // how far behind the origin (i.e. away from the camera) this is
-    const distInit = fadecfg.init * dmax; // recessionOrigin (always 0) + init * dmax
-    if (recession <= distInit) return 1;
-    const alpha = 1 - (recession - distInit) * fadecfg.rate / dmax;
+    if (fadecfg.kind === 'clamp') {
+        const recession = -depth; // how far behind the origin (i.e. away from the camera) this is
+        const distInit = fadecfg.init * dmax; // recessionOrigin (always 0) + init * dmax
+        if (recession <= distInit) return 1;
+        const alpha = 1 - (recession - distInit) * fadecfg.rate / dmax;
+        return Math.max(0, Math.min(1, alpha));
+    }
+    const dist = Math.abs(depth / dmax - fadecfg.z);
+    const halfSolid = fadecfg.solidThick / 2;
+    if (dist <= halfSolid) return 1;
+    const halfFalloff = fadecfg.falloffThick / 2;
+    if (halfFalloff <= 0) return 0; // no falloff region defined - hard cutoff right at halfSolid
+    const alpha = 1 - (dist - halfSolid) / halfFalloff;
     return Math.max(0, Math.min(1, alpha));
 }
 

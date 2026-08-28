@@ -763,6 +763,7 @@ export class Renderer {
     private cmdOutput:    HTMLDivElement;
     private statusPanel:   HTMLDivElement;
     private chatPanel:     HTMLDivElement;
+    private configureViewportPanel: HTMLDivElement;
     private commandsPanel: HTMLDivElement;
     private commandReferenceGamePanel:              HTMLDivElement;
     private commandReferenceDisplayPanel:           HTMLDivElement;
@@ -834,6 +835,7 @@ export class Renderer {
         this.cmdOutput    = document.getElementById('cmd-output')     as HTMLDivElement;
         this.statusPanel   = document.getElementById('status-panel')    as HTMLDivElement;
         this.chatPanel     = document.getElementById('chat-panel')      as HTMLDivElement;
+        this.configureViewportPanel = document.getElementById('configure-viewport-panel') as HTMLDivElement;
         this.commandsPanel = document.getElementById('commands-panel')  as HTMLDivElement;
         this.commandReferenceGamePanel =
             document.getElementById('cmdref-game-panel') as HTMLDivElement;
@@ -949,6 +951,7 @@ export class Renderer {
             historyPanel:         this.historyPanel,
             statusPanel:          this.statusPanel,
             chatPanel:             this.chatPanel,
+            configureViewportPanel: this.configureViewportPanel,
             commandsPanel:        this.commandsPanel,
             commandReferenceGamePanel:              this.commandReferenceGamePanel,
             commandReferenceDisplayPanel:           this.commandReferenceDisplayPanel,
@@ -1398,6 +1401,7 @@ export class Renderer {
                     name => this._selectBoardConfig(name),
                 );
             if (this.currentSidePanel === SidePanelContent.ConfigureOnlinePlayers) this._renderConfigureOnlinePlayers();
+            if (this.currentSidePanel === SidePanelContent.ConfigureViewport) this._renderConfigureViewport();
         }
         this.renderPopup();
         if (this.autoForced && !this.selfPlay && !v.gameOver && this.activeIdx.startsWith('L_')) {
@@ -2563,16 +2567,7 @@ export class Renderer {
             <div><b>Show Territory:</b> ${this.showTerritory}</div>
             <div><b>Show Illegal Moves:</b> ${this.showIllegalMoves}</div>
             <div><b>Evaluation:</b> ${evalStr}</div>
-            <div><b>Projection matrix:</b></div>
-            <div id="status-projmat-slot"></div>
-            <div><b>Fading Init:</b> <span id="status-fadeinit-slot"></span></div>
-            <div><b>Fading Rate:</b> <span id="status-faderate-slot"></span></div>
-            <div><b>Focus:</b>
-                <span id="status-focusx-slot"></span><span id="status-focusy-slot"></span><span id="status-focusz-slot"></span>
-            </div>
-            <div><b>Scale:</b> <span id="status-scale-slot"></span></div>
-            <div><b>Distance:</b> <span id="status-distToFocus-slot"></span></div>
-            <div><b>Aperture:</b> <span id="status-aperture-slot"></span></div>
+            <div><b>Viewport:</b> <button id="status-configure-viewport-btn" class="status-login-btn">Configure</button></div>
         `;
 
         // The login prompt's button needs a click listener, so it's built
@@ -2591,13 +2586,32 @@ export class Renderer {
         // time, same reason the login button's own is re-attached above.
         this.statusPanel.querySelector('#status-chat-btn')
             ?.addEventListener('click', () => this._navigateSidePanel(SidePanelContent.Chat));
+        this.statusPanel.querySelector('#status-configure-viewport-btn')
+            ?.addEventListener('click', () => this._navigateSidePanel(SidePanelContent.ConfigureViewport));
+    }
+
+    // The projection matrix / fading / focus / scale / distance / aperture editors, reached via
+    // Status's own "Viewport: Configure" button (_renderStatus above) - split out of Status itself
+    // since this content doesn't fit "one line per field" the rest of Status uses, and dominated the
+    // panel. Assumes an active game exists (guaranteed here - see _render()'s own doc comment).
+    private _renderConfigureViewport() {
+        this.configureViewportPanel.innerHTML = `
+            <div><b>Projection matrix:</b></div>
+            <div id="viewport-projmat-slot"></div>
+            <div><b>Fading:</b> <span id="viewport-fading-slot"></span></div>
+            <div><b>Focus:</b>
+                <span id="viewport-focus-row"><span id="viewport-focusx-slot"></span><span id="viewport-focusy-slot"></span><span id="viewport-focusz-slot"></span></span>
+            </div>
+            <div><b>Scale:</b> <span id="viewport-scale-slot"></span></div>
+            <div><b>Distance:</b> <span id="viewport-distToFocus-slot"></span></div>
+            <div><b>Aperture:</b> <span id="viewport-aperture-slot"></span></div>
+        `;
 
         // Projection matrix editor: one textbox per entry (2 rows x embDim columns), built via
-        // DOM API for the same reason the login button above is - each box needs its own Enter-key
-        // listener. Pressing Enter parses the box's value and writes it straight into the live
-        // BoardState.emb.projMat, mutating in place (Embedding.project() always reads the current
-        // array, so this takes effect on the very next render), then re-renders so the board
-        // redraws with the new projection.
+        // DOM API since each box needs its own Enter-key listener. Pressing Enter parses the box's
+        // value and writes it straight into the live BoardState.emb.projMat, mutating in place
+        // (Embedding.project() always reads the current array, so this takes effect on the very
+        // next render), then re-renders so the board redraws with the new projection.
         const projMat = this._active.bs.emb.projMat;
         const projMatEl = document.createElement('div');
         for (let r = 0; r < projMat.length; r++) {
@@ -2610,10 +2624,10 @@ export class Renderer {
                 box.dataset.r = String(r);
                 box.dataset.c = String(c);
                 box.value = String(projMat[r][c]);
-                // _render() rebuilds the whole status panel (fresh innerHTML + fresh projMat
-                // boxes), which destroys this box and creates a new one at the same (r,c) -
-                // without re-focusing it explicitly, the textbox would lose focus on every edit.
-                const refocus = () => this.statusPanel
+                // _render() rebuilds this whole panel (fresh innerHTML + fresh projMat boxes),
+                // which destroys this box and creates a new one at the same (r,c) - without
+                // re-focusing it explicitly, the textbox would lose focus on every edit.
+                const refocus = () => this.configureViewportPanel
                     .querySelector<HTMLInputElement>(`.status-projmat-input[data-r="${r}"][data-c="${c}"]`)
                     ?.focus();
                 box.addEventListener('keydown', e => {
@@ -2638,22 +2652,25 @@ export class Renderer {
             }
             projMatEl.appendChild(rowEl);
         }
-        this.statusPanel.querySelector('#status-projmat-slot')?.replaceWith(projMatEl);
+        this.configureViewportPanel.querySelector('#viewport-projmat-slot')?.replaceWith(projMatEl);
 
-        // Single-value editors: single-value versions of the projection-matrix editor above - same
-        // textbox styling, same Enter-to-commit behavior. ArrowUp/ArrowDown nudges via `step`
-        // (added by default; scale below instead multiplies/divides, so it passes its own step).
-        const makeScalarBox = (
-            slotId: string, get: () => number, set: (v: number) => void,
+        // Single-value editor core: same textbox styling, same Enter-to-commit behavior as the
+        // projection-matrix editor above. ArrowUp/ArrowDown nudges via `step` (added by default;
+        // scale below instead multiplies/divides, so it passes its own step). Returns the box
+        // itself rather than slotting it into the template - shared by makeScalarBox (below, for
+        // the fixed template-slot fields) and the fading editor (built entirely via DOM API, since
+        // its own field set varies with fadecfg.kind - see the fading block below).
+        const createScalarBox = (
+            id: string, get: () => number, set: (v: number) => void,
             step: (current: number, direction: 1 | -1) => number =
                 (current, direction) => Math.round((current + direction * 0.05) * 100) / 100,
-        ) => {
+        ): HTMLInputElement => {
             const box = document.createElement('input');
             box.type = 'text';
-            box.id = `${slotId}-input`;
+            box.id = id;
             box.className = 'status-projmat-input';
             box.value = String(get());
-            const refocus = () => this.statusPanel.querySelector<HTMLInputElement>(`#${box.id}`)?.focus();
+            const refocus = () => this.configureViewportPanel.querySelector<HTMLInputElement>(`#${box.id}`)?.focus();
             box.addEventListener('keydown', e => {
                 if (e.key === 'Enter') {
                     const val = Number(box.value);
@@ -2669,26 +2686,63 @@ export class Renderer {
                     refocus();
                 }
             });
-            this.statusPanel.querySelector(`#${slotId}`)?.replaceWith(box);
+            return box;
         };
+        const makeScalarBox = (
+            slotId: string, get: () => number, set: (v: number) => void,
+            step?: (current: number, direction: 1 | -1) => number,
+        ) => {
+            this.configureViewportPanel.querySelector(`#${slotId}`)
+                ?.replaceWith(createScalarBox(`${slotId}-input`, get, set, step));
+        };
+
+        // Single "Fading" line: a mode-toggle button, labeled with the OTHER mode's name (clicking
+        // it switches TO that mode), followed by that mode's own textboxes (clamp: Init/Rate;
+        // slice: z/solid/falloff) - built entirely via DOM API, like the projection-matrix editor
+        // above, since unlike every other line here, this one's own field set depends on
+        // fadecfg.kind rather than being fixed.
         const fadecfg = this._active.viewport.fadecfg;
-        makeScalarBox('status-fadeinit-slot', () => fadecfg.init, v => { fadecfg.init = v; });
-        makeScalarBox('status-faderate-slot', () => fadecfg.rate, v => { fadecfg.rate = v; });
+        const fadingEl = document.createElement('span');
+        const fadingToggleBtn = document.createElement('button');
+        fadingToggleBtn.className = 'status-login-btn';
+        fadingToggleBtn.textContent = fadecfg.kind === 'clamp' ? 'Slice' : 'Clamp';
+        fadingToggleBtn.addEventListener('click', () => {
+            this._active.viewport.fadecfg = fadecfg.kind === 'clamp'
+                ? { kind: 'slice', z: 0, solidThick: 0.2, falloffThick: 0.2 }
+                : { kind: 'clamp', init: 0.0, rate: 0.8 };
+            this._render();
+        });
+        fadingEl.appendChild(fadingToggleBtn);
+        const addFadingField = (label: string, get: () => number, set: (v: number) => void) => {
+            const labelEl = document.createElement('span');
+            labelEl.textContent = ` ${label} `;
+            fadingEl.appendChild(labelEl);
+            fadingEl.appendChild(createScalarBox(`viewport-fading-${label}-input`, get, set));
+        };
+        if (fadecfg.kind === 'clamp') {
+            addFadingField('Init', () => fadecfg.init, v => { fadecfg.init = v; });
+            addFadingField('Rate', () => fadecfg.rate, v => { fadecfg.rate = v; });
+        } else {
+            addFadingField('z', () => fadecfg.z, v => { fadecfg.z = v; });
+            addFadingField('solid', () => fadecfg.solidThick, v => { fadecfg.solidThick = v; });
+            addFadingField('falloff', () => fadecfg.falloffThick, v => { fadecfg.falloffThick = v; });
+        }
+        this.configureViewportPanel.querySelector('#viewport-fading-slot')?.replaceWith(fadingEl);
 
         const viewport = this._active.viewport;
-        makeScalarBox('status-focusx-slot', () => viewport.focus[0], v => { viewport.focus[0] = v; });
-        makeScalarBox('status-focusy-slot', () => viewport.focus[1], v => { viewport.focus[1] = v; });
-        makeScalarBox('status-focusz-slot', () => viewport.focus[2], v => { viewport.focus[2] = v; });
-        makeScalarBox('status-aperture-slot', () => viewport.aperture, v => { viewport.aperture = v; });
+        makeScalarBox('viewport-focusx-slot', () => viewport.focus[0], v => { viewport.focus[0] = v; });
+        makeScalarBox('viewport-focusy-slot', () => viewport.focus[1], v => { viewport.focus[1] = v; });
+        makeScalarBox('viewport-focusz-slot', () => viewport.focus[2], v => { viewport.focus[2] = v; });
+        makeScalarBox('viewport-aperture-slot', () => viewport.aperture, v => { viewport.aperture = v; });
         // Multiplies/divides by 1.02 per arrow-key tap instead of the default fixed +-0.05 step -
         // scale spans a much wider, non-linear range (see its own doc comment, src/camera.ts), and
         // no rounding, since scale can be far smaller than the default step's 2dp precision.
         const multiplicativeStep = (current: number, direction: 1 | -1) => current * (direction === 1 ? 1.02 : 1 / 1.02);
-        makeScalarBox('status-scale-slot', () => viewport.scale, v => { viewport.scale = v; }, multiplicativeStep);
+        makeScalarBox('viewport-scale-slot', () => viewport.scale, v => { viewport.scale = v; }, multiplicativeStep);
         // distToFocus (like scale) must stay positive and spans a similarly wide range - same
         // multiplicative step as scale, not the default fixed +-0.05.
         makeScalarBox(
-            'status-distToFocus-slot', () => viewport.distToFocus, v => { viewport.distToFocus = v; },
+            'viewport-distToFocus-slot', () => viewport.distToFocus, v => { viewport.distToFocus = v; },
             multiplicativeStep,
         );
     }
