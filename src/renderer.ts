@@ -2598,7 +2598,8 @@ export class Renderer {
         this.configureViewportPanel.innerHTML = `
             <div><b>Projection matrix:</b></div>
             <div id="viewport-projmat-slot"></div>
-            <div><b>Fading:</b> <span id="viewport-fading-slot"></span></div>
+            <div><b>Fading:</b> <span id="viewport-fading-mode-slot"></span></div>
+            <div id="viewport-fading-fields-slot"></div>
             <div><b>Focus:</b>
                 <span id="viewport-focus-row"><span id="viewport-focusx-slot"></span><span id="viewport-focusy-slot"></span><span id="viewport-focusz-slot"></span></span>
             </div>
@@ -2696,28 +2697,45 @@ export class Renderer {
                 ?.replaceWith(createScalarBox(`${slotId}-input`, get, set, step));
         };
 
-        // Single "Fading" line: a mode-toggle button, labeled with the OTHER mode's name (clicking
-        // it switches TO that mode), followed by that mode's own textboxes (clamp: Init/Rate;
-        // slice: z/solid/falloff) - built entirely via DOM API, like the projection-matrix editor
-        // above, since unlike every other line here, this one's own field set depends on
-        // fadecfg.kind rather than being fixed.
+        // Fading mode row: Clamp/Slice buttons - clicking one switches straight to that mode
+        // (fresh defaults), with the mode already active disabled, same convention as
+        // .panel-mode-btn's own disabled-on-current state (e.g. panelHomeBtn).
         const fadecfg = this._active.viewport.fadecfg;
-        const fadingEl = document.createElement('span');
-        const fadingToggleBtn = document.createElement('button');
-        fadingToggleBtn.className = 'status-login-btn';
-        fadingToggleBtn.textContent = fadecfg.kind === 'clamp' ? 'Slice' : 'Clamp';
-        fadingToggleBtn.addEventListener('click', () => {
-            this._active.viewport.fadecfg = fadecfg.kind === 'clamp'
-                ? { kind: 'slice', z: 0, solidThick: 0.2, falloffThick: 0.2 }
-                : { kind: 'clamp', init: 0.0, rate: 0.8 };
+        const modeEl = document.createElement('span');
+        const setFadingMode = (kind: 'clamp' | 'slice') => {
+            this._active.viewport.fadecfg = kind === 'clamp'
+                ? { kind: 'clamp', init: 0.0, rate: 0.8 }
+                : { kind: 'slice', z: 0, solidThick: 0.2, falloffThick: 0.2 };
             this._render();
-        });
-        fadingEl.appendChild(fadingToggleBtn);
+        };
+        const clampBtn = document.createElement('button');
+        clampBtn.className = 'status-login-btn';
+        clampBtn.textContent = 'Clamp';
+        clampBtn.disabled = fadecfg.kind === 'clamp';
+        clampBtn.addEventListener('click', () => setFadingMode('clamp'));
+        const sliceBtn = document.createElement('button');
+        sliceBtn.className = 'status-login-btn';
+        sliceBtn.textContent = 'Slice';
+        sliceBtn.disabled = fadecfg.kind === 'slice';
+        sliceBtn.addEventListener('click', () => setFadingMode('slice'));
+        modeEl.appendChild(clampBtn);
+        modeEl.appendChild(sliceBtn);
+        this.configureViewportPanel.querySelector('#viewport-fading-mode-slot')?.replaceWith(modeEl);
+
+        // Fading field rows: one "Label: [box]" row per fadecfg field (clamp: Init/Rate; slice:
+        // z/solid/falloff), indented like the projection-matrix rows (same class/margin) to read as
+        // children of the Fading row above - unlike every other status/viewport line, the label
+        // here is plain text, not bold (matches every other row's own trailing colon, but not its
+        // bolding).
+        const fieldsEl = document.createElement('div');
         const addFadingField = (label: string, get: () => number, set: (v: number) => void) => {
+            const rowEl = document.createElement('div');
+            rowEl.className = 'status-projmat-row';
             const labelEl = document.createElement('span');
-            labelEl.textContent = ` ${label} `;
-            fadingEl.appendChild(labelEl);
-            fadingEl.appendChild(createScalarBox(`viewport-fading-${label}-input`, get, set));
+            labelEl.textContent = `${label}: `;
+            rowEl.appendChild(labelEl);
+            rowEl.appendChild(createScalarBox(`viewport-fading-${label}-input`, get, set));
+            fieldsEl.appendChild(rowEl);
         };
         if (fadecfg.kind === 'clamp') {
             addFadingField('Init', () => fadecfg.init, v => { fadecfg.init = v; });
@@ -2727,7 +2745,7 @@ export class Renderer {
             addFadingField('solid', () => fadecfg.solidThick, v => { fadecfg.solidThick = v; });
             addFadingField('falloff', () => fadecfg.falloffThick, v => { fadecfg.falloffThick = v; });
         }
-        this.configureViewportPanel.querySelector('#viewport-fading-slot')?.replaceWith(fadingEl);
+        this.configureViewportPanel.querySelector('#viewport-fading-fields-slot')?.replaceWith(fieldsEl);
 
         const viewport = this._active.viewport;
         makeScalarBox('viewport-focusx-slot', () => viewport.focus[0], v => { viewport.focus[0] = v; });

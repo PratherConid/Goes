@@ -329,6 +329,9 @@
     @media (hover: hover) and (pointer: fine) {
       .status-login-btn:hover { background: #d6a76f; }
     }
+    /* Same convention as .panel-mode-btn:disabled - marks the mode a mode-select button pair
+       (e.g. the fading Clamp/Slice buttons) is already in. */
+    .status-login-btn:disabled { opacity: 0.5; cursor: default; }
 
     /* One instance per former section of the old single command-reference table (see
        Renderer._initCommandsPanel()) - #commands-panel itself is now just the hub of buttons
@@ -629,8 +632,9 @@
 
     .status-projmat-row {
       display: flex;
+      align-items: center;
       gap: 4px;
-      margin: 2px 0;
+      margin: 2px 0 2px 16px;
     }
     .status-projmat-input {
       width: 5.25em;
