@@ -80,21 +80,32 @@ static double next_nonneg_number(ParseCursor& c, const std::string& context) {
     return n;
 }
 
-static Selector parse_node_sel_expr(ParseCursor& c);
-static Selector parse_edge_sel_expr(ParseCursor& c);
-static Selector parse_triangle_sel_expr(ParseCursor& c);
-static Selector parse_quad_sel_expr(ParseCursor& c);
+static Selector parse_sel_expr(ParseCursor& c, SelectorType type);
 
-// Mirrors shared/selector.ts's parseConversion() - same logic, just an explicit from_tok ->
-// (SelectorType, function-pointer) if/else chain in place of TS's inline ternary of named functions.
+// Display name for `type` used in parse_sel_expr's own "unknown X-selector operator"/rejection
+// messages - Tri reads as "triangle" here (unlike e.g. describe_selector_type's "a tri", used
+// instead by the select_*() evaluators' own wrong-kind-selector messages). Mirrors
+// shared/selector.ts's selectorKindName.
+static std::string selector_kind_name(SelectorType type) {
+    switch (type) {
+        case SelectorType::Node: return "node";
+        case SelectorType::Edge: return "edge";
+        case SelectorType::Tri:  return "triangle";
+        case SelectorType::Quad: return "quad";
+    }
+    throw std::runtime_error("selector_kind_name: unknown type");
+}
+
+// Mirrors shared/selector.ts's parseConversion() - same logic, just calling parse_sel_expr(c, from)
+// directly in place of TS's own dispatch (which only needs a from-token -> SelectorType lookup now
+// that there's a single recursive parser, same simplification TS itself made here).
 static Selector parse_conversion(ParseCursor& c, SelectorOp op, SelectorType to_type) {
     std::string from_tok = c.next();
     SelectorType from;
-    Selector (*parse_from)(ParseCursor&);
-    if (from_tok == "node") { from = SelectorType::Node; parse_from = parse_node_sel_expr; }
-    else if (from_tok == "edge") { from = SelectorType::Edge; parse_from = parse_edge_sel_expr; }
-    else if (from_tok == "tri") { from = SelectorType::Tri; parse_from = parse_triangle_sel_expr; }
-    else if (from_tok == "quad") { from = SelectorType::Quad; parse_from = parse_quad_sel_expr; }
+    if (from_tok == "node") from = SelectorType::Node;
+    else if (from_tok == "edge") from = SelectorType::Edge;
+    else if (from_tok == "tri") from = SelectorType::Tri;
+    else if (from_tok == "quad") from = SelectorType::Quad;
     else throw std::runtime_error(
         "selector: (" + std::string(op == SelectorOp::Conva ? "conva" : "conve") +
         " ...) source kind must be 'node', 'edge', 'tri', or 'quad', got '" + from_tok + "'");
@@ -102,7 +113,7 @@ static Selector parse_conversion(ParseCursor& c, SelectorOp op, SelectorType to_
         (from == SelectorType::Quad && to_type == SelectorType::Tri))
         throw std::runtime_error("selector: (" + std::string(op == SelectorOp::Conva ? "conva" : "conve") +
             " ...) has no association defined between 'tri' and 'quad'");
-    Selector a = parse_from(c);
+    Selector a = parse_sel_expr(c, from);
     c.expect(")");
     if (from == to_type) return a; // same-kind conversion is a no-op
     Selector sel;
@@ -111,49 +122,55 @@ static Selector parse_conversion(ParseCursor& c, SelectorOp op, SelectorType to_
     return sel;
 }
 
-// Parses a node SEL - mutually recursive with parse_edge_sel_expr/parse_triangle_sel_expr/
-// parse_quad_sel_expr via conva/conve's own operand. Every Selector this returns has
-// type == SelectorType::Node. Mirrors shared/selector.ts's parseNodeSelExpr().
-static Selector parse_node_sel_expr(ParseCursor& c) {
+// Parses a SEL of the given `type` - self-recursive on the SAME `type` throughout (conva/conve, via
+// parse_conversion above, are the only place a parse ever continues into a different type). Every
+// Selector this returns has this same `type`. `deg` (node only) and `more` (node/edge only) reject
+// every other `type` with the same "unknown operator" message parsing an operator this function had
+// no case for at all would produce. Mirrors shared/selector.ts's parseSelExpr().
+static Selector parse_sel_expr(ParseCursor& c, SelectorType type) {
     c.expect("(");
     std::string op = c.next();
     if (op == "union" || op == "inter") {
         Selector sel;
         sel.op = op == "union" ? SelectorOp::Union : SelectorOp::Inter;
-        sel.type = SelectorType::Node;
-        while (c.peek() != ")") sel.items.push_back(parse_node_sel_expr(c));
+        sel.type = type;
+        while (c.peek() != ")") sel.items.push_back(parse_sel_expr(c, type));
         c.expect(")");
         return sel;
     }
     if (op == "diff") {
         Selector sel;
         sel.op = SelectorOp::Diff;
-        sel.type = SelectorType::Node;
-        sel.a = std::make_shared<Selector>(parse_node_sel_expr(c));
-        sel.b = std::make_shared<Selector>(parse_node_sel_expr(c));
+        sel.type = type;
+        sel.a = std::make_shared<Selector>(parse_sel_expr(c, type));
+        sel.b = std::make_shared<Selector>(parse_sel_expr(c, type));
         c.expect(")");
         return sel;
     }
     if (op == "compl") {
         Selector sel;
         sel.op = SelectorOp::Compl;
-        sel.type = SelectorType::Node;
-        sel.a = std::make_shared<Selector>(parse_node_sel_expr(c));
+        sel.type = type;
+        sel.a = std::make_shared<Selector>(parse_sel_expr(c, type));
         c.expect(")");
         return sel;
     }
     if (op == "more") {
+        if (type != SelectorType::Node && type != SelectorType::Edge)
+            throw std::runtime_error("selector: unknown " + selector_kind_name(type) + "-selector operator 'more'");
         Selector sel;
         sel.op = SelectorOp::More;
-        sel.type = SelectorType::Node;
+        sel.type = type;
         if (c.peek() != "(") sel.steps = next_nonneg_int(c, "(more ...) step count");
-        sel.a = std::make_shared<Selector>(parse_node_sel_expr(c));
+        sel.a = std::make_shared<Selector>(parse_sel_expr(c, type));
         c.expect(")");
         return sel;
     }
-    if (op == "all") { c.expect(")"); return Selector{SelectorOp::All, SelectorType::Node}; }
-    if (op == "none") { c.expect(")"); return Selector{SelectorOp::None, SelectorType::Node}; }
+    if (op == "all") { c.expect(")"); return Selector{SelectorOp::All, type}; }
+    if (op == "none") { c.expect(")"); return Selector{SelectorOp::None, type}; }
     if (op == "deg") {
+        if (type != SelectorType::Node)
+            throw std::runtime_error("selector: unknown " + selector_kind_name(type) + "-selector operator 'deg'");
         std::string cmp_tok = c.next();
         DegCmp cmp;
         if (cmp_tok == "eq") cmp = DegCmp::Eq;
@@ -164,219 +181,47 @@ static Selector parse_node_sel_expr(ParseCursor& c) {
         int n = next_nonneg_int(c, "(deg ...) argument");
         c.expect(")");
         Selector sel;
-        sel.op = SelectorOp::Deg; sel.type = SelectorType::Node; sel.cmp = cmp; sel.n = n;
+        sel.op = SelectorOp::Deg; sel.type = type; sel.cmp = cmp; sel.n = n;
         return sel;
     }
     if (op == "conva" || op == "conve")
-        return parse_conversion(c, op == "conva" ? SelectorOp::Conva : SelectorOp::Conve, SelectorType::Node);
+        return parse_conversion(c, op == "conva" ? SelectorOp::Conva : SelectorOp::Conve, type);
     if (op == "rrmn") {
         int count = next_nonneg_int(c, "(rrmn ...) count");
         Selector sel;
-        sel.op = SelectorOp::Rrmn; sel.type = SelectorType::Node; sel.count = count;
-        sel.a = std::make_shared<Selector>(parse_node_sel_expr(c));
+        sel.op = SelectorOp::Rrmn; sel.type = type; sel.count = count;
+        sel.a = std::make_shared<Selector>(parse_sel_expr(c, type));
         c.expect(")");
         return sel;
     }
     if (op == "rrmp") {
         double frac = next_nonneg_number(c, "(rrmp ...) portion");
         Selector sel;
-        sel.op = SelectorOp::Rrmp; sel.type = SelectorType::Node; sel.frac = frac;
-        sel.a = std::make_shared<Selector>(parse_node_sel_expr(c));
+        sel.op = SelectorOp::Rrmp; sel.type = type; sel.frac = frac;
+        sel.a = std::make_shared<Selector>(parse_sel_expr(c, type));
         c.expect(")");
         return sel;
     }
-    throw std::runtime_error("selector: unknown node-selector operator '" + op + "'");
-}
-
-// Parses an edge SEL - mutually recursive with parse_node_sel_expr/parse_triangle_sel_expr/
-// parse_quad_sel_expr via conva/conve's own operand. Every Selector this returns has
-// type == SelectorType::Edge. Mirrors shared/selector.ts's parseEdgeSelExpr().
-static Selector parse_edge_sel_expr(ParseCursor& c) {
-    c.expect("(");
-    std::string op = c.next();
-    if (op == "union" || op == "inter") {
-        Selector sel;
-        sel.op = op == "union" ? SelectorOp::Union : SelectorOp::Inter;
-        sel.type = SelectorType::Edge;
-        while (c.peek() != ")") sel.items.push_back(parse_edge_sel_expr(c));
-        c.expect(")");
-        return sel;
-    }
-    if (op == "diff") {
-        Selector sel;
-        sel.op = SelectorOp::Diff;
-        sel.type = SelectorType::Edge;
-        sel.a = std::make_shared<Selector>(parse_edge_sel_expr(c));
-        sel.b = std::make_shared<Selector>(parse_edge_sel_expr(c));
-        c.expect(")");
-        return sel;
-    }
-    if (op == "compl") {
-        Selector sel;
-        sel.op = SelectorOp::Compl;
-        sel.type = SelectorType::Edge;
-        sel.a = std::make_shared<Selector>(parse_edge_sel_expr(c));
-        c.expect(")");
-        return sel;
-    }
-    if (op == "more") {
-        Selector sel;
-        sel.op = SelectorOp::More;
-        sel.type = SelectorType::Edge;
-        if (c.peek() != "(") sel.steps = next_nonneg_int(c, "(more ...) step count");
-        sel.a = std::make_shared<Selector>(parse_edge_sel_expr(c));
-        c.expect(")");
-        return sel;
-    }
-    if (op == "all") { c.expect(")"); return Selector{SelectorOp::All, SelectorType::Edge}; }
-    if (op == "none") { c.expect(")"); return Selector{SelectorOp::None, SelectorType::Edge}; }
-    if (op == "conva" || op == "conve")
-        return parse_conversion(c, op == "conva" ? SelectorOp::Conva : SelectorOp::Conve, SelectorType::Edge);
-    if (op == "rrmn") {
-        int count = next_nonneg_int(c, "(rrmn ...) count");
-        Selector sel;
-        sel.op = SelectorOp::Rrmn; sel.type = SelectorType::Edge; sel.count = count;
-        sel.a = std::make_shared<Selector>(parse_edge_sel_expr(c));
-        c.expect(")");
-        return sel;
-    }
-    if (op == "rrmp") {
-        double frac = next_nonneg_number(c, "(rrmp ...) portion");
-        Selector sel;
-        sel.op = SelectorOp::Rrmp; sel.type = SelectorType::Edge; sel.frac = frac;
-        sel.a = std::make_shared<Selector>(parse_edge_sel_expr(c));
-        c.expect(")");
-        return sel;
-    }
-    throw std::runtime_error("selector: unknown edge-selector operator '" + op + "'");
-}
-
-// Parses a triangle SEL - mutually recursive with parse_node_sel_expr/parse_edge_sel_expr via
-// conva/conve's own operand (never parse_quad_sel_expr - see selector.h's own top comment on why
-// triangle <-> quad is rejected). Every Selector this returns has type == SelectorType::Tri. No
-// deg/more here. Mirrors shared/selector.ts's parseTriangleSelExpr().
-static Selector parse_triangle_sel_expr(ParseCursor& c) {
-    c.expect("(");
-    std::string op = c.next();
-    if (op == "union" || op == "inter") {
-        Selector sel;
-        sel.op = op == "union" ? SelectorOp::Union : SelectorOp::Inter;
-        sel.type = SelectorType::Tri;
-        while (c.peek() != ")") sel.items.push_back(parse_triangle_sel_expr(c));
-        c.expect(")");
-        return sel;
-    }
-    if (op == "diff") {
-        Selector sel;
-        sel.op = SelectorOp::Diff;
-        sel.type = SelectorType::Tri;
-        sel.a = std::make_shared<Selector>(parse_triangle_sel_expr(c));
-        sel.b = std::make_shared<Selector>(parse_triangle_sel_expr(c));
-        c.expect(")");
-        return sel;
-    }
-    if (op == "compl") {
-        Selector sel;
-        sel.op = SelectorOp::Compl;
-        sel.type = SelectorType::Tri;
-        sel.a = std::make_shared<Selector>(parse_triangle_sel_expr(c));
-        c.expect(")");
-        return sel;
-    }
-    if (op == "all") { c.expect(")"); return Selector{SelectorOp::All, SelectorType::Tri}; }
-    if (op == "none") { c.expect(")"); return Selector{SelectorOp::None, SelectorType::Tri}; }
-    if (op == "conva" || op == "conve")
-        return parse_conversion(c, op == "conva" ? SelectorOp::Conva : SelectorOp::Conve, SelectorType::Tri);
-    if (op == "rrmn") {
-        int count = next_nonneg_int(c, "(rrmn ...) count");
-        Selector sel;
-        sel.op = SelectorOp::Rrmn; sel.type = SelectorType::Tri; sel.count = count;
-        sel.a = std::make_shared<Selector>(parse_triangle_sel_expr(c));
-        c.expect(")");
-        return sel;
-    }
-    if (op == "rrmp") {
-        double frac = next_nonneg_number(c, "(rrmp ...) portion");
-        Selector sel;
-        sel.op = SelectorOp::Rrmp; sel.type = SelectorType::Tri; sel.frac = frac;
-        sel.a = std::make_shared<Selector>(parse_triangle_sel_expr(c));
-        c.expect(")");
-        return sel;
-    }
-    throw std::runtime_error("selector: unknown triangle-selector operator '" + op + "'");
-}
-
-// Parses a quad SEL - the quad counterpart of parse_triangle_sel_expr above (see its own doc
-// comment). Every Selector this returns has type == SelectorType::Quad. Mirrors shared/selector.ts's
-// parseQuadSelExpr().
-static Selector parse_quad_sel_expr(ParseCursor& c) {
-    c.expect("(");
-    std::string op = c.next();
-    if (op == "union" || op == "inter") {
-        Selector sel;
-        sel.op = op == "union" ? SelectorOp::Union : SelectorOp::Inter;
-        sel.type = SelectorType::Quad;
-        while (c.peek() != ")") sel.items.push_back(parse_quad_sel_expr(c));
-        c.expect(")");
-        return sel;
-    }
-    if (op == "diff") {
-        Selector sel;
-        sel.op = SelectorOp::Diff;
-        sel.type = SelectorType::Quad;
-        sel.a = std::make_shared<Selector>(parse_quad_sel_expr(c));
-        sel.b = std::make_shared<Selector>(parse_quad_sel_expr(c));
-        c.expect(")");
-        return sel;
-    }
-    if (op == "compl") {
-        Selector sel;
-        sel.op = SelectorOp::Compl;
-        sel.type = SelectorType::Quad;
-        sel.a = std::make_shared<Selector>(parse_quad_sel_expr(c));
-        c.expect(")");
-        return sel;
-    }
-    if (op == "all") { c.expect(")"); return Selector{SelectorOp::All, SelectorType::Quad}; }
-    if (op == "none") { c.expect(")"); return Selector{SelectorOp::None, SelectorType::Quad}; }
-    if (op == "conva" || op == "conve")
-        return parse_conversion(c, op == "conva" ? SelectorOp::Conva : SelectorOp::Conve, SelectorType::Quad);
-    if (op == "rrmn") {
-        int count = next_nonneg_int(c, "(rrmn ...) count");
-        Selector sel;
-        sel.op = SelectorOp::Rrmn; sel.type = SelectorType::Quad; sel.count = count;
-        sel.a = std::make_shared<Selector>(parse_quad_sel_expr(c));
-        c.expect(")");
-        return sel;
-    }
-    if (op == "rrmp") {
-        double frac = next_nonneg_number(c, "(rrmp ...) portion");
-        Selector sel;
-        sel.op = SelectorOp::Rrmp; sel.type = SelectorType::Quad; sel.frac = frac;
-        sel.a = std::make_shared<Selector>(parse_quad_sel_expr(c));
-        c.expect(")");
-        return sel;
-    }
-    throw std::runtime_error("selector: unknown quad-selector operator '" + op + "'");
+    throw std::runtime_error("selector: unknown " + selector_kind_name(type) + "-selector operator '" + op + "'");
 }
 
 // Shared by parse_node_selector/parse_edge_selector/parse_triangle_selector/parse_quad_selector:
-// tokenizes s, runs parse_expr over the whole thing, and rejects any leftover trailing input.
-// Mirrors shared/selector.ts's parseTopLevel().
-static Selector parse_top_level(const std::string& s, Selector (*parse_expr)(ParseCursor&)) {
+// tokenizes s, runs parse_sel_expr(c, type) over the whole thing, and rejects any leftover trailing
+// input. Mirrors shared/selector.ts's parseTopLevel().
+static Selector parse_top_level(const std::string& s, SelectorType type) {
     auto tokens = tokenize(s);
     if (tokens.empty()) throw std::runtime_error("selector: empty input");
     ParseCursor c(std::move(tokens));
-    Selector sel = parse_expr(c);
+    Selector sel = parse_sel_expr(c, type);
     if (!c.at_end())
         throw std::runtime_error("selector: unexpected trailing input starting at '" + c.peek() + "'");
     return sel;
 }
 
-Selector parse_node_selector(const std::string& s) { return parse_top_level(s, parse_node_sel_expr); }
-Selector parse_edge_selector(const std::string& s) { return parse_top_level(s, parse_edge_sel_expr); }
-Selector parse_triangle_selector(const std::string& s) { return parse_top_level(s, parse_triangle_sel_expr); }
-Selector parse_quad_selector(const std::string& s) { return parse_top_level(s, parse_quad_sel_expr); }
+Selector parse_node_selector(const std::string& s) { return parse_top_level(s, SelectorType::Node); }
+Selector parse_edge_selector(const std::string& s) { return parse_top_level(s, SelectorType::Edge); }
+Selector parse_triangle_selector(const std::string& s) { return parse_top_level(s, SelectorType::Tri); }
+Selector parse_quad_selector(const std::string& s) { return parse_top_level(s, SelectorType::Quad); }
 
 // Renders a double the way JS's default Number->string conversion would for the plain decimal
 // literals (rrmp) actually seen in board presets ("0.1", "0.6666", "1", ...) - an integral value

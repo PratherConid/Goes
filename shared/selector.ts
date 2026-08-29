@@ -54,16 +54,17 @@ import { findTriangles, findQuads } from './topology.js';
 //
 // Every Selector node (one monolithic type, below) carries its own `type` (which kind of set it
 // denotes) - but rather than parse a type-less tree and infer/validate `type` bottom-up afterward,
-// parsing itself is done by four mutually recursive functions, parseNodeSelExpr/parseEdgeSelExpr/
-// parseTriangleSelExpr/parseQuadSelExpr (mirroring selectNode()/selectEdge()/selectTriangle()/
-// selectQuad()'s own mutual recursion below): each always produces Selectors of its own `type`,
-// recursing into whichever of the four conva/conve's own explicit source-kind token names for that
-// operand. This is what lets `all`/`none` skip spelling out which kind they mean: `type` comes from
-// *which parser reached them*, not from anything written in the expression itself. selectNode()/
-// selectEdge()/selectTriangle()/selectQuad() (this file's own separate mutually recursive
-// evaluators) still re-check `sel.type` themselves rather than trusting it, since a Selector need
-// not always come from this file's own parsers (e.g. a hand-built AST, or one round-tripped through
-// JSON).
+// parsing itself is done by one function, parseSelExpr(c, type), self-recursive on the SAME `type`
+// throughout (conva/conve, via parseConversion, are the only place a parse ever continues into a
+// DIFFERENT type - naming it explicitly via their own leading node/edge/tri/quad token). This is
+// what lets `all`/`none` skip spelling out which kind they mean: `type` comes from *which type
+// parseSelExpr was called with*, not from anything written in the expression itself. `deg` (node
+// only) and `more` (node/edge only) are rejected for any other `type` - see parseSelExpr's own
+// cases. selectNode()/selectEdge()/selectTriangle()/selectQuad() (this file's own separate mutually
+// recursive evaluators, one per kind rather than one parameterized function, since each returns a
+// different container type - see their own doc comments) still re-check `sel.type` themselves
+// rather than trusting it, since a Selector need not always come from parseSelExpr (e.g. a
+// hand-built AST, or one round-tripped through JSON).
 // ── parsing ──────────────────────────────────────────────────────────────────
 
 // '(' and ')' are always their own token, even with no surrounding whitespace (e.g. "(deg eq 5)");
@@ -119,10 +120,14 @@ function nextNonnegNumber(c: ParseCursor, context: string): number {
     return n;
 }
 
+// Display name for `type` used in parseSelExpr's own "unknown X-selector operator"/rejection
+// messages - 'tri' reads as "triangle" there (unlike e.g. describeSelectorType's "a tri", used
+// instead by the select*() evaluators' own wrong-kind-selector messages).
+const selectorKindName: Record<SelectorType, string> = { node: 'node', edge: 'edge', tri: 'triangle', quad: 'quad' };
+
 // Reads conva/conve's own leading node/edge/tri/quad token (the "from" kind) and parses its operand
-// via the matching one of parseNodeSelExpr/parseEdgeSelExpr/parseTriangleSelExpr/
-// parseQuadSelExpr - shared by all four of those functions' own conva/conve case below, `toType`
-// being whichever of them called this (the "to" kind, from parsing context, same as all/none).
+// via parseSelExpr(c, fromTok) - shared by parseSelExpr's own conva/conve case, `toType` being
+// whichever `type` it was called with (the "to" kind, from parsing context, same as all/none).
 // Throws if the (from, toType) pair is the one with no defined association (triangle <-> quad -
 // see this file's own top comment); returns the parsed operand directly, unwrapped, for a same-kind
 // conversion (a no-op).
@@ -132,224 +137,79 @@ function parseConversion(c: ParseCursor, op: 'conva' | 'conve', toType: Selector
         throw new Error(`selector: (${op} ...) source kind must be 'node', 'edge', 'tri', or 'quad', got '${fromTok}'`);
     if ((fromTok === 'tri' && toType === 'quad') || (fromTok === 'quad' && toType === 'tri'))
         throw new Error(`selector: (${op} ...) has no association defined between 'tri' and 'quad'`);
-    const parseFrom = fromTok === 'node' ? parseNodeSelExpr : fromTok === 'edge' ? parseEdgeSelExpr
-        : fromTok === 'tri' ? parseTriangleSelExpr : parseQuadSelExpr;
-    const a = parseFrom(c);
+    const a = parseSelExpr(c, fromTok);
     c.expect(')');
     return fromTok === toType ? a : { op, type: toType, from: fromTok, a };
 }
 
-// Parses a node SEL - mutually recursive with parseEdgeSelExpr/parseTriangleSelExpr/
-// parseQuadSelExpr via conva/conve's own operand. Every Selector this returns has `type: 'node'`.
-function parseNodeSelExpr(c: ParseCursor): Selector {
+// Parses a SEL of the given `type` - self-recursive on the SAME `type` throughout (conva/conve, via
+// parseConversion above, are the only place a parse ever continues into a different type). Every
+// Selector this returns has this same `type`, except where `type` doesn't actually match what got
+// parsed - impossible, since every case below only reaches a return by consuming input that names
+// `type` implicitly (all/none/deg/more/etc.) or explicitly rejects a mismatched one (conva/conve).
+// `deg` (node only) and `more` (node/edge only) reject every other `type` with the same "unknown
+// operator" message parsing an operator this function has no case for at all would produce (e.g.
+// `deg` was never a recognized triangle/quad operator to begin with).
+function parseSelExpr(c: ParseCursor, type: SelectorType): Selector {
     c.expect('(');
     const op = c.next();
     switch (op) {
         case 'union': case 'inter': {
             const items: Selector[] = [];
-            while (c.peek() !== ')') items.push(parseNodeSelExpr(c));
+            while (c.peek() !== ')') items.push(parseSelExpr(c, type));
             c.expect(')');
-            return { op, type: 'node', items };
+            return { op, type, items };
         }
         case 'diff': {
-            const a = parseNodeSelExpr(c);
-            const b = parseNodeSelExpr(c);
+            const a = parseSelExpr(c, type);
+            const b = parseSelExpr(c, type);
             c.expect(')');
-            return { op: 'diff', type: 'node', a, b };
+            return { op: 'diff', type, a, b };
         }
         case 'compl': {
-            const a = parseNodeSelExpr(c);
+            const a = parseSelExpr(c, type);
             c.expect(')');
-            return { op: 'compl', type: 'node', a };
+            return { op: 'compl', type, a };
         }
         case 'more': {
+            if (type !== 'node' && type !== 'edge')
+                throw new Error(`selector: unknown ${selectorKindName[type]}-selector operator 'more'`);
             const steps = c.peek() === '(' ? undefined : nextNonnegInt(c, '(more ...) step count');
-            const a = parseNodeSelExpr(c);
+            const a = parseSelExpr(c, type);
             c.expect(')');
-            return steps === undefined ? { op: 'more', type: 'node', a } : { op: 'more', type: 'node', steps, a };
+            return steps === undefined ? { op: 'more', type, a } : { op: 'more', type, steps, a };
         }
         case 'all':
             c.expect(')');
-            return { op: 'all', type: 'node' };
+            return { op: 'all', type };
         case 'none':
             c.expect(')');
-            return { op: 'none', type: 'node' };
+            return { op: 'none', type };
         case 'deg': {
+            if (type !== 'node') throw new Error(`selector: unknown ${selectorKindName[type]}-selector operator 'deg'`);
             const cmpTok = c.next();
             if (cmpTok !== 'eq' && cmpTok !== 'gt' && cmpTok !== 'lt')
                 throw new Error(`selector: (deg ...) comparator must be 'eq', 'gt', or 'lt', got '${cmpTok}'`);
             const n = nextNonnegInt(c, '(deg ...) argument');
             c.expect(')');
-            return { op: 'deg', type: 'node', cmp: cmpTok, n };
+            return { op: 'deg', type, cmp: cmpTok, n };
         }
         case 'conva': case 'conve':
-            return parseConversion(c, op, 'node');
+            return parseConversion(c, op, type);
         case 'rrmn': {
             const count = nextNonnegInt(c, '(rrmn ...) count');
-            const a = parseNodeSelExpr(c);
+            const a = parseSelExpr(c, type);
             c.expect(')');
-            return { op: 'rrmn', type: 'node', count, a };
+            return { op: 'rrmn', type, count, a };
         }
         case 'rrmp': {
             const frac = nextNonnegNumber(c, '(rrmp ...) portion');
-            const a = parseNodeSelExpr(c);
+            const a = parseSelExpr(c, type);
             c.expect(')');
-            return { op: 'rrmp', type: 'node', frac, a };
+            return { op: 'rrmp', type, frac, a };
         }
         default:
-            throw new Error(`selector: unknown node-selector operator '${op}'`);
-    }
-}
-
-// Parses an edge SEL - mutually recursive with parseNodeSelExpr/parseTriangleSelExpr/
-// parseQuadSelExpr via conva/conve's own operand. Every Selector this returns has `type: 'edge'`.
-function parseEdgeSelExpr(c: ParseCursor): Selector {
-    c.expect('(');
-    const op = c.next();
-    switch (op) {
-        case 'union': case 'inter': {
-            const items: Selector[] = [];
-            while (c.peek() !== ')') items.push(parseEdgeSelExpr(c));
-            c.expect(')');
-            return { op, type: 'edge', items };
-        }
-        case 'diff': {
-            const a = parseEdgeSelExpr(c);
-            const b = parseEdgeSelExpr(c);
-            c.expect(')');
-            return { op: 'diff', type: 'edge', a, b };
-        }
-        case 'compl': {
-            const a = parseEdgeSelExpr(c);
-            c.expect(')');
-            return { op: 'compl', type: 'edge', a };
-        }
-        case 'more': {
-            const steps = c.peek() === '(' ? undefined : nextNonnegInt(c, '(more ...) step count');
-            const a = parseEdgeSelExpr(c);
-            c.expect(')');
-            return steps === undefined ? { op: 'more', type: 'edge', a } : { op: 'more', type: 'edge', steps, a };
-        }
-        case 'all':
-            c.expect(')');
-            return { op: 'all', type: 'edge' };
-        case 'none':
-            c.expect(')');
-            return { op: 'none', type: 'edge' };
-        case 'conva': case 'conve':
-            return parseConversion(c, op, 'edge');
-        case 'rrmn': {
-            const count = nextNonnegInt(c, '(rrmn ...) count');
-            const a = parseEdgeSelExpr(c);
-            c.expect(')');
-            return { op: 'rrmn', type: 'edge', count, a };
-        }
-        case 'rrmp': {
-            const frac = nextNonnegNumber(c, '(rrmp ...) portion');
-            const a = parseEdgeSelExpr(c);
-            c.expect(')');
-            return { op: 'rrmp', type: 'edge', frac, a };
-        }
-        default:
-            throw new Error(`selector: unknown edge-selector operator '${op}'`);
-    }
-}
-
-// Parses a triangle SEL - mutually recursive with parseNodeSelExpr/parseEdgeSelExpr via conva/
-// conve's own operand (never parseQuadSelExpr - see this file's own top comment on why
-// triangle <-> quad is rejected). Every Selector this returns has `type: 'tri'`. No `deg`/`more`
-// here.
-function parseTriangleSelExpr(c: ParseCursor): Selector {
-    c.expect('(');
-    const op = c.next();
-    switch (op) {
-        case 'union': case 'inter': {
-            const items: Selector[] = [];
-            while (c.peek() !== ')') items.push(parseTriangleSelExpr(c));
-            c.expect(')');
-            return { op, type: 'tri', items };
-        }
-        case 'diff': {
-            const a = parseTriangleSelExpr(c);
-            const b = parseTriangleSelExpr(c);
-            c.expect(')');
-            return { op: 'diff', type: 'tri', a, b };
-        }
-        case 'compl': {
-            const a = parseTriangleSelExpr(c);
-            c.expect(')');
-            return { op: 'compl', type: 'tri', a };
-        }
-        case 'all':
-            c.expect(')');
-            return { op: 'all', type: 'tri' };
-        case 'none':
-            c.expect(')');
-            return { op: 'none', type: 'tri' };
-        case 'conva': case 'conve':
-            return parseConversion(c, op, 'tri');
-        case 'rrmn': {
-            const count = nextNonnegInt(c, '(rrmn ...) count');
-            const a = parseTriangleSelExpr(c);
-            c.expect(')');
-            return { op: 'rrmn', type: 'tri', count, a };
-        }
-        case 'rrmp': {
-            const frac = nextNonnegNumber(c, '(rrmp ...) portion');
-            const a = parseTriangleSelExpr(c);
-            c.expect(')');
-            return { op: 'rrmp', type: 'tri', frac, a };
-        }
-        default:
-            throw new Error(`selector: unknown triangle-selector operator '${op}'`);
-    }
-}
-
-// Parses a quad SEL - the quad counterpart of parseTriangleSelExpr above (see its own doc
-// comment). Every Selector this returns has `type: 'quad'`.
-function parseQuadSelExpr(c: ParseCursor): Selector {
-    c.expect('(');
-    const op = c.next();
-    switch (op) {
-        case 'union': case 'inter': {
-            const items: Selector[] = [];
-            while (c.peek() !== ')') items.push(parseQuadSelExpr(c));
-            c.expect(')');
-            return { op, type: 'quad', items };
-        }
-        case 'diff': {
-            const a = parseQuadSelExpr(c);
-            const b = parseQuadSelExpr(c);
-            c.expect(')');
-            return { op: 'diff', type: 'quad', a, b };
-        }
-        case 'compl': {
-            const a = parseQuadSelExpr(c);
-            c.expect(')');
-            return { op: 'compl', type: 'quad', a };
-        }
-        case 'all':
-            c.expect(')');
-            return { op: 'all', type: 'quad' };
-        case 'none':
-            c.expect(')');
-            return { op: 'none', type: 'quad' };
-        case 'conva': case 'conve':
-            return parseConversion(c, op, 'quad');
-        case 'rrmn': {
-            const count = nextNonnegInt(c, '(rrmn ...) count');
-            const a = parseQuadSelExpr(c);
-            c.expect(')');
-            return { op: 'rrmn', type: 'quad', count, a };
-        }
-        case 'rrmp': {
-            const frac = nextNonnegNumber(c, '(rrmp ...) portion');
-            const a = parseQuadSelExpr(c);
-            c.expect(')');
-            return { op: 'rrmp', type: 'quad', frac, a };
-        }
-        default:
-            throw new Error(`selector: unknown quad-selector operator '${op}'`);
+            throw new Error(`selector: unknown ${selectorKindName[type]}-selector operator '${op}'`);
     }
 }
 
@@ -366,27 +226,27 @@ function parseTopLevel(s: string, parseExpr: (c: ParseCursor) => Selector): Sele
 
 /** Parses `s` as a node selector (see this file's own top comment for the grammar) - throws if `s`
  * doesn't follow the grammar (an operator not valid for nodes is simply not recognized inside a
- * node-selector context - see parseNodeSelExpr). */
+ * node-selector context - see parseSelExpr). */
 export function parseNodeSelector(s: string): Selector {
-    return parseTopLevel(s, parseNodeSelExpr);
+    return parseTopLevel(s, c => parseSelExpr(c, 'node'));
 }
 
 /** Parses `s` as an edge selector (see this file's own top comment for the grammar) - throws if `s`
  * doesn't follow the grammar. */
 export function parseEdgeSelector(s: string): Selector {
-    return parseTopLevel(s, parseEdgeSelExpr);
+    return parseTopLevel(s, c => parseSelExpr(c, 'edge'));
 }
 
 /** Parses `s` as a triangle selector (see this file's own top comment for the grammar) - throws if
  * `s` doesn't follow the grammar. */
 export function parseTriangleSelector(s: string): Selector {
-    return parseTopLevel(s, parseTriangleSelExpr);
+    return parseTopLevel(s, c => parseSelExpr(c, 'tri'));
 }
 
 /** Parses `s` as a quad selector (see this file's own top comment for the grammar) - throws if `s`
  * doesn't follow the grammar. */
 export function parseQuadSelector(s: string): Selector {
-    return parseTopLevel(s, parseQuadSelExpr);
+    return parseTopLevel(s, c => parseSelExpr(c, 'quad'));
 }
 
 /** Formats `sel` back into the S-expression syntax parseNodeSelector()/parseEdgeSelector()/
@@ -419,16 +279,16 @@ export function formatSelector(sel: Selector): string {
     }
 }
 
-// Parses one `(tri [SEL])` / `(quad [SEL])` - mirrors parseNodeSelExpr/etc.'s own "consume '(', read
-// a leading token, dispatch" shape, but there's no mutual recursion here: a FormSelector's own SEL
-// is parsed via the ordinary parseTriangleSelExpr/parseQuadSelExpr, not another parseFormSelExpr.
+// Parses one `(tri [SEL])` / `(quad [SEL])` - mirrors parseSelExpr's own "consume '(', read a
+// leading token, dispatch" shape, but there's no mutual recursion here: a FormSelector's own SEL
+// is parsed via the ordinary parseSelExpr, not another parseFormSelExpr.
 function parseFormSelExpr(c: ParseCursor): FormSelector {
     c.expect('(');
     const kind = c.next();
     if (kind !== 'tri' && kind !== 'quad')
         throw new Error(`form selector: expected 'tri' or 'quad', got '${kind}'`);
     if (c.peek() === ')') { c.next(); return { kind }; }
-    const sel = kind === 'tri' ? parseTriangleSelExpr(c) : parseQuadSelExpr(c);
+    const sel = parseSelExpr(c, kind);
     c.expect(')');
     return { kind, sel };
 }

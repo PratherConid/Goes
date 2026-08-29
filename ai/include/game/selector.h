@@ -102,10 +102,10 @@ struct Selector {
 
 // Parses `s` as a node selector (see this file's own top comment for the grammar) - throws
 // std::runtime_error if `s` doesn't follow the grammar (an operator not valid for nodes is simply
-// not recognized inside a node-selector context). Mirrors shared/selector.ts's parseNodeSelector(),
-// including its mutual recursion with parse_edge_selector/parse_triangle_selector/
-// parse_quad_selector below (via conva/conve's own operand) - see the .cpp file's own
-// parse_node_sel_expr/parse_edge_sel_expr/parse_triangle_sel_expr/parse_quad_sel_expr.
+// not recognized inside a node-selector context). Mirrors shared/selector.ts's parseNodeSelector() -
+// see the .cpp file's own parse_sel_expr, the single function all four parse_*_selector entry
+// points below share (self-recursive on the same SelectorType throughout, including through
+// conva/conve's own operand - see parse_sel_expr's own doc comment).
 Selector parse_node_selector(const std::string& s);
 
 // Parses `s` as an edge selector - the edge-selector counterpart of parse_node_selector above.
