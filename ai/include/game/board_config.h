@@ -4,6 +4,7 @@
 #include <utility>
 #include <string>
 #include <optional>
+#include <set>
 
 struct BoardConfig {
     int N;
@@ -136,23 +137,28 @@ BoardConfig scale_board(const BoardConfig& bc, double factor);
 // side, there's no projMat to construct here - see BoardConfig's own fields above, C++ never renders.
 BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2);
 
-// The subgraph induced by sel (evaluated via game/selector.h's select_node): keeps only the nodes
-// sel selects - compacted to a fresh 0..k-1 index range, in ascending original-index order,
-// embed/emb_dim otherwise untouched - with two surviving nodes adjacent iff they were already
-// adjacent in bc. Unlike quotient_board/merge_close, nothing is merged or repositioned; a
-// non-selected node's own incident edges are simply dropped along with it. Mirrors
+// The subgraph induced by nodes: keeps only the given nodes - compacted to a fresh 0..k-1 index
+// range, in ascending original-index order, embed/emb_dim otherwise untouched - with two surviving
+// nodes adjacent iff they were already adjacent in bc. Unlike quotient_board/merge_close, nothing is
+// merged or repositioned; a non-kept node's own incident edges are simply dropped along with it.
+// `nodes` is typically select_node(bc.adj, bc.embed, sel)'s own result (see apply_modifier's own
+// NodeInducedSubgraph case) but is taken directly here - a plain std::set<int>, not a Selector - so
+// any already-computed node set can be used, not just one selector's own result. Mirrors
 // shared/boardConfig.ts's nodeInducedSubgraph().
-BoardConfig node_induced_subgraph(const BoardConfig& bc, const Selector& sel);
+BoardConfig node_induced_subgraph(const BoardConfig& bc, const std::set<int>& nodes);
 
-// The subgraph induced by sel (evaluated via game/selector.h's select_edge): keeps only the edges
-// sel selects, and only the nodes touched by at least one of them - compacted to a fresh 0..k-1
-// index range, in ascending original-index order, embed/emb_dim otherwise untouched. Unlike
-// node_induced_subgraph (which keeps every original edge between two surviving nodes, since it
-// starts from a node selection), this keeps exactly the selected edges themselves - the standard
-// graph-theory distinction between a node-induced and an edge-induced subgraph - so a node with no
-// selected incident edge doesn't survive at all, even if it's adjacent to other surviving nodes via
-// a non-selected edge. Mirrors shared/boardConfig.ts's edgeInducedSubgraph().
-BoardConfig edge_induced_subgraph(const BoardConfig& bc, const Selector& sel);
+// The subgraph induced by edges: keeps only the given edges, and only the nodes touched by at least
+// one of them - compacted to a fresh 0..k-1 index range, in ascending original-index order,
+// embed/emb_dim otherwise untouched. Unlike node_induced_subgraph (which keeps every original edge
+// between two surviving nodes, since it starts from a node selection), this keeps exactly the given
+// edges themselves - the standard graph-theory distinction between a node-induced and an
+// edge-induced subgraph - so a node with no kept incident edge doesn't survive at all, even if it's
+// adjacent to other surviving nodes via a non-kept edge. `edges` is typically select_edge(bc.adj,
+// bc.embed, sel)'s own result (see apply_modifier's own EdgeInducedSubgraph case) but is taken
+// directly here - a plain std::vector<BoardEdge>, not a Selector - so any already-computed edge list
+// can be used, not just one selector's own result. Mirrors shared/boardConfig.ts's
+// edgeInducedSubgraph().
+BoardConfig edge_induced_subgraph(const BoardConfig& bc, const std::vector<BoardEdge>& edges);
 
 // One positional board-construction arg, tagged with its own kind - mirrors shared/boardConfig.ts's
 // BoardArgType/BoardArgEntry (see that TS type's own doc comment for the full rationale: exactly

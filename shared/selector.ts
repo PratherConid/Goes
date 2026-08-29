@@ -363,8 +363,9 @@ function quadKey(s: BoardQuad): string {
 // Fisher-Yates shuffle (only the first `removeCount` positions need to be randomized to pick which
 // elements to drop). The rest of this file's set operations are pure and order-preserving; rrmn/rrmp
 // (the only Selector ops that use this) are neither - two evaluations of the same selector can
-// return different results, and the kept elements' relative order isn't preserved either.
-function randomlyRemove<T>(items: T[], removeCount: number): T[] {
+// return different results, and the kept elements' relative order isn't preserved either. Exported
+// for shared/cleg.ts's own `randRmN` builtin, which performs this exact operation on a cleg set.
+export function randomlyRemove<T>(items: T[], removeCount: number): T[] {
     const n = items.length;
     const toRemove = Math.min(Math.max(removeCount, 0), n);
     const shuffled = [...items];

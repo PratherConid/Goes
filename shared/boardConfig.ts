@@ -1,4 +1,4 @@
-import type { GameConfig, BoardArgEntry, BoardConfig, BoardModifier, Selector, FormSelector } from './types.js';
+import type { GameConfig, BoardArgEntry, BoardConfig, BoardModifier, Selector, FormSelector, BoardEdge } from './types.js';
 import {
     assert, BoardArgType, boardArgNumber, boardArgList, parseBoardArgToken, Embedding, projectPoint,
 } from './types.js';
@@ -183,16 +183,17 @@ export function mergeClose(bc: BoardConfig, dist: number): BoardConfig {
 }
 
 /**
- * The subgraph induced by `sel` (evaluated via shared/selector.ts's selectNode): keeps only the
- * nodes `sel` selects - compacted to a fresh 0..k-1 index range, in ascending original-index order,
- * positions/embDim/projMat otherwise untouched - with two surviving nodes adjacent iff they were
- * already adjacent in `bc`. Unlike quotientBoard/mergeClose, nothing is merged or repositioned; a
- * non-selected node's own incident edges are simply dropped along with it.
+ * The subgraph induced by `nodes`: keeps only the given nodes - compacted to a fresh 0..k-1 index
+ * range, in ascending original-index order, positions/embDim/projMat otherwise untouched - with two
+ * surviving nodes adjacent iff they were already adjacent in `bc`. Unlike quotientBoard/mergeClose,
+ * nothing is merged or repositioned; a non-kept node's own incident edges are simply dropped along
+ * with it. `nodes` is typically `selectNode(bc.adj, bc.emb.pos, sel)`'s own result (see
+ * applyModifier's own NodeInducedSubgraph case) but is taken directly here - a plain Set<number>,
+ * not a Selector - so any already-computed node set can be used, not just one selector's own result.
  */
-export function nodeInducedSubgraph(bc: BoardConfig, sel: Selector): BoardConfig {
-    const selected = selectNode(bc.adj, bc.emb.pos, sel);
+export function nodeInducedSubgraph(bc: BoardConfig, nodes: Set<number>): BoardConfig {
     const kept: number[] = [];
-    for (let i = 0; i < bc.N; i++) if (selected.has(i)) kept.push(i);
+    for (let i = 0; i < bc.N; i++) if (nodes.has(i)) kept.push(i);
 
     const pos = kept.map(i => bc.emb.pos[i]);
     const adj = zeroAdj(kept.length);
@@ -204,17 +205,18 @@ export function nodeInducedSubgraph(bc: BoardConfig, sel: Selector): BoardConfig
 }
 
 /**
- * The subgraph induced by `sel` (evaluated via shared/selector.ts's selectEdge): keeps only the
- * edges `sel` selects, and only the nodes touched by at least one of them - compacted to a fresh
- * 0..k-1 index range, in ascending original-index order, positions/embDim/projMat otherwise
- * untouched. Unlike nodeInducedSubgraph (which keeps every original edge between two surviving
- * nodes, since it starts from a node selection), this keeps exactly the selected edges themselves -
- * the standard graph-theory distinction between a node-induced and an edge-induced subgraph - so a
- * node with no selected incident edge doesn't survive at all, even if it's adjacent to other
- * surviving nodes via a non-selected edge.
+ * The subgraph induced by `edges`: keeps only the given edges, and only the nodes touched by at
+ * least one of them - compacted to a fresh 0..k-1 index range, in ascending original-index order,
+ * positions/embDim/projMat otherwise untouched. Unlike nodeInducedSubgraph (which keeps every
+ * original edge between two surviving nodes, since it starts from a node selection), this keeps
+ * exactly the given edges themselves - the standard graph-theory distinction between a node-induced
+ * and an edge-induced subgraph - so a node with no kept incident edge doesn't survive at all, even
+ * if it's adjacent to other surviving nodes via a non-kept edge. `edges` is typically
+ * `selectEdge(bc.adj, bc.emb.pos, sel)`'s own result (see applyModifier's own EdgeInducedSubgraph
+ * case) but is taken directly here - a plain BoardEdge[], not a Selector - so any already-computed
+ * edge list can be used, not just one selector's own result.
  */
-export function edgeInducedSubgraph(bc: BoardConfig, sel: Selector): BoardConfig {
-    const edges = selectEdge(bc.adj, bc.emb.pos, sel);
+export function edgeInducedSubgraph(bc: BoardConfig, edges: BoardEdge[]): BoardConfig {
     const touched = new Set<number>();
     for (const e of edges) { touched.add(e.n1); touched.add(e.n2); }
     const kept: number[] = [];
@@ -1928,8 +1930,8 @@ export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardCo
         case 'GlobalCentralize': return globalCentralize(bc);
         case 'QuadOctarize': return quadOctarize(bc);
         case 'Scale': return scaleBoard(bc, modifier.factor);
-        case 'NodeInducedSubgraph': return nodeInducedSubgraph(bc, modifier.sel);
-        case 'EdgeInducedSubgraph': return edgeInducedSubgraph(bc, modifier.sel);
+        case 'NodeInducedSubgraph': return nodeInducedSubgraph(bc, selectNode(bc.adj, bc.emb.pos, modifier.sel));
+        case 'EdgeInducedSubgraph': return edgeInducedSubgraph(bc, selectEdge(bc.adj, bc.emb.pos, modifier.sel));
     }
 }
 

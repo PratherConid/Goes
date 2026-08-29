@@ -402,10 +402,9 @@ BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2) {
     return make_bc(std::move(adj), emb_dim, std::move(embed));
 }
 
-BoardConfig node_induced_subgraph(const BoardConfig& bc, const Selector& sel) {
-    std::set<int> selected = select_node(bc.adj, bc.embed, sel);
+BoardConfig node_induced_subgraph(const BoardConfig& bc, const std::set<int>& nodes) {
     std::vector<int> kept;
-    for (int i = 0; i < bc.N; i++) if (selected.count(i)) kept.push_back(i);
+    for (int i = 0; i < bc.N; i++) if (nodes.count(i)) kept.push_back(i);
 
     std::vector<std::vector<unsigned>> embed;
     embed.reserve(kept.size());
@@ -419,8 +418,7 @@ BoardConfig node_induced_subgraph(const BoardConfig& bc, const Selector& sel) {
     return make_bc(std::move(adj), bc.emb_dim, std::move(embed));
 }
 
-BoardConfig edge_induced_subgraph(const BoardConfig& bc, const Selector& sel) {
-    std::vector<BoardEdge> edges = select_edge(bc.adj, bc.embed, sel);
+BoardConfig edge_induced_subgraph(const BoardConfig& bc, const std::vector<BoardEdge>& edges) {
     std::set<int> touched;
     for (auto& e : edges) { touched.insert(e.n1); touched.insert(e.n2); }
     std::vector<int> kept;
@@ -463,8 +461,8 @@ BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier)
         case ModifierKind::GlobalCentralize: return global_centralize(bc);
         case ModifierKind::QuadOctarize: return quad_octarize(bc);
         case ModifierKind::Scale: return scale_board(bc, modifier.dist);
-        case ModifierKind::NodeInducedSubgraph: return node_induced_subgraph(bc, modifier.sel);
-        case ModifierKind::EdgeInducedSubgraph: return edge_induced_subgraph(bc, modifier.sel);
+        case ModifierKind::NodeInducedSubgraph: return node_induced_subgraph(bc, select_node(bc.adj, bc.embed, modifier.sel));
+        case ModifierKind::EdgeInducedSubgraph: return edge_induced_subgraph(bc, select_edge(bc.adj, bc.embed, modifier.sel));
     }
     throw std::runtime_error("apply_modifier: unknown ModifierKind");
 }
