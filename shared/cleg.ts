@@ -31,7 +31,15 @@
  * interface) - `len` (an array's or set's length, as a `number`), `randRmN`/`randRmP` (a set with
  * elements removed uniformly at random, by count or by portion, mirroring shared/selector.ts's own
  * `(rrmn <num> SEL)`/`(rrmp <num> SEL)`), and `nis`/`eis`/`triangleForm`/`quadForm`/`mkFormSel`
- * (each accepts a `sel` or a `string`, resolved via their one shared resolveSelectorArg).
+ * (each accepts a `sel`, a `string`, or a `set` of the matching element type, resolved via their one
+ * shared resolveSelectorArg). `selectNode`/`selectEdge`/`selectTriangle`/`selectQuad` (X, bc)
+ * similarly each accept a `sel`, `string`, or `set`, but evaluate it immediately against a real
+ * board `bc` (an `egr`) and return the exact set of nodes/edges/triangles/quads selected -
+ * `number{}`/`edge{}`/`tri{}`/`quad{}` respectively -
+ * rather than building something to apply later. One builtin per kind rather than a single
+ * overloaded name, since a `sel` value's own actual kind (see below) is only known at evaluation
+ * time, never from its ClegType alone - there would be no way for checkCall to know which of the
+ * four set types a single `select(X, bc)` should statically return.
  *
  * Three more basic types mirror shared/types.ts's own board primitives: `edge`, `tri`, and `quad`
  * (wrapping a BoardEdge/BoardTriangle/BoardQuad respectively), built via the `mkEdge(n1, n2)`,
@@ -49,17 +57,19 @@
  * set's own element type is restricted. A set literal `{x1, ..., xn}` (SetLit) duplicate-collapses
  * its elements by value (so `{1, 1, 2}` is the same set as `{1, 2}`) - see makeClegSet.
  *
- * One more basic type, `sel`, wraps a real shared/types.ts Selector - built via `mkSel(kind, str)`,
- * where `kind` is `"node"`/`"edge"`/`"tri"`/`"quad"` and `str` is parsed exactly as
- * shared/selector.ts's own grammar/semantics define (see that file's own top comment), via whichever
- * of its four real parse*Selector functions matches `kind` (see SELECTOR_PARSERS below). `sel` itself
- * carries no kind at the type level - `kind` is an ordinary runtime string argument, not something
- * the type checker can see ahead of a call - so two `sel`-typed locals can hold selectors of two
- * different actual kinds; ClegValue's own 'sel' variant carries the real kind (`selType`) once a
- * value actually exists. There is no selector literal syntax and (like `edge`/`tri`/`quad`) no way
- * to read a `sel` value's contents back out - it's passed straight through to whichever consuming
- * builtin's own selector-shaped argument resolves it (`nis`/`eis`/`triangleForm`/`quadForm`/
- * `mkFormSel` - see resolveSelectorArg below, their one shared "sel or string" resolution).
+ * One more basic type, `sel`, wraps a real shared/types.ts Selector - built via `mkSel(kind, X)`,
+ * where `kind` is `"node"`/`"edge"`/`"tri"`/`"quad"` and `X` is either a `string`, parsed exactly as
+ * shared/selector.ts's own grammar/semantics define (see that file's own top comment) via whichever
+ * of its four real parse*Selector functions matches `kind` (see SELECTOR_PARSERS below), or a `set`
+ * of the ClegType matching `kind` (see SELECTOR_SET_ELEM_KIND), wrapped directly into a `raw`
+ * Selector with no parsing at all. `sel` itself carries no kind at the type level - `kind` is an
+ * ordinary runtime string argument, not something the type checker can see ahead of a call - so two
+ * `sel`-typed locals can hold selectors of two different actual kinds; ClegValue's own 'sel' variant
+ * carries the real kind (`selType`) once a value actually exists. There is no selector literal
+ * syntax and (like `edge`/`tri`/`quad`) no way to read a `sel` value's contents back out - it's
+ * passed straight through to whichever consuming builtin's own selector-shaped argument resolves it
+ * (`nis`/`eis`/`triangleForm`/`quadForm`/`mkFormSel` - see resolveSelectorArg below, their one shared
+ * "sel, string, or set" resolution).
  *
  * Two more basic types round out the board-modifier builtins: `formSel` wraps a real
  * shared/types.ts FormSelector (`(tri [SEL])`/`(quad [SEL])`, see that type's own doc comment) -
@@ -106,9 +116,11 @@
  *   ADDITIVE   := TERM (('+' | '-') TERM)*
  *   TERM       := UNARY (('*' | '/' | '%') UNARY)*
  *   UNARY      := '-' UNARY | ATOM
- *   ATOM       := NUMBER | STRING | 'true' | 'false' | ARRAYLIT | SETLIT | IDENT | CALL | '(' EXPR ')'
+ *   ATOM       := NUMBER | STRING | 'true' | 'false' | ARRAYLIT | SETLIT | NIL | IDENT | CALL
+ *               | '(' EXPR ')'
  *   ARRAYLIT   := '[' (EXPR (',' EXPR)*)? ']'
  *   SETLIT     := '{' (EXPR (',' EXPR)*)? '}'
+ *   NIL        := 'nil' '(' TYPE ')'
  *   CALL       := IDENT '(' (EXPR (',' EXPR)*)? ')'
  *
  * `//` line comments are supported. There is still no logical operator of any kind (no `&&`, `||`,
@@ -128,16 +140,19 @@
 
 import {
     BoardArgType, numArg, csvArg, zolArg, parseBoardArgToken,
-    makeBoardEdge, makeBoardTriangle, makeBoardQuad,
+    makeBoardEdge, makeBoardTriangle, makeBoardQuad, Embedding,
     type BoardArgEntry, type BoardConfig, type BoardEdge, type BoardTriangle, type BoardQuad,
-    type Selector, type SelectorType, type FormSelector, type BoardModifier,
+    type Selector, type SelectorType, type SelectedVals, type FormSelector, type BoardModifier,
 } from './types.js';
 import {
     PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, product, applyModifiers,
+    make, defaultProductProjMat, nodeInducedSubgraph, edgeInducedSubgraph,
 } from './boardConfig.js';
 import {
     randomlyRemove, parseNodeSelector, parseEdgeSelector, parseTriangleSelector, parseQuadSelector,
+    selectNode, selectEdge, selectTriangle, selectQuad,
 } from './selector.js';
+import { zeroAdj } from './topology.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -170,6 +185,12 @@ export type ClegType =
      * every BoardModifier kind, the same way `sel`/`egr` are each one flat type regardless of which
      * SelectorType/PrescribedBoard they actually hold. */
     | { kind: 'mod' }
+    /** Wraps a MultiSelector (defined further below, near the multiProd/msBase/msUnion/msInter/
+     * msDiff builtins that are its only consumers) - a cleg-internal-only concept, unlike
+     * sel/formSel/mod, none of which are exposed via shared/types.ts either but wrap something a
+     * consumer OUTSIDE cleg.ts also builds/uses (a real Selector/FormSelector/BoardModifier) -
+     * nothing outside this file ever builds or consumes a MultiSelector directly. */
+    | { kind: 'msel' }
     | { kind: 'array'; elem: ClegType }
     | { kind: 'set'; elem: ClegType };
 
@@ -213,6 +234,7 @@ export type ClegValue =
     | { kind: 'sel'; selType: SelectorType; value: Selector }
     | { kind: 'formSel'; value: FormSelector }
     | { kind: 'mod'; value: BoardModifier }
+    | { kind: 'msel'; value: MultiSelector }
     | { kind: 'array'; elem: ClegType; value: ClegValue[] }
     /** A set's `value` is always deduplicated by clegSetKey (see makeClegSet) - unlike 'array',
      * where `value` may hold anything an ArrayLit/array-typed value can, `value` here never holds
@@ -489,13 +511,15 @@ export interface Block { kind: 'Block'; stmts: Stmt[]; }
 
 export type Expr =
     | NumberLit | StringLit | BoolLit | ArrayLit | SetLit | Identifier | CallExpr | BinaryExpr
-    | UnaryExpr;
+    | UnaryExpr | NilExpr;
 
 export interface NumberLit { kind: 'NumberLit'; value: number; }
 export interface StringLit { kind: 'StringLit'; value: string; }
 export interface BoolLit { kind: 'BoolLit'; value: boolean; }
 /** Simplification: an empty `[]` has no way to say what its element type is, so it's rejected by
- * typecheckCleg (see checkExpr's own ArrayLit case) rather than silently guessed at. */
+ * typecheckCleg (see checkExpr's own ArrayLit case) rather than silently guessed at - `nil(TYPE)`
+ * below is the escape hatch: `nil(number)` is an empty `number[]`, exactly like `[]` would be if its
+ * element type could somehow be inferred. */
 export interface ArrayLit { kind: 'ArrayLit'; elements: Expr[]; }
 /** Same empty-literal simplification as ArrayLit above, plus its own restriction: the inferred
  * element type must be one of SET_ELEM_KINDS (see checkExpr's own SetLit case) - a set of `egr`,
@@ -520,6 +544,11 @@ export interface BinaryExpr {
 /** Unary negation (e.g. `-x`, `-f()`) - also how a negative number literal is written now (`-3`
  * parses as UnaryExpr wrapping NumberLit(3); the lexer itself never produces a signed number). */
 export interface UnaryExpr { kind: 'UnaryExpr'; op: '-'; operand: Expr; }
+/** `nil(TYPE)` - an empty array whose element type is TYPE, e.g. `nil(number)` is an empty
+ * `number[]`, `nil(msel)` an empty `msel[]`, `nil(number[])` an empty `number[][]` - the escape
+ * hatch for ArrayLit's own empty-literal simplification (see its own doc comment): unlike every
+ * other Expr, `TYPE` is a real ClegType (parsed via parseType, not parseExpr), not itself an Expr. */
+export interface NilExpr { kind: 'NilExpr'; type: ClegType; }
 
 /**
  * A top-level statement: a VARDECL, an ASSIGNSTMT, or a bare EXPRSTMT - unlike inside a function
@@ -641,7 +670,7 @@ class TokenCursor {
 }
 
 const TYPE_KEYWORDS = new Set([
-    'egr', 'number', 'string', 'bool', 'edge', 'tri', 'quad', 'sel', 'formSel', 'mod',
+    'egr', 'number', 'string', 'bool', 'edge', 'tri', 'quad', 'sel', 'formSel', 'mod', 'msel',
 ]);
 
 function parseType(c: TokenCursor): ClegType {
@@ -896,6 +925,16 @@ function parseAtom(c: TokenCursor): Expr {
     if (tok.kind === 'ident') {
         if (tok.text === 'true') { c.next(); return { kind: 'BoolLit', value: true }; }
         if (tok.text === 'false') { c.next(); return { kind: 'BoolLit', value: false }; }
+        // 'nil' is a reserved atom-starting keyword, like 'true'/'false' above, not an ordinary
+        // identifier - its own '(' introduces a TYPE (parseType), never an argument list of
+        // expressions like a real CallExpr's own '(' does (see NilExpr's own doc comment).
+        if (tok.text === 'nil') {
+            c.next();
+            c.expectPunct('(');
+            const type = parseType(c);
+            c.expectPunct(')');
+            return { kind: 'NilExpr', type };
+        }
         const name = c.expectIdent();
         if (c.isPunct('(')) {
             c.next();
@@ -1013,6 +1052,7 @@ function unparseExpr(expr: Expr, indent: number): string {
         case 'CallExpr': return `${expr.callee}${unparseBracketed('(', ')', expr.args, indent, expr.callee.length)}`;
         case 'BinaryExpr': return `(${unparseExpr(expr.left, indent)} ${expr.op} ${unparseExpr(expr.right, indent)})`;
         case 'UnaryExpr': return `(-${unparseExpr(expr.operand, indent)})`;
+        case 'NilExpr': return `nil(${typeToString(expr.type)})`;
     }
 }
 
@@ -1190,15 +1230,44 @@ BUILTIN_FUNCTIONS['randRmP'] = {
     },
 };
 
+// The ClegType 'kind' a set of SelectorType `k` is made of - 'node' selections are plain numbers
+// (node indices), the other three match their own SelectorType name exactly. Shared by
+// resolveSelectorArg/mkSel below (both need to validate/convert a `set`-typed selector argument)
+// and Selector's own 'raw' variant (shared/types.ts), which this builds.
+const SELECTOR_SET_ELEM_KIND: Record<SelectorType, ClegType['kind']> = {
+    node: 'number', edge: 'edge', tri: 'tri', quad: 'quad',
+};
+
+// Unwraps a `set` ClegValue's own elements into the matching SelectedVals branch - `kind` must
+// already be known to match the set's own elem type (checked by resolveSelectorArg's caller before
+// this runs). 'node' collects into a real Set<number> (numbers have genuine equality); the other
+// three stay plain arrays, matching SelectedVals' own doc comment on why.
+function setValueToSelectedVals(kind: SelectorType, values: ClegValue[]): SelectedVals {
+    switch (kind) {
+        case 'node': return { kind: 'node', value: new Set(values.map(v => (v as { value: number }).value)) };
+        case 'edge': return { kind: 'edge', value: values.map(v => (v as { value: BoardEdge }).value) };
+        case 'tri': return { kind: 'tri', value: values.map(v => (v as { value: BoardTriangle }).value) };
+        case 'quad': return { kind: 'quad', value: values.map(v => (v as { value: BoardQuad }).value) };
+    }
+}
+
 // Resolves a nis/eis/triangleForm/quadForm-style "selector-like" argument into a real Selector -
-// either a `sel` value (its actual kind checked against `wantKind` at runtime, since 'sel' carries
-// no kind at the type level - see ClegType's own 'sel' doc comment) or a `string` (parsed via
-// `parseFn`, following shared/selector.ts's own grammar exactly). Shared by every builtin that
-// accepts this shape, so the "string or sel, kind-checked" logic exists in exactly one place.
+// a `sel` value (its actual kind checked against `wantKind` at runtime, since 'sel' carries no kind
+// at the type level - see ClegType's own 'sel' doc comment), a `string` (parsed via `parseFn`,
+// following shared/selector.ts's own grammar exactly), or a `set` (of the ClegType matching
+// `wantKind` - see SELECTOR_SET_ELEM_KIND - wrapped directly into a `raw` Selector, no parsing
+// involved). Shared by every builtin that accepts this shape, so the "string, sel, or set - kind-
+// checked" logic exists in exactly one place.
 function resolveSelectorArg(
     callee: string, arg: ClegValue, wantKind: SelectorType, parseFn: (s: string) => Selector,
 ): Selector {
     if (arg.kind === 'string') return parseFn(arg.value);
+    if (arg.kind === 'set') {
+        if (arg.elem.kind !== SELECTOR_SET_ELEM_KIND[wantKind])
+            throw new Error(
+                `cleg: '${callee}' expects a ${wantKind} selector, got a set of ${typeToString(arg.elem)}`);
+        return { op: 'raw', type: wantKind, items: setValueToSelectedVals(wantKind, arg.value) };
+    }
     const sel = arg as { kind: 'sel'; selType: SelectorType; value: Selector };
     if (sel.selType !== wantKind)
         throw new Error(`cleg: '${callee}' expects a ${wantKind} selector, got a '${sel.selType}' selector`);
@@ -1206,7 +1275,6 @@ function resolveSelectorArg(
 }
 
 const NUMBER_TYPE: ClegType = { kind: 'number' };
-const STRING_TYPE: ClegType = { kind: 'string' };
 const EGR_TYPE: ClegType = { kind: 'egr' };
 
 // `mkEdge`/`mkTri`/`mkQuad`: build an edge/tri/quad from node indices, canonicalized exactly as
@@ -1260,19 +1328,31 @@ const SELECTOR_PARSERS: Record<SelectorType, (s: string) => Selector> = {
     quad: parseQuadSelector,
 };
 
-// `mkSel(kind, str)`: parses `str` as a selector of the given `kind` ("node"/"edge"/"tri"/"quad"),
-// via the matching real parse*Selector function above - `str` follows shared/selector.ts's own
-// grammar/semantics exactly (see that file's own top comment), including its own error messages on
-// a malformed `str`. Fixed-signature (`string, string -> sel`, see fixedSignature/BUILTIN_FUNCTIONS
-// above) since `sel` itself isn't parameterized by kind at the type level (see ClegType's own 'sel'
-// doc comment) - `kind` is only validated/dispatched on at call time, not check time.
+// `mkSel(kind, X)`: builds a selector of the given `kind` ("node"/"edge"/"tri"/"quad") from `X` - a
+// `string` (parsed via the matching real parse*Selector function above, following
+// shared/selector.ts's own grammar/semantics exactly, including its own error messages on a
+// malformed string) or a `set` (of the ClegType matching `kind` - see SELECTOR_SET_ELEM_KIND -
+// wrapped directly into a `raw` Selector, no parsing involved), resolved via resolveSelectorArg
+// exactly like nis/eis/etc below, once `kind` is known. Hand-written checkCall (rather than
+// fixedSignature(...)) since `X`'s own accepted type isn't just one fixed ClegType, and `sel` itself
+// isn't parameterized by kind at the type level (see ClegType's own 'sel' doc comment) - `kind` is
+// only validated/dispatched on at call time, not check time.
+function mkSelCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length !== 2)
+        throw new Error(`cleg: '${callee}' expects 2 argument(s), got ${argTypes.length}`);
+    if (argTypes[0].kind !== 'string')
+        throw new Error(`cleg: '${callee}' argument 1: expected string, got ${typeToString(argTypes[0])}`);
+    if (argTypes[1].kind !== 'string' && argTypes[1].kind !== 'set')
+        throw new Error(`cleg: '${callee}' argument 2: expected string or set, got ${typeToString(argTypes[1])}`);
+    return { kind: 'sel' };
+}
 BUILTIN_FUNCTIONS['mkSel'] = {
-    checkCall: fixedSignature([STRING_TYPE, STRING_TYPE], { kind: 'sel' }),
-    call: ([kindVal, strVal]) => {
-        const kind = (kindVal as { value: string }).value;
-        const parse = SELECTOR_PARSERS[kind as SelectorType];
+    checkCall: mkSelCheckCall,
+    call: ([kindVal, arg]) => {
+        const kind = (kindVal as { value: string }).value as SelectorType;
+        const parse = SELECTOR_PARSERS[kind];
         if (!parse) throw new Error(`cleg: mkSel: unknown selector kind '${kind}' - expected node/edge/tri/quad`);
-        return { kind: 'sel', selType: kind as SelectorType, value: parse((strVal as { value: string }).value) };
+        return { kind: 'sel', selType: kind, value: resolveSelectorArg('mkSel', arg, kind, parse) };
     },
 };
 
@@ -1281,7 +1361,7 @@ const FORMSEL_TYPE: ClegType = { kind: 'formSel' };
 
 // `mkFormSel(kind, [selArg])`: builds a real shared/types.ts FormSelector - `kind` is
 // "tri"/"quad" (validated/dispatched at call time, same convention as mkSel's own `kind`), and the
-// optional `selArg` (a `sel` or `string`, resolved via resolveSelectorArg - see FormSelector's own
+// optional `selArg` (a `sel`, `string`, or `set`, resolved via resolveSelectorArg - see FormSelector's own
 // optional `sel?: Selector` field) restricts which tri/quads of that kind qualify (omitted: every
 // one found). Variable-arity (1 or 2 args) rather than fixedSignature(...), to mirror that
 // optionality exactly.
@@ -1290,8 +1370,8 @@ function mkFormSelCheckCall(callee: string, argTypes: ClegType[]): ClegType {
         throw new Error(`cleg: '${callee}' expects 1 or 2 argument(s), got ${argTypes.length}`);
     if (argTypes[0].kind !== 'string')
         throw new Error(`cleg: '${callee}' argument 1: expected string, got ${typeToString(argTypes[0])}`);
-    if (argTypes.length === 2 && argTypes[1].kind !== 'sel' && argTypes[1].kind !== 'string')
-        throw new Error(`cleg: '${callee}' argument 2: expected sel or string, got ${typeToString(argTypes[1])}`);
+    if (argTypes.length === 2 && argTypes[1].kind !== 'sel' && argTypes[1].kind !== 'string' && argTypes[1].kind !== 'set')
+        throw new Error(`cleg: '${callee}' argument 2: expected sel, string, or set, got ${typeToString(argTypes[1])}`);
     return FORMSEL_TYPE;
 }
 BUILTIN_FUNCTIONS['mkFormSel'] = {
@@ -1350,8 +1430,8 @@ BUILTIN_FUNCTIONS['scale'] = {
 function inducedSubgraphModCheckCall(callee: string, argTypes: ClegType[]): ClegType {
     if (argTypes.length !== 1)
         throw new Error(`cleg: '${callee}' expects 1 argument(s), got ${argTypes.length}`);
-    if (argTypes[0].kind !== 'sel' && argTypes[0].kind !== 'string')
-        throw new Error(`cleg: '${callee}' argument 1: expected sel or string, got ${typeToString(argTypes[0])}`);
+    if (argTypes[0].kind !== 'sel' && argTypes[0].kind !== 'string' && argTypes[0].kind !== 'set')
+        throw new Error(`cleg: '${callee}' argument 1: expected sel, string, or set, got ${typeToString(argTypes[0])}`);
     return MOD_TYPE;
 }
 BUILTIN_FUNCTIONS['nis'] = {
@@ -1367,8 +1447,72 @@ BUILTIN_FUNCTIONS['eis'] = {
     ),
 };
 
+const EDGE_TYPE: ClegType = { kind: 'edge' };
+const TRI_TYPE: ClegType = { kind: 'tri' };
+const QUAD_TYPE: ClegType = { kind: 'quad' };
+
+// `selectNode(X, bc)`/`selectEdge(X, bc)`/`selectTriangle(X, bc)`/`selectQuad(X, bc)`: evaluates a
+// selector (`X`, a `sel`, `string`, or `set` - resolved via resolveSelectorArg above, same convention as
+// nis/eis/triangleForm/quadForm) against a real board `bc`, returning the exact set of
+// nodes/edges/triangles/quads it selects (shared/selector.ts's own selectNode/selectEdge/
+// selectTriangle/selectQuad do the actual work) - unlike nis/eis (which build a
+// NodeInducedSubgraph/EdgeInducedSubgraph BoardModifier to apply LATER via modify(...)), this
+// evaluates the selector immediately against a real board and hands back the result as an ordinary
+// cleg set, so a program can inspect/combine/count (len) it directly. One builtin per selector kind,
+// rather than a single overloaded name, because `sel`'s own ClegType carries no kind at the type
+// level (see this file's own top comment) - checkCall only ever sees argument TYPES, never their
+// runtime values, so there's no way for one `select(X, bc)` to know ahead of time which of
+// number{}/edge{}/tri{}/quad{} it should return.
+function selectSetCheckCall(elemType: ClegType): BuiltinFunction['checkCall'] {
+    return (callee, argTypes) => {
+        if (argTypes.length !== 2)
+            throw new Error(`cleg: '${callee}' expects 2 argument(s), got ${argTypes.length}`);
+        if (argTypes[0].kind !== 'sel' && argTypes[0].kind !== 'string' && argTypes[0].kind !== 'set')
+            throw new Error(`cleg: '${callee}' argument 1: expected sel, string, or set, got ${typeToString(argTypes[0])}`);
+        if (argTypes[1].kind !== 'egr')
+            throw new Error(`cleg: '${callee}' argument 2: expected egr, got ${typeToString(argTypes[1])}`);
+        return { kind: 'set', elem: elemType };
+    };
+}
+BUILTIN_FUNCTIONS['selectNode'] = {
+    checkCall: selectSetCheckCall(NUMBER_TYPE),
+    call: ([arg, egrVal]) => {
+        const sel = resolveSelectorArg('selectNode', arg, 'node', parseNodeSelector);
+        const bc = (egrVal as { value: BoardConfig }).value;
+        const nodes = [...selectNode(bc.adj, bc.emb.pos, sel)].map((n): ClegValue => ({ kind: 'number', value: n }));
+        return makeClegSet(NUMBER_TYPE, nodes);
+    },
+};
+BUILTIN_FUNCTIONS['selectEdge'] = {
+    checkCall: selectSetCheckCall(EDGE_TYPE),
+    call: ([arg, egrVal]) => {
+        const sel = resolveSelectorArg('selectEdge', arg, 'edge', parseEdgeSelector);
+        const bc = (egrVal as { value: BoardConfig }).value;
+        const edges = selectEdge(bc.adj, bc.emb.pos, sel).map((e): ClegValue => ({ kind: 'edge', value: e }));
+        return makeClegSet(EDGE_TYPE, edges);
+    },
+};
+BUILTIN_FUNCTIONS['selectTriangle'] = {
+    checkCall: selectSetCheckCall(TRI_TYPE),
+    call: ([arg, egrVal]) => {
+        const sel = resolveSelectorArg('selectTriangle', arg, 'tri', parseTriangleSelector);
+        const bc = (egrVal as { value: BoardConfig }).value;
+        const tris = selectTriangle(bc.adj, bc.emb.pos, sel).map((t): ClegValue => ({ kind: 'tri', value: t }));
+        return makeClegSet(TRI_TYPE, tris);
+    },
+};
+BUILTIN_FUNCTIONS['selectQuad'] = {
+    checkCall: selectSetCheckCall(QUAD_TYPE),
+    call: ([arg, egrVal]) => {
+        const sel = resolveSelectorArg('selectQuad', arg, 'quad', parseQuadSelector);
+        const bc = (egrVal as { value: BoardConfig }).value;
+        const quads = selectQuad(bc.adj, bc.emb.pos, sel).map((q): ClegValue => ({ kind: 'quad', value: q }));
+        return makeClegSet(QUAD_TYPE, quads);
+    },
+};
+
 // `triangleForm(w, [selArg])`/`quadForm(w, [selArg])`: builds a TriangleForm/QuadForm
-// BoardModifier - `selArg` (a `sel` or `string`, resolved via resolveSelectorArg) restricts which
+// BoardModifier - `selArg` (a `sel`, `string`, or `set`, resolved via resolveSelectorArg) restricts which
 // triangles/quads get replaced, mirroring TriangleForm/QuadForm's own optional `sel?: Selector`
 // field exactly - omitted, every one found gets replaced. Variable-arity like mkFormSel above.
 function formModCheckCall(callee: string, argTypes: ClegType[]): ClegType {
@@ -1376,8 +1520,8 @@ function formModCheckCall(callee: string, argTypes: ClegType[]): ClegType {
         throw new Error(`cleg: '${callee}' expects 1 or 2 argument(s), got ${argTypes.length}`);
     if (argTypes[0].kind !== 'number')
         throw new Error(`cleg: '${callee}' argument 1: expected number, got ${typeToString(argTypes[0])}`);
-    if (argTypes.length === 2 && argTypes[1].kind !== 'sel' && argTypes[1].kind !== 'string')
-        throw new Error(`cleg: '${callee}' argument 2: expected sel or string, got ${typeToString(argTypes[1])}`);
+    if (argTypes.length === 2 && argTypes[1].kind !== 'sel' && argTypes[1].kind !== 'string' && argTypes[1].kind !== 'set')
+        throw new Error(`cleg: '${callee}' argument 2: expected sel, string, or set, got ${typeToString(argTypes[1])}`);
     return MOD_TYPE;
 }
 BUILTIN_FUNCTIONS['triangleForm'] = {
@@ -1433,6 +1577,298 @@ BUILTIN_FUNCTIONS['modify'] = {
         const mods = (modsVal as { value: ClegValue[] }).value.map(v => (v as { value: BoardModifier }).value);
         const bc = (egrVal as { value: BoardConfig }).value;
         return { kind: 'egr', value: applyModifiers(bc, mods) };
+    },
+};
+
+// ── multiProd: N-ary Cartesian board product, restricted by a MultiSelector ────
+
+// Denotes a subset of the FULL N-ary Cartesian product's own node space (fixed once per multiProd
+// call, from `boards`' own ORIGINAL, unrestricted sizes - see FullProductIndex below) - cleg-
+// internal only (see ClegType's own 'msel' doc comment), built by msAll/msBase/msUnion/msInter/
+// msDiff and consumed only by multiProd (evalMultiSelector). `base`'s own `sel` may syntactically be
+// any Selector - msBase itself doesn't check its SelectorType at all, only multiProd's own
+// evaluation does, once it actually needs to restrict a specific board (see
+// restrictBoardBySelector) - so a tri/quad selector parses/builds fine as an msBase argument and
+// only fails later, when actually evaluated. `all` is every original index, unrestricted - the same
+// universal set `msInter(nil(msel))` already denotes (the usual absorbing-element identity for an
+// empty intersection fold), just spelled directly rather than via that idiom.
+type MultiSelector =
+    | { op: 'all' }
+    | { op: 'base'; number: number; sel: Selector }
+    | { op: 'union' | 'inter'; items: MultiSelector[] }
+    | { op: 'diff'; a: MultiSelector; b: MultiSelector };
+
+const MSEL_TYPE: ClegType = { kind: 'msel' };
+
+// Inverse of SELECTOR_SET_ELEM_KIND above (ClegType elem kind -> SelectorType) - used only by
+// resolveAnyKindSelectorArg below, which (unlike resolveSelectorArg) has no fixed wantKind of its
+// own to check a set's element type against, so it has to recover a SelectorType FROM the set's own
+// element kind instead.
+const SELECTOR_TYPE_BY_SET_ELEM_KIND: Partial<Record<ClegType['kind'], SelectorType>> = {
+    number: 'node', edge: 'edge', tri: 'tri', quad: 'quad',
+};
+
+// Resolves an msBase-style selector argument into a real Selector - a `sel` value (used directly,
+// whatever SelectorType it is) or a `set` (of number/edge/tri/quad, wrapped into a `raw` Selector
+// the same way resolveSelectorArg's own `set` case does) - but NOT a bare `string`, unlike
+// resolveSelectorArg: every resolveSelectorArg call site has one fixed wantKind to parse a string
+// against, but msBase doesn't know its own kind ahead of time (that's the whole point - see
+// MultiSelector's own doc comment), so there is no parser to pick for a plain string here.
+function resolveAnyKindSelectorArg(callee: string, arg: ClegValue): Selector {
+    if (arg.kind === 'sel') return arg.value;
+    if (arg.kind === 'set') {
+        const wantKind = SELECTOR_TYPE_BY_SET_ELEM_KIND[arg.elem.kind];
+        if (!wantKind)
+            throw new Error(
+                `cleg: '${callee}': a selector set must be a set of number/edge/tri/quad, got a set of ${typeToString(arg.elem)}`);
+        return { op: 'raw', type: wantKind, items: setValueToSelectedVals(wantKind, arg.value) };
+    }
+    throw new Error(`cleg: '${callee}': expected sel or set, got ${typeToString(clegValueType(arg))}`);
+}
+
+function msBaseCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length !== 2)
+        throw new Error(`cleg: '${callee}' expects 2 argument(s), got ${argTypes.length}`);
+    if (argTypes[0].kind !== 'number')
+        throw new Error(`cleg: '${callee}' argument 1: expected number, got ${typeToString(argTypes[0])}`);
+    if (argTypes[1].kind !== 'sel' && argTypes[1].kind !== 'set')
+        throw new Error(`cleg: '${callee}' argument 2: expected sel or set, got ${typeToString(argTypes[1])}`);
+    return MSEL_TYPE;
+}
+// `msAll()`: every node of the full product, unrestricted - see MultiSelector's own 'all' doc
+// comment.
+BUILTIN_FUNCTIONS['msAll'] = {
+    checkCall: fixedSignature([], MSEL_TYPE),
+    call: () => ({ kind: 'msel', value: { op: 'all' } }),
+};
+
+// `msBase(number, X)`: "every full-product node whose `number`-th coordinate is kept by X, every
+// other coordinate unrestricted" - see MultiSelector's own doc comment for what X may be.
+BUILTIN_FUNCTIONS['msBase'] = {
+    checkCall: msBaseCheckCall,
+    call: ([numberVal, arg]) => {
+        const number = (numberVal as { value: number }).value;
+        if (!Number.isInteger(number) || number < 0)
+            throw new Error(`cleg: msBase: number must be a nonnegative integer, got ${number}`);
+        const sel = resolveAnyKindSelectorArg('msBase', arg);
+        return { kind: 'msel', value: { op: 'base', number, sel } };
+    },
+};
+
+// `msUnion(items)`/`msInter(items)`: fixed-signature (msel[] -> msel) - a plain array, not a set,
+// mirroring modify's own mods array (see its own doc comment) and the underlying Selector grammar's
+// own (union SEL...)/(inter SEL...), which are similarly plain lists.
+BUILTIN_FUNCTIONS['msUnion'] = {
+    checkCall: fixedSignature([{ kind: 'array', elem: MSEL_TYPE }], MSEL_TYPE),
+    call: ([itemsVal]) => ({
+        kind: 'msel',
+        value: {
+            op: 'union',
+            items: (itemsVal as { value: ClegValue[] }).value.map(v => (v as { value: MultiSelector }).value),
+        },
+    }),
+};
+BUILTIN_FUNCTIONS['msInter'] = {
+    checkCall: fixedSignature([{ kind: 'array', elem: MSEL_TYPE }], MSEL_TYPE),
+    call: ([itemsVal]) => ({
+        kind: 'msel',
+        value: {
+            op: 'inter',
+            items: (itemsVal as { value: ClegValue[] }).value.map(v => (v as { value: MultiSelector }).value),
+        },
+    }),
+};
+// `msDiff(a, b)`: fixed-signature (msel, msel -> msel).
+BUILTIN_FUNCTIONS['msDiff'] = {
+    checkCall: fixedSignature([MSEL_TYPE, MSEL_TYPE], MSEL_TYPE),
+    call: ([a, b]) => ({
+        kind: 'msel',
+        value: {
+            op: 'diff',
+            a: (a as { value: MultiSelector }).value,
+            b: (b as { value: MultiSelector }).value,
+        },
+    }),
+};
+
+// Fixed once per multiProd call, from `boards`' own ORIGINAL (unrestricted) sizes: `Ns[k]` is
+// boards[k]'s own node count, and `stride[k]` lets any tuple of per-board node indices flatten
+// to/from one "original" flat index into the full (never fully materialized)
+// Ns[0] x Ns[1] x ... x Ns[N-1] product space - the one shared universe every MultiSelector
+// combinator (msUnion/msInter/msDiff) has to combine its own operands against. This has to be fixed
+// UP FRONT, before any msBase/msUnion/msInter/msDiff runs: two differently-restricted intermediate
+// boards (e.g. one msBase restricting board 0, another restricting board 1) would otherwise have no
+// common index space to combine against at all.
+interface FullProductIndex { Ns: number[]; stride: number[]; total: number; }
+
+function makeFullProductIndex(boards: BoardConfig[]): FullProductIndex {
+    const Ns = boards.map(b => b.N);
+    const stride = new Array<number>(Ns.length);
+    stride[Ns.length - 1] = 1;
+    for (let k = Ns.length - 2; k >= 0; k--) stride[k] = stride[k + 1] * Ns[k + 1];
+    const total = Ns.reduce((p, n) => p * n, 1);
+    return { Ns, stride, total };
+}
+
+function fullIndexOf(fpi: FullProductIndex, tuple: number[]): number {
+    return tuple.reduce((sum, n, k) => sum + n * fpi.stride[k], 0);
+}
+
+function tupleOfFullIndex(fpi: FullProductIndex, idx: number): number[] {
+    return fpi.Ns.map((n, k) => Math.floor(idx / fpi.stride[k]) % n);
+}
+
+// Restricts `board` (always boards[msel.number], see evalMultiSelector's own 'base' case) to just
+// the nodes `sel` keeps - nodeInducedSubgraph directly for a node selector, or (mirroring
+// edgeInducedSubgraph's own "which nodes survive" rule) the nodes touched by at least one selected
+// edge for an edge selector. Returns the restricted board AND which of `board`'s own ORIGINAL node
+// indices survived, in the same ascending order nodeInducedSubgraph/edgeInducedSubgraph themselves
+// compact to - evalMultiSelector's own full-product index bookkeeping needs that mapping to place
+// the restricted board's own local nodes back into the fixed full index space (FullProductIndex).
+// Throws for any SelectorType other than node/edge - unlike msBase itself (which accepts any
+// SelectorType at the data-structure level - see MultiSelector's own doc comment), multiProd's own
+// evaluation requires node or edge specifically, since there's no other sensible way to turn a
+// tri/quad selection into "which nodes of this one factor board survive".
+function restrictBoardBySelector(board: BoardConfig, sel: Selector): { bc: BoardConfig; survivors: number[] } {
+    if (sel.type === 'node') {
+        const kept = selectNode(board.adj, board.emb.pos, sel);
+        return { bc: nodeInducedSubgraph(board, kept), survivors: [...kept].sort((a, b) => a - b) };
+    }
+    if (sel.type === 'edge') {
+        const edges = selectEdge(board.adj, board.emb.pos, sel);
+        const kept = new Set(edges.flatMap(e => [e.n1, e.n2]));
+        return { bc: edgeInducedSubgraph(board, edges), survivors: [...kept].sort((a, b) => a - b) };
+    }
+    throw new Error(
+        `cleg: multiProd: msBase's own selector must be a node or edge selector, got a '${sel.type}' selector`);
+}
+
+// Every original flat index, 0..fpi.total-1 - the universal set 'all' and 'inter' (with zero
+// operands) both denote (see MultiSelector's own doc comment on why those two coincide).
+function universalOriginalIndices(fpi: FullProductIndex): Set<number> {
+    const all = new Set<number>();
+    for (let i = 0; i < fpi.total; i++) all.add(i);
+    return all;
+}
+
+// Builds a real BoardConfig for an arbitrary subset of the full product's node space, given only the
+// kept ORIGINAL flat indices (`keptOriginal`) - decomposes each back into its own per-board tuple
+// (via `fpi`) to compute adjacency (Cartesian product rule: two kept nodes are adjacent iff they
+// differ in EXACTLY one coordinate k, adjacent there in boards[k]) and embedding (per-board
+// positions concatenated) directly, never materializing the full product's own (possibly enormous)
+// N x N adjacency matrix. Compacts to a fresh 0..K-1 range in ascending original-index order (same
+// convention as nodeInducedSubgraph/edgeInducedSubgraph) - returns both the new BoardConfig and
+// origIndex (new local index -> kept original flat index), so a further msUnion/msInter/msDiff can
+// keep combining against the very same fixed full-product index space. Used by every
+// evalMultiSelector case except 'base' (which instead reuses the real product() function directly -
+// see its own comment on why that still ends up with the exact same adjacency/embedding).
+function buildFromOriginalIndices(
+    boards: BoardConfig[], fpi: FullProductIndex, keptOriginal: Set<number>,
+): { bc: BoardConfig; origIndex: number[] } {
+    const origIndex = [...keptOriginal].sort((a, b) => a - b);
+    const tuples = origIndex.map(idx => tupleOfFullIndex(fpi, idx));
+    const embDim = boards.reduce((s, b) => s + b.emb.embDim, 0);
+    const pos = tuples.map(tuple => tuple.flatMap((n, k) => boards[k].emb.pos[n]));
+    const K = origIndex.length;
+    const adj = zeroAdj(K);
+    for (let a = 0; a < K; a++) {
+        for (let b = a + 1; b < K; b++) {
+            let diffCoord = -1;
+            let tooManyDiffs = false;
+            for (let k = 0; k < boards.length; k++) {
+                if (tuples[a][k] !== tuples[b][k]) {
+                    if (diffCoord !== -1) { tooManyDiffs = true; break; }
+                    diffCoord = k;
+                }
+            }
+            if (!tooManyDiffs && diffCoord >= 0 && boards[diffCoord].adj[tuples[a][diffCoord]][tuples[b][diffCoord]]) {
+                adj[a][b] = 1;
+                adj[b][a] = 1;
+            }
+        }
+    }
+    return { bc: make(new Embedding(embDim, pos, defaultProductProjMat(embDim)), adj), origIndex };
+}
+
+/**
+ * Evaluates a MultiSelector against `boards`/`fpi` into a real BoardConfig plus origIndex (see
+ * buildFromOriginalIndices) - every combinator ultimately reduces to a set operation over
+ * origIndex's own shared "which of the full product's original flat indices survive" universe (see
+ * FullProductIndex's own doc comment on why that has to be fixed up front, from `boards`' own
+ * unrestricted sizes, rather than derived along the way).
+ *
+ * 'base' restricts boards[number] (see restrictBoardBySelector) and folds the real product()
+ * pairwise, left to right, across every factor (boards[number] replaced by its restriction) -
+ * mathematically identical adjacency/embedding to a direct N-ary construction, since product()'s own
+ * row-major node indexing composes correctly under folding (`product(product(A,B),C)`'s own index
+ * `(a*NB+b)*NC+c` already equals the direct 3-ary flattening `a*NB*NC+b*NC+c`). The resulting local
+ * node indices are then translated back into the fixed full-product index space one at a time
+ * (decompose via the RESTRICTED factors' own sizes, substitute the restricted coordinate's own local
+ * index for its ORIGINAL boards[number] index via `survivors`, then flatten via `fpi`).
+ *
+ * 'union'/'inter'/'diff' recursively evaluate their own operands first (discarding each one's own
+ * `bc`, since only its origIndex set matters for combining), combine via ordinary Set operations,
+ * then materialize a fresh BoardConfig for exactly the combined set via buildFromOriginalIndices.
+ * 'inter' with zero operands is the universal set (every original index) - the usual absorbing-
+ * element identity for an empty intersection fold, matching Selector's own `(inter)`.
+ */
+function evalMultiSelector(
+    boards: BoardConfig[], fpi: FullProductIndex, msel: MultiSelector,
+): { bc: BoardConfig; origIndex: number[] } {
+    switch (msel.op) {
+        case 'all':
+            return buildFromOriginalIndices(boards, fpi, universalOriginalIndices(fpi));
+        case 'base': {
+            const { bc: restricted, survivors } = restrictBoardBySelector(boards[msel.number], msel.sel);
+            const factorBoards = boards.map((b, i) => i === msel.number ? restricted : b);
+            const bc = factorBoards.reduce((acc, b) => product(acc, b));
+            const localNs = factorBoards.map(b => b.N);
+            const localStride = new Array<number>(localNs.length);
+            localStride[localNs.length - 1] = 1;
+            for (let k = localNs.length - 2; k >= 0; k--) localStride[k] = localStride[k + 1] * localNs[k + 1];
+            const origIndex = new Array<number>(bc.N);
+            for (let local = 0; local < bc.N; local++) {
+                const tuple = localNs.map((n, k) => Math.floor(local / localStride[k]) % n);
+                tuple[msel.number] = survivors[tuple[msel.number]];
+                origIndex[local] = fullIndexOf(fpi, tuple);
+            }
+            return { bc, origIndex };
+        }
+        case 'union': {
+            const kept = new Set<number>();
+            for (const item of msel.items)
+                for (const idx of evalMultiSelector(boards, fpi, item).origIndex) kept.add(idx);
+            return buildFromOriginalIndices(boards, fpi, kept);
+        }
+        case 'inter': {
+            if (msel.items.length === 0) return buildFromOriginalIndices(boards, fpi, universalOriginalIndices(fpi));
+            let kept = new Set(evalMultiSelector(boards, fpi, msel.items[0]).origIndex);
+            for (let i = 1; i < msel.items.length; i++) {
+                const next = new Set(evalMultiSelector(boards, fpi, msel.items[i]).origIndex);
+                kept = new Set([...kept].filter(idx => next.has(idx)));
+            }
+            return buildFromOriginalIndices(boards, fpi, kept);
+        }
+        case 'diff': {
+            const a = new Set(evalMultiSelector(boards, fpi, msel.a).origIndex);
+            const b = new Set(evalMultiSelector(boards, fpi, msel.b).origIndex);
+            return buildFromOriginalIndices(boards, fpi, new Set([...a].filter(idx => !b.has(idx))));
+        }
+    }
+}
+
+// `multiProd(boards, msel)`: the N-ary Cartesian product of `boards` (an egr[]), restricted to
+// exactly the subgraph `msel` denotes - see evalMultiSelector's own doc comment for the full
+// algorithm. `boards` must be non-empty - an N-ary product of zero factors has no principled
+// definition here.
+BUILTIN_FUNCTIONS['multiProd'] = {
+    checkCall: fixedSignature([{ kind: 'array', elem: EGR_TYPE }, MSEL_TYPE], EGR_TYPE),
+    call: ([boardsVal, mselVal]) => {
+        const boards = (boardsVal as { value: ClegValue[] }).value.map(v => (v as { value: BoardConfig }).value);
+        if (boards.length === 0) throw new Error(`cleg: multiProd: boards must be non-empty`);
+        const fpi = makeFullProductIndex(boards);
+        const msel = (mselVal as { value: MultiSelector }).value;
+        return { kind: 'egr', value: evalMultiSelector(boards, fpi, msel).bc };
     },
 };
 
@@ -1626,6 +2062,7 @@ function checkExpr(expr: Expr, env: TypeEnv, funcs: FuncTable): ClegType {
             if (t.kind !== 'number') throw new Error(`cleg: unary '-' requires a number operand, got ${typeToString(t)}`);
             return { kind: 'number' };
         }
+        case 'NilExpr': return { kind: 'array', elem: expr.type };
     }
 }
 
@@ -1736,6 +2173,7 @@ function evalExpr(expr: Expr, env: ValueEnv, funcs: UserFuncTable): ClegValue {
             const v = (evalExpr(expr.operand, env, funcs) as { kind: 'number'; value: number }).value;
             return { kind: 'number', value: -v };
         }
+        case 'NilExpr': return { kind: 'array', elem: expr.type, value: [] };
     }
 }
 

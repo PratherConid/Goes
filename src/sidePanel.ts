@@ -26,10 +26,12 @@ export enum SidePanelContent {
     CommandReferenceNewGameSetup      = 'commandReferenceNewGameSetup',
     CommandReferenceGamePresets       = 'commandReferenceGamePresets',
     CommandReferenceOnlineMultiplayer = 'commandReferenceOnlineMultiplayer',
+    CommandReferenceCleg              = 'commandReferenceCleg',
     CommandReferenceBoardTypes        = 'commandReferenceBoardTypes',
     CommandReferenceBoardModifiers    = 'commandReferenceBoardModifiers',
     CommandReferenceSelectors         = 'commandReferenceSelectors',
     CommandReferenceFormSelectors     = 'commandReferenceFormSelectors',
+    CommandReferenceBuiltinFunctions  = 'commandReferenceBuiltinFunctions',
     CurrentGameSetup    = 'currentGameSetup',
     NewGame             = 'newGame',
     GameRecords         = 'gameRecords',
@@ -68,23 +70,32 @@ export const SidePanelHierarchy: Record<SidePanelContent, [SidePanelContent | nu
     // (Renderer._renderStatus()), same reason as Chat's above.
     [SidePanelContent.ConfigureViewport]: [SidePanelContent.Status, []],
     // CommandReference is a pure hub (like Home/GameRecords) - one child per former section of the
-    // old single command-reference table, each now its own leaf page (see Renderer._initCommandsPanel()).
+    // old single command-reference table, each now its own leaf page (see
+    // Renderer._initCommandsPanel()) - except CommandReferenceCleg, itself a further hub grouping
+    // every cleg-language reference page under one place.
     [SidePanelContent.CommandReference]: [SidePanelContent.Home, [
         SidePanelContent.CommandReferenceGame, SidePanelContent.CommandReferenceDisplay,
         SidePanelContent.CommandReferenceNewGameSetup, SidePanelContent.CommandReferenceGamePresets,
-        SidePanelContent.CommandReferenceOnlineMultiplayer, SidePanelContent.CommandReferenceBoardTypes,
-        SidePanelContent.CommandReferenceBoardModifiers, SidePanelContent.CommandReferenceSelectors,
-        SidePanelContent.CommandReferenceFormSelectors,
+        SidePanelContent.CommandReferenceOnlineMultiplayer, SidePanelContent.CommandReferenceCleg,
     ]],
     [SidePanelContent.CommandReferenceGame]:              [SidePanelContent.CommandReference, []],
     [SidePanelContent.CommandReferenceDisplay]:           [SidePanelContent.CommandReference, []],
     [SidePanelContent.CommandReferenceNewGameSetup]:      [SidePanelContent.CommandReference, []],
     [SidePanelContent.CommandReferenceGamePresets]:       [SidePanelContent.CommandReference, []],
     [SidePanelContent.CommandReferenceOnlineMultiplayer]: [SidePanelContent.CommandReference, []],
-    [SidePanelContent.CommandReferenceBoardTypes]:        [SidePanelContent.CommandReference, []],
-    [SidePanelContent.CommandReferenceBoardModifiers]:    [SidePanelContent.CommandReference, []],
-    [SidePanelContent.CommandReferenceSelectors]:         [SidePanelContent.CommandReference, []],
-    [SidePanelContent.CommandReferenceFormSelectors]:     [SidePanelContent.CommandReference, []],
+    // CommandReferenceCleg is itself a pure hub (like CommandReference above) - every cleg-language
+    // reference page (prescribed board constructors, board modifiers, the selector grammar, form
+    // selectors, and every other builtin function) lives under it, one leaf page each.
+    [SidePanelContent.CommandReferenceCleg]: [SidePanelContent.CommandReference, [
+        SidePanelContent.CommandReferenceBoardTypes, SidePanelContent.CommandReferenceBoardModifiers,
+        SidePanelContent.CommandReferenceSelectors, SidePanelContent.CommandReferenceFormSelectors,
+        SidePanelContent.CommandReferenceBuiltinFunctions,
+    ]],
+    [SidePanelContent.CommandReferenceBoardTypes]:        [SidePanelContent.CommandReferenceCleg, []],
+    [SidePanelContent.CommandReferenceBoardModifiers]:    [SidePanelContent.CommandReferenceCleg, []],
+    [SidePanelContent.CommandReferenceSelectors]:         [SidePanelContent.CommandReferenceCleg, []],
+    [SidePanelContent.CommandReferenceFormSelectors]:     [SidePanelContent.CommandReferenceCleg, []],
+    [SidePanelContent.CommandReferenceBuiltinFunctions]:  [SidePanelContent.CommandReferenceCleg, []],
     [SidePanelContent.CurrentGameSetup]: [SidePanelContent.Home, [SidePanelContent.History]],
     // GamePresetSelection/BoardPresetSelection's nav buttons are likewise rendered by
     // Renderer._refreshSidePanel() - into #new-game-buttons, alongside the
@@ -125,10 +136,12 @@ export const SidePanelTitle: Record<SidePanelContent, string> = {
     [SidePanelContent.CommandReferenceNewGameSetup]:      'New Game Setup',
     [SidePanelContent.CommandReferenceGamePresets]:       'Game Presets',
     [SidePanelContent.CommandReferenceOnlineMultiplayer]: 'Online Multiplayer',
-    [SidePanelContent.CommandReferenceBoardTypes]:        'Board Types',
+    [SidePanelContent.CommandReferenceCleg]:              'Cleg Reference',
+    [SidePanelContent.CommandReferenceBoardTypes]:        'Prescribed Boards',
     [SidePanelContent.CommandReferenceBoardModifiers]:    'Board Modifiers',
     [SidePanelContent.CommandReferenceSelectors]:         'Selectors',
     [SidePanelContent.CommandReferenceFormSelectors]:     'Form Selectors',
+    [SidePanelContent.CommandReferenceBuiltinFunctions]:  'Builtin Functions',
     [SidePanelContent.CurrentGameSetup]: 'Current Game Info',
     [SidePanelContent.NewGame]:          'New Game',
     [SidePanelContent.GameRecords]:      'Game Records',
@@ -192,10 +205,12 @@ export interface SidePanelElements {
     commandReferenceNewGameSetupPanel:      HTMLDivElement;
     commandReferenceGamePresetsPanel:       HTMLDivElement;
     commandReferenceOnlineMultiplayerPanel: HTMLDivElement;
+    commandReferenceClegPanel:              HTMLDivElement;
     commandReferenceBoardTypesPanel:        HTMLDivElement;
     commandReferenceBoardModifiersPanel:    HTMLDivElement;
     commandReferenceSelectorsPanel:         HTMLDivElement;
     commandReferenceFormSelectorsPanel:     HTMLDivElement;
+    commandReferenceBuiltinFunctionsPanel:  HTMLDivElement;
     currentGameSetupPanel: HTMLDivElement;
     newGamePanel:          HTMLDivElement;
     gameRecordsPanel:      HTMLDivElement;
@@ -237,6 +252,8 @@ export function renderSidePanelChrome(current: SidePanelContent, els: SidePanelE
         current === SidePanelContent.CommandReferenceGamePresets ? 'block' : 'none';
     els.commandReferenceOnlineMultiplayerPanel.style.display =
         current === SidePanelContent.CommandReferenceOnlineMultiplayer ? 'block' : 'none';
+    els.commandReferenceClegPanel.style.display =
+        current === SidePanelContent.CommandReferenceCleg ? 'block' : 'none';
     els.commandReferenceBoardTypesPanel.style.display =
         current === SidePanelContent.CommandReferenceBoardTypes ? 'block' : 'none';
     els.commandReferenceBoardModifiersPanel.style.display =
@@ -245,6 +262,8 @@ export function renderSidePanelChrome(current: SidePanelContent, els: SidePanelE
         current === SidePanelContent.CommandReferenceSelectors ? 'block' : 'none';
     els.commandReferenceFormSelectorsPanel.style.display =
         current === SidePanelContent.CommandReferenceFormSelectors ? 'block' : 'none';
+    els.commandReferenceBuiltinFunctionsPanel.style.display =
+        current === SidePanelContent.CommandReferenceBuiltinFunctions ? 'block' : 'none';
     els.currentGameSetupPanel.style.display    = current === SidePanelContent.CurrentGameSetup    ? 'block' : 'none';
     els.newGamePanel.style.display             = current === SidePanelContent.NewGame             ? 'block' : 'none';
     els.gameRecordsPanel.style.display         = current === SidePanelContent.GameRecords         ? 'block' : 'none';

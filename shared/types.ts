@@ -441,6 +441,21 @@ export function cloneBoardArgEntry(e: BoardArgEntry): BoardArgEntry {
 export type SelectorType = 'node' | 'edge' | 'tri' | 'quad';
 
 /**
+ * The literal, already-materialized payload of a `raw` Selector (see below) - one branch per
+ * SelectorType, holding exactly what that kind's own shared/selector.ts evaluator (selectNode/
+ * selectEdge/selectTriangle/selectQuad) itself returns: a real `Set<number>` for nodes (numbers
+ * have genuine equality, so a JS Set works as an actual set), plain arrays for edge/tri/quad
+ * (which don't - see ClegValue's own 'set' variant in shared/cleg.ts for why every other edge/
+ * tri/quad collection in this codebase is a plain array, never a JS Set, deduplicated by a real key
+ * function rather than reference equality).
+ */
+export type SelectedVals =
+    | { kind: 'node'; value: Set<number> }
+    | { kind: 'edge'; value: BoardEdge[] }
+    | { kind: 'tri'; value: BoardTriangle[] }
+    | { kind: 'quad'; value: BoardQuad[] };
+
+/**
  * A tiny S-expression language for selecting a subset of a board's nodes, edges, triangles, or
  * quads (a "triangle"/"quad" here is exactly what shared/topology.ts's findTriangles()/
  * findQuads() finds - see BoardTriangle/BoardQuad above) - see shared/selector.ts for the full
@@ -471,7 +486,13 @@ export type Selector =
     | { op: 'deg'; type: 'node'; cmp: 'eq' | 'gt' | 'lt'; n: number }
     | { op: 'conva' | 'conve'; type: SelectorType; from: SelectorType; a: Selector }
     | { op: 'rrmn'; type: SelectorType; count: number; a: Selector }
-    | { op: 'rrmp'; type: SelectorType; frac: number; a: Selector };
+    | { op: 'rrmp'; type: SelectorType; frac: number; a: Selector }
+    // Wraps an already-materialized SelectedVals directly, rather than computing a selection from
+    // scratch - `type` must agree with `items.kind` (both name the same SelectorType; kept as two
+    // fields rather than one, like every other variant here, so generic code can still read `.type`
+    // without switching on `.op` first). Lets a selection built some other way (e.g. evaluated
+    // in cleg, or combined via ordinary set operations) be reused wherever a Selector is expected.
+    | { op: 'raw'; type: SelectorType; items: SelectedVals };
 
 /**
  * A tiny extension of the Selector grammar above for shared/boardConfig.ts's `genericForm` - a

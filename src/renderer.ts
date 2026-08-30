@@ -140,6 +140,8 @@ const _boardConfigDescriptions = new Map([
         + 'quads just under each face), then every one of those quads with both a degree-3 and a '
         + 'degree-6 node (evaluated after that reduction) replaced by a side-length-6 square board'],
     ['cublat_4_4_4_cub_0010_quadform_4', 'quadform 4 applied to 0010 position cubes on 4x4x4 cubical lattice'],
+    ['biTemple_13_13_9', 'Temple with both top and bottom'],
+    ['twsqCluster4D_4_4_2', 'Copies of twsq boards connected in 4 dimensions'],
 ]);
 
 
@@ -727,10 +729,12 @@ export class Renderer {
     private commandReferenceNewGameSetupPanel:      HTMLDivElement;
     private commandReferenceGamePresetsPanel:       HTMLDivElement;
     private commandReferenceOnlineMultiplayerPanel: HTMLDivElement;
+    private commandReferenceClegPanel:              HTMLDivElement;
     private commandReferenceBoardTypesPanel:        HTMLDivElement;
     private commandReferenceBoardModifiersPanel:    HTMLDivElement;
     private commandReferenceSelectorsPanel:         HTMLDivElement;
     private commandReferenceFormSelectorsPanel:     HTMLDivElement;
+    private commandReferenceBuiltinFunctionsPanel:  HTMLDivElement;
     private historyPanel:  HTMLDivElement;
     private panelDockBtn: HTMLButtonElement;
     private panelFullBtn: HTMLButtonElement;
@@ -804,6 +808,8 @@ export class Renderer {
             document.getElementById('cmdref-game-presets-panel') as HTMLDivElement;
         this.commandReferenceOnlineMultiplayerPanel =
             document.getElementById('cmdref-online-multiplayer-panel') as HTMLDivElement;
+        this.commandReferenceClegPanel =
+            document.getElementById('cmdref-cleg-panel') as HTMLDivElement;
         this.commandReferenceBoardTypesPanel =
             document.getElementById('cmdref-board-types-panel') as HTMLDivElement;
         this.commandReferenceBoardModifiersPanel =
@@ -812,6 +818,8 @@ export class Renderer {
             document.getElementById('cmdref-selectors-panel') as HTMLDivElement;
         this.commandReferenceFormSelectorsPanel =
             document.getElementById('cmdref-form-selectors-panel') as HTMLDivElement;
+        this.commandReferenceBuiltinFunctionsPanel =
+            document.getElementById('cmdref-builtin-functions-panel') as HTMLDivElement;
         this.historyPanel  = document.getElementById('history-panel')   as HTMLDivElement;
         this.panelDockBtn = document.getElementById('panel-dock-btn') as HTMLButtonElement;
         this.panelFullBtn = document.getElementById('panel-full-btn') as HTMLButtonElement;
@@ -915,10 +923,12 @@ export class Renderer {
             commandReferenceNewGameSetupPanel:      this.commandReferenceNewGameSetupPanel,
             commandReferenceGamePresetsPanel:       this.commandReferenceGamePresetsPanel,
             commandReferenceOnlineMultiplayerPanel: this.commandReferenceOnlineMultiplayerPanel,
+            commandReferenceClegPanel:              this.commandReferenceClegPanel,
             commandReferenceBoardTypesPanel:        this.commandReferenceBoardTypesPanel,
             commandReferenceBoardModifiersPanel:    this.commandReferenceBoardModifiersPanel,
             commandReferenceSelectorsPanel:         this.commandReferenceSelectorsPanel,
             commandReferenceFormSelectorsPanel:     this.commandReferenceFormSelectorsPanel,
+            commandReferenceBuiltinFunctionsPanel:  this.commandReferenceBuiltinFunctionsPanel,
             currentGameSetupPanel: this.currentGameSetupPanel,
             newGamePanel:          this.newGamePanel,
             gameRecordsPanel:      this.gameRecordsPanel,
@@ -974,10 +984,15 @@ export class Renderer {
             for (const btn of childButtons(children, onNav)) this.gameRecordsPanel.appendChild(btn);
 
         // CommandReference is likewise a pure hub - one child button per former section of the old
-        // single command-reference table, each now its own leaf page (see _initCommandsPanel()).
+        // single command-reference table, each now its own leaf page (see _initCommandsPanel()) -
+        // except CommandReferenceCleg, itself a further hub (same pattern, one level down).
         this.commandsPanel.innerHTML = '';
         if (this.currentSidePanel === SidePanelContent.CommandReference)
             for (const btn of childButtons(children, onNav)) this.commandsPanel.appendChild(btn);
+
+        this.commandReferenceClegPanel.innerHTML = '';
+        if (this.currentSidePanel === SidePanelContent.CommandReferenceCleg)
+            for (const btn of childButtons(children, onNav)) this.commandReferenceClegPanel.appendChild(btn);
 
         // Account has its own content (login form or logged-in view) built by
         // _renderAccountPanel(), not childButtons() - a leaf node, not a hub.
@@ -1593,8 +1608,8 @@ export class Renderer {
             ${row('fpo',                      'Toggle forced-pass-only for new games')}
             ${row('ascd',                     'Toggle allow-suicide for new games')}
             ${row('board', 'Open a text box (pre-filled with the new-game config\'s current board '
-                + 'description) to freely edit the whole cleg program at once - see the Board Types/'
-                + 'Board Modifiers pages for available construction functions; Ok re-parses and '
+                + 'description) to freely edit the whole cleg program at once - see the Prescribed '
+                + 'Boards/Board Modifiers pages for available construction functions; Ok re-parses and '
                 + 'type-checks it (must produce an egr) and, if valid, replaces the new-game board '
                 + 'description - otherwise the box stays open with an error')}
             ${row('ns &lt;n&gt;',             'Set number of stone types for new games')}
@@ -1745,6 +1760,52 @@ export class Renderer {
             ${row('mkFormSel("quad", sel?)',
                 'Names quads for the form modifier: every quad, or (if a quad selector sel is '
                 + 'given) only the ones it selects')}
+        `);
+
+        this.commandReferenceBuiltinFunctionsPanel.innerHTML = table(`
+            ${row('nil(TYPE)', 'An empty array of the given element type - e.g. nil(number) is an '
+                + 'empty number[] - needed anywhere an empty [...]/{...} literal can\'t infer its own '
+                + 'element type on its own, such as msUnion([]) or msInter([])')}
+            ${row('len(arr|set)', 'Number of elements in an array or set')}
+            ${row('randRmN(set, num)',
+                'Randomly (uniformly) removes exactly num (a nonnegative integer) elements from a set '
+                + 'of any element type - same semantics as the (rrmn ...) selector operator (see '
+                + 'Selectors), but usable on any set, not just node/edge/tri/quad selections')}
+            ${row('randRmP(set, num)',
+                'Randomly removes a portion of a set: num (a nonnegative fraction) times the set\'s own '
+                + 'size, rounded down - same semantics as the (rrmp ...) selector operator')}
+            ${row('mkEdge(a, b)', 'Builds an edge value between node indices a and b')}
+            ${row('mkTri(a, b, c)', 'Builds a triangle value from three node indices')}
+            ${row('mkQuad(a, b, c, d)',
+                'Builds a quad value from four node indices, which must already be in cycle order')}
+            ${row('prod(egr, egr)', 'The graph (tensor) product of two boards')}
+            ${row('mkSel(kind, X)',
+                'Builds a selector value (type sel) of the given kind ("node"/"edge"/"tri"/"quad") '
+                + 'from X - a string (parsed with that kind\'s own grammar - see Selectors) or a set '
+                + 'of the matching element type')}
+            ${row('selectNode(X, egr)',
+                'Evaluates a node selector X (a sel, string, or set) against a real board, returning '
+                + 'the exact set of nodes it selects (a number{}) - unlike nis, this runs immediately '
+                + 'against a board instead of building a mod to apply later')}
+            ${row('selectEdge(X, egr)', 'Same as selectNode, but for an edge selector, returning an edge{}')}
+            ${row('selectTriangle(X, egr)', 'Same as selectNode, but for a triangle selector, returning a tri{}')}
+            ${row('selectQuad(X, egr)', 'Same as selectNode, but for a quad selector, returning a quad{}')}
+            ${row('multiProd([egr...], msel)',
+                'The N-ary Cartesian product of the given boards, restricted to the subgraph the '
+                + 'multiselector msel denotes - a fixed indexing over the full (unrestricted) product '
+                + 'space is used throughout, so msUnion/msInter/msDiff operands - built against '
+                + 'independently-restricted boards - combine meaningfully, and unused nodes are '
+                + 'dropped from the final result')}
+            ${row('msAll()', 'Multiselector: every node of the full product, unrestricted')}
+            ${row('msBase(num, X)',
+                'Multiselector: every full-product node whose num-th coordinate is kept by X - a node '
+                + 'or edge selector (sel or set; a node selector keeps the node-induced subgraph of '
+                + 'board num, an edge selector its edge-induced subgraph) - every other coordinate '
+                + 'left unrestricted')}
+            ${row('msUnion([msel...])', 'Multiselector union of zero or more operands (zero is the empty set)')}
+            ${row('msInter([msel...])',
+                'Multiselector intersection of zero or more operands (zero is the universal set - same as msAll())')}
+            ${row('msDiff(msel, msel)', 'Multiselector difference (left minus right)')}
         `);
     }
 

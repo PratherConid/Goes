@@ -441,15 +441,15 @@ export function globalCentralize(bc: BoardConfig): BoardConfig {
 }
 
 /**
- * The default projMat assigned to a freshly-`product()`-ed or `quadOctarize()`-d board (see below):
- * dims 0, 1, 2 map straight to x, y, z (identity - the whole matrix is exactly DEFAULT_3D_PROJMAT
- * when embDim <= 3), and every triple of dims beyond that cycles through x/y/z again at a
- * halved-again magnitude, e.g. embDim=8 gives `[[1, 0, 0, 1/2, 0, 0, 1/4, 0], [0, 1, 0, 0, 1/2, 0,
- * 0, 1/4], [0, 0, 1, 0, 0, 1/2, 0, 0]]`. Dim `d` contributes magnitude `2^-floor(d/3)` to axis
- * `d % 3` (x, y, or z), which also reproduces the d=0/1/2 identity part with no separate case
- * needed, since `2^-floor(d/3)` equals 1 for d=0/1/2.
+ * The default projMat assigned to a freshly-`product()`-ed or `quadOctarize()`-d board (see below,
+ * and shared/cleg.ts's own multiProd) - dims 0, 1, 2 map straight to x, y, z (identity - the whole
+ * matrix is exactly DEFAULT_3D_PROJMAT when embDim <= 3), and every triple of dims beyond that
+ * cycles through x/y/z again at a halved-again magnitude, e.g. embDim=8 gives `[[1, 0, 0, 1/2, 0, 0,
+ * 1/4, 0], [0, 1, 0, 0, 1/2, 0, 0, 1/4], [0, 0, 1, 0, 0, 1/2, 0, 0]]`. Dim `d` contributes magnitude
+ * `2^-floor(d/3)` to axis `d % 3` (x, y, or z), which also reproduces the d=0/1/2 identity part with
+ * no separate case needed, since `2^-floor(d/3)` equals 1 for d=0/1/2.
  */
-function defaultProductProjMat(embDim: number): number[][] {
+export function defaultProductProjMat(embDim: number): number[][] {
     const rows = [new Array<number>(embDim).fill(0), new Array<number>(embDim).fill(0), new Array<number>(embDim).fill(0)];
     for (let d = 0; d < embDim; d++) {
         const mag = 2 ** -Math.floor(d / 3);
@@ -1601,7 +1601,7 @@ const nums = (k: number): BoardArgType[] => new Array(k).fill(BoardArgType.Numbe
 // suffix already, so no name-mangling is needed at the registration site there), a human-readable
 // bracketed argument list (already parenthesized, exactly as it'd read in a real cleg call - no
 // further processing needed to display it, e.g. "(w, h)"), description]. Used directly by
-// src/renderer.ts's "Board Types" command-reference table (no separate lookup structure of its
+// src/renderer.ts's "Prescribed Boards" command-reference table (no separate lookup structure of its
 // own), and by cleg.ts's board-constructor BUILTIN_FUNCTIONS registration loop.
 export const PrescribedBoardMap: Record<PrescribedBoard, [BoardArgType[], string, string, string]> = {
     [PrescribedBoard.linearBoard]:

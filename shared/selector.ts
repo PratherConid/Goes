@@ -276,6 +276,12 @@ export function formatSelector(sel: Selector): string {
             return `(rrmn ${sel.count} ${formatSelector(sel.a)})`;
         case 'rrmp':
             return `(rrmp ${sel.frac} ${formatSelector(sel.a)})`;
+        case 'raw':
+            // No grammar production exists for embedding an already-materialized SelectedVals as
+            // text (unlike every other op, which is built from other Selectors/literals this
+            // grammar can already express) - a 'raw' Selector can only be built/consumed
+            // programmatically, never round-tripped through source text.
+            throw new Error(`selector: 'raw' has no text representation`);
     }
 }
 
@@ -504,6 +510,13 @@ export function selectNode(adj: number[][], pos: number[][], sel: Selector): Set
             const base = [...selectNode(adj, pos, sel.a)];
             return new Set(randomlyRemove(base, Math.floor(sel.frac * base.length)));
         }
+        case 'raw':
+            // sel.type !== 'node' was already rejected above, but that doesn't by itself guarantee
+            // sel.items (a separately-tagged SelectedVals) agrees - a hand-built Selector could still
+            // have the two fields out of sync, so this is checked for real, not just asserted.
+            if (sel.items.kind !== 'node')
+                throw new Error(`selectNode: 'raw' selector's own items must be node-kind, got '${sel.items.kind}'`);
+            return new Set(sel.items.value);
         default:
             throw new Error(`selectNode: unexpected node-selector op '${(sel as Selector).op}'`);
     }
@@ -604,6 +617,10 @@ export function selectEdge(adj: number[][], pos: number[][], sel: Selector): Boa
             const base = selectEdge(adj, pos, sel.a);
             return randomlyRemove(base, Math.floor(sel.frac * base.length));
         }
+        case 'raw':
+            if (sel.items.kind !== 'edge')
+                throw new Error(`selectEdge: 'raw' selector's own items must be edge-kind, got '${sel.items.kind}'`);
+            return [...sel.items.value];
         default:
             throw new Error(`selectEdge: unexpected edge-selector op '${(sel as Selector).op}'`);
     }
@@ -666,6 +683,10 @@ export function selectTriangle(adj: number[][], pos: number[][], sel: Selector):
             const base = selectTriangle(adj, pos, sel.a);
             return randomlyRemove(base, Math.floor(sel.frac * base.length));
         }
+        case 'raw':
+            if (sel.items.kind !== 'tri')
+                throw new Error(`selectTriangle: 'raw' selector's own items must be tri-kind, got '${sel.items.kind}'`);
+            return [...sel.items.value];
         default:
             throw new Error(`selectTriangle: unexpected triangle-selector op '${(sel as Selector).op}'`);
     }
@@ -728,6 +749,10 @@ export function selectQuad(adj: number[][], pos: number[][], sel: Selector): Boa
             const base = selectQuad(adj, pos, sel.a);
             return randomlyRemove(base, Math.floor(sel.frac * base.length));
         }
+        case 'raw':
+            if (sel.items.kind !== 'quad')
+                throw new Error(`selectQuad: 'raw' selector's own items must be quad-kind, got '${sel.items.kind}'`);
+            return [...sel.items.value];
         default:
             throw new Error(`selectQuad: unexpected quad-selector op '${(sel as Selector).op}'`);
     }

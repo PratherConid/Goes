@@ -1,0 +1,15 @@
+multiProd(
+  [twsqB(4, 4, 2), twsqB(4, 4, 2)],
+  msUnion(
+    [
+      msBase(
+        0,
+        mkSel("node", "(diff (more 2 (deg lt 3)) (more 1 (deg lt 3)))")
+      ),
+      msBase(
+        1,
+        mkSel("node", "(diff (more 2 (deg lt 3)) (more 1 (deg lt 3)))")
+      )
+    ]
+  )
+);
