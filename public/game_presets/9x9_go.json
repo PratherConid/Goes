@@ -1,5 +1,5 @@
 {
-  "boardDescr": {"kind":"ClegProgram","functions":[],"stmts":[{"kind":"ExprStmt","expr":{"kind":"CallExpr","callee":"rectB","args":[{"kind":"NumberLit","value":9},{"kind":"NumberLit","value":9}]}}]},
+  "boardDescr": "rectB(9, 9);",
   "numStones": 2,
   "numPlayers": 2,
   "turnList": [

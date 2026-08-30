@@ -1,5 +1,5 @@
 {
-  "boardDescr": {"kind":"ClegProgram","functions":[],"stmts":[{"kind":"ExprStmt","expr":{"kind":"CallExpr","callee":"twsqB","args":[{"kind":"NumberLit","value":7},{"kind":"NumberLit","value":7},{"kind":"NumberLit","value":2}]}}]},
+  "boardDescr": "twsqB(7, 7, 2);",
   "numStones": 2,
   "numPlayers": 2,
   "turnList": [
