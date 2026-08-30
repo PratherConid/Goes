@@ -140,7 +140,7 @@ const _boardConfigDescriptions = new Map([
         + 'quads just under each face), then every one of those quads with both a degree-3 and a '
         + 'degree-6 node (evaluated after that reduction) replaced by a side-length-6 square board'],
     ['cublat_4_4_4_cub_0010_quadform_4', 'quadform 4 applied to 0010 position cubes on 4x4x4 cubical lattice'],
-    ['biTemple_13_13_9', 'Temple with both top and bottom'],
+    ['biTemple_13_13_9_3', 'Temple with both top and bottom'],
     ['twsqCluster4D_4_4_2', 'Copies of twsq boards connected in 4 dimensions'],
 ]);
 
@@ -729,7 +729,7 @@ export class Renderer {
     private commandReferenceNewGameSetupPanel:      HTMLDivElement;
     private commandReferenceGamePresetsPanel:       HTMLDivElement;
     private commandReferenceOnlineMultiplayerPanel: HTMLDivElement;
-    private commandReferenceClegPanel:              HTMLDivElement;
+    private clegReferencePanel:                     HTMLDivElement;
     private commandReferenceBoardTypesPanel:        HTMLDivElement;
     private commandReferenceBoardModifiersPanel:    HTMLDivElement;
     private commandReferenceSelectorsPanel:         HTMLDivElement;
@@ -808,8 +808,8 @@ export class Renderer {
             document.getElementById('cmdref-game-presets-panel') as HTMLDivElement;
         this.commandReferenceOnlineMultiplayerPanel =
             document.getElementById('cmdref-online-multiplayer-panel') as HTMLDivElement;
-        this.commandReferenceClegPanel =
-            document.getElementById('cmdref-cleg-panel') as HTMLDivElement;
+        this.clegReferencePanel =
+            document.getElementById('cleg-reference-panel') as HTMLDivElement;
         this.commandReferenceBoardTypesPanel =
             document.getElementById('cmdref-board-types-panel') as HTMLDivElement;
         this.commandReferenceBoardModifiersPanel =
@@ -923,7 +923,7 @@ export class Renderer {
             commandReferenceNewGameSetupPanel:      this.commandReferenceNewGameSetupPanel,
             commandReferenceGamePresetsPanel:       this.commandReferenceGamePresetsPanel,
             commandReferenceOnlineMultiplayerPanel: this.commandReferenceOnlineMultiplayerPanel,
-            commandReferenceClegPanel:              this.commandReferenceClegPanel,
+            clegReferencePanel:                     this.clegReferencePanel,
             commandReferenceBoardTypesPanel:        this.commandReferenceBoardTypesPanel,
             commandReferenceBoardModifiersPanel:    this.commandReferenceBoardModifiersPanel,
             commandReferenceSelectorsPanel:         this.commandReferenceSelectorsPanel,
@@ -984,15 +984,16 @@ export class Renderer {
             for (const btn of childButtons(children, onNav)) this.gameRecordsPanel.appendChild(btn);
 
         // CommandReference is likewise a pure hub - one child button per former section of the old
-        // single command-reference table, each now its own leaf page (see _initCommandsPanel()) -
-        // except CommandReferenceCleg, itself a further hub (same pattern, one level down).
+        // single command-reference table, each now its own leaf page (see _initCommandsPanel()).
         this.commandsPanel.innerHTML = '';
         if (this.currentSidePanel === SidePanelContent.CommandReference)
             for (const btn of childButtons(children, onNav)) this.commandsPanel.appendChild(btn);
 
-        this.commandReferenceClegPanel.innerHTML = '';
-        if (this.currentSidePanel === SidePanelContent.CommandReferenceCleg)
-            for (const btn of childButtons(children, onNav)) this.commandReferenceClegPanel.appendChild(btn);
+        // ClegReference is a sibling hub of its own, a direct child of Home (not nested under
+        // CommandReference - see SidePanelHierarchy's own comment on why).
+        this.clegReferencePanel.innerHTML = '';
+        if (this.currentSidePanel === SidePanelContent.ClegReference)
+            for (const btn of childButtons(children, onNav)) this.clegReferencePanel.appendChild(btn);
 
         // Account has its own content (login form or logged-in view) built by
         // _renderAccountPanel(), not childButtons() - a leaf node, not a hub.

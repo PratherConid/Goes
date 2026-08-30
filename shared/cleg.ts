@@ -14,9 +14,12 @@
  * revisiting to grow the language further. The five arithmetic operators (`+ - * / %`) and five
  * comparison operators (`== < > <= >=`) are supported, with `()` for grouping/precedence; each is
  * resolved against a small overload table (BINARY_OPERATOR_OVERLOADS below) rather than being
- * hardcoded to one signature, so operators can be polymorphic - `+` currently has three overloads
- * (`number, number -> number`; array concatenation, `T[], T[] -> T[]`; set union, `T{}, T{} ->
- * T{}`, see below), `-` has two (`number, number -> number` and set difference), `*` has four
+ * hardcoded to one signature, so operators can be polymorphic - `+` currently has five overloads
+ * (`number, number -> number`; string concatenation, `string, string -> string`; number/string
+ * concatenation, `number, string -> string` and `string, number -> string`, converting the number
+ * operand to a string - see stringConcatOverload/numberStringConcatOverload; array concatenation,
+ * `T[], T[] -> T[]`; set union, `T{}, T{} -> T{}`, see below), `-` has two (`number, number ->
+ * number` and set difference), `*` has four
  * (`number, number -> number`; set intersection; array/string replication, `T[], number -> T[]` and
  * `string, number -> string`, each also accepted with the two operands swapped - `n` must be a
  * nonnegative integer, checked at evaluation time since it isn't knowable from `number`'s type alone
@@ -286,6 +289,50 @@ function numberOverload(compute: (a: number, b: number) => number): BinaryOverlo
     };
 }
 
+/** `string, string -> string` (concatenation) - needed alongside numberStringConcatOverload below
+ * so a chain like `"a" + (n + 1) + "b"` (string, number -> string, then that result, string ->
+ * string) actually typechecks end to end. */
+const stringConcatOverload: BinaryOverload = {
+    signature: 'string, string -> string (concatenation)',
+    match: (l, r) => (l.kind === 'string' && r.kind === 'string')
+        ? {
+            type: { kind: 'string' },
+            eval: (lv, rv) => ({
+                kind: 'string',
+                value: `${(lv as { value: string }).value}${(rv as { value: string }).value}`,
+            }),
+        }
+        : null,
+};
+
+/** `number, string -> string`/`string, number -> string` (concatenation, converting the number
+ * operand to a string first) - unlike repeatArrayOverload/repeatStringOverload's `*` swap (which
+ * shares one meaning either way round), these two orderings just concatenate in the order the
+ * operands appear (`1 + "x"` is `"1x"`, `"x" + 1` is `"x1"`), so both directions are spelled out
+ * rather than sharing a single symmetric `eval`. */
+const numberStringConcatOverload: BinaryOverload = {
+    signature: 'number, string -> string (or string, number -> string; concatenation)',
+    match: (l, r) => {
+        if (l.kind === 'number' && r.kind === 'string')
+            return {
+                type: { kind: 'string' },
+                eval: (lv, rv) => ({
+                    kind: 'string',
+                    value: `${(lv as { value: number }).value}${(rv as { value: string }).value}`,
+                }),
+            };
+        if (l.kind === 'string' && r.kind === 'number')
+            return {
+                type: { kind: 'string' },
+                eval: (lv, rv) => ({
+                    kind: 'string',
+                    value: `${(lv as { value: string }).value}${(rv as { value: number }).value}`,
+                }),
+            };
+        return null;
+    },
+};
+
 /** `T[], T[] -> T[]` (concatenation) - only matches when both operands are arrays of the exact
  * same element type (via typeEquals), so e.g. `number[] + string[]` is still rejected. */
 const arrayConcatOverload: BinaryOverload = {
@@ -453,7 +500,7 @@ function comparisonOverload(elemKind: 'number' | 'bool', compute: (a: number, b:
 }
 
 const BINARY_OPERATOR_OVERLOADS: Record<BinOp, BinaryOverload[]> = {
-    '+': [numberOverload((a, b) => a + b), arrayConcatOverload, setUnionOverload],
+    '+': [numberOverload((a, b) => a + b), stringConcatOverload, numberStringConcatOverload, arrayConcatOverload, setUnionOverload],
     '-': [numberOverload((a, b) => a - b), setDiffOverload],
     '*': [numberOverload((a, b) => a * b), setIntersectOverload, repeatArrayOverload, repeatStringOverload],
     '/': [numberOverload((a, b) => a / b)],

@@ -363,7 +363,7 @@
     .commands-subpanel td:last-child { color: #000; }
 
     #home-panel, #history-panel, #status-panel, #current-game-setup-panel, #new-game-panel,
-    #game-records-panel, #commands-panel, #cmdref-cleg-panel, #game-preset-selection-panel, #board-preset-selection-panel,
+    #game-records-panel, #commands-panel, #cleg-reference-panel, #game-preset-selection-panel, #board-preset-selection-panel,
     #active-local-games-panel, #pending-games-panel, #active-online-games-panel,
     #finished-online-games-panel, #account-panel, #configure-online-players-panel, #chat-panel,
     #configure-viewport-panel {
@@ -461,7 +461,7 @@
     }
 
     #home-panel, #status-panel, #current-game-setup-panel, #new-game-panel, #game-records-panel,
-    #commands-panel, #cmdref-cleg-panel, #game-preset-selection-panel,
+    #commands-panel, #cleg-reference-panel, #game-preset-selection-panel,
     #board-preset-selection-panel, #active-local-games-panel, #pending-games-panel, #active-online-games-panel,
     #finished-online-games-panel, #account-panel, #configure-online-players-panel, #configure-viewport-panel {
       padding: 12px;
@@ -472,7 +472,7 @@
 
     /* Same thumb/track treatment as #chat-log's scrollbar, but matching #side-panel's own
        background (#b0895c) - none of these sets its own. */
-    #commands-panel, #cmdref-cleg-panel, .commands-subpanel,
+    #commands-panel, #cleg-reference-panel, .commands-subpanel,
     #home-panel, #status-panel, #current-game-setup-panel, #new-game-panel, #game-records-panel,
     #game-preset-selection-panel, #board-preset-selection-panel, #active-local-games-panel,
     #pending-games-panel, #active-online-games-panel, #finished-online-games-panel, #account-panel,
@@ -480,7 +480,7 @@
       scrollbar-width: thin;
       scrollbar-color: #5c442e #b0895c;
     }
-    #commands-panel::-webkit-scrollbar, #cmdref-cleg-panel::-webkit-scrollbar, .commands-subpanel::-webkit-scrollbar,
+    #commands-panel::-webkit-scrollbar, #cleg-reference-panel::-webkit-scrollbar, .commands-subpanel::-webkit-scrollbar,
     #home-panel::-webkit-scrollbar, #status-panel::-webkit-scrollbar,
     #current-game-setup-panel::-webkit-scrollbar, #new-game-panel::-webkit-scrollbar,
     #game-records-panel::-webkit-scrollbar, #game-preset-selection-panel::-webkit-scrollbar,
@@ -490,7 +490,7 @@
     #configure-online-players-panel::-webkit-scrollbar, #configure-viewport-panel::-webkit-scrollbar {
       width: 10px;
     }
-    #commands-panel::-webkit-scrollbar-track, #cmdref-cleg-panel::-webkit-scrollbar-track, .commands-subpanel::-webkit-scrollbar-track,
+    #commands-panel::-webkit-scrollbar-track, #cleg-reference-panel::-webkit-scrollbar-track, .commands-subpanel::-webkit-scrollbar-track,
     #home-panel::-webkit-scrollbar-track, #status-panel::-webkit-scrollbar-track,
     #current-game-setup-panel::-webkit-scrollbar-track, #new-game-panel::-webkit-scrollbar-track,
     #game-records-panel::-webkit-scrollbar-track, #game-preset-selection-panel::-webkit-scrollbar-track,
@@ -500,7 +500,7 @@
     #configure-online-players-panel::-webkit-scrollbar-track, #configure-viewport-panel::-webkit-scrollbar-track {
       background: #b0895c;
     }
-    #commands-panel::-webkit-scrollbar-thumb, #cmdref-cleg-panel::-webkit-scrollbar-thumb, .commands-subpanel::-webkit-scrollbar-thumb,
+    #commands-panel::-webkit-scrollbar-thumb, #cleg-reference-panel::-webkit-scrollbar-thumb, .commands-subpanel::-webkit-scrollbar-thumb,
     #home-panel::-webkit-scrollbar-thumb, #status-panel::-webkit-scrollbar-thumb,
     #current-game-setup-panel::-webkit-scrollbar-thumb, #new-game-panel::-webkit-scrollbar-thumb,
     #game-records-panel::-webkit-scrollbar-thumb, #game-preset-selection-panel::-webkit-scrollbar-thumb,
@@ -639,16 +639,14 @@
       margin: 2px 0 2px 16px;
     }
     /* Read-only board-description display in the New Game panel - layered on .account-input for
-       the same look as the Configure Board popup's own edit textarea (.mod-edit-textarea), but
-       sized to fit its parent (width:100% minus the same 16px left indent .status-projmat-row uses,
-       so it still reads as a child of the "Board description:" label above it, like the fading
-       fields read as children of "Fading:") and never soft-wraps - wrap="off" (set at the call
-       site) lets an overflowing line scroll horizontally instead of wrapping, which would
-       otherwise obscure cleg's own indentation. */
+       the same look as the Configure Board popup's own edit textarea (.mod-edit-textarea), full
+       width (unindented, unlike .status-projmat-row's fields) and never soft-wraps - wrap="off"
+       (set at the call site) lets an overflowing line scroll horizontally instead of wrapping,
+       which would otherwise obscure cleg's own indentation. */
     .board-descr-view {
       display: block;
-      width: calc(100% - 16px);
-      margin: 2px 0 2px 16px;
+      width: 100%;
+      margin: 2px 0;
       box-sizing: border-box;
       font-family: inherit;
       resize: none;
@@ -778,7 +776,7 @@
     <div id="cmdref-new-game-setup-panel" class="commands-subpanel" style="display:none"></div>
     <div id="cmdref-game-presets-panel" class="commands-subpanel" style="display:none"></div>
     <div id="cmdref-online-multiplayer-panel" class="commands-subpanel" style="display:none"></div>
-    <div id="cmdref-cleg-panel" style="display:none"></div>
+    <div id="cleg-reference-panel" style="display:none"></div>
     <div id="cmdref-board-types-panel" class="commands-subpanel" style="display:none"></div>
     <div id="cmdref-board-modifiers-panel" class="commands-subpanel" style="display:none"></div>
     <div id="cmdref-selectors-panel" class="commands-subpanel" style="display:none"></div>

@@ -1,0 +1,16 @@
+egr biTemple(number x, number y, number z, number d) {
+  return multiProd(
+    [rectB(x, y), lineB(z)],
+    msUnion(
+      [
+        msBase(
+          0,
+          mkSel("node", "(diff (more " + (d + 1) + " (deg lt 4)) (more " + d + " (deg lt 4)))")
+        ),
+        msBase(1, mkSel("node", "(deg eq 1)"))
+      ]
+    )
+  );
+}
+
+biTemple(13, 13, 9, 3);
