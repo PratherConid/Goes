@@ -16,8 +16,11 @@
  * resolved against a small overload table (BINARY_OPERATOR_OVERLOADS below) rather than being
  * hardcoded to one signature, so operators can be polymorphic - `+` currently has three overloads
  * (`number, number -> number`; array concatenation, `T[], T[] -> T[]`; set union, `T{}, T{} ->
- * T{}`, see below), `-` has two (`number, number -> number` and set difference), `*` has two
- * (`number, number -> number` and set intersection), `/ %` currently have only the one `number,
+ * T{}`, see below), `-` has two (`number, number -> number` and set difference), `*` has four
+ * (`number, number -> number`; set intersection; array/string replication, `T[], number -> T[]` and
+ * `string, number -> string`, each also accepted with the two operands swapped - `n` must be a
+ * nonnegative integer, checked at evaluation time since it isn't knowable from `number`'s type alone
+ * - see repeatArrayOverload/repeatStringOverload), `/ %` currently have only the one `number,
  * number -> number` overload each, and each comparison operator has two (`number, number -> bool`
  * and `bool, bool -> bool`, the latter via C++'s own false=0/true=1 convention, e.g. `false < true`
  * is `true` - see toComparable/comparisonOverload).
@@ -68,21 +71,24 @@
  * two paragraphs up matches. Both are opaque the same way `sel`/`edge`/`tri`/`quad` are - no literal
  * syntax, no way to read fields back out.
  *
- * A cleg program is a sequence of top-level items, each either a function declaration or a bare
- * expression statement (TOPSTMT below) - there is no `main` and no other designated entry-point
+ * A cleg program is a sequence of top-level items: function declarations, and TOPSTMTs (a VARDECL,
+ * an ASSIGNSTMT, or a bare EXPRSTMT) - there is no `main` and no other designated entry-point
  * function. Every function must declare its own return type and always returns a value via `return
- * EXPR;` (there is no `void`). runCleg() evaluates every top-level TOPSTMT's own expression in
- * order (function declarations aren't executed, just collected - order-independent, see
- * ClegProgram's own doc comment) and returns whatever the LAST one evaluated to - the only way a
- * cleg program produces an overall value, and (since there's no `main` to hand external input to
- * as parameters) also currently the only thing a cleg program actually "does".
+ * EXPR;` (there is no `void`). runCleg() runs every top-level TOPSTMT in order (function
+ * declarations aren't executed, just collected - order-independent, see ClegProgram's own doc
+ * comment), sharing one flat scope across all of them (so a VARDECL near the top of the program is
+ * visible to every TOPSTMT after it) - but that scope is entirely separate from every function's own
+ * (cleg has no closures at all: a function body only ever sees its own parameters, never any
+ * top-level variable), and returns whatever the LAST one (which must itself be an EXPRSTMT) evaluated
+ * to - the only way a cleg program produces an overall value, and (since there's no `main` to hand
+ * external input to as parameters) also currently the only thing a cleg program actually "does".
  *
  * Concrete syntax (deliberately C++-like, per this language's own design brief):
  *
  *   TYPE       := BASETYPE ('{' '}')? ('[' ']')*
  *   BASETYPE   := 'egr' | 'number' | 'string' | 'bool' | 'edge' | 'tri' | 'quad'
  *   PROGRAM    := (FUNCDECL | TOPSTMT)*
- *   TOPSTMT    := EXPR ';'
+ *   TOPSTMT    := VARDECL | ASSIGNSTMT | EXPRSTMT
  *   FUNCDECL   := TYPE IDENT '(' (PARAM (',' PARAM)*)? ')' BLOCK
  *   PARAM      := TYPE IDENT
  *   BLOCK      := '{' STMT* '}'
@@ -274,6 +280,67 @@ const arrayConcatOverload: BinaryOverload = {
         : null,
 };
 
+// Shared by repeatArrayOverload/repeatStringOverload below - `n` isn't statically known (it's a
+// `number`-typed expression, not necessarily a literal), so "nonnegative integer" can only be
+// checked once an actual value exists, at evaluation time - never by a BinaryOverload's own `match`
+// (which only ever sees types, not values).
+function requireRepeatCount(n: number): number {
+    if (!Number.isInteger(n) || n < 0)
+        throw new Error(`cleg: '*' replication count must be a nonnegative integer, got ${n}`);
+    return n;
+}
+
+function repeatArrayValue(arr: { elem: ClegType; value: ClegValue[] }, count: number): ClegValue {
+    const n = requireRepeatCount(count);
+    const value: ClegValue[] = [];
+    for (let i = 0; i < n; i++) value.push(...arr.value);
+    return { kind: 'array', elem: arr.elem, value };
+}
+
+/** `T[], number -> T[]` (replication - concatenates n copies of the array), also accepted with the
+ * operands swapped (`number, T[] -> T[]`) so both `arr * 3` and `3 * arr` work. */
+const repeatArrayOverload: BinaryOverload = {
+    signature: 'T[], number -> T[] (or number, T[] -> T[]; replication - n must be a nonnegative integer)',
+    match: (l, r) => {
+        if (l.kind === 'array' && r.kind === 'number')
+            return {
+                type: l,
+                eval: (lv, rv) =>
+                    repeatArrayValue(lv as { elem: ClegType; value: ClegValue[] }, (rv as { value: number }).value),
+            };
+        if (l.kind === 'number' && r.kind === 'array')
+            return {
+                type: r,
+                eval: (lv, rv) =>
+                    repeatArrayValue(rv as { elem: ClegType; value: ClegValue[] }, (lv as { value: number }).value),
+            };
+        return null;
+    },
+};
+
+function repeatStringValue(s: string, count: number): ClegValue {
+    return { kind: 'string', value: s.repeat(requireRepeatCount(count)) };
+}
+
+/** `string, number -> string` (replication), also accepted with the operands swapped (`number,
+ * string -> string`) so both `s * 3` and `3 * s` work. */
+const repeatStringOverload: BinaryOverload = {
+    signature: 'string, number -> string (or number, string -> string; replication - n must be a nonnegative integer)',
+    match: (l, r) => {
+        if (l.kind === 'string' && r.kind === 'number')
+            return {
+                type: { kind: 'string' },
+                eval: (lv, rv) => repeatStringValue((lv as { value: string }).value, (rv as { value: number }).value),
+            };
+        if (l.kind === 'number' && r.kind === 'string')
+            return {
+                type: { kind: 'string' },
+                eval: (lv, rv) => repeatStringValue((rv as { value: string }).value, (lv as { value: number }).value),
+            };
+        return null;
+    },
+};
+
 /** A canonical string key for a set element - two ClegValues of a SET_ELEM_KINDS type represent
  * the same set member iff their keys are equal, since edge/tri/quad (unlike number/string/bool)
  * have no reference equality of their own, so every set operation (makeClegSet/setUnion/
@@ -366,7 +433,7 @@ function comparisonOverload(elemKind: 'number' | 'bool', compute: (a: number, b:
 const BINARY_OPERATOR_OVERLOADS: Record<BinOp, BinaryOverload[]> = {
     '+': [numberOverload((a, b) => a + b), arrayConcatOverload, setUnionOverload],
     '-': [numberOverload((a, b) => a - b), setDiffOverload],
-    '*': [numberOverload((a, b) => a * b), setIntersectOverload],
+    '*': [numberOverload((a, b) => a * b), setIntersectOverload, repeatArrayOverload, repeatStringOverload],
     '/': [numberOverload((a, b) => a / b)],
     '%': [numberOverload((a, b) => a % b)],
     '==': [comparisonOverload('number', (a, b) => a === b), comparisonOverload('bool', (a, b) => a === b)],
@@ -455,17 +522,29 @@ export interface BinaryExpr {
 export interface UnaryExpr { kind: 'UnaryExpr'; op: '-'; operand: Expr; }
 
 /**
+ * A top-level statement: a VARDECL, an ASSIGNSTMT, or a bare EXPRSTMT - unlike inside a function
+ * BLOCK, never an IFSTMT/FORSTMT/RETURNSTMT (there is no branching, looping, or `return` at top
+ * level - see ClegProgram's own doc comment on why). checkStmt/evalStmt (which handle every Stmt
+ * kind, not just these three) still process a TopStmt correctly, since TopStmt is a subset of Stmt -
+ * their own ForStmt/IfStmt/ReturnStmt cases are simply never reached from top level.
+ */
+export type TopStmt = VarDecl | AssignStmt | ExprStmt;
+
+/**
  * A whole cleg program: its own top-level function declarations (order-independent - functions may
  * call each other regardless of declaration order, forward references are fine, and may recurse
- * directly or mutually) plus its own top-level expression statements, `stmts` (order-DOES-matter -
- * see runCleg's own doc comment for why). There is no `main` and no other designated entry-point
- * function - a cleg program's own top-level statements, not any one function, are what actually
- * run. Simplification: a top-level statement may only be an EXPRSTMT (a bare expression), never a
- * VARDECL/IFSTMT/FORSTMT/etc. - there is no way to declare a variable, branch, or loop at top level,
- * only inside a function body, so distinct top-level statements can't share any named state with
- * each other (only via a function call, if at all).
+ * directly or mutually) plus its own top-level statements, `stmts` (order-DOES-matter - see
+ * runCleg's own doc comment for why). There is no `main` and no other designated entry-point
+ * function - a cleg program's own top-level statements, not any one function, are what actually run.
+ * A VARDECL/ASSIGNSTMT here shares one flat scope across every TopStmt in `stmts` (so a variable
+ * declared by one is visible to every one after it), but that scope is entirely separate from any
+ * function's own - cleg has no closures, so a function body can never see a top-level variable,
+ * only its own parameters (see typecheckCleg/runClegProgram's own top-level `env`). The LAST entry
+ * in `stmts` must be an EXPRSTMT (checked by typecheckCleg) - that is the program's own overall
+ * value, so a program can't usefully end on a bare declaration/assignment with nothing left to
+ * produce a result.
  */
-export interface ClegProgram { kind: 'ClegProgram'; functions: FunctionDecl[]; stmts: ExprStmt[]; }
+export interface ClegProgram { kind: 'ClegProgram'; functions: FunctionDecl[]; stmts: TopStmt[]; }
 
 // ── Lexer ────────────────────────────────────────────────────────────────────
 
@@ -588,6 +667,16 @@ function parseType(c: TokenCursor): ClegType {
 function isTypeStart(c: TokenCursor): boolean {
     const t = c.peek();
     return t.kind === 'ident' && TYPE_KEYWORDS.has(t.text);
+}
+
+// A FUNCDECL and a top-level VARDECL both start with a type keyword (isTypeStart above, true for
+// either) - the next two tokens tell them apart: IDENT '(' for a function declaration ('tri
+// makeTri() {...}'), IDENT '=' for a variable declaration ('tri x = ...;'). Only meaningful at top
+// level - parseStmt (inside a function body) never sees a FUNCDECL, so isTypeStart alone already
+// means VARDECL there.
+function isFunctionDeclStart(c: TokenCursor): boolean {
+    return isTypeStart(c) && c.peekAt(1).kind === 'ident'
+        && c.peekAt(2).kind === 'punct' && c.peekAt(2).text === '(';
 }
 
 function parseCommaSeparated<T>(c: TokenCursor, close: string, parseOne: () => T): T[] {
@@ -821,16 +910,21 @@ function parseAtom(c: TokenCursor): Expr {
 /**
  * Parses a whole cleg program (see this file's own top comment for the grammar) - throws if
  * `source` doesn't follow it, or if anything is left over after the last top-level item. Each
- * top-level item is a FUNCDECL if it starts with a type keyword, an EXPRSTMT otherwise - the same
- * disambiguation-by-leading-token rule parseStmt already uses to tell a VARDECL from every other
- * kind of statement inside a function body (see isTypeStart), extended to top level.
+ * top-level item is a FUNCDECL if it starts a function declaration (isFunctionDeclStart), a VARDECL
+ * if it merely starts a type (isTypeStart) without being one, an ASSIGNSTMT if it starts an
+ * assignment (isAssignStart), or an EXPRSTMT otherwise - the same per-kind dispatch parseStmt already
+ * uses inside a function body, minus IFSTMT/FORSTMT/RETURNSTMT (there is no branching, looping, or
+ * `return` at top level) and plus FUNCDECL (which parseStmt never has to consider, since a function
+ * body can't itself contain a nested function declaration).
  */
 export function parseCleg(source: string): ClegProgram {
     const c = new TokenCursor(tokenize(source));
     const functions: FunctionDecl[] = [];
-    const stmts: ExprStmt[] = [];
+    const stmts: TopStmt[] = [];
     while (!c.atEnd()) {
-        if (isTypeStart(c)) { functions.push(parseFunctionDecl(c)); continue; }
+        if (isFunctionDeclStart(c)) { functions.push(parseFunctionDecl(c)); continue; }
+        if (isTypeStart(c)) { stmts.push(parseVarDecl(c)); continue; }
+        if (isAssignStart(c)) { stmts.push(parseAssignStmt(c)); continue; }
         const expr = parseExpr(c);
         c.expectPunct(';');
         stmts.push({ kind: 'ExprStmt', expr });
@@ -1356,14 +1450,14 @@ type FuncTable = Record<string, FunctionSignature>;
  * Statically checks `program`: every function's own body is checked against its declared
  * parameter/return types, with one flat, program-wide function namespace shared between
  * BUILTIN_FUNCTIONS and `program`'s own top-level declarations (a user function redeclaring a
- * builtin's name is rejected, not shadowed). Also checks every top-level statement's own expression
- * (in an empty scope each - see ClegProgram's own doc comment on why they can't share state), and
- * requires at least one to exist (there is no other way for a cleg program to produce a value at
- * all). Throws descriptively on the first error found; does not attempt to collect more than one.
- * Returns the checked type of `program`'s own LAST top-level statement - since there's no branching
- * at top level, this is always exactly the type runClegProgram will actually produce, computable
- * without evaluating anything (see typecheckClegAsBoard/buildBoardFromCleg below, which use this to
- * validate a program's result type before ever running it).
+ * builtin's name is rejected, not shadowed). Also checks every top-level TopStmt in one shared scope
+ * (see ClegProgram's own doc comment - entirely separate from any function's own), and requires at
+ * least one to exist, the last of which must be an ExprStmt (there is no other way for a cleg program
+ * to produce a value at all). Throws descriptively on the first error found; does not attempt to
+ * collect more than one. Returns the checked type of `program`'s own LAST top-level statement - since
+ * there's no branching at top level, this is always exactly the type runClegProgram will actually
+ * produce, computable without evaluating anything (see typecheckClegAsBoard/buildBoardFromCleg below,
+ * which use this to validate a program's result type before ever running it).
  *
  * Simplification: does not check that every path through a function actually reaches a `return` -
  * a function whose body falls off the end without one is only caught at evaluation time (see
@@ -1383,8 +1477,20 @@ export function typecheckCleg(program: ClegProgram): ClegType {
     }
 
     if (program.stmts.length === 0) throw new Error(`cleg: program has no top-level statement`);
+    const lastStmt = program.stmts[program.stmts.length - 1];
+    if (lastStmt.kind !== 'ExprStmt')
+        throw new Error(`cleg: the last top-level statement must be an expression, got ${lastStmt.kind}`);
+
+    // One env shared across every top-level TopStmt (never passed into a function call's own env -
+    // see ClegProgram's own doc comment on why a function can't see these). checkStmt's own
+    // returnType param is never actually read here - a TopStmt is never a ReturnStmt - EGR_TYPE is
+    // just a harmless placeholder.
+    const env: TypeEnv = { vars: new Map(), parent: null };
     let resultType: ClegType | null = null;
-    for (const stmt of program.stmts) resultType = checkExpr(stmt.expr, { vars: new Map(), parent: null }, funcs);
+    for (const stmt of program.stmts) {
+        if (stmt.kind === 'ExprStmt') resultType = checkExpr(stmt.expr, env, funcs);
+        else checkStmt(stmt, env, funcs, EGR_TYPE);
+    }
     return resultType!;
 }
 
@@ -1645,25 +1751,31 @@ function callUserFunction(fn: FunctionDecl, args: ClegValue[], funcs: UserFuncTa
 }
 
 /**
- * Type-checks, then runs an already-parsed `program`: every top-level statement's own expression is
- * evaluated in turn (in an empty scope each - see ClegProgram's own doc comment), left to right -
- * not just the last one, since an earlier statement can still throw before the last one is ever
- * reached, the usual "run for effect" statement-sequencing semantics. There is no `main` and no
- * other designated entry-point function; the program's own value is whatever its last top-level
- * statement evaluated to (typecheckCleg already required there to be at least one). Always
- * re-typechecks even if the caller already did (e.g. GameConfig.boardDescr may have been validated
- * once already at edit time, but could also have arrived as untrusted deserialized JSON) - cheap
- * relative to actually evaluating, and a program's `program.functions`/`program.stmts` AST could in
- * principle have been hand-built or tampered with since it was last checked.
+ * Type-checks, then runs an already-parsed `program`: every top-level TopStmt runs in turn, left to
+ * right, in one scope shared across all of them (see ClegProgram's own doc comment - entirely
+ * separate from any function's own env, so none of this is visible inside a function body) - not
+ * just the last one, since an earlier statement can still throw before the last one is ever reached,
+ * the usual "run for effect" statement-sequencing semantics. There is no `main` and no other
+ * designated entry-point function; the program's own value is whatever its last top-level statement
+ * (an ExprStmt - typecheckCleg already required it) evaluated to. Always re-typechecks even if the
+ * caller already did (e.g. GameConfig.boardDescr may have been validated once already at edit time,
+ * but could also have arrived as untrusted deserialized JSON) - cheap relative to actually
+ * evaluating, and a program's `program.functions`/`program.stmts` AST could in principle have been
+ * hand-built or tampered with since it was last checked.
  */
 export function runClegProgram(program: ClegProgram): ClegValue {
     typecheckCleg(program);
     const funcs: UserFuncTable = {};
     for (const fn of program.functions) funcs[fn.name] = fn;
 
+    // One env shared across every top-level TopStmt - see typecheckCleg's own matching env.
+    const env: ValueEnv = { vars: new Map(), parent: null };
     let result: ClegValue | undefined;
-    for (const stmt of program.stmts) result = evalExpr(stmt.expr, { vars: new Map(), parent: null }, funcs);
-    return result!; // typecheckCleg already required program.stmts to be non-empty
+    for (const stmt of program.stmts) {
+        if (stmt.kind === 'ExprStmt') result = evalExpr(stmt.expr, env, funcs);
+        else evalStmt(stmt, env, funcs);
+    }
+    return result!; // typecheckCleg already required the last top-level statement to be an ExprStmt
 }
 
 /** Parses `source`, then runs it via runClegProgram - see that function's own doc comment. */

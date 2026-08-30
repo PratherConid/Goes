@@ -418,9 +418,13 @@ export function currentGameSetupHtml(v: BoardView, players: Map<number, PlayerIn
 // #new-game-buttons, built separately by Renderer._refreshSidePanel(), not
 // part of this HTML. Caller assigns the result to a container's innerHTML.
 export function newGameSetupHtml(cfg: GameConfig): string {
+    const boardDescrText = unparseCleg(cfg.boardDescr);
+    // Sized to the actual line count (capped, same rationale as the Configure Board popup's own
+    // fixed rows="12") rather than a fixed height - most board descriptions are only 1-3 lines.
+    const boardDescrRows = Math.min(Math.max(boardDescrText.split('\n').length, 1), 12);
     return `
         <div><b>Board description:</b></div>
-        <pre class="board-descr-pre">${escapeHtml(unparseCleg(cfg.boardDescr))}</pre>
+        <textarea class="account-input board-descr-view" readonly wrap="off" rows="${boardDescrRows}">${escapeHtml(boardDescrText)}</textarea>
         <div><b>Type of stones:</b> ${cfg.numStones}</div>
         <div><b>Number of players:</b> ${cfg.numPlayers}</div>
         <div><b>Turn list:</b> ${fmtTurnList(cfg.turnList, cfg.players)}</div>

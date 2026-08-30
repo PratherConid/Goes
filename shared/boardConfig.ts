@@ -584,7 +584,9 @@ export function rectangularBoard(w: number, h: number): BoardConfig {
 // boardType!=='rect' fallback did.
 function tryExtractPlainRectDims(program: ClegProgram): [number, number] | null {
     if (program.functions.length !== 0 || program.stmts.length !== 1) return null;
-    const expr = program.stmts[0].expr;
+    const stmt = program.stmts[0];
+    if (stmt.kind !== 'ExprStmt') return null;
+    const expr = stmt.expr;
     if (expr.kind !== 'CallExpr' || expr.callee !== 'rectB' || expr.args.length !== 2) return null;
     const [a, b] = expr.args;
     if (a.kind !== 'NumberLit' || b.kind !== 'NumberLit') return null;

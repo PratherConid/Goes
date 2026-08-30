@@ -68,13 +68,15 @@
     .popup-box.mod-edit-box { width: 480px; max-width: calc(100vw - 40px); text-align: left; }
     /* Layered on top of .account-input (the chat textbox's own class - see #chat-input) for a
        matching look; only the bits #chat-input itself also overrides (resize/font-family) plus
-       this popup's own sizing are added here. */
+       this popup's own sizing are added here. wrap="off" (set at the call site) disables soft-wrap,
+       so overflow-x here shows a horizontal scrollbar for a long line instead of wrapping it. */
     .mod-edit-textarea {
       display: block;
       min-height: 120px;
       margin-top: 6px;
       font-family: inherit;
       resize: vertical;
+      overflow-x: auto;
     }
     .mod-edit-error { color: #000; margin-top: 8px; font-size: 13px; }
 
@@ -636,10 +638,21 @@
       gap: 4px;
       margin: 2px 0 2px 16px;
     }
-    /* Same left indent as .status-projmat-row's own, so the board description reads as a child of
-       its own "Board description:" label, like the fading fields read as children of "Fading:". */
-    .board-descr-pre {
+    /* Read-only board-description display in the New Game panel - layered on .account-input for
+       the same look as the Configure Board popup's own edit textarea (.mod-edit-textarea), but
+       sized to fit its parent (width:100% minus the same 16px left indent .status-projmat-row uses,
+       so it still reads as a child of the "Board description:" label above it, like the fading
+       fields read as children of "Fading:") and never soft-wraps - wrap="off" (set at the call
+       site) lets an overflowing line scroll horizontally instead of wrapping, which would
+       otherwise obscure cleg's own indentation. */
+    .board-descr-view {
+      display: block;
+      width: calc(100% - 16px);
       margin: 2px 0 2px 16px;
+      box-sizing: border-box;
+      font-family: inherit;
+      resize: none;
+      overflow-x: auto;
     }
     .status-projmat-input {
       width: 5.25em;

@@ -2276,6 +2276,9 @@ export class Renderer {
             // layers this popup's own sizing on top (see index.html).
             textarea.className = 'account-input mod-edit-textarea';
             textarea.rows = 12;
+            // No soft-wrap - a long line scrolls horizontally (see .mod-edit-textarea's own
+            // overflow-x) instead of wrapping and obscuring cleg's own indentation.
+            textarea.wrap = 'off';
             textarea.value = this._boardDescrText;
             // Field-backed the same way inviteInputValue is (see its own doc comment) - not
             // re-rendered on every keystroke, so the textarea keeps focus/cursor position while typing.
