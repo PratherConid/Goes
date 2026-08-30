@@ -6,13 +6,62 @@
  * `mergeClose`, `triangleForm`, `quadForm`, `form`, `globalCentralize`, `quadOctarize`, `scale`)
  * BUILD a `mod` value (see that type's own doc comment below) rather than applying it to a board
  * immediately - there is no cleg builtin yet that takes a `mod` and an `egr` and applies one to the
- * other. The language has a single C++-style `for` loop (see
- * ForStmt below) - its only loop construct; recursion is otherwise still the only other way to
- * repeat anything. There is still no logical operator (no `&&`/`||`/`!`) and no way to construct a
- * `bool` value from a literal other than `true`/`false` - see the design notes scattered through
- * this file (each marked "Simplification:") for what's deliberately left out for now and would need
- * revisiting to grow the language further. The five arithmetic operators (`+ - * / %`) and five
- * comparison operators (`== < > <= >=`) are supported, with `()` for grouping/precedence; each is
+ * other. The language has two C++-style loop constructs - `for` (see ForStmt below) and a plain
+ * pretest `while` (see WhileStmt below, equivalent to a `for` with empty init/update clauses) - each
+ * with its own `break`/`continue` (BreakStmt/ContinueStmt, rejected by checkStmt outside a loop) -
+ * recursion is otherwise still the only other way to repeat anything. An array value's elements can
+ * now be read back out via indexing (`arr[i]`, IndexExpr below) - a postfix operator, binding tighter
+ * than unary `-`/`!` (so `arr[i][j]`/`f()[0]`/`-arr[0]` all parse as expected) - `arr` must be
+ * array-typed (never set-typed - sets are unordered, so indexing one has no defined meaning) and `i`
+ * a `number`, checked to be a nonnegative in-bounds integer at evaluation time (not statically
+ * knowable). An AssignStmt's own left-hand side may now carry zero or more of these same `[...]`
+ * indices (`arr[i] = x;`, `arr[i][j] = x;`, ... - see AssignStmt's own doc comment), mutating one
+ * element of an already-declared array IN PLACE rather than rebinding `arr` itself to a whole new
+ * value (checkStmt's own AssignStmt case walks one `array` level per index, requiring `name`'s own
+ * declared type to be nested at least that deep). Arrays are VALUE types, not references, despite
+ * this in-place mutation - assigning an array to another variable, or passing one as a function
+ * argument, always copies it first (cloneArrayValue, called at every VarDecl init / whole-value
+ * AssignStmt / function-argument binding site), so `b = a; b[0] = 9;` can never affect `a` even
+ * though nothing in cleg's own AST distinguishes "the same array" from "an equal-looking copy" -
+ * this is the one place evaluation performs a defensive copy that TS's own object-reference
+ * semantics wouldn't otherwise need, mirroring this language's own "deliberately C++-like" design
+ * brief (std::vector-style containers, not shared references). A function
+ * can now also be passed around as a value - a monomorphic (fully concrete, no type variables/
+ * generics) function-pointer type, `(T1, T2, ...) -> R` (FUNCTYPE, ClegType's own 'func' variant),
+ * usable anywhere a TYPE is (a param, a VARDECL, a return type, even another FUNCTYPE's own param/
+ * return for a higher-order function). A bare reference to one of `program`'s own top-level
+ * functions by name (not immediately followed by `(`, which would instead call it directly) IS a
+ * value of this type - the whole mechanism riding entirely on Identifier/CallExpr's EXISTING
+ * resolution logic (see checkExpr/evalExpr's own cases) rather than needing new AST nodes: passing
+ * `cmp` where a `(number, number) -> bool` is expected, then later calling `cmp(a, b)` inside that
+ * function's own body, both already worked once Identifier could resolve to a function and CallExpr
+ * could dispatch through a local variable of func type. Only a cleg-declared function can be
+ * referenced this way - a builtin can't, since BUILTIN_FUNCTIONS' own checkCall/call pair has no
+ * single static signature for the generic/overloaded ones (`+`, `len`, ...) to describe as a `func`
+ * ClegType. A bare Identifier reference to a top-level function names it by itself - see
+ * ClegValue's own 'func' variant - there is no way to construct a `func` value from an arbitrary
+ * expression, only to name an existing top-level function, either directly or (below) partially
+ * applied. A trailing `[]` on a bare FUNCTYPE binds to its return type, not
+ * the whole thing (`(number) -> bool[]` is a function returning `bool[]`) - wrapping it in an extra
+ * pair of parens first (`((number) -> bool)[]`, parseType's own grouping alternative for a func type
+ * specifically, see parseParenType) makes the array apply to the func type as a whole instead, an
+ * array of comparator-shaped functions (a func type can never have a `{}` set suffix either way - it
+ * isn't one of SET_ELEM_KINDS, same as `egr`). cleg now has a limited form of closure: writing `#`
+ * (HoleExpr) in place of one or more of a CALL's own arguments - `f(a, #, b)` - is a PARTIAL
+ * APPLICATION rather than an ordinary call, producing a `func` value that closes over the non-`#`
+ * arguments (each evaluated once, right there) and expects only the `#` positions' own values later,
+ * interleaved back into their original slots (see CallExpr's own doc comment, and ClegValue's own
+ * 'func'/`boundArgs` for the representation). This is deliberately narrow, not general
+ * closures-over-arbitrary-expressions: `f` must be either a bare reference to one of `program`'s own
+ * top-level functions, or an existing local variable already holding a `func` value (itself a plain
+ * pointer or an already-partial closure - further-applying it narrows its own remaining open
+ * positions, rather than starting over) - never a builtin (most have no single fixed signature to
+ * close over). There is still no way to construct a `bool` value from a literal
+ * other than `true`/`false` - see the design notes scattered through this file (each marked "Simplification:")
+ * for what's deliberately left out for now and would need revisiting to grow the language further.
+ * The five arithmetic operators (`+ - * / %`), six comparison operators (`== != < > <= >=`), and two
+ * logical operators (`&& ||`, both short-circuiting - see evalExpr's own BinaryExpr case) are
+ * supported, with `()` for grouping/precedence; each is
  * resolved against a small overload table (BINARY_OPERATOR_OVERLOADS below) rather than being
  * hardcoded to one signature, so operators can be polymorphic - `+` currently has five overloads
  * (`number, number -> number`; string concatenation, `string, string -> string`; number/string
@@ -31,7 +80,10 @@
  * the graph/tensor product of two `egr`s, fixed-signature like `mkEdge`/`mkTri`/`mkQuad` below),
  * there's also a small set of generic built-ins whose result type depends on their actual argument
  * types rather than one fixed signature (BUILTIN_FUNCTIONS below covers both kinds under one
- * interface) - `len` (an array's or set's length, as a `number`), `randRmN`/`randRmP` (a set with
+ * interface) - `len` (an array's or set's length, as a `number`), `has(x, e)` (whether `x`, a `T[]`
+ * or `T{}`, contains `e` - `T` restricted to SET_ELEM_KINDS, the same equality-bearing types a set's
+ * own elements are already restricted to, since nothing else in the language has a defined equality -
+ * see hasCheckCall below), `randRmN`/`randRmP` (a set with
  * elements removed uniformly at random, by count or by portion, mirroring shared/selector.ts's own
  * `(rrmn <num> SEL)`/`(rrmp <num> SEL)`), and `nis`/`eis`/`triangleForm`/`quadForm`/`mkFormSel`
  * (each accepts a `sel`, a `string`, or a `set` of the matching element type, resolved via their one
@@ -98,41 +150,55 @@
  *
  * Concrete syntax (deliberately C++-like, per this language's own design brief):
  *
- *   TYPE       := BASETYPE ('{' '}')? ('[' ']')*
+ *   TYPE       := (BASETYPE ('{' '}')? | FUNCTYPE | '(' FUNCTYPE ')') ('[' ']')*
  *   BASETYPE   := 'egr' | 'number' | 'string' | 'bool' | 'edge' | 'tri' | 'quad'
+ *   FUNCTYPE   := '(' (TYPE (',' TYPE)*)? ')' '->' TYPE
  *   PROGRAM    := (FUNCDECL | TOPSTMT)*
  *   TOPSTMT    := VARDECL | ASSIGNSTMT | EXPRSTMT
  *   FUNCDECL   := TYPE IDENT '(' (PARAM (',' PARAM)*)? ')' BLOCK
  *   PARAM      := TYPE IDENT
  *   BLOCK      := '{' STMT* '}'
- *   STMT       := VARDECL | ASSIGNSTMT | IFSTMT | FORSTMT | RETURNSTMT | EXPRSTMT | BLOCK
+ *   STMT       := VARDECL | ASSIGNSTMT | IFSTMT | FORSTMT | WHILESTMT | BREAKSTMT | CONTINUESTMT
+ *               | RETURNSTMT | EXPRSTMT | BLOCK
  *   VARDECL    := TYPE IDENT '=' EXPR ';'
- *   ASSIGNSTMT := IDENT '=' EXPR ';'
+ *   ASSIGNSTMT := IDENT ('[' EXPR ']')* '=' EXPR ';'
  *   IFSTMT     := 'if' '(' EXPR ')' BLOCK ('else' (IFSTMT | BLOCK))?
  *   FORSTMT    := 'for' '(' FORINIT? ';' EXPR? ';' FORUPDATE? ')' BLOCK
- *   FORINIT    := TYPE IDENT '=' EXPR | IDENT '=' EXPR | EXPR
- *   FORUPDATE  := IDENT '=' EXPR | EXPR
+ *   FORINIT    := TYPE IDENT '=' EXPR | IDENT ('[' EXPR ']')* '=' EXPR | EXPR
+ *   FORUPDATE  := IDENT ('[' EXPR ']')* '=' EXPR | EXPR
+ *   WHILESTMT  := 'while' '(' EXPR ')' BLOCK
+ *   BREAKSTMT  := 'break' ';'
+ *   CONTINUESTMT := 'continue' ';'
  *   RETURNSTMT := 'return' EXPR ';'
  *   EXPRSTMT   := EXPR ';'
- *   EXPR       := RELATIONAL (('==') RELATIONAL)*
+ *   EXPR       := LOGIC_OR
+ *   LOGIC_OR   := LOGIC_AND (('||') LOGIC_AND)*
+ *   LOGIC_AND  := EQUALITY (('&&') EQUALITY)*
+ *   EQUALITY   := RELATIONAL (('==' | '!=') RELATIONAL)*
  *   RELATIONAL := ADDITIVE (('<' | '>' | '<=' | '>=') ADDITIVE)*
  *   ADDITIVE   := TERM (('+' | '-') TERM)*
  *   TERM       := UNARY (('*' | '/' | '%') UNARY)*
- *   UNARY      := '-' UNARY | ATOM
+ *   UNARY      := ('-' | '!') UNARY | POSTFIX
+ *   POSTFIX    := ATOM ('[' EXPR ']')*
  *   ATOM       := NUMBER | STRING | 'true' | 'false' | ARRAYLIT | SETLIT | NIL | IDENT | CALL
  *               | '(' EXPR ')'
  *   ARRAYLIT   := '[' (EXPR (',' EXPR)*)? ']'
  *   SETLIT     := '{' (EXPR (',' EXPR)*)? '}'
  *   NIL        := 'nil' '(' TYPE ')'
- *   CALL       := IDENT '(' (EXPR (',' EXPR)*)? ')'
+ *   CALL       := IDENT '(' (CALLARG (',' CALLARG)*)? ')'
+ *   CALLARG    := EXPR | '#'
  *
- * `//` line comments are supported. There is still no logical operator of any kind (no `&&`, `||`,
- * `!`) - besides the ten (possibly overloaded, see BINARY_OPERATOR_OVERLOADS above) arithmetic/
- * comparison operators (standard C++ precedence - `==` loosest, then `< > <= >=`, then `+ -`, then
- * `* / %` tightest - all left-associative, `()` overrides precedence), the only way to combine or
- * inspect values is by calling a function (either a builtin, see BUILTIN_FUNCTIONS below, or another
- * cleg function). Since comparison operators now produce `bool`, `if`/`for` conditions are no longer
- * limited to bare literals - `if (x < 10) { ... }` works exactly as it looks.
+ * `//` line comments are supported. Besides the thirteen (possibly overloaded, see
+ * BINARY_OPERATOR_OVERLOADS above) arithmetic/comparison/logical operators plus unary `!` (standard
+ * C++ precedence - `||` loosest, then `&&`, then `== !=`, then `< > <= >=`, then `+ -`, then `* / %`
+ * tightest, unary `-`/`!` tighter still, postfix `[]` indexing tighter still - all left-associative,
+ * `()` overrides precedence), the only other way to combine or inspect values is by calling a
+ * function (either a builtin, see BUILTIN_FUNCTIONS below, or another cleg function). Since
+ * comparison operators now produce `bool`, `if`/`for`
+ * conditions are no longer limited to bare literals - `if (x < 10) { ... }` works exactly as it
+ * looks, and `&&`/`||` short-circuit exactly like C++/JS (the right operand is only evaluated if the
+ * left doesn't already determine the result) - relevant since a right operand can have visible
+ * effects (e.g. `randRmN`/`randRmP`'s RNG draw).
  *
  * Example - the program's own value is whatever its last top-level statement evaluates to:
  *   egr helper() {
@@ -195,7 +261,15 @@ export type ClegType =
      * nothing outside this file ever builds or consumes a MultiSelector directly. */
     | { kind: 'msel' }
     | { kind: 'array'; elem: ClegType }
-    | { kind: 'set'; elem: ClegType };
+    | { kind: 'set'; elem: ClegType }
+    /** A monomorphic function-pointer type - `(number, number) -> bool` syntax (parseType's own
+     * FUNCTYPE production), fully concrete (no type variables/generics - see this file's own top
+     * comment). Only ever refers to one of `program`'s own top-level FunctionDecls (see ClegValue's
+     * own 'func' variant) - a builtin can't be referenced this way, since BUILTIN_FUNCTIONS' own
+     * checkCall/call pair has no single static ClegType[]/ClegType signature to describe for the
+     * generic/overloaded ones (`+`, `nis`, `len`, ...), and every fixed-signature one is trivially
+     * callable directly by name anyway (see checkExpr/evalExpr's own CallExpr cases). */
+    | { kind: 'func'; params: ClegType[]; returnType: ClegType };
 
 /** The ClegType kinds a set (`{}`) may directly hold, per this language's own design brief - `egr`
  * (no natural equality/hashing for a whole board), sets (no nested `{}`), and arrays (no nested
@@ -208,13 +282,30 @@ function typeEquals(a: ClegType, b: ClegType): boolean {
     if (a.kind !== b.kind) return false;
     if (a.kind === 'array' || a.kind === 'set')
         return typeEquals(a.elem, (b as { kind: 'array' | 'set'; elem: ClegType }).elem);
+    if (a.kind === 'func') {
+        const bf = b as { kind: 'func'; params: ClegType[]; returnType: ClegType };
+        return a.params.length === bf.params.length
+            && a.params.every((p, i) => typeEquals(p, bf.params[i]))
+            && typeEquals(a.returnType, bf.returnType);
+    }
     return true;
 }
 
 export function typeToString(t: ClegType): string {
-    if (t.kind === 'array') return `${typeToString(t.elem)}[]`;
-    if (t.kind === 'set') return `${typeToString(t.elem)}{}`;
+    if (t.kind === 'array') return `${typeToStringForSuffix(t.elem)}[]`;
+    if (t.kind === 'set') return `${typeToStringForSuffix(t.elem)}{}`;
+    if (t.kind === 'func') return `(${t.params.map(typeToString).join(', ')}) -> ${typeToString(t.returnType)}`;
     return t.kind;
+}
+
+// A func type printed directly before a `[]`/`{}` suffix needs its own extra parens (matching
+// parseParenType's own grouping rule) - otherwise the suffix would silently re-parse as binding to
+// the func type's own return type instead of to the func type as a whole (`(number, number) ->
+// bool[]` means "returns bool[]", not "an array of these functions" - see this file's own top
+// comment). Every other ClegType kind is unambiguous either way, so this only differs from
+// typeToString itself for 'func'.
+function typeToStringForSuffix(t: ClegType): string {
+    return t.kind === 'func' ? `(${typeToString(t)})` : typeToString(t);
 }
 
 // ── Values ───────────────────────────────────────────────────────────────────
@@ -244,17 +335,36 @@ export type ClegValue =
      * two elements with the same key. Represented as a plain array (not a JS Set/Map) since
      * edge/tri/quad don't have reference equality, so every set operation already needs its own
      * clegSetKey-based comparison regardless of the backing container - see setUnion/etc. below. */
-    | { kind: 'set'; elem: ClegType; value: ClegValue[] };
+    | { kind: 'set'; elem: ClegType; value: ClegValue[] }
+    /** A function-pointer value - a reference to one of `program`'s own top-level functions, held by
+     * `name` (looked up in `funcs`/UserFuncTable again at call time - see evalExpr's own CallExpr
+     * case) rather than a direct FunctionDecl reference: keeps this type free of any dependency on
+     * cleg's own AST shape, which matters for a future consumer (e.g. a Selector - shared/types.ts)
+     * that needs to hold "a named callback to resolve later" as plain, evaluator-agnostic data,
+     * without importing anything cleg-internal. `boundArgs` has one slot per entry of the ORIGINAL
+     * function's own full parameter list - `null` at every still-uninstantiated ('#') position, the
+     * actual (already-evaluated) argument everywhere else - so a plain, uncalled reference (built
+     * from a bare Identifier, see evalExpr's own case) is simply the all-`null` case, and a partial
+     * application (`f(a, #, b)`, see CallExpr's own doc comment) is the general one; calling either
+     * kind of value later interleaves the caller's own supplied arguments into the `null` slots, in
+     * order (see evalExpr's own CallExpr case). `params`/`returnType` describe this VALUE's own
+     * callable signature, not the original function's - for a plain reference the two coincide, but
+     * a partial application's `params` is only the `#` positions' types, in order (its `returnType`
+     * is always unchanged, since cleg has no currying of the return value itself). Cached here
+     * (rather than re-derived on every use) purely so clegValueType can report this value's own
+     * ClegType without needing a funcs-table lookup. */
+    | { kind: 'func'; params: ClegType[]; returnType: ClegType; name: string; boundArgs: (ClegValue | null)[] };
 
 function clegValueType(v: ClegValue): ClegType {
     if (v.kind === 'array') return { kind: 'array', elem: v.elem };
     if (v.kind === 'set') return { kind: 'set', elem: v.elem };
+    if (v.kind === 'func') return { kind: 'func', params: v.params, returnType: v.returnType };
     return { kind: v.kind };
 }
 
 // ── Binary operators ─────────────────────────────────────────────────────────
 
-type BinOp = '+' | '-' | '*' | '/' | '%' | '==' | '<' | '>' | '<=' | '>=';
+type BinOp = '+' | '-' | '*' | '/' | '%' | '==' | '!=' | '<' | '>' | '<=' | '>=' | '&&' | '||';
 
 /**
  * One candidate signature for a binary operator - operators are polymorphic (see `+`'s overloads
@@ -263,6 +373,11 @@ type BinOp = '+' | '-' | '*' | '/' | '%' | '==' | '<' | '>' | '<=' | '>=';
  * overload": both checkExpr (which only needs the result `type`) and evalExpr (which only needs
  * `eval`) call it, so the two can never disagree about which overload applies to a given pair of
  * operand types. Returns null if `l`/`r` don't match this overload.
+ *
+ * `&&`/`||` are the one exception to evalExpr actually calling `eval` here - see logicalOverload's
+ * own doc comment for why they're short-circuited by evalExpr's own BinaryExpr case instead, before
+ * ever reaching this table at evaluation time (checkExpr still goes through this table exactly like
+ * every other operator, since type-checking both operands doesn't depend on short-circuiting).
  */
 interface BinaryOverload {
     /** Shown in the error message when no overload of an operator matches, e.g.
@@ -499,6 +614,27 @@ function comparisonOverload(elemKind: 'number' | 'bool', compute: (a: number, b:
     };
 }
 
+/** `bool, bool -> bool` for `&&`/`||` - only used by checkExpr (both operands still need typing
+ * regardless of runtime short-circuiting) and as documentation of the operator's own signature;
+ * evalExpr's own BinaryExpr case short-circuits these two operators itself, before ever consulting
+ * BINARY_OPERATOR_OVERLOADS, so `eval` here is never actually reached at runtime - it's still a
+ * genuinely correct (just non-short-circuiting) implementation, kept for interface consistency with
+ * every other overload rather than a stub. */
+function logicalOverload(compute: (a: boolean, b: boolean) => boolean): BinaryOverload {
+    return {
+        signature: 'bool, bool -> bool',
+        match: (l, r) => (l.kind === 'bool' && r.kind === 'bool')
+            ? {
+                type: { kind: 'bool' },
+                eval: (lv, rv) => ({
+                    kind: 'bool',
+                    value: compute((lv as { value: boolean }).value, (rv as { value: boolean }).value),
+                }),
+            }
+            : null,
+    };
+}
+
 const BINARY_OPERATOR_OVERLOADS: Record<BinOp, BinaryOverload[]> = {
     '+': [numberOverload((a, b) => a + b), stringConcatOverload, numberStringConcatOverload, arrayConcatOverload, setUnionOverload],
     '-': [numberOverload((a, b) => a - b), setDiffOverload],
@@ -506,10 +642,13 @@ const BINARY_OPERATOR_OVERLOADS: Record<BinOp, BinaryOverload[]> = {
     '/': [numberOverload((a, b) => a / b)],
     '%': [numberOverload((a, b) => a % b)],
     '==': [comparisonOverload('number', (a, b) => a === b), comparisonOverload('bool', (a, b) => a === b)],
+    '!=': [comparisonOverload('number', (a, b) => a !== b), comparisonOverload('bool', (a, b) => a !== b)],
     '<': [comparisonOverload('number', (a, b) => a < b), comparisonOverload('bool', (a, b) => a < b)],
     '>': [comparisonOverload('number', (a, b) => a > b), comparisonOverload('bool', (a, b) => a > b)],
     '<=': [comparisonOverload('number', (a, b) => a <= b), comparisonOverload('bool', (a, b) => a <= b)],
     '>=': [comparisonOverload('number', (a, b) => a >= b), comparisonOverload('bool', (a, b) => a >= b)],
+    '&&': [logicalOverload((a, b) => a && b)],
+    '||': [logicalOverload((a, b) => a || b)],
 };
 
 // ── AST ──────────────────────────────────────────────────────────────────────
@@ -524,15 +663,25 @@ export interface FunctionDecl {
     body: Block;
 }
 
-export type Stmt = VarDecl | AssignStmt | IfStmt | ForStmt | ReturnStmt | ExprStmt | Block;
+export type Stmt =
+    | VarDecl | AssignStmt | IfStmt | ForStmt | WhileStmt | BreakStmt | ContinueStmt | ReturnStmt
+    | ExprStmt | Block;
 
 /** Declares and initializes a new local; see AssignStmt below for mutating an already-declared one. */
 export interface VarDecl { kind: 'VarDecl'; type: ClegType; name: string; init: Expr; }
-/** Reassigns an already-declared local (`x = expr;`) - mutates the binding in whichever enclosing
- * scope originally declared `name` (see evaluation's setValue), it does not shadow it with a new
- * one in the current block. `name` must already be declared with `value`'s exact type - there is no
- * way to introduce a new binding via assignment, only VarDecl does that. */
-export interface AssignStmt { kind: 'AssignStmt'; name: string; value: Expr; }
+/** Reassigns an already-declared local (`x = expr;`), or - if `indices` is nonempty - mutates one
+ * element of an already-declared array in place (`arr[i] = expr;`, `arr[i][j] = expr;`, ...): each
+ * entry of `indices` must be a `number`, and `name`'s own declared type must be an array nested at
+ * least `indices.length` deep (checkStmt's own AssignStmt case walks one `array` level per index,
+ * rejecting anything that runs out of array levels before `indices` does - see this file's own top
+ * comment on why arrays are value types, not references, for what this mutation can and can't affect
+ * through an alias). With no indices, mutates the binding in whichever enclosing scope originally
+ * declared `name` (see evaluation's setValue), it does not shadow it with a new one in the current
+ * block. `name` must already be declared, and the assigned value's type must exactly match either
+ * `name`'s own declared type (no indices) or the array-element type `indices.length` levels down
+ * (with indices) - there is no way to introduce a new binding via assignment, only VarDecl does
+ * that. */
+export interface AssignStmt { kind: 'AssignStmt'; name: string; indices: Expr[]; value: Expr; }
 /** `else_` is null (no else clause), a Block (`else { ... }`), or another IfStmt (`else if (...)`). */
 export interface IfStmt { kind: 'IfStmt'; cond: Expr; then: Block; else_: Block | IfStmt | null; }
 /** `init`/`cond`/`update` are each independently optional, exactly like real C++'s `for (;;)` -
@@ -551,6 +700,20 @@ export interface ForStmt {
     update: AssignStmt | ExprStmt | null;
     body: Block;
 }
+/** A plain pretest loop: `while (EXPR) BLOCK` - equivalent to `for (; EXPR; ) BLOCK`, just spelled
+ * directly rather than requiring the empty init/update clauses. Unlike ForStmt, there's no separate
+ * "loop header scope" - with no init clause to declare a loop-scoped variable, `cond` is checked/
+ * evaluated in the same scope the `while` itself appears in, and `body` gets its own further-nested
+ * scope each iteration per BLOCK's usual rule (see checkStmt's/evalStmt's own WhileStmt cases). */
+export interface WhileStmt { kind: 'WhileStmt'; cond: Expr; body: Block; }
+/** Exits the innermost enclosing ForStmt/WhileStmt immediately (checkStmt rejects one outside a
+ * loop - see its own `inLoop` doc comment). Mirrors real C++'s own `break;`. */
+export interface BreakStmt { kind: 'BreakStmt'; }
+/** Skips the rest of the innermost enclosing ForStmt/WhileStmt's current iteration and moves on to
+ * the next one - for a ForStmt this still runs `update` before re-checking `cond`, exactly like real
+ * C++'s own `continue;` (see evalStmt's own ForStmt/WhileStmt cases); checkStmt rejects one outside
+ * a loop, same as BreakStmt. */
+export interface ContinueStmt { kind: 'ContinueStmt'; }
 /** Every function must return a value (there is no `void`), so unlike C++ this is never bare. */
 export interface ReturnStmt { kind: 'ReturnStmt'; value: Expr; }
 export interface ExprStmt { kind: 'ExprStmt'; expr: Expr; }
@@ -558,7 +721,7 @@ export interface Block { kind: 'Block'; stmts: Stmt[]; }
 
 export type Expr =
     | NumberLit | StringLit | BoolLit | ArrayLit | SetLit | Identifier | CallExpr | BinaryExpr
-    | UnaryExpr | NilExpr;
+    | UnaryExpr | NilExpr | IndexExpr | HoleExpr;
 
 export interface NumberLit { kind: 'NumberLit'; value: number; }
 export interface StringLit { kind: 'StringLit'; value: string; }
@@ -574,35 +737,58 @@ export interface ArrayLit { kind: 'ArrayLit'; elements: Expr[]; }
  * their own. Duplicate elements (by clegSetKey) collapse to one - see makeClegSet. */
 export interface SetLit { kind: 'SetLit'; elements: Expr[]; }
 export interface Identifier { kind: 'Identifier'; name: string; }
-/** `callee` names either a builtin (BUILTIN_FUNCTIONS below) or another function declared in the
- * same program - one flat namespace, see typecheckCleg. */
+/** `callee` names either a builtin (BUILTIN_FUNCTIONS below), another function declared in the same
+ * program, or (see checkExpr/evalExpr's own CallExpr cases) a local variable holding a `func` value
+ * - one flat namespace, see typecheckCleg. If any of `args` is a HoleExpr (`#`), this is a PARTIAL
+ * APPLICATION rather than an ordinary call: `f(a, #, b)` evaluates to a function-pointer value
+ * closing over the non-`#` arguments (evaluated once, right here), whose own parameter list is just
+ * the `#` positions' types, in order - calling that value later supplies only those, interleaved
+ * back into their original positions (see ClegValue's own 'func'/`boundArgs` doc comment). `callee`
+ * here is either a bare reference to one of `program`'s own top-level functions, or an existing
+ * local variable already holding a `func` value - a plain pointer, or itself already a partial
+ * application, in which case this narrows its own remaining open positions further rather than
+ * starting over (see checkPartialApplication/mergeBoundArgs) - never a builtin (no single fixed
+ * signature to close over for the generic/overloaded ones). */
 export interface CallExpr { kind: 'CallExpr'; callee: string; args: Expr[]; }
-/** One of the five arithmetic operators or five comparison operators (`== < > <= >=`), each
- * possibly overloaded beyond a single fixed signature - see BINARY_OPERATOR_OVERLOADS and
- * checkExpr's own BinaryExpr case. `(...)` grouping isn't its own AST node - parseAtom just returns
- * the parenthesized subexpression directly, so precedence is fully resolved by the time the AST
- * exists. */
+/** One of the five arithmetic operators, six comparison operators (`== != < > <= >=`), or two
+ * logical operators (`&& ||`, short-circuiting - see evalExpr's own BinaryExpr case), each possibly
+ * overloaded beyond a single fixed signature - see BINARY_OPERATOR_OVERLOADS and checkExpr's own
+ * BinaryExpr case. `(...)` grouping isn't its own AST node - parseAtom just returns the
+ * parenthesized subexpression directly, so precedence is fully resolved by the time the AST exists. */
 export interface BinaryExpr {
     kind: 'BinaryExpr';
-    op: '+' | '-' | '*' | '/' | '%' | '==' | '<' | '>' | '<=' | '>=';
+    op: '+' | '-' | '*' | '/' | '%' | '==' | '!=' | '<' | '>' | '<=' | '>=' | '&&' | '||';
     left: Expr;
     right: Expr;
 }
-/** Unary negation (e.g. `-x`, `-f()`) - also how a negative number literal is written now (`-3`
- * parses as UnaryExpr wrapping NumberLit(3); the lexer itself never produces a signed number). */
-export interface UnaryExpr { kind: 'UnaryExpr'; op: '-'; operand: Expr; }
+/** Unary negation (`-x`, `-f()` - also how a negative number literal is written now: `-3` parses as
+ * UnaryExpr wrapping NumberLit(3), the lexer itself never produces a signed number) or unary logical
+ * negation (`!x`, requires a `bool` operand - see checkExpr's own UnaryExpr case). */
+export interface UnaryExpr { kind: 'UnaryExpr'; op: '-' | '!'; operand: Expr; }
 /** `nil(TYPE)` - an empty array whose element type is TYPE, e.g. `nil(number)` is an empty
  * `number[]`, `nil(msel)` an empty `msel[]`, `nil(number[])` an empty `number[][]` - the escape
  * hatch for ArrayLit's own empty-literal simplification (see its own doc comment): unlike every
  * other Expr, `TYPE` is a real ClegType (parsed via parseType, not parseExpr), not itself an Expr. */
 export interface NilExpr { kind: 'NilExpr'; type: ClegType; }
+/** Array indexing (`arr[i]`) - `array` must be array-typed (never set-typed - see this file's own
+ * top comment on why), `index` a `number`, checked to be a nonnegative in-bounds integer only at
+ * evaluation time (not statically knowable - see checkExpr's own IndexExpr case vs evalExpr's own).
+ * Parses as a postfix operator (see POSTFIX in this file's own grammar comment) - binds tighter than
+ * unary `-`/`!`, and chains naturally for nested arrays (`arr[i][j]`). */
+export interface IndexExpr { kind: 'IndexExpr'; array: Expr; index: Expr; }
+/** `#` - an uninstantiated-argument placeholder, valid only inside a CallExpr's own `args` (the
+ * parser never produces one anywhere else - see parseAtom's own CallExpr branch). A CallExpr with
+ * one or more HoleExpr args is a partial application, not an ordinary call - see CallExpr's own doc
+ * comment for the restriction (a plain top-level function name only) and ClegValue's own 'func'
+ * variant for how the resulting closure is represented. */
+export interface HoleExpr { kind: 'HoleExpr'; }
 
 /**
  * A top-level statement: a VARDECL, an ASSIGNSTMT, or a bare EXPRSTMT - unlike inside a function
- * BLOCK, never an IFSTMT/FORSTMT/RETURNSTMT (there is no branching, looping, or `return` at top
- * level - see ClegProgram's own doc comment on why). checkStmt/evalStmt (which handle every Stmt
- * kind, not just these three) still process a TopStmt correctly, since TopStmt is a subset of Stmt -
- * their own ForStmt/IfStmt/ReturnStmt cases are simply never reached from top level.
+ * BLOCK, never an IFSTMT/FORSTMT/WHILESTMT/RETURNSTMT (there is no branching, looping, or `return`
+ * at top level - see ClegProgram's own doc comment on why). checkStmt/evalStmt (which handle every
+ * Stmt kind, not just these three) still process a TopStmt correctly, since TopStmt is a subset of
+ * Stmt - their own ForStmt/WhileStmt/IfStmt/ReturnStmt cases are simply never reached from top level.
  */
 export type TopStmt = VarDecl | AssignStmt | ExprStmt;
 
@@ -627,17 +813,20 @@ export interface ClegProgram { kind: 'ClegProgram'; functions: FunctionDecl[]; s
 type TokenKind = 'ident' | 'number' | 'string' | 'punct' | 'eof';
 interface Token { kind: TokenKind; text: string; pos: number; }
 
-const PUNCTUATION = '(){}[],;+-*/%';
+const PUNCTUATION = '(){}[],;+-*/%!#';
 
 /** Splits `src` into tokens - identifiers (including keywords, disambiguated later by the parser,
  * same convention as shared/selector.ts's own tokenize()/parser split), unsigned integer/decimal
  * number literals (negative numbers are the parser's unary '-' applied to one of these, see
  * parseUnary - the lexer itself never produces a signed number token), double-quoted string
  * literals (`\\`, `\"`, `\n`, `\t` escapes only), single-character punctuation (including the five
- * arithmetic operators), and '='/'<'/'>' - each its own one-character token unless immediately
- * followed by another '=' (making '==', '<=', or '>=' instead), handled separately from
- * `PUNCTUATION` above since it's the one lexer rule needing a second character of lookahead.
- * `//` starts a line comment. */
+ * arithmetic operators, unary '!', and '#' - the partial-application placeholder, see CallExpr's
+ * own doc comment), '='/'<'/'>'/'!' - each its own one-character token unless
+ * immediately followed by another '=' (making '==', '<=', '>=', or '!=' instead - '!' alone is
+ * still unary/logical negation), and '&&'/'||' - each requires its own doubled character (a lone
+ * '&' or '|' is a lexer error - there is no bitwise operator of any kind). All needing a second
+ * character of lookahead are handled separately from `PUNCTUATION` above. `//` starts a line
+ * comment. */
 function tokenize(src: string): Token[] {
     const tokens: Token[] = [];
     const n = src.length;
@@ -678,12 +867,18 @@ function tokenize(src: string): Token[] {
             i = j + 1;
             continue;
         }
-        if (c === '=' || c === '<' || c === '>') {
+        if (c === '=' || c === '<' || c === '>' || c === '!') {
             if (src[i + 1] === '=') { tokens.push({ kind: 'punct', text: c + '=', pos: i }); i += 2; continue; }
             tokens.push({ kind: 'punct', text: c, pos: i });
             i++;
             continue;
         }
+        if (c === '&' && src[i + 1] === '&') { tokens.push({ kind: 'punct', text: '&&', pos: i }); i += 2; continue; }
+        if (c === '|' && src[i + 1] === '|') { tokens.push({ kind: 'punct', text: '||', pos: i }); i += 2; continue; }
+        // '->' (FUNCTYPE's own arrow, e.g. `(number, number) -> bool`) - checked before the generic
+        // PUNCTUATION fallback below, same as '&&'/'||' above, since '-' alone is already in
+        // PUNCTUATION (arithmetic/unary minus).
+        if (c === '-' && src[i + 1] === '>') { tokens.push({ kind: 'punct', text: '->', pos: i }); i += 2; continue; }
         if (PUNCTUATION.includes(c)) { tokens.push({ kind: 'punct', text: c, pos: i }); i++; continue; }
         throw new Error(`cleg: unexpected character '${c}' at position ${i}`);
     }
@@ -704,6 +899,12 @@ class TokenCursor {
     isPunct(p: string): boolean { const t = this.peek(); return t.kind === 'punct' && t.text === p; }
     isKeyword(k: string): boolean { const t = this.peek(); return t.kind === 'ident' && t.text === k; }
 
+    /** Saves the cursor's current position, to be handed back to restore() later - lets a caller
+     * (isFunctionDeclStart below) speculatively run a real parse function purely to see what follows,
+     * then roll back as if it had never looked, regardless of whether that parse succeeded. */
+    save(): number { return this.pos; }
+    restore(pos: number): void { this.pos = pos; }
+
     expectPunct(p: string): void {
         const t = this.next();
         if (t.kind !== 'punct' || t.text !== p)
@@ -721,38 +922,100 @@ const TYPE_KEYWORDS = new Set([
 ]);
 
 function parseType(c: TokenCursor): ClegType {
-    const base = c.expectIdent();
-    if (!TYPE_KEYWORDS.has(base))
-        throw new Error(`cleg: expected a type (egr/number/string/bool/edge/tri/quad/sel/formSel/mod), got '${base}'`);
-    let type: ClegType = {
-        kind: base as 'egr' | 'number' | 'string' | 'bool' | 'edge' | 'tri' | 'quad' | 'sel' | 'formSel' | 'mod',
-    };
-    if (c.isPunct('{')) {
-        if (!SET_ELEM_KINDS.has(base))
-            throw new Error(
-                `cleg: '${base}{}' is not a supported set type - sets of egr, sets of sets, and sets of ` +
-                `arrays are not supported`);
-        c.next();
-        c.expectPunct('}');
-        type = { kind: 'set', elem: type };
+    let type: ClegType;
+    if (c.isPunct('(')) {
+        type = parseParenType(c);
+    } else {
+        const base = c.expectIdent();
+        if (!TYPE_KEYWORDS.has(base))
+            throw new Error(`cleg: expected a type (egr/number/string/bool/edge/tri/quad/sel/formSel/mod), got '${base}'`);
+        type = {
+            kind: base as 'egr' | 'number' | 'string' | 'bool' | 'edge' | 'tri' | 'quad' | 'sel' | 'formSel' | 'mod',
+        };
+        if (c.isPunct('{')) {
+            if (!SET_ELEM_KINDS.has(base))
+                throw new Error(
+                    `cleg: '${base}{}' is not a supported set type - sets of egr, sets of sets, and sets of ` +
+                    `arrays are not supported`);
+            c.next();
+            c.expectPunct('}');
+            type = { kind: 'set', elem: type };
+        }
     }
     while (c.isPunct('[')) { c.next(); c.expectPunct(']'); type = { kind: 'array', elem: type }; }
     return type;
 }
 
-function isTypeStart(c: TokenCursor): boolean {
-    const t = c.peek();
-    return t.kind === 'ident' && TYPE_KEYWORDS.has(t.text);
+// A leading '(' starts either FUNCTYPE's own param list (immediately followed by '->' once the list
+// closes, e.g. `(number, number) -> bool`) or a parenthesized GROUPING of a single already-complete
+// func type - needed so a trailing `[]` can bind to a func type as a WHOLE rather than (per FUNCTYPE's own
+// recursive-return-type parsing, see below) to its return type: `((number) -> number)[]` is an array
+// of comparator-shaped functions, vs. `(number) -> number[]` (no outer grouping), a single function
+// returning `number[]`. The two are told apart only after the closing ')' of the parenthesized list:
+// '->' immediately after means FUNCTYPE (consume it and parse the return type - recursing through
+// parseType this way, rather than a separate parseFuncType, is also what lets a func type itself
+// take/return another func type, higher-order, still fully concrete/non-generic, for free); anything
+// else means the list must have held exactly one, itself func-typed, item, unwrapped as plain
+// grouping. Deliberately NOT extended to grouping any other single type (`(number)` alone is
+// rejected, not accepted as a redundant-parens `number`) even though that would be unambiguous in
+// isolation - isTypeStart's own speculative parseType call (see below) needs "this fully parses as a
+// TYPE" to never accidentally also describe a valid EXPR, and a bare grouped BASETYPE like `(number)`
+// can collide with `(number) + 1` where `number` names an ordinary variable that happens to share a
+// type keyword's spelling; a grouped FUNCTYPE can't collide this way, since no EXPR production can
+// ever contain FUNCTYPE's own mandatory '->' token.
+function parseParenType(c: TokenCursor): ClegType {
+    c.expectPunct('(');
+    const items = parseCommaSeparated<ClegType>(c, ')', () => parseType(c));
+    if (c.isPunct('->')) {
+        c.next();
+        const returnType = parseType(c);
+        return { kind: 'func', params: items, returnType };
+    }
+    if (items.length === 1 && items[0].kind === 'func') return items[0];
+    throw new Error(`cleg: expected '->' after a parenthesized parameter list`);
 }
 
-// A FUNCDECL and a top-level VARDECL both start with a type keyword (isTypeStart above, true for
-// either) - the next two tokens tell them apart: IDENT '(' for a function declaration ('tri
-// makeTri() {...}'), IDENT '=' for a variable declaration ('tri x = ...;'). Only meaningful at top
-// level - parseStmt (inside a function body) never sees a FUNCDECL, so isTypeStart alone already
-// means VARDECL there.
+// True at a TYPE's own first token - either a BASETYPE keyword, or '(' starting a FUNCTYPE (see
+// parseType/parseFuncType above). A bare '(' can also start a grouped EXPR at some of isTypeStart's
+// own call sites (parseForInit's/parseCleg's own bare-EXPR fallback) - since a real EXPR can never
+// contain FUNCTYPE's own mandatory '->' token, the two can only be told apart by actually trying to
+// parse a TYPE. Rather than re-deriving parseType's own grammar here, speculatively run parseType for
+// real via TokenCursor's own save/restore, always rolling back afterward (success or failure) so the
+// cursor ends up exactly where it started either way.
+function isTypeStart(c: TokenCursor): boolean {
+    const t = c.peek();
+    if (t.kind === 'ident' && TYPE_KEYWORDS.has(t.text)) return true;
+    if (!c.isPunct('(')) return false;
+    const pos = c.save();
+    try {
+        parseType(c);
+        return true;
+    } catch {
+        return false;
+    } finally {
+        c.restore(pos);
+    }
+}
+
+// A FUNCDECL and a top-level VARDECL both start with a TYPE (isTypeStart above, true for either) -
+// the tokens right after the TYPE tell them apart: IDENT '(' for a function declaration ('tri
+// makeTri() {...}', 'number[] mk() {...}', '(number)->bool makeCmp() {...}'), IDENT '=' for a
+// variable declaration ('tri x = ...;'). Only meaningful at top level - parseStmt (inside a function
+// body) never sees a FUNCDECL, so isTypeStart alone already means VARDECL there. Speculatively runs
+// the real parseType directly (same save/restore technique as isTypeStart above, rather than
+// re-deriving its own grammar) since a TYPE isn't always one token; a malformed type here just means
+// "not a function decl start" - whichever of parseVarDecl/parseFunctionDecl actually runs next will
+// surface the same error for real.
 function isFunctionDeclStart(c: TokenCursor): boolean {
-    return isTypeStart(c) && c.peekAt(1).kind === 'ident'
-        && c.peekAt(2).kind === 'punct' && c.peekAt(2).text === '(';
+    const pos = c.save();
+    try {
+        parseType(c);
+        return c.peek().kind === 'ident' && c.peekAt(1).kind === 'punct' && c.peekAt(1).text === '(';
+    } catch {
+        return false;
+    } finally {
+        c.restore(pos);
+    }
 }
 
 function parseCommaSeparated<T>(c: TokenCursor, close: string, parseOne: () => T): T[] {
@@ -786,18 +1049,39 @@ function parseBlock(c: TokenCursor): Block {
     return { kind: 'Block', stmts };
 }
 
-// Only an identifier immediately followed by '=' is an assignment (as opposed to, say, a bare
-// call-expression statement) - look ahead one extra token to tell them apart, since parseExpr's
-// own Identifier case doesn't consume '='. Shared by parseStmt and the for-loop's own
-// parseForInit/parseForUpdate.
+// An identifier, optionally followed by one or more '[' EXPR ']' index brackets, immediately
+// followed by '=' is an assignment (as opposed to, say, a bare call-expression statement or a bare
+// indexing expression like `arr[i];`) - shared by parseStmt and the for-loop's own
+// parseForInit/parseForUpdate. The zero-index case (`x =`) is checked by a cheap fixed 2-token
+// lookahead; since the number of indices isn't bounded, telling `arr[i] = ...` apart from a bare
+// `arr[i];`/`arr[i] + 1;` expression needs the same speculative-parse-then-restore technique as
+// isTypeStart/isFunctionDeclStart above (consuming the index brackets for real via TokenCursor's own
+// save/restore, rather than re-deriving their own grammar here) - a malformed index expression here
+// just means "not an assignment start"; whichever of parseAssignStmt/the EXPRSTMT fallback actually
+// runs next will surface the same error for real.
 function isAssignStart(c: TokenCursor): boolean {
-    return c.peek().kind === 'ident' && c.peekAt(1).kind === 'punct' && c.peekAt(1).text === '=';
+    if (c.peek().kind !== 'ident') return false;
+    if (c.peekAt(1).kind === 'punct' && c.peekAt(1).text === '=') return true;
+    if (!(c.peekAt(1).kind === 'punct' && c.peekAt(1).text === '[')) return false;
+    const pos = c.save();
+    try {
+        c.next();
+        while (c.isPunct('[')) { c.next(); parseExpr(c); c.expectPunct(']'); }
+        return c.isPunct('=');
+    } catch {
+        return false;
+    } finally {
+        c.restore(pos);
+    }
 }
 
 function parseStmt(c: TokenCursor): Stmt {
     if (c.isPunct('{')) return parseBlock(c);
     if (c.isKeyword('if')) return parseIfStmt(c);
     if (c.isKeyword('for')) return parseForStmt(c);
+    if (c.isKeyword('while')) return parseWhileStmt(c);
+    if (c.isKeyword('break')) return parseBreakStmt(c);
+    if (c.isKeyword('continue')) return parseContinueStmt(c);
     if (c.isKeyword('return')) return parseReturnStmt(c);
     if (isTypeStart(c)) return parseVarDecl(c);
     if (isAssignStart(c)) return parseAssignStmt(c);
@@ -826,9 +1110,15 @@ function parseVarDecl(c: TokenCursor): VarDecl {
 // parseForUpdate (which instead leave it for parseForStmt's own explicit delimiters).
 function parseAssignStmtNoSemi(c: TokenCursor): AssignStmt {
     const name = c.expectIdent();
+    const indices: Expr[] = [];
+    while (c.isPunct('[')) {
+        c.next();
+        indices.push(parseExpr(c));
+        c.expectPunct(']');
+    }
     c.expectPunct('=');
     const value = parseExpr(c);
-    return { kind: 'AssignStmt', name, value };
+    return { kind: 'AssignStmt', name, indices, value };
 }
 
 function parseAssignStmt(c: TokenCursor): AssignStmt {
@@ -879,6 +1169,27 @@ function parseForStmt(c: TokenCursor): ForStmt {
     return { kind: 'ForStmt', init, cond, update, body };
 }
 
+function parseWhileStmt(c: TokenCursor): WhileStmt {
+    c.next(); // 'while'
+    c.expectPunct('(');
+    const cond = parseExpr(c);
+    c.expectPunct(')');
+    const body = parseBlock(c);
+    return { kind: 'WhileStmt', cond, body };
+}
+
+function parseBreakStmt(c: TokenCursor): BreakStmt {
+    c.next(); // 'break'
+    c.expectPunct(';');
+    return { kind: 'BreakStmt' };
+}
+
+function parseContinueStmt(c: TokenCursor): ContinueStmt {
+    c.next(); // 'continue'
+    c.expectPunct(';');
+    return { kind: 'ContinueStmt' };
+}
+
 function parseReturnStmt(c: TokenCursor): ReturnStmt {
     c.next(); // 'return'
     const value = parseExpr(c);
@@ -886,7 +1197,9 @@ function parseReturnStmt(c: TokenCursor): ReturnStmt {
     return { kind: 'ReturnStmt', value };
 }
 
-const EQUALITY_OPS = new Set(['==']);
+const LOGICAL_OR_OPS = new Set(['||']);
+const LOGICAL_AND_OPS = new Set(['&&']);
+const EQUALITY_OPS = new Set(['==', '!=']);
 const RELATIONAL_OPS = new Set(['<', '>', '<=', '>=']);
 const ADDITIVE_OPS = new Set(['+', '-']);
 const MULTIPLICATIVE_OPS = new Set(['*', '/', '%']);
@@ -896,14 +1209,35 @@ function isPunctIn(c: TokenCursor, ops: Set<string>): boolean {
     return t.kind === 'punct' && ops.has(t.text);
 }
 
-/** Expression entry point, lowest precedence (`==`), left-associative - every existing call site
+/** Expression entry point, lowest precedence (`||`), left-associative - every existing call site
  * (VarDecl init, AssignStmt value, if/for condition, return value, call arguments, array/set
  * elements) already calls parseExpr, so every new precedence level works everywhere an expression
  * was already accepted without any caller changes. */
 function parseExpr(c: TokenCursor): Expr {
+    let left = parseLogicalAnd(c);
+    while (isPunctIn(c, LOGICAL_OR_OPS)) {
+        const op = c.next().text as '||';
+        left = { kind: 'BinaryExpr', op, left, right: parseLogicalAnd(c) };
+    }
+    return left;
+}
+
+/** `&&` - binds tighter than `||`, looser than `==`, left-associative (matches real C++'s own
+ * precedence between the two). */
+function parseLogicalAnd(c: TokenCursor): Expr {
+    let left = parseEquality(c);
+    while (isPunctIn(c, LOGICAL_AND_OPS)) {
+        const op = c.next().text as '&&';
+        left = { kind: 'BinaryExpr', op, left, right: parseEquality(c) };
+    }
+    return left;
+}
+
+/** `== !=` - binds tighter than `&&`, looser than `< > <= >=`, left-associative. */
+function parseEquality(c: TokenCursor): Expr {
     let left = parseRelational(c);
     while (isPunctIn(c, EQUALITY_OPS)) {
-        const op = c.next().text as '==';
+        const op = c.next().text as '==' | '!=';
         left = { kind: 'BinaryExpr', op, left, right: parseRelational(c) };
     }
     return left;
@@ -940,11 +1274,25 @@ function parseMultiplicative(c: TokenCursor): Expr {
     return left;
 }
 
-/** Unary `-` (`-x`, `-f()`, ...) - binds tighter than any binary operator, and right-recursive so
- * `--x` (double negation) parses too. */
+/** Unary `-` (`-x`, `-f()`, ...) or unary `!` (`!x`, `!f()`, ...) - both bind tighter than any
+ * binary operator, and both are right-recursive so `--x`/`!!x` (double negation) parse too. */
 function parseUnary(c: TokenCursor): Expr {
     if (c.isPunct('-')) { c.next(); return { kind: 'UnaryExpr', op: '-', operand: parseUnary(c) }; }
-    return parseAtom(c);
+    if (c.isPunct('!')) { c.next(); return { kind: 'UnaryExpr', op: '!', operand: parseUnary(c) }; }
+    return parsePostfix(c);
+}
+
+/** Postfix `[]` indexing (`arr[i]`, `arr[i][j]`, `f()[0]`, ...) - binds tighter than unary `-`/`!`,
+ * left-associative (each `[...]` wraps the result of everything to its left so far). */
+function parsePostfix(c: TokenCursor): Expr {
+    let e = parseAtom(c);
+    while (c.isPunct('[')) {
+        c.next();
+        const index = parseExpr(c);
+        c.expectPunct(']');
+        e = { kind: 'IndexExpr', array: e, index };
+    }
+    return e;
 }
 
 function parseAtom(c: TokenCursor): Expr {
@@ -985,7 +1333,14 @@ function parseAtom(c: TokenCursor): Expr {
         const name = c.expectIdent();
         if (c.isPunct('(')) {
             c.next();
-            const args = parseCommaSeparated(c, ')', () => parseExpr(c));
+            // Each argument is either a real EXPR or a bare '#' (HoleExpr) - only ever meaningful
+            // when `name` is a plain top-level function (partial application, see CallExpr's own doc
+            // comment), but that isn't known yet at parse time, so '#' is always syntactically
+            // accepted here and rejected later by checkExpr if `name` doesn't qualify.
+            const args = parseCommaSeparated(c, ')', (): Expr => {
+                if (c.isPunct('#')) { c.next(); return { kind: 'HoleExpr' }; }
+                return parseExpr(c);
+            });
             return { kind: 'CallExpr', callee: name, args };
         }
         return { kind: 'Identifier', name };
@@ -1056,10 +1411,16 @@ function unparseBlock(block: Block, indent: number): string {
     return `{\n${lines.join('\n')}\n${' '.repeat(indent)}}`;
 }
 
+// `name` followed by zero or more `[EXPR]` indices - shared by unparseStmt's and unparseForClause's
+// own AssignStmt cases.
+function unparseAssignTarget(stmt: AssignStmt, indent: number): string {
+    return `${stmt.name}${stmt.indices.map(idx => `[${unparseExpr(idx, indent)}]`).join('')}`;
+}
+
 function unparseStmt(stmt: Stmt, indent: number): string {
     switch (stmt.kind) {
         case 'VarDecl': return `${typeToString(stmt.type)} ${stmt.name} = ${unparseExpr(stmt.init, indent)};`;
-        case 'AssignStmt': return `${stmt.name} = ${unparseExpr(stmt.value, indent)};`;
+        case 'AssignStmt': return `${unparseAssignTarget(stmt, indent)} = ${unparseExpr(stmt.value, indent)};`;
         case 'IfStmt': {
             const elsePart = stmt.else_ === null ? ''
                 : stmt.else_.kind === 'Block' ? ` else ${unparseBlock(stmt.else_, indent)}`
@@ -1072,6 +1433,9 @@ function unparseStmt(stmt: Stmt, indent: number): string {
             const update = stmt.update === null ? '' : unparseForClause(stmt.update, indent);
             return `for (${init}; ${cond}; ${update}) ${unparseBlock(stmt.body, indent)}`;
         }
+        case 'WhileStmt': return `while (${unparseExpr(stmt.cond, indent)}) ${unparseBlock(stmt.body, indent)}`;
+        case 'BreakStmt': return 'break;';
+        case 'ContinueStmt': return 'continue;';
         case 'ReturnStmt': return `return ${unparseExpr(stmt.value, indent)};`;
         case 'ExprStmt': return `${unparseExpr(stmt.expr, indent)};`;
         case 'Block': return unparseBlock(stmt, indent);
@@ -1083,7 +1447,7 @@ function unparseStmt(stmt: Stmt, indent: number): string {
 function unparseForClause(stmt: VarDecl | AssignStmt | ExprStmt, indent: number): string {
     switch (stmt.kind) {
         case 'VarDecl': return `${typeToString(stmt.type)} ${stmt.name} = ${unparseExpr(stmt.init, indent)}`;
-        case 'AssignStmt': return `${stmt.name} = ${unparseExpr(stmt.value, indent)}`;
+        case 'AssignStmt': return `${unparseAssignTarget(stmt, indent)} = ${unparseExpr(stmt.value, indent)}`;
         case 'ExprStmt': return unparseExpr(stmt.expr, indent);
     }
 }
@@ -1098,8 +1462,10 @@ function unparseExpr(expr: Expr, indent: number): string {
         case 'Identifier': return expr.name;
         case 'CallExpr': return `${expr.callee}${unparseBracketed('(', ')', expr.args, indent, expr.callee.length)}`;
         case 'BinaryExpr': return `(${unparseExpr(expr.left, indent)} ${expr.op} ${unparseExpr(expr.right, indent)})`;
-        case 'UnaryExpr': return `(-${unparseExpr(expr.operand, indent)})`;
+        case 'UnaryExpr': return `(${expr.op}${unparseExpr(expr.operand, indent)})`;
         case 'NilExpr': return `nil(${typeToString(expr.type)})`;
+        case 'IndexExpr': return `${unparseExpr(expr.array, indent)}[${unparseExpr(expr.index, indent)}]`;
+        case 'HoleExpr': return '#';
     }
 }
 
@@ -1177,7 +1543,11 @@ interface BuiltinFunction {
     /** Validates `argTypes` (throwing descriptively on a bad arg count/type) and returns the call's
      * result type. */
     checkCall: (callee: string, argTypes: ClegType[]) => ClegType;
-    call: (args: ClegValue[]) => ClegValue;
+    /** `funcs` is only ever needed by a builtin that itself calls a `func`-typed argument back
+     * (e.g. subHcublat's own `cond`, via callUserFunction) - every other builtin's own `call` simply
+     * ignores it, which TypeScript allows (a function declared with fewer parameters than a call
+     * signature requires is still a valid implementation of it). */
+    call: (args: ClegValue[], funcs: UserFuncTable) => ClegValue;
 }
 
 /** Builds a BuiltinFunction's own checkCall from a fixed ClegType[] -> ClegType signature - shares
@@ -1230,6 +1600,40 @@ BUILTIN_FUNCTIONS['len'] = {
     call(args) {
         const v = args[0] as { kind: 'array' | 'set'; elem: ClegType; value: ClegValue[] };
         return { kind: 'number', value: v.value.length };
+    },
+};
+
+// `has(x, e)`: whether `x` (a `T[]` or `T{}`) contains `e` (a `T`), as a `bool` - like `len`, its
+// result depends on the actual argument types (here, argument 2's own required type, taken from
+// argument 1's element type), hence the hand-written checkCall/call pair. `T` is restricted to
+// SET_ELEM_KINDS (number/string/bool/edge/tri/quad) for BOTH `T[]` and `T{}` - even though an
+// array's own element type is normally unrestricted, nothing outside SET_ELEM_KINDS has a defined
+// equality in this language (e.g. `egr`: "no natural equality/hashing for a whole board", see this
+// file's own top comment on SET_ELEM_KINDS), so `has` can't be given a well-defined meaning for one
+// either. Compares by clegSetKey, the same equality every set operation already uses.
+function hasCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length !== 2)
+        throw new Error(`cleg: '${callee}' expects 2 argument(s), got ${argTypes.length}`);
+    if (argTypes[0].kind !== 'array' && argTypes[0].kind !== 'set')
+        throw new Error(
+            `cleg: '${callee}' argument 1: expected an array or set, got ${typeToString(argTypes[0])}`);
+    const elem = (argTypes[0] as { elem: ClegType }).elem;
+    if (!SET_ELEM_KINDS.has(elem.kind))
+        throw new Error(
+            `cleg: '${callee}' argument 1: element type ${typeToString(elem)} has no defined equality - only ` +
+            `number/string/bool/edge/tri/quad elements are supported`);
+    if (!typeEquals(argTypes[1], elem))
+        throw new Error(
+            `cleg: '${callee}' argument 2: expected ${typeToString(elem)} (the element type of argument 1), got ` +
+            `${typeToString(argTypes[1])}`);
+    return { kind: 'bool' };
+}
+BUILTIN_FUNCTIONS['has'] = {
+    checkCall: hasCheckCall,
+    call(args) {
+        const container = args[0] as { kind: 'array' | 'set'; elem: ClegType; value: ClegValue[] };
+        const key = clegSetKey(args[1]);
+        return { kind: 'bool', value: container.value.some(v => clegSetKey(v) === key) };
     },
 };
 
@@ -1919,6 +2323,121 @@ BUILTIN_FUNCTIONS['multiProd'] = {
     },
 };
 
+// `subHcublat(bounds, cond)`: a "sub-region" of an N-dimensional hypercubical lattice - `bounds` is
+// an N-length array of `[lo, hi]` pairs (inclusive integer bounds, one pair per dimension)
+// describing the bounding hyperrectangle; `cond` decides which lattice points inside it actually
+// become nodes, called once per candidate point (as that point's own N coordinates, a `number[]`)
+// via callUserFunction - the one builtin so far that needs to call back into a `func`-typed argument,
+// which is why `funcs` is threaded through BuiltinFunction's own `call` signature. Surviving nodes
+// keep the plain grid adjacency (connected iff their coordinates differ by exactly 1 in exactly one
+// dimension) and their own lattice coordinates, re-centered (see below), as their N-dim embedding
+// position - same convention, and the same full-lattice-index/stride bookkeeping to avoid an
+// O(survivors^2) adjacency scan, as
+// shared/boardConfig.ts's own hypercuboidBoard, just over an explicit per-dimension [lo, hi] rather
+// than always starting at 0 - unlike hypercuboidBoard, the re-centering (see the end of `call`
+// below) is computed from the SURVIVING nodes' own bounding box, not from `bounds` itself, since
+// `cond` may keep a shape nowhere near centered within the hyperrectangle it was given.
+BUILTIN_FUNCTIONS['subHcublat'] = {
+    checkCall: fixedSignature(
+        [
+            { kind: 'array', elem: { kind: 'array', elem: NUMBER_TYPE } },
+            { kind: 'func', params: [{ kind: 'array', elem: NUMBER_TYPE }], returnType: { kind: 'bool' } },
+        ],
+        EGR_TYPE,
+    ),
+    call([boundsVal, condVal], funcs) {
+        const boundsArr = (boundsVal as { value: ClegValue[] }).value;
+        const k = boundsArr.length;
+        if (k === 0) throw new Error(`cleg: 'subHcublat' bounds must be non-empty`);
+        const lo = new Array<number>(k);
+        const dims = new Array<number>(k);
+        boundsArr.forEach((pairVal, i) => {
+            const pair = (pairVal as { value: ClegValue[] }).value;
+            if (pair.length !== 2)
+                throw new Error(`cleg: 'subHcublat' bounds[${i}] must have exactly 2 entries (lower, upper), got ${pair.length}`);
+            const a = (pair[0] as { value: number }).value;
+            const b = (pair[1] as { value: number }).value;
+            if (!Number.isInteger(a) || !Number.isInteger(b) || a > b)
+                throw new Error(
+                    `cleg: 'subHcublat' bounds[${i}] must be integers with lower <= upper, got [${a}, ${b}]`);
+            lo[i] = a;
+            dims[i] = b - a + 1;
+        });
+        // `condVal` may be a plain top-level-function reference OR a partial application (e.g.
+        // `goDeskCond(l, w, h, fw, fh, in, #)`) closing over everything but the one open `number[]`
+        // position - fillHoles interleaves `pointArg` into whichever slot that is, rather than
+        // assuming `fn`'s own full parameter list is just `[pointArg]` (it was, for a plain
+        // reference, but not in general once `cond` can be a closure).
+        const cond = condVal as { name: string; boundArgs: (ClegValue | null)[] };
+        const fn = funcs[cond.name];
+
+        const strides = new Array<number>(k);
+        strides[0] = 1;
+        for (let i = 1; i < k; i++) strides[i] = strides[i - 1] * dims[i - 1];
+        const fullN = dims.reduce((p, d) => p * d, 1);
+        const localCoordsOf = (n: number): number[] => {
+            const coords = new Array<number>(k);
+            for (let i = 0; i < k; i++) { coords[i] = n % dims[i]; n = Math.floor(n / dims[i]); }
+            return coords;
+        };
+
+        // Only surviving (cond-kept) nodes get a board index (compacted, in ascending
+        // full-lattice-index order) - boardIdxOf maps a full-lattice index to that compacted index,
+        // absent for a point cond rejected.
+        const boardIdxOf = new Map<number, number>();
+        const survivingLocal: number[][] = [];
+        const pos: number[][] = [];
+        for (let n = 0; n < fullN; n++) {
+            const local = localCoordsOf(n);
+            const point = local.map((c, i) => c + lo[i]);
+            const pointArg: ClegValue = {
+                kind: 'array', elem: NUMBER_TYPE, value: point.map(v => ({ kind: 'number', value: v })),
+            };
+            const keep = (callUserFunction(fn, fillHoles(cond.boundArgs, [pointArg]), funcs) as { value: boolean }).value;
+            if (!keep) continue;
+            boardIdxOf.set(n, survivingLocal.length);
+            survivingLocal.push(local);
+            pos.push(point);
+        }
+        const N = survivingLocal.length;
+
+        const adj = zeroAdj(N);
+        for (let bi = 0; bi < N; bi++) {
+            const local = survivingLocal[bi];
+            for (let i = 0; i < k; i++)
+                for (const delta of [1, -1]) {
+                    const nc = local[i] + delta;
+                    if (nc < 0 || nc >= dims[i]) continue;
+                    const nlocal = local.slice();
+                    nlocal[i] = nc;
+                    const flat = nlocal.reduce((s, c, j) => s + c * strides[j], 0);
+                    const nbi = boardIdxOf.get(flat);
+                    if (nbi === undefined) continue;
+                    adj[bi][nbi] = 1;
+                }
+        }
+
+        // Re-center: subtract each dimension's own midpoint - (min + max) / 2, computed from the
+        // SURVIVING nodes' own coordinates (not `bounds` itself) - so the shape sits roughly around
+        // the origin regardless of where within `bounds` `cond` happened to keep it. No-op (and no
+        // division-by-zero-shaped issue) when N === 0 - there's nothing to center.
+        if (N > 0) {
+            const mid = new Array<number>(k);
+            for (let i = 0; i < k; i++) {
+                let minC = pos[0][i];
+                let maxC = pos[0][i];
+                for (let j = 1; j < N; j++) {
+                    if (pos[j][i] < minC) minC = pos[j][i];
+                    if (pos[j][i] > maxC) maxC = pos[j][i];
+                }
+                mid[i] = (minC + maxC) / 2;
+            }
+            for (const p of pos) for (let i = 0; i < k; i++) p[i] -= mid[i];
+        }
+        return { kind: 'egr', value: make(new Embedding(k, pos), adj) };
+    },
+};
+
 // ── Type checking ──────────────────────────────────────────────────────────────
 
 interface TypeEnv { vars: Map<string, ClegType>; parent: TypeEnv | null; }
@@ -1928,6 +2447,41 @@ function lookupVarType(env: TypeEnv, name: string): ClegType | undefined {
 }
 
 type FuncTable = Record<string, FunctionSignature>;
+
+// Shared arg-count/arg-type check for calling a (params, returnType) signature by name - used by
+// checkExpr's own CallExpr case for both a top-level function and a local func-typed variable's
+// value, so the two share one error-message format instead of duplicating it.
+function checkCallArgs(callee: string, argTypes: ClegType[], params: ClegType[]): void {
+    if (argTypes.length !== params.length)
+        throw new Error(`cleg: '${callee}' expects ${params.length} argument(s), got ${argTypes.length}`);
+    argTypes.forEach((t, i) => {
+        if (!typeEquals(t, params[i]))
+            throw new Error(`cleg: '${callee}' argument ${i + 1}: expected ${typeToString(params[i])}, got ${typeToString(t)}`);
+    });
+}
+
+/** Type-checks a partial-application CallExpr's own `args` (at least one is a HoleExpr) against
+ * `refParams` - the currently-callable parameter list of whatever `callee` refers to, one entry per
+ * `args` position. Shared by both partial-application sources (see CallExpr's own doc comment): a
+ * bare top-level function name (`refParams` is its own full signature, since nothing is bound yet)
+ * and an existing local variable holding a `func` value, itself possibly already a partial
+ * application (`refParams` is that value's own, already-reduced, `params` - the positions still
+ * open) - "some args are holes, producing a new/further func value" is exactly the same check
+ * either way, only which parameter list it's checked against differs. Returns the resulting
+ * closure's own new `params` - the subset of `refParams` at exactly the hole positions, in order. */
+function checkPartialApplication(callee: string, args: Expr[], refParams: ClegType[], env: TypeEnv, funcs: FuncTable): ClegType[] {
+    if (args.length !== refParams.length)
+        throw new Error(`cleg: '${callee}' expects ${refParams.length} argument(s), got ${args.length}`);
+    const holeParams: ClegType[] = [];
+    args.forEach((a, i) => {
+        if (a.kind === 'HoleExpr') { holeParams.push(refParams[i]); return; }
+        const t = checkExpr(a, env, funcs);
+        if (!typeEquals(t, refParams[i]))
+            throw new Error(
+                `cleg: '${callee}' argument ${i + 1}: expected ${typeToString(refParams[i])}, got ${typeToString(t)}`);
+    });
+    return holeParams;
+}
 
 /**
  * Statically checks `program`: every function's own body is checked against its declared
@@ -1956,7 +2510,7 @@ export function typecheckCleg(program: ClegProgram): ClegType {
 
     for (const fn of program.functions) {
         const env: TypeEnv = { vars: new Map(fn.params.map(p => [p.name, p.type])), parent: null };
-        checkBlock(fn.body, env, funcs, fn.returnType);
+        checkBlock(fn.body, env, funcs, fn.returnType, false);
     }
 
     if (program.stmts.length === 0) throw new Error(`cleg: program has no top-level statement`);
@@ -1972,17 +2526,22 @@ export function typecheckCleg(program: ClegProgram): ClegType {
     let resultType: ClegType | null = null;
     for (const stmt of program.stmts) {
         if (stmt.kind === 'ExprStmt') resultType = checkExpr(stmt.expr, env, funcs);
-        else checkStmt(stmt, env, funcs, EGR_TYPE);
+        else checkStmt(stmt, env, funcs, EGR_TYPE, false);
     }
     return resultType!;
 }
 
-function checkBlock(block: Block, parent: TypeEnv, funcs: FuncTable, returnType: ClegType): void {
+function checkBlock(block: Block, parent: TypeEnv, funcs: FuncTable, returnType: ClegType, inLoop: boolean): void {
     const env: TypeEnv = { vars: new Map(), parent };
-    for (const stmt of block.stmts) checkStmt(stmt, env, funcs, returnType);
+    for (const stmt of block.stmts) checkStmt(stmt, env, funcs, returnType, inLoop);
 }
 
-function checkStmt(stmt: Stmt, env: TypeEnv, funcs: FuncTable, returnType: ClegType): void {
+// `inLoop` is true while checking a ForStmt/WhileStmt's own `body` (or anything nested inside it,
+// e.g. an IfStmt's own then/else, or a further-nested loop's body) - BreakStmt/ContinueStmt require
+// it, matching real C++'s own "break/continue outside a loop" rejection. A nested loop's own body
+// re-passes `true` (already true, or newly so); everything else (IfStmt's then/else, a bare Block)
+// just threads the caller's own value through unchanged, since neither adds nor removes loop-ness.
+function checkStmt(stmt: Stmt, env: TypeEnv, funcs: FuncTable, returnType: ClegType, inLoop: boolean): void {
     switch (stmt.kind) {
         case 'VarDecl': {
             if (env.vars.has(stmt.name)) throw new Error(`cleg: '${stmt.name}' is already declared in this scope`);
@@ -1997,21 +2556,35 @@ function checkStmt(stmt: Stmt, env: TypeEnv, funcs: FuncTable, returnType: ClegT
         case 'AssignStmt': {
             const varType = lookupVarType(env, stmt.name);
             if (!varType) throw new Error(`cleg: assignment to undeclared variable '${stmt.name}'`);
+            // Walk one 'array' level per index (see AssignStmt's own doc comment) - `targetType`
+            // ends up being `varType` itself when `indices` is empty (the plain whole-value
+            // reassignment case), exactly like before this field existed.
+            let targetType = varType;
+            for (const idx of stmt.indices) {
+                if (targetType.kind !== 'array')
+                    throw new Error(
+                        `cleg: too many indices assigning to '${stmt.name}' - ${typeToString(varType)} is not ` +
+                        `nested that deep`);
+                const idxType = checkExpr(idx, env, funcs);
+                if (idxType.kind !== 'number')
+                    throw new Error(`cleg: array index must be a number, got ${typeToString(idxType)}`);
+                targetType = targetType.elem;
+            }
             const valueType = checkExpr(stmt.value, env, funcs);
-            if (!typeEquals(valueType, varType))
+            if (!typeEquals(valueType, targetType))
                 throw new Error(
-                    `cleg: cannot assign a value of type ${typeToString(valueType)} to '${stmt.name}' ` +
-                    `of type ${typeToString(varType)}`);
+                    `cleg: cannot assign a value of type ${typeToString(valueType)} to '${unparseAssignTarget(stmt, 0)}' ` +
+                    `of type ${typeToString(targetType)}`);
             return;
         }
         case 'IfStmt': {
             const condType = checkExpr(stmt.cond, env, funcs);
             if (condType.kind !== 'bool') throw new Error(`cleg: if condition must be bool, got ${typeToString(condType)}`);
-            checkBlock(stmt.then, env, funcs, returnType);
+            checkBlock(stmt.then, env, funcs, returnType, inLoop);
             if (stmt.else_)
                 stmt.else_.kind === 'Block'
-                    ? checkBlock(stmt.else_, env, funcs, returnType)
-                    : checkStmt(stmt.else_, env, funcs, returnType);
+                    ? checkBlock(stmt.else_, env, funcs, returnType, inLoop)
+                    : checkStmt(stmt.else_, env, funcs, returnType, inLoop);
             return;
         }
         case 'ForStmt': {
@@ -2019,16 +2592,29 @@ function checkStmt(stmt: Stmt, env: TypeEnv, funcs: FuncTable, returnType: ClegT
             // NOT the same scope as body's own (checkBlock below gives body its own further-nested
             // scope, same as every other BLOCK) - see ForStmt's own doc comment.
             const loopEnv: TypeEnv = { vars: new Map(), parent: env };
-            if (stmt.init) checkStmt(stmt.init, loopEnv, funcs, returnType);
+            if (stmt.init) checkStmt(stmt.init, loopEnv, funcs, returnType, inLoop);
             if (stmt.cond) {
                 const condType = checkExpr(stmt.cond, loopEnv, funcs);
                 if (condType.kind !== 'bool')
                     throw new Error(`cleg: for-loop condition must be bool, got ${typeToString(condType)}`);
             }
-            if (stmt.update) checkStmt(stmt.update, loopEnv, funcs, returnType);
-            checkBlock(stmt.body, loopEnv, funcs, returnType);
+            if (stmt.update) checkStmt(stmt.update, loopEnv, funcs, returnType, inLoop);
+            checkBlock(stmt.body, loopEnv, funcs, returnType, true);
             return;
         }
+        case 'WhileStmt': {
+            const condType = checkExpr(stmt.cond, env, funcs);
+            if (condType.kind !== 'bool')
+                throw new Error(`cleg: while condition must be bool, got ${typeToString(condType)}`);
+            checkBlock(stmt.body, env, funcs, returnType, true);
+            return;
+        }
+        case 'BreakStmt':
+            if (!inLoop) throw new Error(`cleg: 'break' outside a loop`);
+            return;
+        case 'ContinueStmt':
+            if (!inLoop) throw new Error(`cleg: 'continue' outside a loop`);
+            return;
         case 'ReturnStmt': {
             const t = checkExpr(stmt.value, env, funcs);
             if (!typeEquals(t, returnType))
@@ -2039,7 +2625,7 @@ function checkStmt(stmt: Stmt, env: TypeEnv, funcs: FuncTable, returnType: ClegT
             checkExpr(stmt.expr, env, funcs);
             return;
         case 'Block':
-            checkBlock(stmt, env, funcs, returnType);
+            checkBlock(stmt, env, funcs, returnType, inLoop);
             return;
     }
 }
@@ -2051,8 +2637,19 @@ function checkExpr(expr: Expr, env: TypeEnv, funcs: FuncTable): ClegType {
         case 'BoolLit': return { kind: 'bool' };
         case 'Identifier': {
             const t = lookupVarType(env, expr.name);
-            if (!t) throw new Error(`cleg: undeclared variable '${expr.name}'`);
-            return t;
+            if (t) return t;
+            // Not a variable - maybe a bare reference to one of program's own top-level functions,
+            // used as a function-pointer value (e.g. passing a comparator by name) rather than being
+            // called directly. A builtin can't be referenced this way (see ClegType's own 'func' doc
+            // comment on why), so it gets its own clearer error instead of falling through to the
+            // generic "undeclared variable" below.
+            const fn = funcs[expr.name];
+            if (fn) return { kind: 'func', params: fn.params, returnType: fn.returnType };
+            if (BUILTIN_FUNCTIONS[expr.name])
+                throw new Error(
+                    `cleg: builtin function '${expr.name}' cannot be used as a function pointer - only a ` +
+                    `cleg-declared function can`);
+            throw new Error(`cleg: undeclared variable '${expr.name}'`);
         }
         case 'ArrayLit': {
             if (expr.elements.length === 0)
@@ -2079,18 +2676,43 @@ function checkExpr(expr: Expr, env: TypeEnv, funcs: FuncTable): ClegType {
             return { kind: 'set', elem: elemTypes[0] };
         }
         case 'CallExpr': {
+            if (expr.args.some(a => a.kind === 'HoleExpr')) {
+                // Partial application - a bare top-level function name, or an existing local
+                // variable holding a func value (a plain pointer, or itself already a partial
+                // application - see checkPartialApplication's own doc comment) - never a builtin (no
+                // single fixed signature to close over for the generic/overloaded ones).
+                const varType = lookupVarType(env, expr.callee);
+                if (varType) {
+                    if (varType.kind !== 'func')
+                        throw new Error(`cleg: '${expr.callee}' is not callable (${typeToString(varType)})`);
+                    const holeParams = checkPartialApplication(expr.callee, expr.args, varType.params, env, funcs);
+                    return { kind: 'func', params: holeParams, returnType: varType.returnType };
+                }
+                if (BUILTIN_FUNCTIONS[expr.callee])
+                    throw new Error(
+                        `cleg: partial application ('#') is only supported for a cleg-declared function or a ` +
+                        `func-typed variable, not builtin '${expr.callee}'`);
+                const sig = funcs[expr.callee];
+                if (!sig) throw new Error(`cleg: call to undeclared function '${expr.callee}'`);
+                const holeParams = checkPartialApplication(expr.callee, expr.args, sig.params, env, funcs);
+                return { kind: 'func', params: holeParams, returnType: sig.returnType };
+            }
             const argTypes = expr.args.map(a => checkExpr(a, env, funcs));
             const builtin = BUILTIN_FUNCTIONS[expr.callee];
             if (builtin) return builtin.checkCall(expr.callee, argTypes);
+            // A local variable (almost always a parameter) of func type shadows a same-named
+            // top-level function here - the whole point of passing a comparator by name is to call
+            // it through the parameter that received it (see this file's own top comment).
+            const varType = lookupVarType(env, expr.callee);
+            if (varType) {
+                if (varType.kind !== 'func')
+                    throw new Error(`cleg: '${expr.callee}' is not callable (${typeToString(varType)})`);
+                checkCallArgs(expr.callee, argTypes, varType.params);
+                return varType.returnType;
+            }
             const sig = funcs[expr.callee];
             if (!sig) throw new Error(`cleg: call to undeclared function '${expr.callee}'`);
-            if (argTypes.length !== sig.params.length)
-                throw new Error(`cleg: '${expr.callee}' expects ${sig.params.length} argument(s), got ${argTypes.length}`);
-            argTypes.forEach((t, i) => {
-                if (!typeEquals(t, sig.params[i]))
-                    throw new Error(
-                        `cleg: '${expr.callee}' argument ${i + 1}: expected ${typeToString(sig.params[i])}, got ${typeToString(t)}`);
-            });
+            checkCallArgs(expr.callee, argTypes, sig.params);
             return sig.returnType;
         }
         case 'BinaryExpr': {
@@ -2106,21 +2728,47 @@ function checkExpr(expr: Expr, env: TypeEnv, funcs: FuncTable): ClegType {
         }
         case 'UnaryExpr': {
             const t = checkExpr(expr.operand, env, funcs);
-            if (t.kind !== 'number') throw new Error(`cleg: unary '-' requires a number operand, got ${typeToString(t)}`);
-            return { kind: 'number' };
+            if (expr.op === '-') {
+                if (t.kind !== 'number') throw new Error(`cleg: unary '-' requires a number operand, got ${typeToString(t)}`);
+                return { kind: 'number' };
+            }
+            if (t.kind !== 'bool') throw new Error(`cleg: unary '!' requires a bool operand, got ${typeToString(t)}`);
+            return { kind: 'bool' };
         }
         case 'NilExpr': return { kind: 'array', elem: expr.type };
+        case 'IndexExpr': {
+            const arrType = checkExpr(expr.array, env, funcs);
+            if (arrType.kind !== 'array')
+                throw new Error(`cleg: '[]' requires an array, got ${typeToString(arrType)}`);
+            const idxType = checkExpr(expr.index, env, funcs);
+            if (idxType.kind !== 'number')
+                throw new Error(`cleg: array index must be a number, got ${typeToString(idxType)}`);
+            return arrType.elem;
+        }
+        // Unreachable - CallExpr's own case above always filters HoleExpr args out before recursing
+        // into checkExpr for the rest; the parser never produces one anywhere else.
+        case 'HoleExpr':
+            throw new Error(`cleg: '#' is only valid as an argument in a partial-application call`);
     }
 }
 
 // ── Evaluation ───────────────────────────────────────────────────────────────
 
 interface ValueEnv { vars: Map<string, ClegValue>; parent: ValueEnv | null; }
-function lookupValue(env: ValueEnv, name: string): ClegValue {
+// Mirrors lookupVarType's own `| undefined` convention - evalExpr's own Identifier/CallExpr cases
+// need to tell "not a local variable" apart from "found" (falling back to a top-level function
+// reference/call in the former case), unlike lookupValue/setValue below, which are always used where
+// typecheckCleg already guarantees the variable exists.
+function lookupValueOptional(env: ValueEnv, name: string): ClegValue | undefined {
     for (let e: ValueEnv | null = env; e; e = e.parent) { const v = e.vars.get(name); if (v) return v; }
-    // Unreachable in a program that has passed typecheckCleg - every Identifier there already
-    // resolved to a declared variable.
-    throw new Error(`cleg: undeclared variable '${name}'`);
+    return undefined;
+}
+function lookupValue(env: ValueEnv, name: string): ClegValue {
+    const v = lookupValueOptional(env, name);
+    // Unreachable in a program that has passed typecheckCleg - every Identifier/AssignStmt there
+    // already resolved to a declared variable.
+    if (!v) throw new Error(`cleg: undeclared variable '${name}'`);
+    return v;
 }
 
 /** Mutates `name`'s existing binding in place, in whichever env of the chain declared it - unlike
@@ -2135,11 +2783,71 @@ function setValue(env: ValueEnv, name: string, value: ClegValue): void {
     throw new Error(`cleg: undeclared variable '${name}'`);
 }
 
+/** Deep-clones an array value's own array structure (recursively, for a nested `T[][]`) so indexed
+ * mutation (`arr[i] = x;`, see evalStmt's own AssignStmt case) can never be observed through another
+ * variable that was previously assigned `= arr` or received it as a function argument - this
+ * language's arrays are value types, not shared references (see this file's own top comment).
+ * Every other ClegValue kind either can't be mutated in place at all, or (an array ELEMENT that
+ * isn't itself an array - a number/egr/sel/set/... ) can only ever be wholesale REPLACED via an
+ * indexed assignment, never mutated internally - so only the array *structure* itself needs a fresh
+ * copy, not every value reachable from it; called at every site a value is bound to a (potentially
+ * long-lived, aliasable) variable - VarDecl's init, a whole-value AssignStmt, and a function
+ * argument's own param binding - a no-op passthrough for anything that isn't (or doesn't contain) an
+ * array. */
+function cloneArrayValue(v: ClegValue): ClegValue {
+    if (v.kind !== 'array') return v;
+    return { kind: 'array', elem: v.elem, value: v.value.map(cloneArrayValue) };
+}
+
+/** Validates that `idx` is a usable index into an array of `length` elements, returning it - shared
+ * by evalExpr's own IndexExpr (read) case and evalStmt's own indexed AssignStmt (write) case, so
+ * both report an out-of-bounds index the same way. */
+function validateArrayIndex(idx: number, length: number): number {
+    if (!Number.isInteger(idx) || idx < 0 || idx >= length)
+        throw new Error(`cleg: array index ${idx} out of bounds for array of length ${length}`);
+    return idx;
+}
+
+/** Interleaves `suppliedArgs` (in order) into `boundArgs`' own `null` ("still uninstantiated")
+ * slots, producing the full argument list the original function actually needs - used by evalExpr's
+ * own CallExpr case whenever it calls through a `func` value, whether that value is a plain
+ * function-pointer reference (every slot `null`, so this is just `suppliedArgs` unchanged) or a
+ * partial application (see ClegValue's own 'func' doc comment) - one shared interleaving rule for
+ * both, rather than treating them as two different cases. */
+function fillHoles(boundArgs: (ClegValue | null)[], suppliedArgs: ClegValue[]): ClegValue[] {
+    let i = 0;
+    return boundArgs.map(b => (b === null ? suppliedArgs[i++] : b));
+}
+
+/** Merges a partial-application CallExpr's own `args` (at least one is a HoleExpr) into `boundArgs`'
+ * own currently-open (`null`) slots, in order - evaluating each non-hole argument now (once,
+ * eagerly) and leaving each hole slot open, producing the NEW boundArgs for the resulting (possibly
+ * still-partial) closure. Mirrors checkPartialApplication's own "same merge either way" reasoning:
+ * starting from a fresh all-`null` boundArgs (a bare top-level function name, nothing bound yet) or
+ * an existing value's own boundArgs (a plain pointer, still all-`null`, or an already-partial
+ * closure) is the exact same operation, just a different starting point. */
+function mergeBoundArgs(boundArgs: (ClegValue | null)[], args: Expr[], env: ValueEnv, funcs: UserFuncTable): (ClegValue | null)[] {
+    let j = 0;
+    return boundArgs.map(b => {
+        if (b !== null) return b;
+        const a = args[j++];
+        return a.kind === 'HoleExpr' ? null : cloneArrayValue(evalExpr(a, env, funcs));
+    });
+}
+
 type UserFuncTable = Record<string, FunctionDecl>;
 
 // Thrown to unwind out of nested blocks/if-statements on `return` - always caught by
 // callUserFunction below, never escapes runCleg itself.
 class ReturnSignal { constructor(public value: ClegValue) {} }
+// Thrown by BreakStmt/ContinueStmt to unwind out of nested blocks/if-statements up to the innermost
+// enclosing ForStmt/WhileStmt's own try/catch (see evalStmt's own ForStmt/WhileStmt cases) - never
+// escapes past there in a program that has passed typecheckCleg (checkStmt's own `inLoop` check
+// already rejected either one outside a loop). A ReturnSignal thrown from inside a loop body is
+// neither of these, so it passes straight through both catches unchanged, all the way up to
+// callUserFunction, exactly as if the loop weren't there.
+class BreakSignal {}
+class ContinueSignal {}
 
 function evalBlock(block: Block, parent: ValueEnv, funcs: UserFuncTable): void {
     const env: ValueEnv = { vars: new Map(), parent };
@@ -2149,11 +2857,32 @@ function evalBlock(block: Block, parent: ValueEnv, funcs: UserFuncTable): void {
 function evalStmt(stmt: Stmt, env: ValueEnv, funcs: UserFuncTable): void {
     switch (stmt.kind) {
         case 'VarDecl':
-            env.vars.set(stmt.name, evalExpr(stmt.init, env, funcs));
+            env.vars.set(stmt.name, cloneArrayValue(evalExpr(stmt.init, env, funcs)));
             return;
-        case 'AssignStmt':
-            setValue(env, stmt.name, evalExpr(stmt.value, env, funcs));
+        case 'AssignStmt': {
+            const value = cloneArrayValue(evalExpr(stmt.value, env, funcs));
+            if (stmt.indices.length === 0) {
+                setValue(env, stmt.name, value);
+                return;
+            }
+            // Walk down into the array named `stmt.name`, following every index but the last (each
+            // of which - checkStmt's own AssignStmt case already guarantees - lands on another
+            // array), then mutate the final slot in place. `target` is the SAME object stored in
+            // `env` (lookupValue never copies), which is safe to mutate directly precisely because
+            // cloneArrayValue already guarantees nothing else aliases it (see that function's own
+            // doc comment).
+            let target = lookupValue(env, stmt.name) as { kind: 'array'; value: ClegValue[] };
+            for (let i = 0; i < stmt.indices.length - 1; i++) {
+                const idxValue = (evalExpr(stmt.indices[i], env, funcs) as { kind: 'number'; value: number }).value;
+                const idx = validateArrayIndex(idxValue, target.value.length);
+                target = target.value[idx] as { kind: 'array'; value: ClegValue[] };
+            }
+            const lastIdxValue =
+                (evalExpr(stmt.indices[stmt.indices.length - 1], env, funcs) as { kind: 'number'; value: number }).value;
+            const lastIdx = validateArrayIndex(lastIdxValue, target.value.length);
+            target.value[lastIdx] = value;
             return;
+        }
         case 'IfStmt': {
             const cond = evalExpr(stmt.cond, env, funcs) as { kind: 'bool'; value: boolean };
             if (cond.value) evalBlock(stmt.then, env, funcs);
@@ -2163,15 +2892,40 @@ function evalStmt(stmt: Stmt, env: ValueEnv, funcs: UserFuncTable): void {
         case 'ForStmt': {
             // One scope for the whole loop (init's own variable, if any, persists across every
             // iteration) - body gets its own further-nested scope each iteration via evalBlock,
-            // same as any other BLOCK - see ForStmt's own doc comment.
+            // same as any other BLOCK - see ForStmt's own doc comment. The try/catch around
+            // evalBlock is BreakStmt/ContinueStmt's own unwind target (see BreakSignal/
+            // ContinueSignal's own doc comment) - `continue` still runs `update` below before the
+            // next `cond` check, exactly like real C++; `break` skips straight past the loop
+            // entirely, never running `update` again.
             const loopEnv: ValueEnv = { vars: new Map(), parent: env };
             if (stmt.init) evalStmt(stmt.init, loopEnv, funcs);
             while (!stmt.cond || (evalExpr(stmt.cond, loopEnv, funcs) as { kind: 'bool'; value: boolean }).value) {
-                evalBlock(stmt.body, loopEnv, funcs);
+                try {
+                    evalBlock(stmt.body, loopEnv, funcs);
+                } catch (e) {
+                    if (e instanceof BreakSignal) break;
+                    if (!(e instanceof ContinueSignal)) throw e;
+                }
                 if (stmt.update) evalStmt(stmt.update, loopEnv, funcs);
             }
             return;
         }
+        case 'WhileStmt': {
+            // Same BreakStmt/ContinueStmt unwind target as ForStmt above - see its own comment.
+            while ((evalExpr(stmt.cond, env, funcs) as { kind: 'bool'; value: boolean }).value) {
+                try {
+                    evalBlock(stmt.body, env, funcs);
+                } catch (e) {
+                    if (e instanceof BreakSignal) break;
+                    if (!(e instanceof ContinueSignal)) throw e;
+                }
+            }
+            return;
+        }
+        case 'BreakStmt':
+            throw new BreakSignal();
+        case 'ContinueStmt':
+            throw new ContinueSignal();
         case 'ReturnStmt':
             throw new ReturnSignal(evalExpr(stmt.value, env, funcs));
         case 'ExprStmt':
@@ -2188,7 +2942,17 @@ function evalExpr(expr: Expr, env: ValueEnv, funcs: UserFuncTable): ClegValue {
         case 'NumberLit': return { kind: 'number', value: expr.value };
         case 'StringLit': return { kind: 'string', value: expr.value };
         case 'BoolLit': return { kind: 'bool', value: expr.value };
-        case 'Identifier': return lookupValue(env, expr.name);
+        case 'Identifier': {
+            const v = lookupValueOptional(env, expr.name);
+            if (v) return v;
+            // Not a variable - a bare reference to one of program's own top-level functions, used as
+            // a function-pointer value (checkExpr already confirmed this resolves and is func-typed).
+            const fn = funcs[expr.name];
+            return {
+                kind: 'func', params: fn.params.map(p => p.type), returnType: fn.returnType, name: expr.name,
+                boundArgs: fn.params.map(() => null),
+            };
+        }
         case 'ArrayLit': {
             const values = expr.elements.map(e => evalExpr(e, env, funcs));
             // typecheckCleg already rejected an empty or mixed-element-type literal, so the first
@@ -2202,11 +2966,49 @@ function evalExpr(expr: Expr, env: ValueEnv, funcs: UserFuncTable): ClegValue {
             return makeClegSet(clegValueType(values[0]), values);
         }
         case 'CallExpr': {
+            if (expr.args.some(a => a.kind === 'HoleExpr')) {
+                // Partial application - checkExpr already confirmed expr.callee names either a
+                // top-level function or a local func-typed variable (never a builtin) whenever any
+                // arg is '#'. mergeBoundArgs evaluates each non-hole argument now (once, eagerly),
+                // exactly like an ordinary call's own arguments - cloneArrayValue matters here for
+                // the same reason it does at any other site a value is bound into a (potentially
+                // long-lived) slot: `boundArgs` itself, held inside the resulting closure, is exactly
+                // such a slot. Starting from a variable's own boundArgs (rather than a fresh all-null
+                // one) is what lets this further-apply an already-partial closure.
+                const varValue = lookupValueOptional(env, expr.callee);
+                const fv = varValue as { kind: 'func'; name: string; boundArgs: (ClegValue | null)[] } | undefined;
+                const name = fv ? fv.name : expr.callee;
+                const fn = funcs[name];
+                const startingBoundArgs = fv ? fv.boundArgs : fn.params.map(() => null);
+                const boundArgs = mergeBoundArgs(startingBoundArgs, expr.args, env, funcs);
+                const holeParams = fn.params.filter((_, i) => boundArgs[i] === null).map(p => p.type);
+                return { kind: 'func', params: holeParams, returnType: fn.returnType, name, boundArgs };
+            }
             const args = expr.args.map(a => evalExpr(a, env, funcs));
             const builtin = BUILTIN_FUNCTIONS[expr.callee];
-            return builtin ? builtin.call(args) : callUserFunction(funcs[expr.callee], args, funcs);
+            if (builtin) return builtin.call(args, funcs);
+            // A local variable of func type shadows a same-named top-level function - see checkExpr's
+            // own CallExpr case, which already required this to resolve the same way. fillHoles
+            // handles a plain (never-partially-applied) function value transparently, since its own
+            // `boundArgs` is all `null`.
+            const varValue = lookupValueOptional(env, expr.callee);
+            if (varValue) {
+                const fv = varValue as { kind: 'func'; name: string; boundArgs: (ClegValue | null)[] };
+                return callUserFunction(funcs[fv.name], fillHoles(fv.boundArgs, args), funcs);
+            }
+            return callUserFunction(funcs[expr.callee], args, funcs);
         }
         case 'BinaryExpr': {
+            // `&&`/`||` short-circuit here, before ever reaching BINARY_OPERATOR_OVERLOADS below -
+            // see BinOp's own doc comment. checkExpr already required both operands to be bool, so
+            // the short-circuited result is always just whichever side actually determines it: `&&`
+            // returns false without evaluating `right` at all if `left` is already false, otherwise
+            // `right`'s own value; `||` is the mirror image.
+            if (expr.op === '&&' || expr.op === '||') {
+                const l = (evalExpr(expr.left, env, funcs) as { kind: 'bool'; value: boolean }).value;
+                if (expr.op === '&&') return l ? evalExpr(expr.right, env, funcs) : { kind: 'bool', value: false };
+                return l ? { kind: 'bool', value: true } : evalExpr(expr.right, env, funcs);
+            }
             const l = evalExpr(expr.left, env, funcs);
             const r = evalExpr(expr.right, env, funcs);
             for (const overload of BINARY_OPERATOR_OVERLOADS[expr.op]) {
@@ -2217,15 +3019,32 @@ function evalExpr(expr: Expr, env: ValueEnv, funcs: UserFuncTable): ClegValue {
             throw new Error(`cleg: operator '${expr.op}' has no overload for these operand types at runtime`);
         }
         case 'UnaryExpr': {
-            const v = (evalExpr(expr.operand, env, funcs) as { kind: 'number'; value: number }).value;
-            return { kind: 'number', value: -v };
+            if (expr.op === '-') {
+                const v = (evalExpr(expr.operand, env, funcs) as { kind: 'number'; value: number }).value;
+                return { kind: 'number', value: -v };
+            }
+            const v = (evalExpr(expr.operand, env, funcs) as { kind: 'bool'; value: boolean }).value;
+            return { kind: 'bool', value: !v };
         }
         case 'NilExpr': return { kind: 'array', elem: expr.type, value: [] };
+        case 'IndexExpr': {
+            const arr = evalExpr(expr.array, env, funcs) as { kind: 'array'; elem: ClegType; value: ClegValue[] };
+            const idxValue = (evalExpr(expr.index, env, funcs) as { kind: 'number'; value: number }).value;
+            const idx = validateArrayIndex(idxValue, arr.value.length);
+            return arr.value[idx];
+        }
+        // Unreachable - CallExpr's own case above always filters HoleExpr args out before recursing
+        // into evalExpr for the rest; the parser never produces one anywhere else.
+        case 'HoleExpr':
+            throw new Error(`cleg: '#' is only valid as an argument in a partial-application call`);
     }
 }
 
 function callUserFunction(fn: FunctionDecl, args: ClegValue[], funcs: UserFuncTable): ClegValue {
-    const env: ValueEnv = { vars: new Map(fn.params.map((p, i) => [p.name, args[i]])), parent: null };
+    // cloneArrayValue here (not just at the call site's own VarDecl/AssignStmt) is what makes an
+    // array argument a genuine value-copy rather than a reference to the caller's own array, exactly
+    // like passing one to another variable - see cloneArrayValue's own doc comment.
+    const env: ValueEnv = { vars: new Map(fn.params.map((p, i) => [p.name, cloneArrayValue(args[i])])), parent: null };
     try {
         evalBlock(fn.body, env, funcs);
     } catch (e) {

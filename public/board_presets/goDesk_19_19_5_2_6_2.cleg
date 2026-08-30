@@ -1,0 +1,39 @@
+bool hcCond(number[] mins, number[] maxs, number numeq, number[] coords) {
+  number l = len(mins);
+  number rnumeq = 0;
+  number rnumin = 0;
+  for (number i = 0; (i < l); i = (i + 1)) {
+    if (((mins[i] <= coords[i]) && (maxs[i] >= coords[i]))) {
+      rnumin = (rnumin + 1);
+    }
+    if (((mins[i] == coords[i]) || (maxs[i] == coords[i]))) {
+      rnumeq = (rnumeq + 1);
+    }
+  }
+  return ((rnumin == l) && (rnumeq >= numeq));
+}
+bool goDeskCond(number l, number w, number h, number fw, number fh, number in, number[] coords) {
+  number zmid = fh;
+  number ztop = (h + fh);
+  number xll = in;
+  number xlr = (in + fw);
+  number xrl = ((l - in) - fw);
+  number xrr = (l - in);
+  number yll = in;
+  number ylr = (in + fw);
+  number yrl = ((w - in) - fw);
+  number yrr = (w - in);
+  bool xlyl = hcCond([xll, yll, 0], [xlr, ylr, zmid], 1, coords);
+  bool xlyr = hcCond([xll, yrl, 0], [xlr, yrr, zmid], 1, coords);
+  bool xryl = hcCond([xrl, yll, 0], [xrr, ylr, zmid], 1, coords);
+  bool xryr = hcCond([xrl, yrl, 0], [xrr, yrr, zmid], 1, coords);
+  bool desk = hcCond([0, 0, zmid], [l, w, ztop], 1, coords);
+  return ((((xlyl || xlyr) || xryl) || xryr) || desk);
+}
+egr goDesk(number l, number w, number h, number fw, number fh, number in) {
+  return subHcublat(
+    [[0, l], [0, w], [0, (h + fh)]],
+    goDeskCond(l, w, h, fw, fh, in, #)
+  );
+}
+goDesk(19, 19, 5, 2, 6, 2);

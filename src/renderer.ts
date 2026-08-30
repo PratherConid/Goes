@@ -142,6 +142,7 @@ const _boardConfigDescriptions = new Map([
     ['cublat_4_4_4_cub_0010_quadform_4', 'quadform 4 applied to 0010 position cubes on 4x4x4 cubical lattice'],
     ['biTemple_13_13_9_3', 'Temple with both top and bottom'],
     ['twsqCluster4D_4_4_2', 'Copies of twsq boards connected in 4 dimensions'],
+    ['goDesk_19_19_5_2_6_2', 'A nice go desk that you can play go on'],
 ]);
 
 

@@ -39,18 +39,27 @@
 // ── Types ────────────────────────────────────────────────────────────────────
 
 enum class CTKind {
-    Egr, Number, String, Bool, Edge, Tri, Quad, Sel, FormSel, Mod, Msel, Array, Set
+    Egr, Number, String, Bool, Edge, Tri, Quad, Sel, FormSel, Mod, Msel, Array, Set, Func
 };
 
-// Mirrors shared/cleg.ts's ClegType - `elem` meaningful iff kind == Array/Set.
+// Mirrors shared/cleg.ts's ClegType - `elem` meaningful iff kind == Array/Set; `params`/
+// `return_type` meaningful iff kind == Func (a monomorphic function-pointer type, e.g.
+// `(number, number) -> bool`).
 struct ClegType {
     CTKind kind = CTKind::Number;
     std::shared_ptr<ClegType> elem;
+    std::vector<ClegType> params;
+    std::shared_ptr<ClegType> return_type;
 };
 
 static bool type_equals(const ClegType& a, const ClegType& b) {
     if (a.kind != b.kind) return false;
     if (a.kind == CTKind::Array || a.kind == CTKind::Set) return type_equals(*a.elem, *b.elem);
+    if (a.kind == CTKind::Func) {
+        if (a.params.size() != b.params.size()) return false;
+        for (size_t i = 0; i < a.params.size(); i++) if (!type_equals(a.params[i], b.params[i])) return false;
+        return type_equals(*a.return_type, *b.return_type);
+    }
     return true;
 }
 
@@ -67,14 +76,30 @@ static std::string ctkind_word(CTKind k) {
         case CTKind::FormSel: return "formSel";
         case CTKind::Mod: return "mod";
         case CTKind::Msel: return "msel";
-        case CTKind::Array: case CTKind::Set: break; // handled by type_to_string below
+        case CTKind::Array: case CTKind::Set: case CTKind::Func: break; // handled by type_to_string below
     }
     throw std::runtime_error("cleg: ctkind_word: unexpected kind");
 }
 
+static std::string type_to_string(const ClegType& t);
+
+// A func type printed directly before a `[]`/`{}` suffix needs its own extra parens (matching
+// parse_paren_type's own grouping rule below) - otherwise the suffix would silently re-parse as
+// binding to the func type's own return type instead of to the func type as a whole (`(number,
+// number) -> bool[]` means "returns bool[]", not "an array of these functions" - see this file's own
+// top comment). Every other ClegType kind is unambiguous either way.
+static std::string type_to_string_for_suffix(const ClegType& t) {
+    return t.kind == CTKind::Func ? "(" + type_to_string(t) + ")" : type_to_string(t);
+}
+
 static std::string type_to_string(const ClegType& t) {
-    if (t.kind == CTKind::Array) return type_to_string(*t.elem) + "[]";
-    if (t.kind == CTKind::Set) return type_to_string(*t.elem) + "{}";
+    if (t.kind == CTKind::Array) return type_to_string_for_suffix(*t.elem) + "[]";
+    if (t.kind == CTKind::Set) return type_to_string_for_suffix(*t.elem) + "{}";
+    if (t.kind == CTKind::Func) {
+        std::string params;
+        for (size_t i = 0; i < t.params.size(); i++) { if (i) params += ", "; params += type_to_string(t.params[i]); }
+        return "(" + params + ") -> " + type_to_string(*t.return_type);
+    }
     return ctkind_word(t.kind);
 }
 
@@ -88,6 +113,11 @@ struct MultiSelector {
     std::vector<MultiSelector> items;     // Union/Inter
     std::shared_ptr<MultiSelector> a, b;  // Diff
 };
+
+// Defined in full in the AST section below (game/cleg.h's own top comment - private to this file) -
+// ClegValue only ever holds a raw pointer to one (see its own `func_decl` field's doc comment), so a
+// forward declaration is enough here.
+struct FunctionDecl;
 
 // ── Values ───────────────────────────────────────────────────────────────────
 
@@ -112,11 +142,24 @@ struct ClegValue {
     BoardModifier mod_v{ModifierKind::Rectify};
     MultiSelector msel_v;
     std::vector<ClegValue> arr_v;                    // Array or Set (Set: deduplicated by cleg_set_key)
+    // Func only - mirrors shared/cleg.ts's ClegValue own 'func' variant: cleg has no closures, so a
+    // function-pointer value is nothing more than a reference to one of `program`'s own top-level
+    // FunctionDecls. `func_params`/`func_return_type` are cached from `*func_decl` itself (rather
+    // than re-derived on every use) purely so cleg_value_type can report this value's own ClegType
+    // without needing `*func_decl`'s own Param wrapper. `func_decl` is a raw pointer into whichever
+    // ClegProgram::functions vector declared it - safe for the same reason UserFuncTable's own
+    // pointers are (see this file's own top comment): evaluation never outlives the ClegProgram that
+    // owns it.
+    std::vector<ClegType> func_params;
+    ClegType func_return_type;
+    const FunctionDecl* func_decl = nullptr;
 };
 
 static ClegType cleg_value_type(const ClegValue& v) {
     if (v.kind == CTKind::Array || v.kind == CTKind::Set)
         return ClegType{v.kind, std::make_shared<ClegType>(v.elem)};
+    if (v.kind == CTKind::Func)
+        return ClegType{CTKind::Func, nullptr, v.func_params, std::make_shared<ClegType>(v.func_return_type)};
     return ClegType{v.kind, nullptr};
 }
 
@@ -382,6 +425,22 @@ static BinaryOverload comparison_overload(CTKind elem_kind, std::function<bool(d
     };
 }
 
+// Mirrors shared/cleg.ts's logicalOverload() - `eval` here is never actually reached at runtime
+// (eval_expr's own BinaryExpr case short-circuits `&&`/`||` itself), kept only for interface
+// consistency with every other overload and so check_expr can type both operands regardless.
+static BinaryOverload logical_overload(std::function<bool(bool, bool)> compute) {
+    return BinaryOverload{
+        "bool, bool -> bool",
+        [compute](const ClegType& l, const ClegType& r) -> std::optional<MatchResult> {
+            if (l.kind != CTKind::Bool || r.kind != CTKind::Bool) return std::nullopt;
+            return MatchResult{
+                ClegType{CTKind::Bool, nullptr},
+                [compute](const ClegValue& lv, const ClegValue& rv) { return make_bool(compute(lv.boolean, rv.boolean)); },
+            };
+        },
+    };
+}
+
 // Mirrors shared/cleg.ts's BINARY_OPERATOR_OVERLOADS - keyed by the operator's own punctuation text
 // (matching the parser's own token, rather than introducing a separate BinOp enum).
 static const std::unordered_map<std::string, std::vector<BinaryOverload>>& binary_operator_overloads() {
@@ -407,6 +466,8 @@ static const std::unordered_map<std::string, std::vector<BinaryOverload>>& binar
                     comparison_overload(CTKind::Bool, [](double a, double b) { return a <= b; }) };
         m[">="] = { comparison_overload(CTKind::Number, [](double a, double b) { return a >= b; }),
                     comparison_overload(CTKind::Bool, [](double a, double b) { return a >= b; }) };
+        m["&&"] = { logical_overload([](bool a, bool b) { return a && b; }) };
+        m["||"] = { logical_overload([](bool a, bool b) { return a || b; }) };
         return m;
     }();
     return table;
@@ -416,38 +477,43 @@ static const std::unordered_map<std::string, std::vector<BinaryOverload>>& binar
 
 struct Param { ClegType type; std::string name; };
 
-enum class ExprKind { NumberLit, StringLit, BoolLit, ArrayLit, SetLit, Identifier, CallExpr, BinaryExpr, UnaryExpr, NilExpr };
+enum class ExprKind { NumberLit, StringLit, BoolLit, ArrayLit, SetLit, Identifier, CallExpr, BinaryExpr, UnaryExpr, NilExpr, IndexExpr };
 
 // Mirrors shared/cleg.ts's Expr union - one flat tagged struct, same convention as ClegValue above.
 // `string_value` doubles as StringLit's text, Identifier's name, and CallExpr's callee;
-// `elements` doubles as ArrayLit/SetLit's own elements and CallExpr's own args (each kind uses only
-// one of the two roles, never both).
+// `elements` doubles as ArrayLit/SetLit's own elements and CallExpr's own args; `left`/`right` double
+// as BinaryExpr's own operands and IndexExpr's own array/index respectively (each kind uses only one
+// of these roles, never two at once).
 struct Expr {
     ExprKind kind = ExprKind::NumberLit;
     double number_value = 0;
     std::string string_value;
     bool bool_value = false;
     std::vector<Expr> elements;
-    std::string op;                              // BinaryExpr only
-    std::shared_ptr<Expr> left, right, operand;   // BinaryExpr (left/right) / UnaryExpr (operand)
+    std::string op;                              // BinaryExpr ('+'/etc.) / UnaryExpr ('-' or '!')
+    std::shared_ptr<Expr> left, right, operand;   // BinaryExpr/IndexExpr (left/right) / UnaryExpr (operand)
     ClegType nil_type;                            // NilExpr only
 };
 
-enum class StmtKind { VarDecl, AssignStmt, IfStmt, ForStmt, ReturnStmt, ExprStmt, Block };
+enum class StmtKind { VarDecl, AssignStmt, IfStmt, ForStmt, WhileStmt, BreakStmt, ContinueStmt, ReturnStmt, ExprStmt, Block };
 
 // Mirrors shared/cleg.ts's Stmt union - same flat-struct convention as Expr above. `expr` doubles as
-// VarDecl's init, AssignStmt's value, ReturnStmt's value, and ExprStmt's own expr.
+// VarDecl's init, AssignStmt's value, ReturnStmt's value, and ExprStmt's own expr. WhileStmt reuses
+// ForStmt's own `cond`/`body` fields (a WhileStmt has no init/update). AssignStmt's own `indices`
+// (empty for a plain `x = expr`) - see shared/cleg.ts's AssignStmt doc comment - lets it mutate one
+// element of an already-declared array in place (`arr[i] = expr`, `arr[i][j] = expr`, ...).
 struct Stmt {
     StmtKind kind = StmtKind::Block;
     ClegType decl_type;                     // VarDecl only
     std::string name;                       // VarDecl/AssignStmt only
+    std::vector<Expr> indices;               // AssignStmt only
     std::shared_ptr<Expr> expr;
-    std::shared_ptr<Expr> cond;              // IfStmt/ForStmt (ForStmt: null = omitted)
+    std::shared_ptr<Expr> cond;              // IfStmt/ForStmt/WhileStmt (ForStmt: null = omitted)
     std::shared_ptr<Stmt> then_stmt;         // IfStmt (a Block)
     std::shared_ptr<Stmt> else_stmt;         // IfStmt (null | Block | IfStmt)
     std::shared_ptr<Stmt> for_init;          // ForStmt (VarDecl/AssignStmt/ExprStmt-shaped, null = omitted)
     std::shared_ptr<Stmt> for_update;        // ForStmt (AssignStmt/ExprStmt-shaped, null = omitted)
-    std::shared_ptr<Stmt> body;              // ForStmt (a Block)
+    std::shared_ptr<Stmt> body;              // ForStmt/WhileStmt (a Block)
     std::vector<Stmt> stmts;                 // Block only
 };
 
@@ -457,6 +523,9 @@ static std::string stmt_kind_word(StmtKind k) {
         case StmtKind::AssignStmt: return "AssignStmt";
         case StmtKind::IfStmt: return "IfStmt";
         case StmtKind::ForStmt: return "ForStmt";
+        case StmtKind::WhileStmt: return "WhileStmt";
+        case StmtKind::BreakStmt: return "BreakStmt";
+        case StmtKind::ContinueStmt: return "ContinueStmt";
         case StmtKind::ReturnStmt: return "ReturnStmt";
         case StmtKind::ExprStmt: return "ExprStmt";
         case StmtKind::Block: return "Block";
@@ -484,7 +553,7 @@ struct ClegProgram {
 enum class TokKind { Ident, Number, String, Punct, Eof };
 struct Token { TokKind kind; std::string text; size_t pos; };
 
-static const std::string PUNCTUATION = "(){}[],;+-*/%";
+static const std::string PUNCTUATION = "(){}[],;+-*/%!";
 
 static bool is_ident_start(char c) { return std::isalpha(static_cast<unsigned char>(c)) || c == '_'; }
 static bool is_ident_cont(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
@@ -539,6 +608,12 @@ static std::vector<Token> tokenize(const std::string& src) {
             i++;
             continue;
         }
+        if (c == '&' && i + 1 < n && src[i + 1] == '&') { tokens.push_back({TokKind::Punct, "&&", i}); i += 2; continue; }
+        if (c == '|' && i + 1 < n && src[i + 1] == '|') { tokens.push_back({TokKind::Punct, "||", i}); i += 2; continue; }
+        // '->' (FUNCTYPE's own arrow, e.g. `(number, number) -> bool`) - checked before the generic
+        // PUNCTUATION fallback below, same as '&&'/'||' above, since '-' alone is already in
+        // PUNCTUATION (arithmetic/unary minus).
+        if (c == '-' && i + 1 < n && src[i + 1] == '>') { tokens.push_back({TokKind::Punct, "->", i}); i += 2; continue; }
         if (PUNCTUATION.find(c) != std::string::npos) {
             tokens.push_back({TokKind::Punct, std::string(1, c), i});
             i++;
@@ -571,6 +646,13 @@ public:
     bool at_end() const { return peek().kind == TokKind::Eof; }
     bool is_punct(const std::string& p) const { auto& t = peek(); return t.kind == TokKind::Punct && t.text == p; }
     bool is_keyword(const std::string& k) const { auto& t = peek(); return t.kind == TokKind::Ident && t.text == k; }
+
+    // Saves the cursor's current position, to be handed back to restore() later - lets a caller
+    // (is_type_start/is_function_decl_start/is_assign_start below) speculatively run a real parse
+    // function purely to see what follows, then roll back as if it had never looked, regardless of
+    // whether that parse succeeded.
+    size_t save() const { return pos_; }
+    void restore(size_t pos) { pos_ = pos; }
 
     void expect_punct(const std::string& p) {
         Token t = next();
@@ -620,19 +702,31 @@ static CTKind base_type_kind(const std::string& base) {
     throw std::runtime_error("cleg: base_type_kind: unknown base type '" + base + "'");
 }
 
+// Forward-declared (a template, defined in full further below alongside its own other callers) so
+// parse_paren_type can use it without moving that definition up here.
+template <typename T, typename F>
+static std::vector<T> parse_comma_separated(TokenCursor& c, const std::string& close, F parse_one);
+
+static ClegType parse_paren_type(TokenCursor& c);
+
 static ClegType parse_type(TokenCursor& c) {
-    std::string base = c.expect_ident();
-    if (!type_keywords().count(base))
-        throw std::runtime_error("cleg: expected a type (egr/number/string/bool/edge/tri/quad/sel/formSel/mod), got '" + base + "'");
-    ClegType type{base_type_kind(base), nullptr};
-    if (c.is_punct("{")) {
-        if (!set_elem_kind_words().count(base))
-            throw std::runtime_error(
-                "cleg: '" + base + "{}' is not a supported set type - sets of egr, sets of sets, and sets of "
-                "arrays are not supported");
-        c.next();
-        c.expect_punct("}");
-        type = ClegType{CTKind::Set, std::make_shared<ClegType>(std::move(type))};
+    ClegType type;
+    if (c.is_punct("(")) {
+        type = parse_paren_type(c);
+    } else {
+        std::string base = c.expect_ident();
+        if (!type_keywords().count(base))
+            throw std::runtime_error("cleg: expected a type (egr/number/string/bool/edge/tri/quad/sel/formSel/mod), got '" + base + "'");
+        type = ClegType{base_type_kind(base), nullptr};
+        if (c.is_punct("{")) {
+            if (!set_elem_kind_words().count(base))
+                throw std::runtime_error(
+                    "cleg: '" + base + "{}' is not a supported set type - sets of egr, sets of sets, and sets of "
+                    "arrays are not supported");
+            c.next();
+            c.expect_punct("}");
+            type = ClegType{CTKind::Set, std::make_shared<ClegType>(std::move(type))};
+        }
     }
     while (c.is_punct("[")) {
         c.next();
@@ -642,13 +736,77 @@ static ClegType parse_type(TokenCursor& c) {
     return type;
 }
 
+// A leading '(' starts either FUNCTYPE's own param list (immediately followed by '->' once the list
+// closes, e.g. `(number, number) -> bool`) or a parenthesized GROUPING of a single already-complete
+// func type - needed so a trailing `[]` can bind to a func type as a WHOLE rather than (per
+// FUNCTYPE's own recursive-return-type parsing, see below) to its return type: `((number) ->
+// number)[]` is an array of comparator-shaped functions, vs. `(number) -> number[]` (no outer
+// grouping), a single function returning `number[]`. The two are told apart only after the closing
+// ')' of the parenthesized list: '->' immediately after means FUNCTYPE (consume it and parse the
+// return type - recursing through parse_type this way, rather than a separate parse_func_type, is
+// also what lets a func type itself take/return another func type, higher-order, still fully
+// concrete/non-generic, for free); anything else means the list must have held exactly one, itself
+// func-typed, item, unwrapped as plain grouping. Deliberately NOT extended to grouping any other
+// single type (`(number)` alone is rejected, not accepted as a redundant-parens `number`) even
+// though that would be unambiguous in isolation - is_type_start's own speculative parse_type call
+// (see below) needs "this fully parses as a TYPE" to never accidentally also describe a valid EXPR,
+// and a bare grouped BASETYPE like `(number)` can collide with `(number) + 1` where `number` names
+// an ordinary variable that happens to share a type keyword's spelling; a grouped FUNCTYPE can't
+// collide this way, since no EXPR production can ever contain FUNCTYPE's own mandatory '->' token.
+static ClegType parse_paren_type(TokenCursor& c) {
+    c.expect_punct("(");
+    std::vector<ClegType> items = parse_comma_separated<ClegType>(c, ")", [&]() { return parse_type(c); });
+    if (c.is_punct("->")) {
+        c.next();
+        ClegType return_type = parse_type(c);
+        return ClegType{CTKind::Func, nullptr, std::move(items), std::make_shared<ClegType>(std::move(return_type))};
+    }
+    if (items.size() == 1 && items[0].kind == CTKind::Func) return items[0];
+    throw std::runtime_error("cleg: expected '->' after a parenthesized parameter list");
+}
+
+// True at a TYPE's own first token - either a BASETYPE keyword, or '(' starting a FUNCTYPE (see
+// parse_type/parse_paren_type above). A bare '(' can also start a grouped EXPR at some of
+// is_type_start's own call sites (parse_for_init's/parse_cleg_impl's own bare-EXPR fallback) - since
+// a real EXPR can never contain FUNCTYPE's own mandatory '->' token, the two can only be told apart
+// by actually trying to parse a TYPE. Rather than re-deriving parse_type's own grammar here,
+// speculatively run parse_type for real via TokenCursor's own save/restore, always rolling back
+// afterward (success or failure) so the cursor ends up exactly where it started either way.
 static bool is_type_start(TokenCursor& c) {
     auto& t = c.peek();
-    return t.kind == TokKind::Ident && type_keywords().count(t.text) > 0;
+    if (t.kind == TokKind::Ident && type_keywords().count(t.text) > 0) return true;
+    if (!c.is_punct("(")) return false;
+    size_t pos = c.save();
+    try {
+        parse_type(c);
+        c.restore(pos);
+        return true;
+    } catch (...) {
+        c.restore(pos);
+        return false;
+    }
 }
+
+// A FUNCDECL and a top-level VARDECL both start with a TYPE (is_type_start above, true for either) -
+// the tokens right after the TYPE tell them apart: IDENT '(' for a function declaration ('tri
+// makeTri() {...}', 'number[] mk() {...}', '(number)->bool makeCmp() {...}'), IDENT '=' for a
+// variable declaration ('tri x = ...;'). Only meaningful at top level - parse_stmt (inside a
+// function body) never sees a FUNCDECL, so is_type_start alone already means VARDECL there.
+// Speculatively runs the real parse_type directly (same save/restore technique as is_type_start
+// above, rather than re-deriving its own grammar) since a TYPE isn't always one token; a malformed
+// type here just means "not a function decl start" - whichever of parse_var_decl/
+// parse_function_decl actually runs next will surface the same error for real.
 static bool is_function_decl_start(TokenCursor& c) {
-    return is_type_start(c) && c.peek_at(1).kind == TokKind::Ident &&
-           c.peek_at(2).kind == TokKind::Punct && c.peek_at(2).text == "(";
+    size_t pos = c.save();
+    try {
+        parse_type(c);
+        bool ok = c.peek().kind == TokKind::Ident && c.peek_at(1).kind == TokKind::Punct && c.peek_at(1).text == "(";
+        c.restore(pos);
+        return ok;
+    } catch (...) {
+        c.restore(pos);
+        return false;
+    }
 }
 
 template <typename T, typename F>
@@ -688,12 +846,38 @@ static Stmt parse_block(TokenCursor& c) {
     return block;
 }
 
+// An identifier, optionally followed by one or more '[' EXPR ']' index brackets, immediately
+// followed by '=' is an assignment (as opposed to, say, a bare call-expression statement or a bare
+// indexing expression like `arr[i];`) - shared by parse_stmt and the for-loop's own
+// parse_for_init/parse_for_update. The zero-index case (`x =`) is checked by a cheap fixed 2-token
+// lookahead; since the number of indices isn't bounded, telling `arr[i] = ...` apart from a bare
+// `arr[i];`/`arr[i] + 1;` expression needs the same speculative-parse-then-restore technique as
+// is_type_start/is_function_decl_start above (consuming the index brackets for real via
+// TokenCursor's own save/restore, rather than re-deriving their own grammar here) - a malformed
+// index expression here just means "not an assignment start"; whichever of parse_assign_stmt/the
+// EXPRSTMT fallback actually runs next will surface the same error for real.
 static bool is_assign_start(TokenCursor& c) {
-    return c.peek().kind == TokKind::Ident && c.peek_at(1).kind == TokKind::Punct && c.peek_at(1).text == "=";
+    if (c.peek().kind != TokKind::Ident) return false;
+    if (c.peek_at(1).kind == TokKind::Punct && c.peek_at(1).text == "=") return true;
+    if (!(c.peek_at(1).kind == TokKind::Punct && c.peek_at(1).text == "[")) return false;
+    size_t pos = c.save();
+    try {
+        c.next();
+        while (c.is_punct("[")) { c.next(); parse_expr(c); c.expect_punct("]"); }
+        bool ok = c.is_punct("=");
+        c.restore(pos);
+        return ok;
+    } catch (...) {
+        c.restore(pos);
+        return false;
+    }
 }
 
 static Stmt parse_if_stmt(TokenCursor& c);
 static Stmt parse_for_stmt(TokenCursor& c);
+static Stmt parse_while_stmt(TokenCursor& c);
+static Stmt parse_break_stmt(TokenCursor& c);
+static Stmt parse_continue_stmt(TokenCursor& c);
 static Stmt parse_return_stmt(TokenCursor& c);
 
 static Stmt parse_var_decl_no_semi(TokenCursor& c) {
@@ -712,9 +896,15 @@ static Stmt parse_var_decl(TokenCursor& c) {
 }
 static Stmt parse_assign_stmt_no_semi(TokenCursor& c) {
     std::string name = c.expect_ident();
+    std::vector<Expr> indices;
+    while (c.is_punct("[")) {
+        c.next();
+        indices.push_back(parse_expr(c));
+        c.expect_punct("]");
+    }
     c.expect_punct("=");
     Expr value = parse_expr(c);
-    Stmt s; s.kind = StmtKind::AssignStmt; s.name = name;
+    Stmt s; s.kind = StmtKind::AssignStmt; s.name = name; s.indices = std::move(indices);
     s.expr = std::make_shared<Expr>(std::move(value));
     return s;
 }
@@ -728,6 +918,9 @@ static Stmt parse_stmt(TokenCursor& c) {
     if (c.is_punct("{")) return parse_block(c);
     if (c.is_keyword("if")) return parse_if_stmt(c);
     if (c.is_keyword("for")) return parse_for_stmt(c);
+    if (c.is_keyword("while")) return parse_while_stmt(c);
+    if (c.is_keyword("break")) return parse_break_stmt(c);
+    if (c.is_keyword("continue")) return parse_continue_stmt(c);
     if (c.is_keyword("return")) return parse_return_stmt(c);
     if (is_type_start(c)) return parse_var_decl(c);
     if (is_assign_start(c)) return parse_assign_stmt(c);
@@ -786,6 +979,32 @@ static Stmt parse_for_stmt(TokenCursor& c) {
     return s;
 }
 
+static Stmt parse_while_stmt(TokenCursor& c) {
+    c.next(); // 'while'
+    c.expect_punct("(");
+    Expr cond = parse_expr(c);
+    c.expect_punct(")");
+    Stmt body = parse_block(c);
+    Stmt s; s.kind = StmtKind::WhileStmt;
+    s.cond = std::make_shared<Expr>(std::move(cond));
+    s.body = std::make_shared<Stmt>(std::move(body));
+    return s;
+}
+
+static Stmt parse_break_stmt(TokenCursor& c) {
+    c.next(); // 'break'
+    c.expect_punct(";");
+    Stmt s; s.kind = StmtKind::BreakStmt;
+    return s;
+}
+
+static Stmt parse_continue_stmt(TokenCursor& c) {
+    c.next(); // 'continue'
+    c.expect_punct(";");
+    Stmt s; s.kind = StmtKind::ContinueStmt;
+    return s;
+}
+
 static Stmt parse_return_stmt(TokenCursor& c) {
     c.next(); // 'return'
     Expr value = parse_expr(c);
@@ -805,20 +1024,43 @@ static Expr make_binary(std::string op, Expr left, Expr right) {
     return e;
 }
 
+static Expr parse_logical_and(TokenCursor& c);
+static Expr parse_equality(TokenCursor& c);
 static Expr parse_relational(TokenCursor& c);
 static Expr parse_additive(TokenCursor& c);
 static Expr parse_multiplicative(TokenCursor& c);
 static Expr parse_unary(TokenCursor& c);
+static Expr parse_postfix(TokenCursor& c);
 static Expr parse_atom(TokenCursor& c);
 
-// Precedence chain mirrors shared/cleg.ts's own parseExpr/parseRelational/parseAdditive/
-// parseMultiplicative/parseUnary exactly (`==` loosest, then `< > <= >=`, then `+ -`, then `* / %`
-// tightest, all left-associative).
+// Precedence chain mirrors shared/cleg.ts's own parseExpr/parseLogicalAnd/parseEquality/
+// parseRelational/parseAdditive/parseMultiplicative/parseUnary exactly (`||` loosest, then `&&`,
+// then `==`, then `< > <= >=`, then `+ -`, then `* / %` tightest, all left-associative).
 // Each loop body consumes the operator into a local BEFORE calling the next precedence level down -
 // C++ function-call argument evaluation order is unspecified (unlike JS's own strict left-to-right),
 // so folding both into one make_binary(...) call let the compiler legally evaluate the recursive
 // parse before c.next() ever advanced past the operator token, parsing the wrong thing entirely.
 static Expr parse_expr(TokenCursor& c) {
+    static const std::set<std::string> OR_OPS = {"||"};
+    Expr left = parse_logical_and(c);
+    while (is_punct_in(c, OR_OPS)) {
+        std::string op = c.next().text;
+        Expr right = parse_logical_and(c);
+        left = make_binary(std::move(op), std::move(left), std::move(right));
+    }
+    return left;
+}
+static Expr parse_logical_and(TokenCursor& c) {
+    static const std::set<std::string> AND_OPS = {"&&"};
+    Expr left = parse_equality(c);
+    while (is_punct_in(c, AND_OPS)) {
+        std::string op = c.next().text;
+        Expr right = parse_equality(c);
+        left = make_binary(std::move(op), std::move(left), std::move(right));
+    }
+    return left;
+}
+static Expr parse_equality(TokenCursor& c) {
     static const std::set<std::string> EQ_OPS = {"=="};
     Expr left = parse_relational(c);
     while (is_punct_in(c, EQ_OPS)) {
@@ -861,10 +1103,31 @@ static Expr parse_multiplicative(TokenCursor& c) {
 static Expr parse_unary(TokenCursor& c) {
     if (c.is_punct("-")) {
         c.next();
-        Expr e; e.kind = ExprKind::UnaryExpr; e.operand = std::make_shared<Expr>(parse_unary(c));
+        Expr e; e.kind = ExprKind::UnaryExpr; e.op = "-"; e.operand = std::make_shared<Expr>(parse_unary(c));
         return e;
     }
-    return parse_atom(c);
+    if (c.is_punct("!")) {
+        c.next();
+        Expr e; e.kind = ExprKind::UnaryExpr; e.op = "!"; e.operand = std::make_shared<Expr>(parse_unary(c));
+        return e;
+    }
+    return parse_postfix(c);
+}
+
+// Postfix `[]` indexing (`arr[i]`, `arr[i][j]`, `f()[0]`, ...) - binds tighter than unary `-`/`!`,
+// left-associative (each `[...]` wraps the result of everything to its left so far).
+static Expr parse_postfix(TokenCursor& c) {
+    Expr e = parse_atom(c);
+    while (c.is_punct("[")) {
+        c.next();
+        Expr index = parse_expr(c);
+        c.expect_punct("]");
+        Expr idx_expr; idx_expr.kind = ExprKind::IndexExpr;
+        idx_expr.left = std::make_shared<Expr>(std::move(e));
+        idx_expr.right = std::make_shared<Expr>(std::move(index));
+        e = std::move(idx_expr);
+    }
+    return e;
 }
 
 static Expr parse_atom(TokenCursor& c) {
@@ -1368,6 +1631,38 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
             [](const std::vector<ClegValue>& args) { return make_number(static_cast<double>(args[0].arr_v.size())); },
         };
 
+        // `has(x, e)`: whether `x` (a `T[]` or `T{}`) contains `e` (a `T`), as a `bool` - like `len`,
+        // its result depends on the actual argument types (here, argument 2's own required type,
+        // taken from argument 1's element type), hence the hand-written check_call/call pair. `T` is
+        // restricted to is_set_elem_kind (number/string/bool/edge/tri/quad) for BOTH `T[]` and `T{}`
+        // - even though an array's own element type is normally unrestricted, nothing outside
+        // is_set_elem_kind has a defined equality in this language, so `has` can't be given a
+        // well-defined meaning for one either. Compares by cleg_set_key, the same equality every set
+        // operation already uses.
+        m["has"] = BuiltinFunction{
+            [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
+                if (arg_types.size() != 2)
+                    throw std::runtime_error("cleg: '" + callee + "' expects 2 argument(s), got " + std::to_string(arg_types.size()));
+                if (arg_types[0].kind != CTKind::Array && arg_types[0].kind != CTKind::Set)
+                    throw std::runtime_error("cleg: '" + callee + "' argument 1: expected an array or set, got " + type_to_string(arg_types[0]));
+                const ClegType& elem = *arg_types[0].elem;
+                if (!is_set_elem_kind(elem.kind))
+                    throw std::runtime_error(
+                        "cleg: '" + callee + "' argument 1: element type " + type_to_string(elem) + " has no defined "
+                        "equality - only number/string/bool/edge/tri/quad elements are supported");
+                if (!type_equals(arg_types[1], elem))
+                    throw std::runtime_error(
+                        "cleg: '" + callee + "' argument 2: expected " + type_to_string(elem) + " (the element type of "
+                        "argument 1), got " + type_to_string(arg_types[1]));
+                return ClegType{CTKind::Bool, nullptr};
+            },
+            [](const std::vector<ClegValue>& args) {
+                std::string key = cleg_set_key(args[1]);
+                for (auto& v : args[0].arr_v) if (cleg_set_key(v) == key) return make_bool(true);
+                return make_bool(false);
+            },
+        };
+
         CheckCallFn rand_rm_check_call = [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
             if (arg_types.size() != 2)
                 throw std::runtime_error("cleg: '" + callee + "' expects 2 argument(s), got " + std::to_string(arg_types.size()));
@@ -1719,16 +2014,33 @@ static const ClegType* lookup_var_type(TypeEnv& env, const std::string& name) {
 struct FunctionSignature { std::vector<ClegType> params; ClegType return_type; };
 using FuncTable = std::unordered_map<std::string, FunctionSignature>;
 
-static void check_block(const Stmt& block, TypeEnv* parent, FuncTable& funcs, const ClegType& return_type);
-static void check_stmt(const Stmt& stmt, TypeEnv& env, FuncTable& funcs, const ClegType& return_type);
-static ClegType check_expr(const Expr& expr, TypeEnv& env, FuncTable& funcs);
-
-static void check_block(const Stmt& block, TypeEnv* parent, FuncTable& funcs, const ClegType& return_type) {
-    TypeEnv env; env.parent = parent;
-    for (auto& stmt : block.stmts) check_stmt(stmt, env, funcs, return_type);
+// Shared arg-count/arg-type check for calling a (params, return_type) signature by name - used by
+// check_expr's own CallExpr case for both a top-level function and a local func-typed variable's
+// value, so the two share one error-message format instead of duplicating it.
+static void check_call_args(const std::string& callee, const std::vector<ClegType>& arg_types, const std::vector<ClegType>& params) {
+    if (arg_types.size() != params.size())
+        throw std::runtime_error(
+            "cleg: '" + callee + "' expects " + std::to_string(params.size()) + " argument(s), got " +
+            std::to_string(arg_types.size()));
+    for (size_t i = 0; i < arg_types.size(); i++)
+        if (!type_equals(arg_types[i], params[i]))
+            throw std::runtime_error(
+                "cleg: '" + callee + "' argument " + std::to_string(i + 1) + ": expected " +
+                type_to_string(params[i]) + ", got " + type_to_string(arg_types[i]));
 }
 
-static void check_stmt(const Stmt& stmt, TypeEnv& env, FuncTable& funcs, const ClegType& return_type) {
+static void check_block(const Stmt& block, TypeEnv* parent, FuncTable& funcs, const ClegType& return_type, bool in_loop);
+static void check_stmt(const Stmt& stmt, TypeEnv& env, FuncTable& funcs, const ClegType& return_type, bool in_loop);
+static ClegType check_expr(const Expr& expr, TypeEnv& env, FuncTable& funcs);
+
+static void check_block(const Stmt& block, TypeEnv* parent, FuncTable& funcs, const ClegType& return_type, bool in_loop) {
+    TypeEnv env; env.parent = parent;
+    for (auto& stmt : block.stmts) check_stmt(stmt, env, funcs, return_type, in_loop);
+}
+
+// Mirrors shared/cleg.ts's checkStmt() - `in_loop` is true while checking a ForStmt/WhileStmt's own
+// `body` (or anything nested inside it), required by BreakStmt/ContinueStmt (see their own cases).
+static void check_stmt(const Stmt& stmt, TypeEnv& env, FuncTable& funcs, const ClegType& return_type, bool in_loop) {
     switch (stmt.kind) {
         case StmtKind::VarDecl: {
             if (env.vars.count(stmt.name))
@@ -1744,21 +2056,38 @@ static void check_stmt(const Stmt& stmt, TypeEnv& env, FuncTable& funcs, const C
         case StmtKind::AssignStmt: {
             const ClegType* var_type = lookup_var_type(env, stmt.name);
             if (!var_type) throw std::runtime_error("cleg: assignment to undeclared variable '" + stmt.name + "'");
+            // Walk one 'array' level per index (see shared/cleg.ts's own AssignStmt doc comment) -
+            // `target_type` ends up being `*var_type` itself when `indices` is empty (the plain
+            // whole-value reassignment case), exactly like before this field existed.
+            ClegType target_type = *var_type;
+            for (auto& idx : stmt.indices) {
+                if (target_type.kind != CTKind::Array)
+                    throw std::runtime_error(
+                        "cleg: too many indices assigning to '" + stmt.name + "' - " + type_to_string(*var_type) +
+                        " is not nested that deep");
+                ClegType idx_type = check_expr(idx, env, funcs);
+                if (idx_type.kind != CTKind::Number)
+                    throw std::runtime_error("cleg: array index must be a number, got " + type_to_string(idx_type));
+                target_type = *target_type.elem;
+            }
             ClegType value_type = check_expr(*stmt.expr, env, funcs);
-            if (!type_equals(value_type, *var_type))
+            if (!type_equals(value_type, target_type)) {
+                std::string target_name = stmt.name;
+                for (size_t i = 0; i < stmt.indices.size(); i++) target_name += "[]";
                 throw std::runtime_error(
-                    "cleg: cannot assign a value of type " + type_to_string(value_type) + " to '" + stmt.name +
-                    "' of type " + type_to_string(*var_type));
+                    "cleg: cannot assign a value of type " + type_to_string(value_type) + " to '" + target_name +
+                    "' of type " + type_to_string(target_type));
+            }
             return;
         }
         case StmtKind::IfStmt: {
             ClegType cond_type = check_expr(*stmt.cond, env, funcs);
             if (cond_type.kind != CTKind::Bool)
                 throw std::runtime_error("cleg: if condition must be bool, got " + type_to_string(cond_type));
-            check_block(*stmt.then_stmt, &env, funcs, return_type);
+            check_block(*stmt.then_stmt, &env, funcs, return_type, in_loop);
             if (stmt.else_stmt) {
-                if (stmt.else_stmt->kind == StmtKind::Block) check_block(*stmt.else_stmt, &env, funcs, return_type);
-                else check_stmt(*stmt.else_stmt, env, funcs, return_type);
+                if (stmt.else_stmt->kind == StmtKind::Block) check_block(*stmt.else_stmt, &env, funcs, return_type, in_loop);
+                else check_stmt(*stmt.else_stmt, env, funcs, return_type, in_loop);
             }
             return;
         }
@@ -1767,16 +2096,29 @@ static void check_stmt(const Stmt& stmt, TypeEnv& env, FuncTable& funcs, const C
             // NOT the same scope as body's own (check_block below gives body its own further-nested
             // scope, same as every other BLOCK) - see ForStmt's own doc comment (shared/cleg.ts).
             TypeEnv loop_env; loop_env.parent = &env;
-            if (stmt.for_init) check_stmt(*stmt.for_init, loop_env, funcs, return_type);
+            if (stmt.for_init) check_stmt(*stmt.for_init, loop_env, funcs, return_type, in_loop);
             if (stmt.cond) {
                 ClegType cond_type = check_expr(*stmt.cond, loop_env, funcs);
                 if (cond_type.kind != CTKind::Bool)
                     throw std::runtime_error("cleg: for-loop condition must be bool, got " + type_to_string(cond_type));
             }
-            if (stmt.for_update) check_stmt(*stmt.for_update, loop_env, funcs, return_type);
-            check_block(*stmt.body, &loop_env, funcs, return_type);
+            if (stmt.for_update) check_stmt(*stmt.for_update, loop_env, funcs, return_type, in_loop);
+            check_block(*stmt.body, &loop_env, funcs, return_type, true);
             return;
         }
+        case StmtKind::WhileStmt: {
+            ClegType cond_type = check_expr(*stmt.cond, env, funcs);
+            if (cond_type.kind != CTKind::Bool)
+                throw std::runtime_error("cleg: while condition must be bool, got " + type_to_string(cond_type));
+            check_block(*stmt.body, &env, funcs, return_type, true);
+            return;
+        }
+        case StmtKind::BreakStmt:
+            if (!in_loop) throw std::runtime_error("cleg: 'break' outside a loop");
+            return;
+        case StmtKind::ContinueStmt:
+            if (!in_loop) throw std::runtime_error("cleg: 'continue' outside a loop");
+            return;
         case StmtKind::ReturnStmt: {
             ClegType t = check_expr(*stmt.expr, env, funcs);
             if (!type_equals(t, return_type))
@@ -1788,7 +2130,7 @@ static void check_stmt(const Stmt& stmt, TypeEnv& env, FuncTable& funcs, const C
             check_expr(*stmt.expr, env, funcs);
             return;
         case StmtKind::Block:
-            check_block(stmt, &env, funcs, return_type);
+            check_block(stmt, &env, funcs, return_type, in_loop);
             return;
     }
 }
@@ -1800,8 +2142,20 @@ static ClegType check_expr(const Expr& expr, TypeEnv& env, FuncTable& funcs) {
         case ExprKind::BoolLit: return ClegType{CTKind::Bool, nullptr};
         case ExprKind::Identifier: {
             const ClegType* t = lookup_var_type(env, expr.string_value);
-            if (!t) throw std::runtime_error("cleg: undeclared variable '" + expr.string_value + "'");
-            return *t;
+            if (t) return *t;
+            // Not a variable - maybe a bare reference to one of program's own top-level functions,
+            // used as a function-pointer value (e.g. passing a comparator by name) rather than being
+            // called directly. A builtin can't be referenced this way (see ClegType's own Func doc
+            // comment on why), so it gets its own clearer error instead of falling through to the
+            // generic "undeclared variable" below.
+            auto fit = funcs.find(expr.string_value);
+            if (fit != funcs.end())
+                return ClegType{CTKind::Func, nullptr, fit->second.params, std::make_shared<ClegType>(fit->second.return_type)};
+            if (builtin_functions().count(expr.string_value))
+                throw std::runtime_error(
+                    "cleg: builtin function '" + expr.string_value + "' cannot be used as a function pointer - only "
+                    "a cleg-declared function can");
+            throw std::runtime_error("cleg: undeclared variable '" + expr.string_value + "'");
         }
         case ExprKind::ArrayLit: {
             if (expr.elements.empty()) throw std::runtime_error("cleg: cannot infer the element type of an empty array literal '[]'");
@@ -1833,19 +2187,20 @@ static ClegType check_expr(const Expr& expr, TypeEnv& env, FuncTable& funcs) {
             auto& builtins = builtin_functions();
             auto bit = builtins.find(expr.string_value);
             if (bit != builtins.end()) return bit->second.check_call(expr.string_value, arg_types);
+            // A local variable (almost always a parameter) of func type shadows a same-named
+            // top-level function here - the whole point of passing a comparator by name is to call
+            // it through the parameter that received it (see this file's own top comment).
+            const ClegType* var_type = lookup_var_type(env, expr.string_value);
+            if (var_type) {
+                if (var_type->kind != CTKind::Func)
+                    throw std::runtime_error("cleg: '" + expr.string_value + "' is not callable (" + type_to_string(*var_type) + ")");
+                check_call_args(expr.string_value, arg_types, var_type->params);
+                return *var_type->return_type;
+            }
             auto fit = funcs.find(expr.string_value);
             if (fit == funcs.end()) throw std::runtime_error("cleg: call to undeclared function '" + expr.string_value + "'");
-            auto& sig = fit->second;
-            if (arg_types.size() != sig.params.size())
-                throw std::runtime_error(
-                    "cleg: '" + expr.string_value + "' expects " + std::to_string(sig.params.size()) + " argument(s), got " +
-                    std::to_string(arg_types.size()));
-            for (size_t i = 0; i < arg_types.size(); i++)
-                if (!type_equals(arg_types[i], sig.params[i]))
-                    throw std::runtime_error(
-                        "cleg: '" + expr.string_value + "' argument " + std::to_string(i + 1) + ": expected " +
-                        type_to_string(sig.params[i]) + ", got " + type_to_string(arg_types[i]));
-            return sig.return_type;
+            check_call_args(expr.string_value, arg_types, fit->second.params);
+            return fit->second.return_type;
         }
         case ExprKind::BinaryExpr: {
             ClegType l = check_expr(*expr.left, env, funcs);
@@ -1863,11 +2218,24 @@ static ClegType check_expr(const Expr& expr, TypeEnv& env, FuncTable& funcs) {
         }
         case ExprKind::UnaryExpr: {
             ClegType t = check_expr(*expr.operand, env, funcs);
-            if (t.kind != CTKind::Number) throw std::runtime_error("cleg: unary '-' requires a number operand, got " + type_to_string(t));
-            return ClegType{CTKind::Number, nullptr};
+            if (expr.op == "-") {
+                if (t.kind != CTKind::Number) throw std::runtime_error("cleg: unary '-' requires a number operand, got " + type_to_string(t));
+                return ClegType{CTKind::Number, nullptr};
+            }
+            if (t.kind != CTKind::Bool) throw std::runtime_error("cleg: unary '!' requires a bool operand, got " + type_to_string(t));
+            return ClegType{CTKind::Bool, nullptr};
         }
         case ExprKind::NilExpr:
             return ClegType{CTKind::Array, std::make_shared<ClegType>(expr.nil_type)};
+        case ExprKind::IndexExpr: {
+            ClegType arr_type = check_expr(*expr.left, env, funcs);
+            if (arr_type.kind != CTKind::Array)
+                throw std::runtime_error("cleg: '[]' requires an array, got " + type_to_string(arr_type));
+            ClegType idx_type = check_expr(*expr.right, env, funcs);
+            if (idx_type.kind != CTKind::Number)
+                throw std::runtime_error("cleg: array index must be a number, got " + type_to_string(idx_type));
+            return *arr_type.elem;
+        }
     }
     throw std::runtime_error("cleg: check_expr: unexpected ExprKind");
 }
@@ -1887,7 +2255,7 @@ static ClegType typecheck_cleg(const ClegProgram& program) {
     for (auto& fn : program.functions) {
         TypeEnv param_env;
         for (auto& p : fn.params) param_env.vars[p.name] = p.type;
-        check_block(fn.body, &param_env, funcs, fn.return_type);
+        check_block(fn.body, &param_env, funcs, fn.return_type, false);
     }
 
     if (program.stmts.empty()) throw std::runtime_error("cleg: program has no top-level statement");
@@ -1899,7 +2267,7 @@ static ClegType typecheck_cleg(const ClegProgram& program) {
     std::optional<ClegType> result_type;
     for (auto& stmt : program.stmts) {
         if (stmt.kind == StmtKind::ExprStmt) result_type = check_expr(*stmt.expr, env, funcs);
-        else check_stmt(stmt, env, funcs, EGR_TYPE);
+        else check_stmt(stmt, env, funcs, EGR_TYPE, false);
     }
     return *result_type;
 }
@@ -1938,11 +2306,47 @@ static void set_value(ValueEnv& env, const std::string& name, ClegValue value) {
     *v = std::move(value);
 }
 
+// Deep-clones an array value's own array structure (recursively, for a nested `T[][]`) so indexed
+// mutation (`arr[i] = x;`, see eval_stmt's own AssignStmt case) can never be observed through
+// another variable that was previously assigned `= arr` or received it as a function argument -
+// this language's arrays are value types, not shared references (see shared/cleg.ts's own top
+// comment). Every other ClegValue kind either can't be mutated in place at all, or (an array
+// ELEMENT that isn't itself an array - a number/egr/sel/set/...) can only ever be wholesale
+// REPLACED via an indexed assignment, never mutated internally - so only the array *structure*
+// itself needs a fresh copy, not every value reachable from it; called at every site a value is
+// bound to a (potentially long-lived, aliasable) variable - VarDecl's init, a whole-value
+// AssignStmt, and a function argument's own param binding - a no-op passthrough for anything that
+// isn't (or doesn't contain) an array.
+static ClegValue clone_array_value(const ClegValue& v) {
+    if (v.kind != CTKind::Array) return v;
+    ClegValue out = v;
+    out.arr_v.clear();
+    out.arr_v.reserve(v.arr_v.size());
+    for (auto& e : v.arr_v) out.arr_v.push_back(clone_array_value(e));
+    return out;
+}
+
+// Validates that `idx` is a usable index into an array of `length` elements, returning it as a
+// size_t - shared by eval_expr's own IndexExpr (read) case and eval_stmt's own indexed AssignStmt
+// (write) case, so both report an out-of-bounds index the same way.
+static size_t validate_array_index(double idx, size_t length) {
+    if (idx != std::floor(idx) || idx < 0 || idx >= static_cast<double>(length))
+        throw std::runtime_error(
+            "cleg: array index " + format_number_display(idx) + " out of bounds for array of length " +
+            std::to_string(length));
+    return static_cast<size_t>(idx);
+}
+
 using UserFuncTable = std::unordered_map<std::string, const FunctionDecl*>;
 
 // Mirrors shared/cleg.ts's ReturnSignal - thrown to unwind out of nested blocks/if-statements on
 // `return`, always caught by call_user_function below.
 struct ReturnSignal { ClegValue value; };
+// Mirrors shared/cleg.ts's BreakSignal/ContinueSignal - thrown by BreakStmt/ContinueStmt, caught by
+// the innermost enclosing ForStmt/WhileStmt's own try/catch (see eval_stmt's own cases). A
+// ReturnSignal thrown from inside a loop body is neither of these, so it passes through untouched.
+struct BreakSignal {};
+struct ContinueSignal {};
 
 static void eval_block(const Stmt& block, ValueEnv* parent, UserFuncTable& funcs);
 static void eval_stmt(const Stmt& stmt, ValueEnv& env, UserFuncTable& funcs);
@@ -1957,11 +2361,33 @@ static void eval_block(const Stmt& block, ValueEnv* parent, UserFuncTable& funcs
 static void eval_stmt(const Stmt& stmt, ValueEnv& env, UserFuncTable& funcs) {
     switch (stmt.kind) {
         case StmtKind::VarDecl:
-            env.vars[stmt.name] = eval_expr(*stmt.expr, env, funcs);
+            env.vars[stmt.name] = clone_array_value(eval_expr(*stmt.expr, env, funcs));
             return;
-        case StmtKind::AssignStmt:
-            set_value(env, stmt.name, eval_expr(*stmt.expr, env, funcs));
+        case StmtKind::AssignStmt: {
+            ClegValue value = clone_array_value(eval_expr(*stmt.expr, env, funcs));
+            if (stmt.indices.empty()) {
+                set_value(env, stmt.name, std::move(value));
+                return;
+            }
+            // Walk down into the array named `stmt.name`, following every index but the last (each
+            // of which - check_stmt's own AssignStmt case already guarantees - lands on another
+            // array), then mutate the final slot in place. `target` points into the SAME object
+            // stored in `env` (lookup_value_ptr never copies), which is safe to mutate directly
+            // precisely because clone_array_value already guarantees nothing else aliases it (see
+            // that function's own doc comment).
+            ClegValue* target = lookup_value_ptr(env, stmt.name);
+            // Unreachable in a program that has passed typecheck_cleg - see lookup_value's own comment.
+            if (!target) throw std::runtime_error("cleg: undeclared variable '" + stmt.name + "'");
+            for (size_t i = 0; i + 1 < stmt.indices.size(); i++) {
+                double idx_value = eval_expr(stmt.indices[i], env, funcs).number;
+                size_t idx = validate_array_index(idx_value, target->arr_v.size());
+                target = &target->arr_v[idx];
+            }
+            double last_idx_value = eval_expr(stmt.indices.back(), env, funcs).number;
+            size_t last_idx = validate_array_index(last_idx_value, target->arr_v.size());
+            target->arr_v[last_idx] = std::move(value);
             return;
+        }
         case StmtKind::IfStmt: {
             ClegValue cond = eval_expr(*stmt.cond, env, funcs);
             if (cond.boolean) eval_block(*stmt.then_stmt, &env, funcs);
@@ -1974,15 +2400,41 @@ static void eval_stmt(const Stmt& stmt, ValueEnv& env, UserFuncTable& funcs) {
         case StmtKind::ForStmt: {
             // One scope for the whole loop (init's own variable, if any, persists across every
             // iteration) - body gets its own further-nested scope each iteration via eval_block, same
-            // as any other BLOCK - see ForStmt's own doc comment (shared/cleg.ts).
+            // as any other BLOCK - see ForStmt's own doc comment (shared/cleg.ts). The try/catch
+            // around eval_block is BreakStmt/ContinueStmt's own unwind target - `continue` still runs
+            // `for_update` before the next `cond` check, exactly like real C++; `break` skips straight
+            // past the loop entirely, never running `for_update` again.
             ValueEnv loop_env; loop_env.parent = &env;
             if (stmt.for_init) eval_stmt(*stmt.for_init, loop_env, funcs);
             while (!stmt.cond || eval_expr(*stmt.cond, loop_env, funcs).boolean) {
-                eval_block(*stmt.body, &loop_env, funcs);
+                try {
+                    eval_block(*stmt.body, &loop_env, funcs);
+                } catch (BreakSignal&) {
+                    break;
+                } catch (ContinueSignal&) {
+                    // fall through to for_update below
+                }
                 if (stmt.for_update) eval_stmt(*stmt.for_update, loop_env, funcs);
             }
             return;
         }
+        case StmtKind::WhileStmt: {
+            // Same BreakStmt/ContinueStmt unwind target as ForStmt above - see its own comment.
+            while (eval_expr(*stmt.cond, env, funcs).boolean) {
+                try {
+                    eval_block(*stmt.body, &env, funcs);
+                } catch (BreakSignal&) {
+                    break;
+                } catch (ContinueSignal&) {
+                    // next iteration
+                }
+            }
+            return;
+        }
+        case StmtKind::BreakStmt:
+            throw BreakSignal{};
+        case StmtKind::ContinueStmt:
+            throw ContinueSignal{};
         case StmtKind::ReturnStmt:
             throw ReturnSignal{eval_expr(*stmt.expr, env, funcs)};
         case StmtKind::ExprStmt:
@@ -1999,7 +2451,17 @@ static ClegValue eval_expr(const Expr& expr, ValueEnv& env, UserFuncTable& funcs
         case ExprKind::NumberLit: return make_number(expr.number_value);
         case ExprKind::StringLit: return make_string(expr.string_value);
         case ExprKind::BoolLit: return make_bool(expr.bool_value);
-        case ExprKind::Identifier: return lookup_value(env, expr.string_value);
+        case ExprKind::Identifier: {
+            ClegValue* v = lookup_value_ptr(env, expr.string_value);
+            if (v) return *v;
+            // Not a variable - a bare reference to one of program's own top-level functions, used as
+            // a function-pointer value (check_expr already confirmed this resolves and is func-typed).
+            const FunctionDecl* fn = funcs.at(expr.string_value);
+            ClegValue fv; fv.kind = CTKind::Func; fv.func_decl = fn;
+            for (auto& p : fn->params) fv.func_params.push_back(p.type);
+            fv.func_return_type = fn->return_type;
+            return fv;
+        }
         case ExprKind::ArrayLit: {
             std::vector<ClegValue> values;
             for (auto& e : expr.elements) values.push_back(eval_expr(e, env, funcs));
@@ -2023,9 +2485,20 @@ static ClegValue eval_expr(const Expr& expr, ValueEnv& env, UserFuncTable& funcs
             auto& builtins = builtin_functions();
             auto bit = builtins.find(expr.string_value);
             if (bit != builtins.end()) return bit->second.call(args);
+            // A local variable of func type shadows a same-named top-level function - see
+            // check_expr's own CallExpr case, which already required this to resolve the same way.
+            ClegValue* var_value = lookup_value_ptr(env, expr.string_value);
+            if (var_value) return call_user_function(*var_value->func_decl, args, funcs);
             return call_user_function(*funcs.at(expr.string_value), args, funcs);
         }
         case ExprKind::BinaryExpr: {
+            // `&&`/`||` short-circuit here, before ever reaching binary_operator_overloads() below -
+            // see logical_overload's own doc comment.
+            if (expr.op == "&&" || expr.op == "||") {
+                bool l = eval_expr(*expr.left, env, funcs).boolean;
+                if (expr.op == "&&") return l ? eval_expr(*expr.right, env, funcs) : make_bool(false);
+                return l ? make_bool(true) : eval_expr(*expr.right, env, funcs);
+            }
             ClegValue l = eval_expr(*expr.left, env, funcs);
             ClegValue r = eval_expr(*expr.right, env, funcs);
             ClegType lt = cleg_value_type(l), rt = cleg_value_type(r);
@@ -2037,10 +2510,17 @@ static ClegValue eval_expr(const Expr& expr, ValueEnv& env, UserFuncTable& funcs
             throw std::runtime_error("cleg: operator '" + expr.op + "' has no overload for these operand types at runtime");
         }
         case ExprKind::UnaryExpr:
-            return make_number(-eval_expr(*expr.operand, env, funcs).number);
+            if (expr.op == "-") return make_number(-eval_expr(*expr.operand, env, funcs).number);
+            return make_bool(!eval_expr(*expr.operand, env, funcs).boolean);
         case ExprKind::NilExpr: {
             ClegValue v; v.kind = CTKind::Array; v.elem = expr.nil_type;
             return v;
+        }
+        case ExprKind::IndexExpr: {
+            ClegValue arr = eval_expr(*expr.left, env, funcs);
+            double idx_value = eval_expr(*expr.right, env, funcs).number;
+            size_t idx = validate_array_index(idx_value, arr.arr_v.size());
+            return arr.arr_v[idx];
         }
     }
     throw std::runtime_error("cleg: eval_expr: unexpected ExprKind");
@@ -2048,7 +2528,10 @@ static ClegValue eval_expr(const Expr& expr, ValueEnv& env, UserFuncTable& funcs
 
 static ClegValue call_user_function(const FunctionDecl& fn, const std::vector<ClegValue>& args, UserFuncTable& funcs) {
     ValueEnv env;
-    for (size_t i = 0; i < fn.params.size(); i++) env.vars[fn.params[i].name] = args[i];
+    // clone_array_value here (not just at the call site's own VarDecl/AssignStmt) is what makes an
+    // array argument a genuine value-copy rather than a reference to the caller's own array, exactly
+    // like passing one to another variable - see clone_array_value's own doc comment.
+    for (size_t i = 0; i < fn.params.size(); i++) env.vars[fn.params[i].name] = clone_array_value(args[i]);
     try {
         eval_block(fn.body, &env, funcs);
     } catch (ReturnSignal& r) {
