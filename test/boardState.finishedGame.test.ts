@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { BoardState } from '../shared/boardState.ts';
 import { rectangularBoard } from '../shared/boardConfig.ts';
 import { FinishedGame, GameConfig } from '../shared/types.ts';
+import { parseCleg } from '../shared/cleg.ts';
 
 // numPlayers=2 (not 1): BoardState.gameOver() treats "<=1 non-resigned players"
 // as an automatic win, so a 1-player game would already be "over" at
@@ -35,7 +36,7 @@ function playShortGame() {
 test('BoardState.fromFinishedGame reconstructs the same final view as the live game', () => {
     const { bc, bs } = playShortGame();
     const config = new GameConfig(
-        'rect', [1, 1], [], 2, 2,
+        parseCleg('rectB(1, 1);'), 2, 2,
         [
             { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
             { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
@@ -60,7 +61,7 @@ test('BoardState.fromFinishedGame reconstructs the same final view as the live g
 test('FinishedGame.toJSON()/fromJSON() round-trips', () => {
     const { bs } = playShortGame();
     const config = new GameConfig(
-        'rect', [1, 1], [], 2, 2,
+        parseCleg('rectB(1, 1);'), 2, 2,
         [
             { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
             { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
@@ -75,5 +76,5 @@ test('FinishedGame.toJSON()/fromJSON() round-trips', () => {
     assert.deepEqual(roundTripped.moves, fg.moves);
     assert.deepEqual([...roundTripped.resigns.entries()], [...fg.resigns.entries()]);
     assert.equal(roundTripped.config.numStones, fg.config.numStones);
-    assert.equal(roundTripped.config.boardType, fg.config.boardType);
+    assert.deepEqual(roundTripped.config.boardDescr, fg.config.boardDescr);
 });

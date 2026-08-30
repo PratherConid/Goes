@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { BoardState, MoveType } from '../shared/boardState.ts';
 import { rectangularBoard } from '../shared/boardConfig.ts';
 import { FinishedGame, GameConfig } from '../shared/types.ts';
+import { parseCleg } from '../shared/cleg.ts';
 
 function twoPlayerGame() {
     const bc = rectangularBoard(5, 5);
@@ -106,7 +107,7 @@ test('a resignation recorded after targetPly is re-keyed onto targetPly, and adv
     assert.equal(bs.nextTurn.player, 1);
 
     const config = new GameConfig(
-        'rect', [5, 5], [], 3, 3, turnList,
+        parseCleg('rectB(5, 5);'), 3, 3, turnList,
         [[null, null, null], [null, null, null], [null, null, null]], [null, null, null],
         { 1: new Set([1]), 2: new Set([2]), 3: new Set([3]) }, false, 'area', [0, 0, 0],
         'situational', false, null,

@@ -63,52 +63,40 @@ test('command input drives newCfg and the New Game panel via the real keydown li
     assert.match(newGameDetails.innerHTML, /Number of players:<\/b> 3/);
 });
 
-test("'bd' with meshdim then a comma-separated dims token sets a variable-dimension board type's " +
-    "whole args list", () => {
-    createRenderer();
-    (document.querySelector('#home-panel button[data-child="newGame"]') as HTMLButtonElement).click();
-
-    runCommand('bt hcub');
-    runCommand('bd 4 5,5,2,2');
-
-    const newGameDetails = document.getElementById('new-game-setup-details') as HTMLDivElement;
-    assert.match(newGameDetails.innerHTML, /Board dimension:<\/b> 4 5,5,2,2/);
-});
-
-// Drives the 'mod' command's edit-modifiers popup: opens it (a no-arg 'mod' command), types
+// Drives the 'board' command's edit-board popup: opens it (a no-arg 'board' command), types
 // `text` into its textarea and clicks Ok. Callers must not already have the popup open (opening it
 // a second time before the first is dismissed just re-queues, since _advancePopupQueue() only pulls
 // the next entry once currentPopup goes back to null).
-function runModEdit(text: string) {
-    runCommand('mod');
+function runBoardEdit(text: string) {
+    runCommand('board');
     const textarea = document.querySelector('#popup-overlay .mod-edit-textarea') as HTMLTextAreaElement;
     textarea.value = text;
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
     (document.querySelector('#popup-overlay .btn-row button') as HTMLButtonElement).click();
 }
 
-test("'mod' opens a popup pre-filled with the current modifiers; Ok re-parses and adopts a " +
-    'well-formed edit, closing the popup', () => {
+test("'board' opens a popup pre-filled with the current board description; Ok re-parses and " +
+    'adopts a well-formed edit, closing the popup', () => {
     createRenderer();
     (document.querySelector('#home-panel button[data-child="newGame"]') as HTMLButtonElement).click();
 
-    runModEdit('rect; es 3');
+    runBoardEdit('rectB(3, 3);');
     assert.equal(document.getElementById('popup-overlay')!.hidden, true, 'Ok closes the popup on success');
     const newGameDetails = document.getElementById('new-game-setup-details') as HTMLDivElement;
-    assert.match(newGameDetails.innerHTML, /Board modifiers:<\/b> rect; es 3/);
+    assert.match(newGameDetails.innerHTML, /Board description:<\/b>[\s\S]*rectB\(3, 3\);/);
 });
 
-test("'mod' pre-fills its textarea from the new-game config's current modifiers", () => {
+test("'board' pre-fills its textarea from the new-game config's current board description", () => {
     createRenderer();
-    runModEdit('rect; es 3'); // adopt a non-empty modifiers list first, then reopen to check the seed
-    runCommand('mod');
+    runBoardEdit('rectB(3, 3);'); // adopt a non-default board first, then reopen to check the seed
+    runCommand('board');
     const textarea = document.querySelector('#popup-overlay .mod-edit-textarea') as HTMLTextAreaElement;
-    assert.equal(textarea.value, 'rect; es 3');
+    assert.equal(textarea.value, 'rectB(3, 3);');
 });
 
 test('New Game panel lays out its buttons as 3 rows: Game/Board Preset, Configure Players/' +
-    'Configure Modifiers, New Local/Online Game - and Configure Modifiers opens the same popup ' +
-    "as the 'mod' command", () => {
+    'Configure Board, New Local/Online Game - and Configure Board opens the same popup ' +
+    "as the 'board' command", () => {
     createRenderer();
     (document.querySelector('#home-panel button[data-child="newGame"]') as HTMLButtonElement).click();
 
@@ -116,35 +104,35 @@ test('New Game panel lays out its buttons as 3 rows: Game/Board Preset, Configur
     assert.equal(rows.length, 3);
     const rowText = (row: Element) => [...row.querySelectorAll('button')].map(b => b.textContent);
     assert.deepEqual(rowText(rows[0]), ['Game Preset', 'Board Preset']);
-    assert.deepEqual(rowText(rows[1]), ['Configure Players', 'Configure Modifiers']);
+    assert.deepEqual(rowText(rows[1]), ['Configure Players', 'Configure Board']);
     assert.deepEqual(rowText(rows[2]), ['New Local Game', 'New Online Game']);
 
-    const configureModifiersBtn = [...rows[1].querySelectorAll('button')]
-        .find(b => b.textContent === 'Configure Modifiers') as HTMLButtonElement;
-    configureModifiersBtn.click();
+    const configureBoardBtn = [...rows[1].querySelectorAll('button')]
+        .find(b => b.textContent === 'Configure Board') as HTMLButtonElement;
+    configureBoardBtn.click();
     assert.equal(document.getElementById('popup-overlay')!.hidden, false);
     assert.ok(document.querySelector('#popup-overlay .mod-edit-textarea'));
 });
 
-test("'mod' rejects a malformed edit: the popup stays open and shows the parse error above Ok", () => {
+test("'board' rejects a malformed edit: the popup stays open and shows the parse error above Ok", () => {
     createRenderer();
-    runModEdit('nope-not-a-modifier');
+    runBoardEdit('blah();');
 
     assert.equal(document.getElementById('popup-overlay')!.hidden, false, 'a bad edit keeps the popup open');
     const error = document.querySelector('#popup-overlay .mod-edit-error') as HTMLDivElement;
-    assert.match(error.textContent ?? '', /Unknown board modifier/);
+    assert.match(error.textContent ?? '', /call to undeclared function/);
 });
 
-test('_startNewGame catches an applyModifiers error and shows it in the command output bar', () => {
+test('_startNewGame catches a buildBoardFromCleg error and shows it in the command output bar', () => {
     createRenderer();
     const plyNum = document.getElementById('ply-num') as HTMLSpanElement;
     const before = plyNum.textContent;
 
-    // 'prod line 0' parses fine (parseBoardTypeArgs only checks that board args are integers, not
-    // that they're positive - see boardConfig.ts), but applyModifier's 'Prod' case throws once it
-    // actually builds the inner board (linearBoard(0)'s own assert) - 'new' must catch that rather
+    // 'prod(rectB(3, 3), lineB(0))' parses and typechecks fine (typecheckClegAsBoard never
+    // evaluates the program - see its own doc comment), but lineB(0) -> linearBoard(0)'s own
+    // assert throws once buildBoardFromCleg actually evaluates it - 'new' must catch that rather
     // than letting it propagate uncaught, and report it via the command output bar.
-    runModEdit('prod line 0');
+    runBoardEdit('prod(rectB(3, 3), lineB(0));');
     runCommand('new');
 
     const cmdOutput = document.getElementById('cmd-output') as HTMLDivElement;

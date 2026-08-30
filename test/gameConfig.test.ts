@@ -2,11 +2,12 @@
 // online-game config payloads sent between client and server.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GameConfig, PlayerInfo, numArg } from '../shared/types.ts';
+import { GameConfig, PlayerInfo } from '../shared/types.ts';
+import { parseCleg } from '../shared/cleg.ts';
 
 function sampleConfig() {
     const config = new GameConfig(
-        'rect', [numArg(9), numArg(9)], [], 2, 2,
+        parseCleg('rectB(9, 9);'), 2, 2,
         [
             { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
             { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
@@ -41,8 +42,7 @@ test('GameConfig.toJSON()/fromJSON() round-trips players and scalar fields', () 
     const original = sampleConfig();
     const roundTripped = GameConfig.fromJSON(JSON.parse(JSON.stringify(original.toJSON())));
 
-    assert.equal(roundTripped.boardType, original.boardType);
-    assert.deepEqual(roundTripped.boardArgs, original.boardArgs);
+    assert.deepEqual(roundTripped.boardDescr, original.boardDescr);
     assert.equal(roundTripped.forcedPassOnly, original.forcedPassOnly);
     assert.equal(roundTripped.scoreRule, original.scoreRule);
     assert.deepEqual(roundTripped.komi, original.komi);
@@ -56,7 +56,7 @@ test('GameConfig.toJSON()/fromJSON() round-trips players and scalar fields', () 
 
 test('GameConfig.fromJSON() defaults scoreRule/komi/koRule/allowSuicide/maxPlies when absent', () => {
     const raw = {
-        boardType: 'rect', boardArgs: [numArg(9), numArg(9)], numStones: 2, numPlayers: 2,
+        boardDescr: parseCleg('rectB(9, 9);'), numStones: 2, numPlayers: 2,
         turnList: [
             { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
             { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
