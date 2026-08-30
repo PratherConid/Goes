@@ -1,11 +1,12 @@
 /**
  * CLEG - "Construction Language for Embedded Graphs": a small typed language for describing
  * boards, built on top of shared/boardConfig.ts's own board-construction functions. This is the
- * first, deliberately minimal version - `nis`/`eis` (below) are the only two board modifiers with
- * their own dedicated builtin so far; every other one (`rectify`, `quadform`, `repeat`, ...) is only
- * reachable via `applyMod` (below), which parses and applies one at a time from its own command-line
- * string syntax (shared/boardConfig.ts's own parseModifier/parseModifiers) rather than cleg having a
- * dedicated function or AST node per modifier. The language has a single C++-style `for` loop (see
+ * first, deliberately minimal version. Every BoardModifier kind except `Prod`/`Repeat` (handled
+ * elsewhere) now has its own builtin - all of them (`nis`, `eis`, `rectify`, `edgeSplit`,
+ * `mergeClose`, `triangleForm`, `quadForm`, `form`, `globalCentralize`, `quadOctarize`, `scale`)
+ * BUILD a `mod` value (see that type's own doc comment below) rather than applying it to a board
+ * immediately - there is no cleg builtin yet that takes a `mod` and an `egr` and applies one to the
+ * other. The language has a single C++-style `for` loop (see
  * ForStmt below) - its only loop construct; recursion is otherwise still the only other way to
  * repeat anything. There is still no logical operator (no `&&`/`||`/`!`) and no way to construct a
  * `bool` value from a literal other than `true`/`false` - see the design notes scattered through
@@ -20,18 +21,14 @@
  * number -> number` overload each, and each comparison operator has two (`number, number -> bool`
  * and `bool, bool -> bool`, the latter via C++'s own false=0/true=1 convention, e.g. `false < true`
  * is `true` - see toComparable/comparisonOverload).
- * Besides the per-prescribed-board functions, `prod` (shared/boardConfig.ts's own product() - the
- * graph/tensor product of two `egr`s), and `applyMod` (parses its `string` argument as exactly one
- * board modifier via parseModifiers, then applies it via applyModifier - all fixed-signature like
- * `mkEdge`/`mkTri`/`mkQuad` below), there's also a small set of generic built-ins whose
- * result type depends on their actual argument types rather than one fixed signature
- * (BUILTIN_FUNCTIONS below covers both kinds under one interface) - `len` (an array's or set's
- * length, as a `number`), `randRmN` (a set with `count` elements removed uniformly at random),
- * `randRmP` (a set with a `frac`-sized portion removed uniformly at random, mirroring
- * shared/selector.ts's own `(rrmn <num> SEL)`/`(rrmp <num> SEL)`), and `nis`/`eis` (the first real
- * board modifiers: shared/boardConfig.ts's own nodeInducedSubgraph/edgeInducedSubgraph, taking an
- * `egr` and either a `number{}`/`edge{}` set, a `sel` (kind-checked at runtime), or a `string`
- * parsed as a selector at call time).
+ * Besides the per-prescribed-board functions and `prod` (shared/boardConfig.ts's own product() -
+ * the graph/tensor product of two `egr`s, fixed-signature like `mkEdge`/`mkTri`/`mkQuad` below),
+ * there's also a small set of generic built-ins whose result type depends on their actual argument
+ * types rather than one fixed signature (BUILTIN_FUNCTIONS below covers both kinds under one
+ * interface) - `len` (an array's or set's length, as a `number`), `randRmN`/`randRmP` (a set with
+ * elements removed uniformly at random, by count or by portion, mirroring shared/selector.ts's own
+ * `(rrmn <num> SEL)`/`(rrmp <num> SEL)`), and `nis`/`eis`/`triangleForm`/`quadForm`/`mkFormSel`
+ * (each accepts a `sel` or a `string`, resolved via their one shared resolveSelectorArg).
  *
  * Three more basic types mirror shared/types.ts's own board primitives: `edge`, `tri`, and `quad`
  * (wrapping a BoardEdge/BoardTriangle/BoardQuad respectively), built via the `mkEdge(n1, n2)`,
@@ -57,21 +54,35 @@
  * the type checker can see ahead of a call - so two `sel`-typed locals can hold selectors of two
  * different actual kinds; ClegValue's own 'sel' variant carries the real kind (`selType`) once a
  * value actually exists. There is no selector literal syntax and (like `edge`/`tri`/`quad`) no way
- * to read a `sel` value's contents back out - it's passed straight through to whichever of `nis`/
- * `eis`'s own `sel` argument case consumes it (see BUILTIN_FUNCTIONS below), the only thing that
- * does yet.
+ * to read a `sel` value's contents back out - it's passed straight through to whichever consuming
+ * builtin's own selector-shaped argument resolves it (`nis`/`eis`/`triangleForm`/`quadForm`/
+ * `mkFormSel` - see resolveSelectorArg below, their one shared "sel or string" resolution).
  *
- * A cleg program is a sequence of top-level function declarations. Every function must declare its
- * own return type and always returns a value via `return EXPR;` (there is no `void`). Exactly one
- * function, `main`, is the program's entry point - runCleg() below evaluates it, given a
- * caller-supplied argument list (there is no other way for a cleg program to receive external
- * input yet), and returns whatever it returns.
+ * Two more basic types round out the board-modifier builtins: `formSel` wraps a real
+ * shared/types.ts FormSelector (`(tri [SEL])`/`(quad [SEL])`, see that type's own doc comment) -
+ * built via `mkFormSel(kind, [selArg])`, the `form`-modifier counterpart of `sel`/`mkSel` (`kind` is
+ * `"tri"`/`"quad"`; `selArg`, like `triangleForm`/`quadForm`'s own, is optional - a `sel` or
+ * `string`, resolved the same way, restricting which tri/quads qualify, default every one found).
+ * `mod` wraps a real shared/types.ts BoardModifier - one flat type covering every kind (`Rectify`,
+ * `EdgeSplit`, `TriangleForm`, `Form`, ...), built by whichever of the constructor builtins listed
+ * two paragraphs up matches. Both are opaque the same way `sel`/`edge`/`tri`/`quad` are - no literal
+ * syntax, no way to read fields back out.
+ *
+ * A cleg program is a sequence of top-level items, each either a function declaration or a bare
+ * expression statement (TOPSTMT below) - there is no `main` and no other designated entry-point
+ * function. Every function must declare its own return type and always returns a value via `return
+ * EXPR;` (there is no `void`). runCleg() evaluates every top-level TOPSTMT's own expression in
+ * order (function declarations aren't executed, just collected - order-independent, see
+ * ClegProgram's own doc comment) and returns whatever the LAST one evaluated to - the only way a
+ * cleg program produces an overall value, and (since there's no `main` to hand external input to
+ * as parameters) also currently the only thing a cleg program actually "does".
  *
  * Concrete syntax (deliberately C++-like, per this language's own design brief):
  *
  *   TYPE       := BASETYPE ('{' '}')? ('[' ']')*
  *   BASETYPE   := 'egr' | 'number' | 'string' | 'bool' | 'edge' | 'tri' | 'quad'
- *   PROGRAM    := FUNCDECL*
+ *   PROGRAM    := (FUNCDECL | TOPSTMT)*
+ *   TOPSTMT    := EXPR ';'
  *   FUNCDECL   := TYPE IDENT '(' (PARAM (',' PARAM)*)? ')' BLOCK
  *   PARAM      := TYPE IDENT
  *   BLOCK      := '{' STMT* '}'
@@ -102,26 +113,24 @@
  * cleg function). Since comparison operators now produce `bool`, `if`/`for` conditions are no longer
  * limited to bare literals - `if (x < 10) { ... }` works exactly as it looks.
  *
- * Example:
- *   egr main() {
- *       egr x = menger(3, 3, "0011");
- *       return x;
+ * Example - the program's own value is whatever its last top-level statement evaluates to:
+ *   egr helper() {
+ *       return mengerB(3, 3, "0011");
  *   }
+ *   helper();
  */
 
 import {
     BoardArgType, numArg, csvArg, zolArg, parseBoardArgToken,
     makeBoardEdge, makeBoardTriangle, makeBoardQuad,
     type BoardArgEntry, type BoardConfig, type BoardEdge, type BoardTriangle, type BoardQuad,
-    type Selector, type SelectorType,
+    type Selector, type SelectorType, type FormSelector, type BoardModifier,
 } from './types.js';
 import {
-    PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, nodeInducedSubgraph, edgeInducedSubgraph,
-    product, parseModifiers, applyModifier,
+    PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, product, applyModifiers,
 } from './boardConfig.js';
 import {
     randomlyRemove, parseNodeSelector, parseEdgeSelector, parseTriangleSelector, parseQuadSelector,
-    selectNode, selectEdge,
 } from './selector.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -145,6 +154,16 @@ export type ClegType =
      * know ahead of a call. ClegValue's own 'sel' variant carries the actual kind (`selType`) at
      * runtime instead. */
     | { kind: 'sel' }
+    /** Wraps a real shared/types.ts FormSelector (`(tri [SEL])`/`(quad [SEL])`) - built via
+     * `mkFormSel(kind, [selArg])`, the `form`-modifier counterpart of `sel`/`mkSel`. Not itself a
+     * `sel` - a FormSelector isn't selecting FROM an existing known-kind set, it's declaring which
+     * kind (tri/quad) to look for in the first place (see FormSelector's own doc comment). */
+    | { kind: 'formSel' }
+    /** Wraps a real shared/types.ts BoardModifier - built via one of the modifier-constructor
+     * builtins below (`rectify`, `edgeSplit`, `triangleForm`, `form`, ...). One flat type covering
+     * every BoardModifier kind, the same way `sel`/`egr` are each one flat type regardless of which
+     * SelectorType/PrescribedBoard they actually hold. */
+    | { kind: 'mod' }
     | { kind: 'array'; elem: ClegType }
     | { kind: 'set'; elem: ClegType };
 
@@ -162,7 +181,7 @@ function typeEquals(a: ClegType, b: ClegType): boolean {
     return true;
 }
 
-function typeToString(t: ClegType): string {
+export function typeToString(t: ClegType): string {
     if (t.kind === 'array') return `${typeToString(t.elem)}[]`;
     if (t.kind === 'set') return `${typeToString(t.elem)}{}`;
     return t.kind;
@@ -186,6 +205,8 @@ export type ClegValue =
      * own 'sel' doc comment) - always set from whichever parse*Selector function built `value`, so
      * it's never out of sync with `value.type`. */
     | { kind: 'sel'; selType: SelectorType; value: Selector }
+    | { kind: 'formSel'; value: FormSelector }
+    | { kind: 'mod'; value: BoardModifier }
     | { kind: 'array'; elem: ClegType; value: ClegValue[] }
     /** A set's `value` is always deduplicated by clegSetKey (see makeClegSet) - unlike 'array',
      * where `value` may hold anything an ArrayLit/array-typed value can, `value` here never holds
@@ -433,11 +454,18 @@ export interface BinaryExpr {
  * parses as UnaryExpr wrapping NumberLit(3); the lexer itself never produces a signed number). */
 export interface UnaryExpr { kind: 'UnaryExpr'; op: '-'; operand: Expr; }
 
-/** A whole cleg program: its own top-level function declarations, in the order written. Functions
- * may call each other regardless of declaration order (forward references are fine) and may
- * recurse (directly or mutually) - the only form of repetition this language has at all, since it
- * has no loops. */
-export interface ClegProgram { kind: 'ClegProgram'; functions: FunctionDecl[]; }
+/**
+ * A whole cleg program: its own top-level function declarations (order-independent - functions may
+ * call each other regardless of declaration order, forward references are fine, and may recurse
+ * directly or mutually) plus its own top-level expression statements, `stmts` (order-DOES-matter -
+ * see runCleg's own doc comment for why). There is no `main` and no other designated entry-point
+ * function - a cleg program's own top-level statements, not any one function, are what actually
+ * run. Simplification: a top-level statement may only be an EXPRSTMT (a bare expression), never a
+ * VARDECL/IFSTMT/FORSTMT/etc. - there is no way to declare a variable, branch, or loop at top level,
+ * only inside a function body, so distinct top-level statements can't share any named state with
+ * each other (only via a function call, if at all).
+ */
+export interface ClegProgram { kind: 'ClegProgram'; functions: FunctionDecl[]; stmts: ExprStmt[]; }
 
 // ── Lexer ────────────────────────────────────────────────────────────────────
 
@@ -533,13 +561,17 @@ class TokenCursor {
     }
 }
 
-const TYPE_KEYWORDS = new Set(['egr', 'number', 'string', 'bool', 'edge', 'tri', 'quad', 'sel']);
+const TYPE_KEYWORDS = new Set([
+    'egr', 'number', 'string', 'bool', 'edge', 'tri', 'quad', 'sel', 'formSel', 'mod',
+]);
 
 function parseType(c: TokenCursor): ClegType {
     const base = c.expectIdent();
     if (!TYPE_KEYWORDS.has(base))
-        throw new Error(`cleg: expected a type (egr/number/string/bool/edge/tri/quad/sel), got '${base}'`);
-    let type: ClegType = { kind: base as 'egr' | 'number' | 'string' | 'bool' | 'edge' | 'tri' | 'quad' | 'sel' };
+        throw new Error(`cleg: expected a type (egr/number/string/bool/edge/tri/quad/sel/formSel/mod), got '${base}'`);
+    let type: ClegType = {
+        kind: base as 'egr' | 'number' | 'string' | 'bool' | 'edge' | 'tri' | 'quad' | 'sel' | 'formSel' | 'mod',
+    };
     if (c.isPunct('{')) {
         if (!SET_ELEM_KINDS.has(base))
             throw new Error(
@@ -786,14 +818,107 @@ function parseAtom(c: TokenCursor): Expr {
     throw new Error(`cleg: unexpected token '${tok.text || '<eof>'}' at position ${tok.pos}`);
 }
 
-/** Parses a whole cleg program (see this file's own top comment for the grammar) - throws if
- * `source` doesn't follow it, or if anything is left over after the last top-level function
- * declaration. */
+/**
+ * Parses a whole cleg program (see this file's own top comment for the grammar) - throws if
+ * `source` doesn't follow it, or if anything is left over after the last top-level item. Each
+ * top-level item is a FUNCDECL if it starts with a type keyword, an EXPRSTMT otherwise - the same
+ * disambiguation-by-leading-token rule parseStmt already uses to tell a VARDECL from every other
+ * kind of statement inside a function body (see isTypeStart), extended to top level.
+ */
 export function parseCleg(source: string): ClegProgram {
     const c = new TokenCursor(tokenize(source));
     const functions: FunctionDecl[] = [];
-    while (!c.atEnd()) functions.push(parseFunctionDecl(c));
-    return { kind: 'ClegProgram', functions };
+    const stmts: ExprStmt[] = [];
+    while (!c.atEnd()) {
+        if (isTypeStart(c)) { functions.push(parseFunctionDecl(c)); continue; }
+        const expr = parseExpr(c);
+        c.expectPunct(';');
+        stmts.push({ kind: 'ExprStmt', expr });
+    }
+    return { kind: 'ClegProgram', functions, stmts };
+}
+
+// ── Unparsing ────────────────────────────────────────────────────────────────
+
+/**
+ * Regenerates cleg source text from `program` - the inverse of parseCleg, used so a value like
+ * GameConfig.boardDescr (a ClegProgram, not source text - see that field's own doc comment) can
+ * still be shown back to a user for editing (e.g. re-opening the Configure Board popup). Not a
+ * pretty-printer in the sense of preserving the exact original formatting/comments (those aren't
+ * part of the AST at all) - only that `parseCleg(unparseCleg(p))` produces a program equivalent to
+ * `p` (same result type, same behavior). Every binary/unary sub-expression is always parenthesized
+ * (`unparseExpr`'s own BinaryExpr/UnaryExpr cases) rather than re-deriving the parser's own
+ * precedence rules to decide when parens are actually needed - always correct, just not minimal.
+ */
+export function unparseCleg(program: ClegProgram): string {
+    const parts: string[] = [
+        ...program.functions.map(unparseFunctionDecl),
+        ...program.stmts.map(unparseStmt),
+    ];
+    return parts.join('\n');
+}
+
+function unparseFunctionDecl(fn: FunctionDecl): string {
+    const params = fn.params.map(p => `${typeToString(p.type)} ${p.name}`).join(', ');
+    return `${typeToString(fn.returnType)} ${fn.name}(${params}) ${unparseBlock(fn.body)}`;
+}
+
+function unparseBlock(block: Block): string {
+    if (block.stmts.length === 0) return '{}';
+    const indented = block.stmts.map(unparseStmt).join('\n').split('\n').map(line => `    ${line}`).join('\n');
+    return `{\n${indented}\n}`;
+}
+
+function unparseStmt(stmt: Stmt): string {
+    switch (stmt.kind) {
+        case 'VarDecl': return `${typeToString(stmt.type)} ${stmt.name} = ${unparseExpr(stmt.init)};`;
+        case 'AssignStmt': return `${stmt.name} = ${unparseExpr(stmt.value)};`;
+        case 'IfStmt': {
+            const elsePart = stmt.else_ === null ? ''
+                : stmt.else_.kind === 'Block' ? ` else ${unparseBlock(stmt.else_)}`
+                    : ` else ${unparseStmt(stmt.else_)}`;
+            return `if (${unparseExpr(stmt.cond)}) ${unparseBlock(stmt.then)}${elsePart}`;
+        }
+        case 'ForStmt': {
+            const init = stmt.init === null ? '' : unparseForClause(stmt.init);
+            const cond = stmt.cond === null ? '' : unparseExpr(stmt.cond);
+            const update = stmt.update === null ? '' : unparseForClause(stmt.update);
+            return `for (${init}; ${cond}; ${update}) ${unparseBlock(stmt.body)}`;
+        }
+        case 'ReturnStmt': return `return ${unparseExpr(stmt.value)};`;
+        case 'ExprStmt': return `${unparseExpr(stmt.expr)};`;
+        case 'Block': return unparseBlock(stmt);
+    }
+}
+
+// FORINIT/FORUPDATE - same as unparseStmt's own VarDecl/AssignStmt/ExprStmt cases, minus the
+// trailing ';' (parseForStmt's own explicit ';'/')' delimit these, see ForStmt's own doc comment).
+function unparseForClause(stmt: VarDecl | AssignStmt | ExprStmt): string {
+    switch (stmt.kind) {
+        case 'VarDecl': return `${typeToString(stmt.type)} ${stmt.name} = ${unparseExpr(stmt.init)}`;
+        case 'AssignStmt': return `${stmt.name} = ${unparseExpr(stmt.value)}`;
+        case 'ExprStmt': return unparseExpr(stmt.expr);
+    }
+}
+
+function unparseExpr(expr: Expr): string {
+    switch (expr.kind) {
+        case 'NumberLit': return String(expr.value);
+        case 'StringLit': return `"${escapeClegString(expr.value)}"`;
+        case 'BoolLit': return expr.value ? 'true' : 'false';
+        case 'ArrayLit': return `[${expr.elements.map(unparseExpr).join(', ')}]`;
+        case 'SetLit': return `{${expr.elements.map(unparseExpr).join(', ')}}`;
+        case 'Identifier': return expr.name;
+        case 'CallExpr': return `${expr.callee}(${expr.args.map(unparseExpr).join(', ')})`;
+        case 'BinaryExpr': return `(${unparseExpr(expr.left)} ${expr.op} ${unparseExpr(expr.right)})`;
+        case 'UnaryExpr': return `(-${unparseExpr(expr.operand)})`;
+    }
+}
+
+// The lexer's own string-literal escapes (see tokenize's own doc comment) - '\\'  must come first,
+// so it doesn't double-escape the backslashes this function itself just inserted for '"'/'\n'/'\t'.
+function escapeClegString(s: string): string {
+    return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\t/g, '\\t');
 }
 
 // ── Predefined (board-construction) functions ─────────────────────────────────
@@ -864,15 +989,16 @@ function fixedSignature(params: ClegType[], returnType: ClegType): BuiltinFuncti
 const BUILTIN_FUNCTIONS: Record<string, BuiltinFunction> = {};
 
 // One builtin per shared/boardConfig.ts's own PrescribedBoardMap/PrescribedBoardFns entry, named
-// after its own command-line token (PrescribedBoardMap[pb][1], e.g. "menger", "rect", "cublat") so a
-// cleg program's board-construction calls read exactly like this project's own command syntax -
-// modifiers/selectors aside (see this file's own top comment). Built generically from that existing
-// table (rather than one hand-written cleg function per board type) so this list never drifts out of
-// sync with it.
+// after its own command-line token plus a trailing "B" (PrescribedBoardMap[pb][1], e.g. "menger" ->
+// "mengerB", "rect" -> "rectB") - built generically from that existing table (rather than one
+// hand-written cleg function per board type) so this list never drifts out of sync with it. The "B"
+// suffix keeps every one of these names clear of TYPE_KEYWORDS by construction (rather than
+// special-casing the one existing collision, "tri" vs. the `tri` triangle-value type - a future
+// command-line token could collide too, e.g. if "mod" or "egr" were ever added as one).
 for (const [pbKey, [argTypes, cmdName]] of
     Object.entries(PrescribedBoardMap) as [string, [BoardArgType[], string, string, string]][]) {
     const pb = Number(pbKey) as PrescribedBoard;
-    BUILTIN_FUNCTIONS[cmdName] = {
+    BUILTIN_FUNCTIONS[`${cmdName}B`] = {
         checkCall: fixedSignature(argTypes.map(argTypeToClegType), { kind: 'egr' }),
         call: (args: ClegValue[]): ClegValue =>
             ({ kind: 'egr', value: PrescribedBoardFns[pb](...argTypes.map((t, i) => valueToBoardArgEntry(t, args[i]))) }),
@@ -941,67 +1067,20 @@ BUILTIN_FUNCTIONS['randRmP'] = {
     },
 };
 
-// `nis`/`eis`: both `(egr, X) -> egr`, where X may be a set of nodes/edges (`number{}`/`edge{}`),
-// a `sel` (its actual kind checked at runtime, since 'sel' carries no kind at the type level - see
-// ClegType's own 'sel' doc comment), or a `string` (parsed at call time via the real
-// parseNodeSelector/parseEdgeSelector, following shared/selector.ts's own grammar exactly). Share
-// this one checkCall (parameterized by which set element kind is valid), the same way randRmN/
-// randRmP share randRmCheckCall above.
-function inducedSubgraphCheckCall(elemKind: 'number' | 'edge'): BuiltinFunction['checkCall'] {
-    return (callee, argTypes) => {
-        if (argTypes.length !== 2)
-            throw new Error(`cleg: '${callee}' expects 2 argument(s), got ${argTypes.length}`);
-        if (argTypes[0].kind !== 'egr')
-            throw new Error(`cleg: '${callee}' argument 1: expected egr, got ${typeToString(argTypes[0])}`);
-        const t = argTypes[1];
-        const okSet = t.kind === 'set' && t.elem.kind === elemKind;
-        if (!okSet && t.kind !== 'sel' && t.kind !== 'string')
-            throw new Error(
-                `cleg: '${callee}' argument 2: expected ${elemKind}{}, sel, or string, got ${typeToString(t)}`);
-        return { kind: 'egr' };
-    };
+// Resolves a nis/eis/triangleForm/quadForm-style "selector-like" argument into a real Selector -
+// either a `sel` value (its actual kind checked against `wantKind` at runtime, since 'sel' carries
+// no kind at the type level - see ClegType's own 'sel' doc comment) or a `string` (parsed via
+// `parseFn`, following shared/selector.ts's own grammar exactly). Shared by every builtin that
+// accepts this shape, so the "string or sel, kind-checked" logic exists in exactly one place.
+function resolveSelectorArg(
+    callee: string, arg: ClegValue, wantKind: SelectorType, parseFn: (s: string) => Selector,
+): Selector {
+    if (arg.kind === 'string') return parseFn(arg.value);
+    const sel = arg as { kind: 'sel'; selType: SelectorType; value: Selector };
+    if (sel.selType !== wantKind)
+        throw new Error(`cleg: '${callee}' expects a ${wantKind} selector, got a '${sel.selType}' selector`);
+    return sel.value;
 }
-
-// `nis(bc, nodes)`: shared/boardConfig.ts's own nodeInducedSubgraph, lowered to accept a plain
-// Set<number> - `nodes` is derived from whichever of the three argument-2 shapes was actually
-// given, always ending up as exactly that Set<number> before being handed to nodeInducedSubgraph.
-BUILTIN_FUNCTIONS['nis'] = {
-    checkCall: inducedSubgraphCheckCall('number'),
-    call([egrVal, arg]) {
-        const bc = (egrVal as { value: BoardConfig }).value;
-        let nodes: Set<number>;
-        if (arg.kind === 'set') {
-            nodes = new Set(arg.value.map(v => (v as { value: number }).value));
-        } else if (arg.kind === 'sel') {
-            if (arg.selType !== 'node')
-                throw new Error(`cleg: 'nis' argument 2: expected a node selector, got a '${arg.selType}' selector`);
-            nodes = selectNode(bc.adj, bc.emb.pos, arg.value);
-        } else {
-            nodes = selectNode(bc.adj, bc.emb.pos, parseNodeSelector((arg as { value: string }).value));
-        }
-        return { kind: 'egr', value: nodeInducedSubgraph(bc, nodes) };
-    },
-};
-
-// `eis(bc, edges)` - the edge-flavored counterpart of `nis` above, backed by
-// shared/boardConfig.ts's own (equally lowered) edgeInducedSubgraph.
-BUILTIN_FUNCTIONS['eis'] = {
-    checkCall: inducedSubgraphCheckCall('edge'),
-    call([egrVal, arg]) {
-        const bc = (egrVal as { value: BoardConfig }).value;
-        let edges: BoardEdge[];
-        if (arg.kind === 'set') {
-            edges = arg.value.map(v => (v as { value: BoardEdge }).value);
-        } else if (arg.kind === 'sel') {
-            if (arg.selType !== 'edge')
-                throw new Error(`cleg: 'eis' argument 2: expected an edge selector, got a '${arg.selType}' selector`);
-            edges = selectEdge(bc.adj, bc.emb.pos, arg.value);
-        } else {
-            edges = selectEdge(bc.adj, bc.emb.pos, parseEdgeSelector((arg as { value: string }).value));
-        }
-        return { kind: 'egr', value: edgeInducedSubgraph(bc, edges) };
-    },
-};
 
 const NUMBER_TYPE: ClegType = { kind: 'number' };
 const STRING_TYPE: ClegType = { kind: 'string' };
@@ -1047,22 +1126,6 @@ BUILTIN_FUNCTIONS['prod'] = {
     }),
 };
 
-// `applyMod(bc, str)`: parses `str` as exactly one board modifier (shared/boardConfig.ts's own
-// parseModifiers - the same "<name> <args>" syntax this project's own modifier-list textboxes take,
-// see parseModifier's own doc comment for the per-command grammar) and applies it to `bc` via
-// applyModifier. `str` naming 'beginprod'/'repeat' is fine too (parseModifiers folds a whole nested
-// span into one Prod/Repeat BoardModifier), but must still resolve to exactly one modifier overall.
-BUILTIN_FUNCTIONS['applyMod'] = {
-    checkCall: fixedSignature([EGR_TYPE, STRING_TYPE], { kind: 'egr' }),
-    call: ([egrVal, strVal]) => {
-        const bc = (egrVal as { value: BoardConfig }).value;
-        const modifiers = parseModifiers((strVal as { value: string }).value);
-        if (modifiers.length !== 1)
-            throw new Error(`cleg: 'applyMod' expects its string argument to name exactly one modifier, got ${modifiers.length}`);
-        return { kind: 'egr', value: applyModifier(bc, modifiers[0]) };
-    },
-};
-
 // One real parse*Selector function per SelectorType - shared/selector.ts itself has no single
 // kind-agnostic parse entry point (see that file's own top comment: parsing is type-directed,
 // since e.g. `(all)` means a different thing depending on which of these is called), so mkSel's
@@ -1090,6 +1153,166 @@ BUILTIN_FUNCTIONS['mkSel'] = {
     },
 };
 
+const MOD_TYPE: ClegType = { kind: 'mod' };
+const FORMSEL_TYPE: ClegType = { kind: 'formSel' };
+
+// `mkFormSel(kind, [selArg])`: builds a real shared/types.ts FormSelector - `kind` is
+// "tri"/"quad" (validated/dispatched at call time, same convention as mkSel's own `kind`), and the
+// optional `selArg` (a `sel` or `string`, resolved via resolveSelectorArg - see FormSelector's own
+// optional `sel?: Selector` field) restricts which tri/quads of that kind qualify (omitted: every
+// one found). Variable-arity (1 or 2 args) rather than fixedSignature(...), to mirror that
+// optionality exactly.
+function mkFormSelCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length !== 1 && argTypes.length !== 2)
+        throw new Error(`cleg: '${callee}' expects 1 or 2 argument(s), got ${argTypes.length}`);
+    if (argTypes[0].kind !== 'string')
+        throw new Error(`cleg: '${callee}' argument 1: expected string, got ${typeToString(argTypes[0])}`);
+    if (argTypes.length === 2 && argTypes[1].kind !== 'sel' && argTypes[1].kind !== 'string')
+        throw new Error(`cleg: '${callee}' argument 2: expected sel or string, got ${typeToString(argTypes[1])}`);
+    return FORMSEL_TYPE;
+}
+BUILTIN_FUNCTIONS['mkFormSel'] = {
+    checkCall: mkFormSelCheckCall,
+    call: (args) => {
+        const kind = (args[0] as { value: string }).value;
+        if (kind !== 'tri' && kind !== 'quad')
+            throw new Error(`cleg: mkFormSel: unknown form-selector kind '${kind}' - expected tri/quad`);
+        if (args.length === 1) return { kind: 'formSel', value: { kind } };
+        const sel = resolveSelectorArg('mkFormSel', args[1], kind, SELECTOR_PARSERS[kind]);
+        return { kind: 'formSel', value: { kind, sel } };
+    },
+};
+
+// `rectify`/`globalCentralize`/`quadOctarize`: zero-argument BoardModifier constructors, one per
+// shared/types.ts's own like-named BoardModifier kind - build the value directly (`{ kind: 'X' }`)
+// rather than calling shared/boardConfig.ts's own rectify()/globalCentralize()/quadOctarize()
+// (those APPLY a modifier to a board immediately; these instead build the modifier value itself,
+// to be applied later - see this file's own top comment on the `mod` type).
+BUILTIN_FUNCTIONS['rectify'] = {
+    checkCall: fixedSignature([], MOD_TYPE),
+    call: () => ({ kind: 'mod', value: { kind: 'Rectify' } }),
+};
+BUILTIN_FUNCTIONS['globalCentralize'] = {
+    checkCall: fixedSignature([], MOD_TYPE),
+    call: () => ({ kind: 'mod', value: { kind: 'GlobalCentralize' } }),
+};
+BUILTIN_FUNCTIONS['quadOctarize'] = {
+    checkCall: fixedSignature([], MOD_TYPE),
+    call: () => ({ kind: 'mod', value: { kind: 'QuadOctarize' } }),
+};
+
+// `edgeSplit`/`mergeClose`/`scale`: one-number-argument BoardModifier constructors, same
+// "build the value, don't apply it" rationale as rectify/globalCentralize/quadOctarize above.
+BUILTIN_FUNCTIONS['edgeSplit'] = {
+    checkCall: fixedSignature([NUMBER_TYPE], MOD_TYPE),
+    call: ([n]) => ({ kind: 'mod', value: { kind: 'EdgeSplit', splitN: (n as { value: number }).value } }),
+};
+BUILTIN_FUNCTIONS['mergeClose'] = {
+    checkCall: fixedSignature([NUMBER_TYPE], MOD_TYPE),
+    call: ([d]) => ({ kind: 'mod', value: { kind: 'MergeClose', dist: (d as { value: number }).value } }),
+};
+BUILTIN_FUNCTIONS['scale'] = {
+    checkCall: fixedSignature([NUMBER_TYPE], MOD_TYPE),
+    call: ([f]) => ({ kind: 'mod', value: { kind: 'Scale', factor: (f as { value: number }).value } }),
+};
+
+// `nis(X)`/`eis(X)`: build a NodeInducedSubgraph/EdgeInducedSubgraph BoardModifier - `X` (a `sel` or
+// `string`, resolved via resolveSelectorArg above) becomes that modifier's own `sel: Selector`
+// field. Same family as triangleForm/quadForm just below (construct the value, don't apply it), but
+// simpler - no `w`, and the selector is mandatory rather than optional (NodeInducedSubgraph/
+// EdgeInducedSubgraph's own `sel` field isn't `?`). Unlike a `number{}`/`edge{}` set (nis/eis's own
+// earlier, since-removed third accepted shape), there's no Selector grammar production for "exactly
+// this literal set of nodes/edges" (see this file's own top comment history), so a real
+// NodeInducedSubgraph/EdgeInducedSubgraph modifier value can only ever hold a genuine Selector.
+function inducedSubgraphModCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length !== 1)
+        throw new Error(`cleg: '${callee}' expects 1 argument(s), got ${argTypes.length}`);
+    if (argTypes[0].kind !== 'sel' && argTypes[0].kind !== 'string')
+        throw new Error(`cleg: '${callee}' argument 1: expected sel or string, got ${typeToString(argTypes[0])}`);
+    return MOD_TYPE;
+}
+BUILTIN_FUNCTIONS['nis'] = {
+    checkCall: inducedSubgraphModCheckCall,
+    call: ([arg]) => (
+        { kind: 'mod', value: { kind: 'NodeInducedSubgraph', sel: resolveSelectorArg('nis', arg, 'node', parseNodeSelector) } }
+    ),
+};
+BUILTIN_FUNCTIONS['eis'] = {
+    checkCall: inducedSubgraphModCheckCall,
+    call: ([arg]) => (
+        { kind: 'mod', value: { kind: 'EdgeInducedSubgraph', sel: resolveSelectorArg('eis', arg, 'edge', parseEdgeSelector) } }
+    ),
+};
+
+// `triangleForm(w, [selArg])`/`quadForm(w, [selArg])`: builds a TriangleForm/QuadForm
+// BoardModifier - `selArg` (a `sel` or `string`, resolved via resolveSelectorArg) restricts which
+// triangles/quads get replaced, mirroring TriangleForm/QuadForm's own optional `sel?: Selector`
+// field exactly - omitted, every one found gets replaced. Variable-arity like mkFormSel above.
+function formModCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length !== 1 && argTypes.length !== 2)
+        throw new Error(`cleg: '${callee}' expects 1 or 2 argument(s), got ${argTypes.length}`);
+    if (argTypes[0].kind !== 'number')
+        throw new Error(`cleg: '${callee}' argument 1: expected number, got ${typeToString(argTypes[0])}`);
+    if (argTypes.length === 2 && argTypes[1].kind !== 'sel' && argTypes[1].kind !== 'string')
+        throw new Error(`cleg: '${callee}' argument 2: expected sel or string, got ${typeToString(argTypes[1])}`);
+    return MOD_TYPE;
+}
+BUILTIN_FUNCTIONS['triangleForm'] = {
+    checkCall: formModCheckCall,
+    call: (args) => {
+        const w = (args[0] as { value: number }).value;
+        if (args.length === 1) return { kind: 'mod', value: { kind: 'TriangleForm', w } };
+        const sel = resolveSelectorArg('triangleForm', args[1], 'tri', parseTriangleSelector);
+        return { kind: 'mod', value: { kind: 'TriangleForm', w, sel } };
+    },
+};
+BUILTIN_FUNCTIONS['quadForm'] = {
+    checkCall: formModCheckCall,
+    call: (args) => {
+        const w = (args[0] as { value: number }).value;
+        if (args.length === 1) return { kind: 'mod', value: { kind: 'QuadForm', w } };
+        const sel = resolveSelectorArg('quadForm', args[1], 'quad', parseQuadSelector);
+        return { kind: 'mod', value: { kind: 'QuadForm', w, sel } };
+    },
+};
+
+// `form(w, ...sels)`: builds a Form BoardModifier - `w` (the shared lattice width) followed by one
+// or more `formSel` arguments, mirroring genericForm's own (bc, w, sels) signature and
+// parseModifier's own `assert(sels.length >= 1, ...)` requirement (see its 'form' case).
+function formCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length < 2)
+        throw new Error(`cleg: '${callee}' expects at least 2 argument(s) (w, and >= 1 formSel), got ${argTypes.length}`);
+    if (argTypes[0].kind !== 'number')
+        throw new Error(`cleg: '${callee}' argument 1: expected number, got ${typeToString(argTypes[0])}`);
+    for (let i = 1; i < argTypes.length; i++)
+        if (argTypes[i].kind !== 'formSel')
+            throw new Error(`cleg: '${callee}' argument ${i + 1}: expected formSel, got ${typeToString(argTypes[i])}`);
+    return MOD_TYPE;
+}
+BUILTIN_FUNCTIONS['form'] = {
+    checkCall: formCheckCall,
+    call: (args) => {
+        const w = (args[0] as { value: number }).value;
+        const sels = args.slice(1).map(a => (a as { value: FormSelector }).value);
+        return { kind: 'mod', value: { kind: 'Form', w, sels } };
+    },
+};
+
+// `modify(mods, bc)`: applies every modifier in `mods`, in order, to `bc` - shared/boardConfig.ts's
+// own applyModifiers(), the one builtin that actually turns a list of `mod` values into a
+// transformed board (every rectify/edgeSplit/.../form/nis/eis builtin above only constructs an
+// opaque `mod` value, never applies one). `mods` is a plain array (`mod[]`), not a set - modifiers
+// are meaningfully ordered and can repeat (e.g. `[scale(2), scale(2)]` is not the same as one
+// `scale(4)`), neither of which a set would preserve.
+BUILTIN_FUNCTIONS['modify'] = {
+    checkCall: fixedSignature([{ kind: 'array', elem: MOD_TYPE }, EGR_TYPE], EGR_TYPE),
+    call: ([modsVal, egrVal]) => {
+        const mods = (modsVal as { value: ClegValue[] }).value.map(v => (v as { value: BoardModifier }).value);
+        const bc = (egrVal as { value: BoardConfig }).value;
+        return { kind: 'egr', value: applyModifiers(bc, mods) };
+    },
+};
+
 // ── Type checking ──────────────────────────────────────────────────────────────
 
 interface TypeEnv { vars: Map<string, ClegType>; parent: TypeEnv | null; }
@@ -1104,26 +1327,36 @@ type FuncTable = Record<string, FunctionSignature>;
  * Statically checks `program`: every function's own body is checked against its declared
  * parameter/return types, with one flat, program-wide function namespace shared between
  * BUILTIN_FUNCTIONS and `program`'s own top-level declarations (a user function redeclaring a
- * builtin's name is rejected, not shadowed). Requires a `main` function to exist. Throws
- * descriptively on the first error found; does not attempt to collect more than one.
+ * builtin's name is rejected, not shadowed). Also checks every top-level statement's own expression
+ * (in an empty scope each - see ClegProgram's own doc comment on why they can't share state), and
+ * requires at least one to exist (there is no other way for a cleg program to produce a value at
+ * all). Throws descriptively on the first error found; does not attempt to collect more than one.
+ * Returns the checked type of `program`'s own LAST top-level statement - since there's no branching
+ * at top level, this is always exactly the type runClegProgram will actually produce, computable
+ * without evaluating anything (see typecheckClegAsBoard/buildBoardFromCleg below, which use this to
+ * validate a program's result type before ever running it).
  *
  * Simplification: does not check that every path through a function actually reaches a `return` -
  * a function whose body falls off the end without one is only caught at evaluation time (see
  * callUserFunction below), not here.
  */
-export function typecheckCleg(program: ClegProgram): void {
+export function typecheckCleg(program: ClegProgram): ClegType {
     const funcs: FuncTable = {};
     for (const fn of program.functions) {
         if (funcs[fn.name] || BUILTIN_FUNCTIONS[fn.name])
             throw new Error(`cleg: function '${fn.name}' is declared more than once (or shadows a builtin function)`);
         funcs[fn.name] = { params: fn.params.map(p => p.type), returnType: fn.returnType };
     }
-    if (!funcs['main']) throw new Error(`cleg: program has no 'main' function`);
 
     for (const fn of program.functions) {
         const env: TypeEnv = { vars: new Map(fn.params.map(p => [p.name, p.type])), parent: null };
         checkBlock(fn.body, env, funcs, fn.returnType);
     }
+
+    if (program.stmts.length === 0) throw new Error(`cleg: program has no top-level statement`);
+    let resultType: ClegType | null = null;
+    for (const stmt of program.stmts) resultType = checkExpr(stmt.expr, { vars: new Map(), parent: null }, funcs);
+    return resultType!;
 }
 
 function checkBlock(block: Block, parent: TypeEnv, funcs: FuncTable, returnType: ClegType): void {
@@ -1383,25 +1616,47 @@ function callUserFunction(fn: FunctionDecl, args: ClegValue[], funcs: UserFuncTa
 }
 
 /**
- * Parses, type-checks, then runs `source`'s own `main` function with `args` as its parameters -
- * the only way a cleg program receives external input right now (see ClegProgram's own doc
- * comment). `args` is checked against `main`'s declared parameter types the same way an ordinary
- * call's arguments are. Returns whatever `main` returns.
+ * Type-checks, then runs an already-parsed `program`: every top-level statement's own expression is
+ * evaluated in turn (in an empty scope each - see ClegProgram's own doc comment), left to right -
+ * not just the last one, since an earlier statement can still throw before the last one is ever
+ * reached, the usual "run for effect" statement-sequencing semantics. There is no `main` and no
+ * other designated entry-point function; the program's own value is whatever its last top-level
+ * statement evaluated to (typecheckCleg already required there to be at least one). Always
+ * re-typechecks even if the caller already did (e.g. GameConfig.boardDescr may have been validated
+ * once already at edit time, but could also have arrived as untrusted deserialized JSON) - cheap
+ * relative to actually evaluating, and a program's `program.functions`/`program.stmts` AST could in
+ * principle have been hand-built or tampered with since it was last checked.
  */
-export function runCleg(source: string, args: ClegValue[] = []): ClegValue {
-    const program = parseCleg(source);
+export function runClegProgram(program: ClegProgram): ClegValue {
     typecheckCleg(program);
     const funcs: UserFuncTable = {};
     for (const fn of program.functions) funcs[fn.name] = fn;
-    const main = funcs['main']; // typecheckCleg already required this to exist
 
-    if (args.length !== main.params.length)
-        throw new Error(`cleg: main expects ${main.params.length} argument(s), got ${args.length}`);
-    main.params.forEach((p, i) => {
-        const t = clegValueType(args[i]);
-        if (!typeEquals(t, p.type))
-            throw new Error(`cleg: main argument ${i + 1} ('${p.name}'): expected ${typeToString(p.type)}, got ${typeToString(t)}`);
-    });
+    let result: ClegValue | undefined;
+    for (const stmt of program.stmts) result = evalExpr(stmt.expr, { vars: new Map(), parent: null }, funcs);
+    return result!; // typecheckCleg already required program.stmts to be non-empty
+}
 
-    return callUserFunction(main, args, funcs);
+/** Parses `source`, then runs it via runClegProgram - see that function's own doc comment. */
+export function runCleg(source: string): ClegValue {
+    return runClegProgram(parseCleg(source));
+}
+
+/** Type-checks `program` (see typecheckCleg) and additionally requires its own result type to be
+ * `egr` - the shape every GameConfig.boardDescr must satisfy. Throws (with a message naming the
+ * actual result type) if `program` type-checks but doesn't produce an `egr`. */
+export function typecheckClegAsBoard(program: ClegProgram): void {
+    const t = typecheckCleg(program);
+    if (t.kind !== 'egr') throw new Error(`cleg: a board description must produce an egr, got ${typeToString(t)}`);
+}
+
+/**
+ * Type-checks `program` as a board description (typecheckClegAsBoard), runs it (runClegProgram),
+ * and unwraps the resulting `egr`'s own BoardConfig - the one entry point every GameConfig ->
+ * BoardConfig call site (src/renderer.ts, src/main.ts, server/src/onlineGameManager.ts) uses
+ * instead of the old boardType/boardArgs + applyModifiers two-step.
+ */
+export function buildBoardFromCleg(program: ClegProgram): BoardConfig {
+    typecheckClegAsBoard(program);
+    return (runClegProgram(program) as { kind: 'egr'; value: BoardConfig }).value;
 }

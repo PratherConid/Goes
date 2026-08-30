@@ -1,0 +1,1 @@
+prod(modify([edgeSplit(5)], regpolyB(5)), lineB(6));

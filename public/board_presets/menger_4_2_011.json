@@ -1,9 +1,0 @@
-{
-  "boardType": "menger",
-  "boardArgs": [
-    {"kind": "Number", "value": 4},
-    {"kind": "Number", "value": 2},
-    {"kind": "ZeroOneList", "values": [0, 1, 1]}
-  ],
-  "boardModifiers": []
-}

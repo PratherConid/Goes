@@ -1,0 +1,1 @@
+modify([triangleForm(4), quadForm(4), triangleForm(4), scale(0.33)], octaB());

@@ -1,0 +1,1 @@
+modify([quadForm(5), nis("(rrmp 0.1 (all))"), eis("(conve quad (conva node (all)))")], cublatB(3, 3, 3));

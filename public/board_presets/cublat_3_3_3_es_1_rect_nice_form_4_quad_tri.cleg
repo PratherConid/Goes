@@ -1,0 +1,1 @@
+modify([edgeSplit(1), rectify(), eis("(conve quad (all))"), form(4, mkFormSel("tri"), mkFormSel("quad", "(conve node (deg lt 6))")), scale(0.75)], cublatB(3, 3, 3));

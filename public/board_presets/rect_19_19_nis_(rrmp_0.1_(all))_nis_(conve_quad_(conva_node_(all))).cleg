@@ -1,0 +1,1 @@
+modify([nis("(rrmp 0.1 (all))"), nis("(conve quad (conva node (all)))")], rectB(19, 19));

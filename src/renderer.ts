@@ -1,21 +1,20 @@
 import { BoardState, MoveType, STONE_MAP } from '@shared/boardState.js';
 import {
-    PlayerInfo, GameConfig, FinishedGame, OnlinePlayerRequest, makeId,
-    BoardArgType, parseBoardArgToken, numArg, csvArg, zolArg, cloneBoardArgEntry, projectPoint,
+    PlayerInfo, GameConfig, FinishedGame, OnlinePlayerRequest, makeId, BoardArgType, projectPoint,
 } from '@shared/types.js';
 import type {
-    BoardView, OnlineStateResponse, PendingGame, ScoreRule, KoRule, TurnInfo, ReplayMove, ChatMessage, BoardArgEntry,
-    BoardConfig, BoardModifier,
+    BoardView, OnlineStateResponse, PendingGame, ScoreRule, KoRule, TurnInfo, ReplayMove, ChatMessage,
+    BoardConfig,
 } from '@shared/types.js';
 import {
-    PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, computeStarPoints,
-    parseModifiers, applyModifiers, MC_DEFAULT_DIST,
+    PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, computeStarPoints, MC_DEFAULT_DIST,
 } from '@shared/boardConfig.js';
+import { parseCleg, unparseCleg, typecheckClegAsBoard, buildBoardFromCleg, type ClegProgram } from '@shared/cleg.js';
 import { ServerConnection, type RequestHandle } from './serverConnection.js';
 import {
     SidePanelContent, SidePanelHierarchy, SidePanelBwFw, renderSidePanelChrome, sidePanelParent, childButtons,
     renderGamePresetSelection, currentGameSetupHtml, newGameSetupHtml,
-    coloredStoneCircle, fmtTurnList, fmtModifiers,
+    coloredStoneCircle, fmtTurnList,
 } from './sidePanel.js';
 import {
     type Viewport, QUAT_IDENTITY, defaultViewport, computeAlpha, computePerspectiveScale,
@@ -592,7 +591,7 @@ type PopupInfo =
     | { kind: 'create-failed'; message: string }
     | { kind: 'login-prompt' }
     | { kind: 'confirm'; message: string; onYes: () => void; onNo: () => void }
-    | { kind: 'edit-modifiers' };
+    | { kind: 'edit-board' };
 
 export class Renderer {
     aiEngineReady = false;
@@ -605,9 +604,7 @@ export class Renderer {
     selectingStone = false;
     pendingPos: number | null = null;
     newCfg = new GameConfig(
-        PrescribedBoardMap[PrescribedBoard.rectangularBoard][1],
-        [numArg(9), numArg(9)],
-        [],
+        parseCleg('rectB(9, 9);'),
         2, 2,
         [
             {player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0]},
@@ -633,14 +630,14 @@ export class Renderer {
     // rebuilds the whole panel - including this input - on every _render().
     private inviteInputTarget: number | 'random' | null = null;
     private inviteInputValue = '';
-    // Transient UI-only state for the 'edit-modifiers' popup (the 'mod' command) - the textarea's
+    // Transient UI-only state for the 'edit-board' popup (the 'board' command) - the textarea's
     // current text (field-backed the same way inviteInputValue is above, since renderPopup()
-    // rebuilds the whole popup, textarea included, on every call) and the parse error to show above
-    // the Ok button, if the last Ok click's parseModifiers(_modText) call threw. Seeded from
-    // newCfg.boardModifiers (via fmtModifiers) when 'mod' opens the popup; written back to
-    // newCfg.boardModifiers only once Ok's parseModifiers call succeeds (see _applyModifiersEdit()).
-    private _modText = '';
-    private _modError: string | null = null;
+    // rebuilds the whole popup, textarea included, on every call) and the error to show above the
+    // Ok button, if the last Ok click's parseCleg/typecheckClegAsBoard call threw. Seeded from
+    // newCfg.boardDescr (via unparseCleg) when 'board' opens the popup; written back to
+    // newCfg.boardDescr only once Ok's parse+typecheck succeeds (see _applyBoardEdit()).
+    private _boardDescrText = '';
+    private _boardDescrError: string | null = null;
     // Dedupes 'localEngine' auto-advance attempts (see _render()) per
     // (activeIdx, plyCount) - a failed attempt leaves plyCount unchanged, so
     // this prevents retrying every single _render() tick in a loop; a fresh
@@ -657,41 +654,11 @@ export class Renderer {
     private popupQueue: PopupInfo[] = [];
     // Loaded at startup from public/game_presets/ (see _loadPresets()); name -> config.
     presets = new Map<string, GameConfig>();
-    // Loaded at startup from public/board_presets/ (see _loadBoardConfigs()); name -> raw
-    // {boardType, boardArgs, boardModifiers} JSON, applied via GameConfig.adoptJSONBoardCfg().
-    boardConfigs = new Map<string, { boardType: string; boardArgs: BoardArgEntry[]; boardModifiers: BoardModifier[] }>();
-    // Per-board-type dimension memory so 'bt' restores custom dimensions on type switch
-    boardDimensionForNew: Record<PrescribedBoard, BoardArgEntry[]> = {
-        [PrescribedBoard.linearBoard]:               [numArg(9)],
-        [PrescribedBoard.rectangularBoard]:         [numArg(9), numArg(9)],
-        [PrescribedBoard.rectangularDiagonalBoard]: [numArg(9), numArg(9), numArg(3)],
-        [PrescribedBoard.cubeLatticeBoard]:         [numArg(5), numArg(5), numArg(2)],
-        [PrescribedBoard.hypercuboidBoard]:         [numArg(4), csvArg([5, 5, 2, 2])],
-        [PrescribedBoard.triangularBoard]:          [numArg(13)],
-        [PrescribedBoard.regularPolygonBoard]:      [numArg(6)],
-        [PrescribedBoard.tetrahedronBoard]:         [],
-        [PrescribedBoard.dodecahedronBoard]:        [],
-        [PrescribedBoard.icosahedronBoard]:         [],
-        [PrescribedBoard.triangularHexBoard]:       [numArg(5)],
-        [PrescribedBoard.hexBoard]:                 [numArg(4)],
-        [PrescribedBoard.trihexBoard]:               [numArg(3)],
-        [PrescribedBoard.snubSquareBoard]:          [numArg(5), numArg(5), numArg(2)],
-        [PrescribedBoard.snubSquareTriBoard]:       [numArg(3), numArg(3), numArg(3)],
-        [PrescribedBoard.twistedSquareBoard]:       [numArg(4), numArg(4), numArg(3)],
-        [PrescribedBoard.glueTwistedSquareBoard]:   [numArg(4), numArg(4), numArg(3)],
-        [PrescribedBoard.starBoard]:                 [numArg(6)],
-        [PrescribedBoard.octahedronBoard]:          [],
-        [PrescribedBoard.sierpinskiSimplex]:        [numArg(2), numArg(4)],
-        [PrescribedBoard.orthoplexBoard]:           [numArg(3)],
-        [PrescribedBoard.dodecahedronFlake]:        [numArg(2)],
-        [PrescribedBoard.icosahedronFlake]:         [numArg(2)],
-        [PrescribedBoard.octahedronFlake]:          [numArg(4)],
-        [PrescribedBoard.regularPolygonFlake]:      [numArg(6), numArg(2)],
-        [PrescribedBoard.centralRegularPolygonFlake]: [numArg(6), numArg(2)],
-        [PrescribedBoard.centralPentagonFlake]:     [numArg(2)],
-        [PrescribedBoard.mengerSpongeFlake]:        [numArg(2), numArg(3), zolArg([0, 0, 1, 1])],
-        [PrescribedBoard.antiprismBoard]:           [numArg(5)],
-    };
+    // Loaded at startup from public/board_presets/ (see _loadBoardConfigs()); name -> a
+    // boardDescr-only preset, applied via GameConfig.adoptBoardDescr(). On disk each preset stores
+    // { boardDescr: string } (cleg source text) - _loadBoardConfigs() parses it, so this map always
+    // holds the parsed ClegProgram, matching what GameConfig.boardDescr itself needs.
+    boardConfigs = new Map<string, { boardDescr: ClegProgram }>();
     nShowHistory = 10;
     currentSidePanel: SidePanelContent = SidePanelContent.Home;
     sidePanelBwFw: SidePanelBwFw = new SidePanelBwFw(SidePanelContent.Home);
@@ -1001,7 +968,7 @@ export class Renderer {
             this.newGameButtons.appendChild(presetBtnRow);
             const configureBtnRow = document.createElement('div');
             configureBtnRow.className = 'btn-row';
-            configureBtnRow.append(...childButtons(children.slice(2), onNav), this._buildConfigureModifiersBtn());
+            configureBtnRow.append(...childButtons(children.slice(2), onNav), this._buildConfigureBoardBtn());
             this.newGameButtons.appendChild(configureBtnRow);
             const startBtnRow = document.createElement('div');
             startBtnRow.className = 'btn-row';
@@ -1119,24 +1086,25 @@ export class Renderer {
         this.presets = new Map(entries.filter((e): e is readonly [string, GameConfig] => e !== null));
     }
 
-    // Fetches every preset in _boardConfigDescriptions from public/board_presets/ and stores its
-    // raw {boardType, boardArgs, boardModifiers} JSON in `boardConfigs`, keyed by filename stem -
-    // same "not awaited by init(), each fails independently" convention as _loadPresets() above,
-    // except the raw JSON is kept as-is (for GameConfig.adoptJSONBoardCfg()) rather than built into
-    // a whole GameConfig, since a board-only preset has none of GameConfig's other required fields.
+    // Fetches every preset in _boardConfigDescriptions from public/board_presets/ - each *.cleg
+    // file holds nothing but plain cleg SOURCE TEXT (readable/editable on disk as-is, unlike the
+    // parsed-AST shape GameConfig.boardDescr itself uses), parsed here via parseCleg into the
+    // ClegProgram `boardConfigs` actually stores - same "not awaited by init(), each fails
+    // independently" convention as _loadPresets() above; a parse error is caught and dropped
+    // exactly like a fetch failure, since a board-only preset has none of GameConfig's other
+    // required fields anyway.
     private async _loadBoardConfigs(): Promise<void> {
         const entries = await Promise.all([..._boardConfigDescriptions.keys()].map(async name => {
             try {
-                const raw = await fetch(`/board_presets/${name}.json`).then(r => r.json());
-                return [name, raw] as const;
+                const source = await fetch(`/board_presets/${name}.cleg`).then(r => r.text());
+                return [name, { boardDescr: parseCleg(source) }] as const;
             } catch (e) {
                 console.warn(`Failed to load board config '${name}':`, e);
                 return null;
             }
         }));
         this.boardConfigs = new Map(entries.filter(
-            (e): e is readonly [string, { boardType: string; boardArgs: BoardArgEntry[]; boardModifiers: BoardModifier[] }] =>
-                e !== null,
+            (e): e is readonly [string, { boardDescr: ClegProgram }] => e !== null,
         ));
     }
 
@@ -1634,17 +1602,11 @@ export class Renderer {
             ${row('preset &lt;name&gt;',      'Use the specified preset (see the Game Presets page for available names)')}
             ${row('fpo',                      'Toggle forced-pass-only for new games')}
             ${row('ascd',                     'Toggle allow-suicide for new games')}
-            ${row('bt &lt;name&gt',           'Set board type for new game')}
-            ${row(
-                'bd &lt;args…&gt;',
-                'Set board dimension for new game - one argument per the current board type\'s own '
-                + 'slots (see its own usage string above); a variable-dimension type like hcub takes '
-                + 'a single comma-separated list',
-            )}
-            ${row('mod', 'Open a text box (pre-filled with the new-game config\'s current modifiers) to '
-                + 'freely edit the whole modifier list at once - one "&lt;name&gt; &lt;args&gt;" per '
-                + 'entry, separated by ";" (see Board Modifiers); Ok re-parses it and, if well-formed, '
-                + 'replaces the new-game modifier list - otherwise the box stays open with an error')}
+            ${row('board', 'Open a text box (pre-filled with the new-game config\'s current board '
+                + 'description) to freely edit the whole cleg program at once - see the Board Types/'
+                + 'Board Modifiers pages for available construction functions; Ok re-parses and '
+                + 'type-checks it (must produce an egr) and, if valid, replaces the new-game board '
+                + 'description - otherwise the box stays open with an error')}
             ${row('ns &lt;n&gt;',             'Set number of stone types for new games')}
             ${row('np &lt;n&gt;',             'Set number of players for new games')}
             ${row('tl &lt;player&gt;-&lt;stone bits&gt; …',
@@ -2104,15 +2066,15 @@ export class Renderer {
         return btn;
     }
 
-    // New Game panel's own "Configure Modifiers" button - not a SidePanelContent nav target (like
+    // New Game panel's own "Configure Board" button - not a SidePanelContent nav target (like
     // ConfigureOnlinePlayers's own button, built via childButtons()), so built directly here, same
-    // as _buildStartLocalGameBtn/_buildStartOnlineGameBtn above; does exactly what the 'mod'
-    // command does (_openModifiersEditor()).
-    private _buildConfigureModifiersBtn(): HTMLButtonElement {
+    // as _buildStartLocalGameBtn/_buildStartOnlineGameBtn above; does exactly what the 'board'
+    // command does (_openBoardEditor()).
+    private _buildConfigureBoardBtn(): HTMLButtonElement {
         const btn = document.createElement('button');
         btn.className = 'panel-child-btn';
-        btn.textContent = 'Configure Modifiers';
-        btn.addEventListener('click', () => this._openModifiersEditor());
+        btn.textContent = 'Configure Board';
+        btn.addEventListener('click', () => this._openBoardEditor());
         return btn;
     }
 
@@ -2324,31 +2286,31 @@ export class Renderer {
             laterBtn.textContent = 'Later';
             laterBtn.addEventListener('click', () => this._dismissPopup());
             btnRow.append(loginBtn, laterBtn);
-        } else if (this.currentPopup.kind === 'edit-modifiers') {
+        } else if (this.currentPopup.kind === 'edit-board') {
             // Own layout (label/textarea/error stacked above the Ok button) rather than the shared
             // text+btnRow pair every other popup kind uses below - appends directly and returns.
             box.classList.add('mod-edit-box');
-            text.textContent = 'Board modifiers:';
+            text.textContent = 'Board description:';
             const textarea = document.createElement('textarea');
             // account-input matches the chat textbox's own look (#chat-input); mod-edit-textarea
             // layers this popup's own sizing on top (see index.html).
             textarea.className = 'account-input mod-edit-textarea';
-            textarea.rows = 4;
-            textarea.value = this._modText;
+            textarea.rows = 12;
+            textarea.value = this._boardDescrText;
             // Field-backed the same way inviteInputValue is (see its own doc comment) - not
             // re-rendered on every keystroke, so the textarea keeps focus/cursor position while typing.
-            textarea.addEventListener('input', () => { this._modText = textarea.value; });
+            textarea.addEventListener('input', () => { this._boardDescrText = textarea.value; });
             box.append(text, textarea);
-            if (this._modError !== null) {
+            if (this._boardDescrError !== null) {
                 const errorDiv = document.createElement('div');
                 errorDiv.className = 'mod-edit-error';
-                errorDiv.textContent = this._modError;
+                errorDiv.textContent = this._boardDescrError;
                 box.appendChild(errorDiv);
             }
             const okBtn = document.createElement('button');
             okBtn.className = 'panel-child-btn';
             okBtn.textContent = 'Ok';
-            okBtn.addEventListener('click', () => this._applyModifiersEdit());
+            okBtn.addEventListener('click', () => this._applyBoardEdit());
             btnRow.appendChild(okBtn);
             box.appendChild(btnRow);
             this.popupOverlay.appendChild(box);
@@ -2379,29 +2341,33 @@ export class Renderer {
         this._render();
     }
 
-    // Opens the edit-modifiers popup (the 'mod' command, and the New Game panel's own "Configure
-    // Modifiers" button - see _buildConfigureModifiersBtn()) - seeded from the current
-    // newCfg.boardModifiers via fmtModifiers, same as _modText's own doc comment describes.
-    private _openModifiersEditor() {
-        this._modText = fmtModifiers(this.newCfg.boardModifiers);
-        this._modError = null;
-        this.popupQueue.push({ kind: 'edit-modifiers' });
+    // Opens the edit-board popup (the 'board' command, and the New Game panel's own "Configure
+    // Board" button - see _buildConfigureBoardBtn()) - seeded from the current newCfg.boardDescr
+    // via unparseCleg, same as _boardDescrText's own doc comment describes.
+    private _openBoardEditor() {
+        this._boardDescrText = unparseCleg(this.newCfg.boardDescr);
+        this._boardDescrError = null;
+        this.popupQueue.push({ kind: 'edit-board' });
         this._advancePopupQueue();
     }
 
-    // The 'edit-modifiers' popup's Ok button: parses the whole textarea via parseModifiers (the
-    // mutually-recursive-with-parseModifier tree builder in boardConfig.ts, which handles
-    // beginprod/endprod nesting itself - see its own doc comment). On success, adopts the result
-    // into newCfg.boardModifiers and closes the popup; on failure, keeps the popup open and shows
-    // the error above the Ok button instead, leaving _modText as the user left it.
-    private _applyModifiersEdit() {
+    // The 'edit-board' popup's Ok button: parses the whole textarea via parseCleg, then requires it
+    // typecheck with an `egr` result via typecheckClegAsBoard (shared/cleg.ts) - a board description
+    // that doesn't actually describe a board is rejected here rather than later, when a game
+    // actually starts. On success, adopts the result into newCfg.boardDescr and closes the popup;
+    // on failure, keeps the popup open and shows the error above the Ok button instead, leaving
+    // _boardDescrText as the user left it.
+    private _applyBoardEdit() {
+        let program;
         try {
-            this.newCfg.boardModifiers = parseModifiers(this._modText);
+            program = parseCleg(this._boardDescrText);
+            typecheckClegAsBoard(program);
         } catch (e) {
-            this._modError = e instanceof Error ? e.message : String(e);
+            this._boardDescrError = e instanceof Error ? e.message : String(e);
             this._render();
             return;
         }
+        this.newCfg.boardDescr = program;
         this._dismissPopup();
     }
 
@@ -2912,10 +2878,9 @@ export class Renderer {
     // "ignore invited players?" popup below (or never, if they decline) -
     // see _createLocalGame()'s own doc comment.
     private _startNewGame(onStarted?: () => void) {
-        const entry = _cmdToBoard.get(this.newCfg.boardType)!;
         let bc: BoardConfig;
         try {
-            bc = applyModifiers(entry.fn(...this.newCfg.boardArgs), this.newCfg.boardModifiers);
+            bc = buildBoardFromCleg(this.newCfg.boardDescr);
         } catch (e) {
             this._setCmdOutput(e instanceof Error ? e.message : String(e));
             return;
@@ -2937,15 +2902,14 @@ export class Renderer {
     }
 
     // Called by a Select-Board-Preset button click (see renderGamePresetSelection,
-    // sidePanel.ts) - applies just the board-only fields (boardType/boardArgs/boardModifiers)
-    // onto newCfg in place via GameConfig.adoptJSONBoardCfg(), leaving every other field
-    // (turnList, players, scoring rules, etc.) untouched, then navigates back to New Game to show
-    // the result; silently does nothing for an unknown name, since the button list is always
-    // built from this.boardConfigs' own keys.
+    // sidePanel.ts) - applies just the board-only field (boardDescr) onto newCfg in place via
+    // GameConfig.adoptBoardDescr(), leaving every other field (turnList, players, scoring rules,
+    // etc.) untouched, then navigates back to New Game to show the result; silently does nothing
+    // for an unknown name, since the button list is always built from this.boardConfigs' own keys.
     private _selectBoardConfig(name: string) {
         const bc = this.boardConfigs.get(name);
         if (!bc) return;
-        this.newCfg.adoptJSONBoardCfg(bc);
+        this.newCfg.adoptBoardDescr(bc.boardDescr);
         this._navigateSidePanel(SidePanelContent.NewGame);
     }
 
@@ -3230,48 +3194,8 @@ export class Renderer {
             }
             this._active.viewport.scale = v;
         }
-        else if (cmd === 'bt') {
-            if (!parts[1]) { this._setCmdOutput('Usage: bt <board-type>'); return; }
-            if (!_cmdToBoard.has(parts[1])) { this._setCmdOutput(`Unknown board type: ${parts[1]}`); return; }
-            const entry = _cmdToBoard.get(parts[1])!;
-            this.newCfg.boardType = parts[1];
-            this.newCfg.boardArgs = this.boardDimensionForNew[entry.boardType as PrescribedBoard].map(cloneBoardArgEntry);
-        }
-        else if (cmd === 'bd') {
-            const boardTypeEnum = _cmdToBoard.get(this.newCfg.boardType)!.boardType as PrescribedBoard;
-            const argTypes = PrescribedBoardMap[boardTypeEnum][0];
-            const tokens = parts.slice(1);
-            if (tokens.length !== argTypes.length) {
-                const placeholder = (t: BoardArgType) => t === BoardArgType.Number ? '<num>'
-                    : t === BoardArgType.CommaSeparatedNumbers ? '<num,num,…>' : '<0/1…>';
-                this._setCmdOutput(`Usage: bd ${argTypes.map(placeholder).join(' ')}`);
-                return;
-            }
-            // Each token is parsed per its own declared BoardArgType into exactly one BoardArgEntry
-            // (see parseBoardArgToken/BoardArgEntry's own doc comments) - ZeroOneList's own token is
-            // self-validating (throws on a non-0/1 character), so this is wrapped in try/catch.
-            let entries: BoardArgEntry[];
-            try {
-                entries = argTypes.map((type, i) => parseBoardArgToken(type, tokens[i]));
-            } catch (e) {
-                this._setCmdOutput(`bd: ${e instanceof Error ? e.message : String(e)}`); return;
-            }
-            // A ZeroOneList's own entries are legitimately 0 (e.g. an "off" indicator class) - only
-            // a Number/CommaSeparatedNumbers entry's own number(s) (ordinary dimensions/counts) must
-            // be positive.
-            const isValid = (e: BoardArgEntry) => e.kind === BoardArgType.ZeroOneList
-                ? e.values.every(n => Number.isInteger(n))
-                : e.kind === BoardArgType.Number
-                    ? Number.isInteger(e.value) && e.value > 0
-                    : e.values.every(n => Number.isInteger(n) && n > 0);
-            if (!entries.every(isValid)) {
-                this._setCmdOutput('bd: all arguments must be positive integers (0/1 list entries excepted)'); return;
-            }
-            this.boardDimensionForNew[boardTypeEnum] = entries;
-            this.newCfg.boardArgs = entries.map(cloneBoardArgEntry);
-        }
-        else if (cmd === 'mod') {
-            this._openModifiersEditor();
+        else if (cmd === 'board') {
+            this._openBoardEditor();
         }
         else if (cmd === 'ns') {
             const n = Number(parts[1]);
@@ -3652,9 +3576,7 @@ export class Renderer {
         for (const { id, finishedGame: raw, chat } of entries) {
             try {
                 const fg = FinishedGame.fromJSON(raw);
-                const boardEntry = _cmdToBoard.get(fg.config.boardType);
-                if (!boardEntry) continue;
-                const bc = applyModifiers(boardEntry.fn(...fg.config.boardArgs), fg.config.boardModifiers);
+                const bc = buildBoardFromCleg(fg.config.boardDescr);
                 const bs = BoardState.fromFinishedGame(fg, bc);
                 this.finishedGames.set('O_' + id, {
                     bs, config: fg.config, displayPlyNum: bs.getView().plyCount,
@@ -3710,9 +3632,13 @@ export class Renderer {
 
     // Promote a pending game to active once it starts.
     private _activatePendingGame(id: string, config: GameConfig, chat: ChatMessage[] = []) {
-        const boardEntry = _cmdToBoard.get(config.boardType);
-        if (!boardEntry) { this._setCmdOutput(`Unknown board type: ${config.boardType}`); return; }
-        const bc = applyModifiers(boardEntry.fn(...config.boardArgs), config.boardModifiers);
+        let bc: BoardConfig;
+        try {
+            bc = buildBoardFromCleg(config.boardDescr);
+        } catch (e) {
+            this._setCmdOutput(e instanceof Error ? e.message : String(e));
+            return;
+        }
         const bs = new BoardState(
             config.numStones, config.numPlayers,
             config.turnList, config.playerStonePlaceLimit, config.globalStonePlaceLimit, config.stoneToPlayerMap,

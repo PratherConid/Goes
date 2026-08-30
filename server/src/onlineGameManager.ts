@@ -1,9 +1,7 @@
 import { BoardState } from '@shared/boardState.js';
-import { PrescribedBoardMap, PrescribedBoardFns, PrescribedBoard, applyModifiers } from '@shared/boardConfig.js';
+import { buildBoardFromCleg, typecheckClegAsBoard } from '@shared/cleg.js';
 import { PlayerInfo, GameConfig, FinishedGame, OnlinePlayerRequest, makeId } from '@shared/types.js';
-import type {
-    OnlineStateResponse, PendingGame, ReplayMove, ChatMessage, BoardArgEntry, BoardConfig,
-} from '@shared/types.js';
+import type { OnlineStateResponse, PendingGame, ReplayMove, ChatMessage } from '@shared/types.js';
 import { recordFinishedGame, getFinishedGames } from './gameRecordStore.js';
 import type { GameRecordStoreState } from './gameRecordStore.js';
 
@@ -55,13 +53,6 @@ export interface OnlineGame {
 
 const MAX_CHAT_LENGTH = 2000;
 
-const boardTypeToFn = new Map<string, (...args: BoardArgEntry[]) => BoardConfig>();
-for (const key of Object.keys(PrescribedBoardMap)) {
-    const numKey = Number(key) as PrescribedBoard;
-    const [, typeStr] = PrescribedBoardMap[numKey];
-    boardTypeToFn.set(typeStr, PrescribedBoardFns[numKey]);
-}
-
 
 export class OnlineGameManager {
     // pendingGames/activeGames are lost on server restart; no persistence.
@@ -76,9 +67,7 @@ export class OnlineGameManager {
         this.gameRecordState = gameRecordState;
         for (const { id, finishedGame, observers, chat } of gameRecordState.loadedRecords) {
             try {
-                const fn = boardTypeToFn.get(finishedGame.config.boardType);
-                if (!fn) throw new Error(`Unknown board type: ${finishedGame.config.boardType}`);
-                const bc = applyModifiers(fn(...finishedGame.config.boardArgs), finishedGame.config.boardModifiers);
+                const bc = buildBoardFromCleg(finishedGame.config.boardDescr);
                 const boardState = BoardState.fromFinishedGame(finishedGame, bc);
                 this.finishedGames.set(id, {
                     id, config: finishedGame.config, boardState, engineSessions: new Map(), observers, chat,
@@ -115,8 +104,11 @@ export class OnlineGameManager {
     // client, is the sole authority for this; an incoming config's own
     // `players` map (if any) is ignored entirely.
     createGame(config: GameConfig, request: OnlinePlayerRequest): { id: string; status: 'waiting' | 'playing' } {
-        const fn = boardTypeToFn.get(config.boardType);
-        if (!fn) throw Object.assign(new Error(`Unknown board type: ${config.boardType}`), { statusCode: 400 });
+        try {
+            typecheckClegAsBoard(config.boardDescr);
+        } catch (e) {
+            throw Object.assign(new Error(e instanceof Error ? e.message : String(e)), { statusCode: 400 });
+        }
         let id: string;
         do { id = makeId(12); } while (this.pendingGames.has(id) || this.activeGames.has(id));
 
@@ -253,9 +245,7 @@ export class OnlineGameManager {
     }
 
     private _startGame(pending: ServerPendingGame) {
-        const bc = applyModifiers(
-            boardTypeToFn.get(pending.config.boardType)!(...pending.config.boardArgs), pending.config.boardModifiers,
-        );
+        const bc = buildBoardFromCleg(pending.config.boardDescr);
         const boardState = new BoardState(
             pending.config.numStones, pending.config.numPlayers,
             pending.config.turnList, pending.config.playerStonePlaceLimit, pending.config.globalStonePlaceLimit,

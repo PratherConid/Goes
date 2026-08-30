@@ -1,7 +1,0 @@
-{
-  "boardType": "cpentflake",
-  "boardArgs": [
-    {"kind": "Number", "value": 4}
-  ],
-  "boardModifiers": []
-}

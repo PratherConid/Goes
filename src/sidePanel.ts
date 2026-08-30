@@ -3,10 +3,16 @@
 // Renderer.activeTab: 'history'|'status'|'commands' switch with a hierarchy
 // that isn't hardcoded to one flat level.
 
-import type { BoardView, GameConfig, PlayerInfo, TurnInfo, BoardModifier } from '@shared/types.js';
-import { formatBoardArgEntry } from '@shared/types.js';
-import { formatSelector, formatFormSelectors } from '@shared/selector.js';
+import type { BoardView, GameConfig, PlayerInfo, TurnInfo } from '@shared/types.js';
+import { unparseCleg } from '@shared/cleg.js';
 import { STONE_MAP } from '@shared/boardState.js';
+
+// Minimal HTML-escaping for text embedded in an innerHTML template - needed for cleg source text
+// (unparseCleg), which can contain '<'/'>' (comparison operators) or '&' that would otherwise be
+// misread as markup.
+function escapeHtml(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
 export enum SidePanelContent {
     Home                = 'home',
@@ -380,39 +386,6 @@ export const fmtGlobalLimit = (limit: (number | null)[]) =>
     limit
         .map((lim, i) => `${coloredStoneCircle(i + 1)}&nbsp;${lim === null ? '∞' : lim}`)
         .join('&nbsp;&nbsp;&nbsp;');
-// Renders one modifier as one "<name> <args>" entry (same short names as the `mod` command's own
-// edit-modifiers popup, see boardConfig.ts's parseModifier/parseModifiers) - except the two
-// tree-shaped modifiers, 'Prod' and 'Repeat', which expand back out to the flat "beginprod <args>;
-// ...; endprod"/"repeat <count>; ...; endrepeat" command sequence parseModifiers would fold back
-// into them, recursively.
-function fmtModifier(m: BoardModifier): string {
-    switch (m.kind) {
-        case 'Rectify': return 'rect';
-        case 'EdgeSplit': return `es ${m.splitN}`;
-        case 'MergeClose': return `mc ${m.dist}`;
-        case 'TriangleForm': return m.sel === undefined ? `triform ${m.w}` : `triform ${m.w} ${formatSelector(m.sel)}`;
-        case 'QuadForm': return m.sel === undefined ? `quadform ${m.w}` : `quadform ${m.w} ${formatSelector(m.sel)}`;
-        case 'Prod': {
-            const head = `${m.boardType} ${m.boardArgs.map(formatBoardArgEntry).join(' ')}`;
-            return m.modifiers.length === 0
-                ? `prod ${head}`
-                : [`beginprod ${head}`, ...m.modifiers.map(fmtModifier), 'endprod'].join('; ');
-        }
-        case 'Repeat':
-            return [`repeat ${m.count}`, ...m.modifiers.map(fmtModifier), 'endrepeat'].join('; ');
-        case 'GlobalCentralize': return 'gcent';
-        case 'QuadOctarize': return 'quadocta';
-        case 'Scale': return `scale ${m.factor}`;
-        case 'NodeInducedSubgraph': return `nis ${formatSelector(m.sel)}`;
-        case 'EdgeInducedSubgraph': return `eis ${formatSelector(m.sel)}`;
-        case 'Form': return `form ${m.w} ${formatFormSelectors(m.sels)}`;
-    }
-}
-
-// Renders e.g. "rect; es 3; mc 0.5; triform 3; form 4 (tri) (quad (deg gt 2)); prod rect 3 3;
-// beginprod rect 3 3; es 2; endprod; repeat 3; es 2; endrepeat; gcent; quadocta; scale 2;
-// nis (deg gt 2); eis (all)" - see fmtModifier above, joined by "; ".
-export const fmtModifiers = (modifiers: BoardModifier[]) => modifiers.map(fmtModifier).join('; ');
 
 // Pure: HTML for the "Current Game Info" side-panel node's content - the
 // active game's live rules, sourced from its BoardView v (already-resolved
@@ -445,9 +418,8 @@ export function currentGameSetupHtml(v: BoardView, players: Map<number, PlayerIn
 // part of this HTML. Caller assigns the result to a container's innerHTML.
 export function newGameSetupHtml(cfg: GameConfig): string {
     return `
-        <div><b>Board type:</b> ${cfg.boardType}</div>
-        <div><b>Board dimension:</b> ${cfg.boardArgs.map(formatBoardArgEntry).join(' ')}</div>
-        <div><b>Board modifiers:</b> ${fmtModifiers(cfg.boardModifiers)}</div>
+        <div><b>Board description:</b></div>
+        <pre>${escapeHtml(unparseCleg(cfg.boardDescr))}</pre>
         <div><b>Type of stones:</b> ${cfg.numStones}</div>
         <div><b>Number of players:</b> ${cfg.numPlayers}</div>
         <div><b>Turn list:</b> ${fmtTurnList(cfg.turnList, cfg.players)}</div>

@@ -1,8 +1,0 @@
-{
-  "boardType": "cpolyflake",
-  "boardArgs": [
-    {"kind": "Number", "value": 8},
-    {"kind": "Number", "value": 3}
-  ],
-  "boardModifiers": []
-}

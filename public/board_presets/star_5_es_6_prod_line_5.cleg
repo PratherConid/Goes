@@ -1,0 +1,1 @@
+prod(modify([edgeSplit(6)], starB(5)), lineB(5));

@@ -1,3 +1,7 @@
+// Type-only - erased entirely at compile time, so this doesn't create a real circular runtime
+// import even though shared/cleg.ts itself imports real values from this file.
+import type { ClegProgram } from './cleg.js';
+
 /** General-purpose runtime assertion, used throughout shared/ and beyond - unified here rather than
  * duplicated per-file (see git history). */
 export function assert(cond: boolean, msg: string): asserts cond {
@@ -342,8 +346,8 @@ export enum BoardArgType { Number = 'Number', CommaSeparatedNumbers = 'CommaSepa
 /**
  * One parsed board-arg token, tagged with its own `BoardArgType` so callers never have to
  * separately track "which type produced this value" alongside a flattened, anonymous number -
- * this is the type every "list of board args" in this codebase is a list OF (`GameConfig.boardArgs`,
- * `BoardModifier`'s own `Prod.boardArgs`, shared/boardConfig.ts's `PrescribedBoardFns`' own rest
+ * this is the type every "list of board args" in this codebase is a list OF (`BoardModifier`'s own
+ * `Prod.boardArgs`, shared/boardConfig.ts's `PrescribedBoardFns`' own rest
  * args, ...): exactly one `BoardArgEntry` per POSITIONAL arg (never flattened), so `entries[i]`
  * always corresponds to `PrescribedBoardMap[pb][0][i]` (that positional arg's own declared
  * `BoardArgType`) for any board type `pb`. Earlier revisions of this design flattened every entry
@@ -502,24 +506,13 @@ export type BoardModifier =
     | { kind: 'NodeInducedSubgraph'; sel: Selector }
     | { kind: 'EdgeInducedSubgraph'; sel: Selector };
 
-// Deep-clones a single BoardModifier - a plain `{ ...m }` alone would still share Prod's own
-// nested boardArgs array (itself a BoardArgEntry[] - see cloneBoardArgEntry()'s own doc comment
-// above for why each entry needs its own deep clone too) and, since Prod/Repeat are both
-// tree-shaped, their own nested modifiers array (recursively cloned the same way) between the
-// original and the clone, so mutating one's boardArgs/modifiers wouldn't otherwise bleed into the
-// other. Used (via .map()) by both GameConfig.copy() and adoptJSONBoardCfg() below.
-function cloneBoardModifier(m: BoardModifier): BoardModifier {
-    if (m.kind === 'Prod')
-        return { ...m, boardArgs: m.boardArgs.map(cloneBoardArgEntry), modifiers: m.modifiers.map(cloneBoardModifier) };
-    if (m.kind === 'Repeat')
-        return { ...m, modifiers: m.modifiers.map(cloneBoardModifier) };
-    return { ...m };
-}
-
 export class GameConfig {
-    boardType: string;
-    boardArgs: BoardArgEntry[];
-    boardModifiers: BoardModifier[];
+    // The board's own construction program - a cleg (shared/cleg.ts) AST, run via
+    // buildBoardFromCleg (shared/cleg.ts) to get the actual BoardConfig when this GameConfig
+    // becomes a real game. Not source text - see ClegProgram's own doc comment; a cleg source
+    // string round-trips through this via parseCleg/unparseCleg (both shared/cleg.ts), used e.g. by
+    // the Configure Board popup (src/renderer.ts).
+    boardDescr: ClegProgram;
     numStones: number;
     numPlayers: number;
     turnList: TurnInfo[];
@@ -548,9 +541,7 @@ export class GameConfig {
     players: Map<number, PlayerInfo>;  // slot → player; empty slots are pending/unassigned
 
     constructor(
-        boardType: string,
-        boardArgs: BoardArgEntry[],
-        boardModifiers: BoardModifier[],
+        boardDescr: ClegProgram,
         numStones: number,
         numPlayers: number,
         turnList: TurnInfo[],
@@ -566,9 +557,7 @@ export class GameConfig {
         players: Map<number, PlayerInfo> = new Map(),
     ) {
         if (komi.some(k => k < 0)) throw new Error(`komi values must be >= 0, got [${komi.join(', ')}]`);
-        this.boardType        = boardType;
-        this.boardArgs        = boardArgs;
-        this.boardModifiers   = boardModifiers;
+        this.boardDescr       = boardDescr;
         this.numStones        = numStones;
         this.numPlayers       = numPlayers;
         this.turnList         = turnList;
@@ -586,9 +575,11 @@ export class GameConfig {
 
     copy(): GameConfig {
         return new GameConfig(
-            this.boardType,
-            this.boardArgs.map(cloneBoardArgEntry),
-            this.boardModifiers.map(cloneBoardModifier),
+            // No deep clone needed - unlike the old boardArgs/boardModifiers (mutated in place by
+            // dimension-editing UI/the 'mod' command), boardDescr is always replaced wholesale (see
+            // adoptBoardDescr below), never mutated node-by-node, so aliasing the same ClegProgram
+            // is safe.
+            this.boardDescr,
             this.numStones,
             this.numPlayers,
             this.turnList.map(t => ({ ...t, stones: [...t.stones], protected: [...t.protected], friendly: [...t.friendly] })),
@@ -611,7 +602,7 @@ export class GameConfig {
     // array, so JSON.stringify works (Set serializes to "{}" otherwise).
     toJSON() {
         return {
-            boardType: this.boardType, boardArgs: this.boardArgs, boardModifiers: this.boardModifiers,
+            boardDescr: this.boardDescr,
             numStones: this.numStones, numPlayers: this.numPlayers,
             turnList: this.turnList,
             playerStonePlaceLimit: this.playerStonePlaceLimit,
@@ -625,19 +616,12 @@ export class GameConfig {
         };
     }
 
-    // Applies a board-only preset (boardType/boardArgs/boardModifiers, e.g. from
-    // public/board_presets/) to this GameConfig in place, leaving every other field (turnList,
-    // players, scoring rules, etc.) untouched - unlike fromJSON(), which builds a whole new
-    // GameConfig from a full preset. Copies boardArgs/boardModifiers (same convention as copy(),
-    // below) rather than aliasing raw's own arrays - raw is Renderer.boardConfigs' cached preset
-    // object (see src/renderer.ts's _loadBoardConfigs()), reused across every load of that preset,
-    // and boardArgs/boardModifiers both get mutated in place elsewhere (dimension-editing UI,
-    // the 'mod'/'endprod' commands) - aliasing would corrupt the cached preset for the rest of the
-    // session after the first such edit.
-    adoptJSONBoardCfg(raw: any): void {
-        this.boardType      = raw.boardType;
-        this.boardArgs      = (raw.boardArgs as BoardArgEntry[]).map(cloneBoardArgEntry);
-        this.boardModifiers = (raw.boardModifiers as BoardModifier[]).map(cloneBoardModifier);
+    // Applies a board-only preset (a boardDescr, e.g. from public/board_presets/) to this
+    // GameConfig in place, leaving every other field (turnList, players, scoring rules, etc.)
+    // untouched - unlike fromJSON(), which builds a whole new GameConfig from a full preset. No
+    // clone needed - see copy()'s own doc comment on why aliasing a ClegProgram is safe.
+    adoptBoardDescr(descr: ClegProgram): void {
+        this.boardDescr = descr;
     }
 
     static fromJSON(raw: any): GameConfig {
@@ -653,7 +637,7 @@ export class GameConfig {
         const globalStonePlaceLimit = (raw.globalStonePlaceLimit
             ?? new Array(raw.numStones).fill(null)) as (number | null)[];
         return new GameConfig(
-            raw.boardType, raw.boardArgs, raw.boardModifiers as BoardModifier[], raw.numStones, raw.numPlayers,
+            raw.boardDescr as ClegProgram, raw.numStones, raw.numPlayers,
             raw.turnList, playerStonePlaceLimit, globalStonePlaceLimit, stoneToPlayerMap, raw.forcedPassOnly,
             (raw.scoreRule ?? 'area') as ScoreRule,
             (raw.komi ?? new Array(raw.numPlayers).fill(0)) as number[],

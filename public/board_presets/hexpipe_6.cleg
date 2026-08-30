@@ -1,0 +1,1 @@
+modify([eis("(conve quad (inter (conva node (deg gt 4)) (conve node (deg eq 5))))"), quadForm(6, "(inter (conve node (deg eq 3)) (conve node (deg eq 6)))")], cublatB(4, 4, 4));

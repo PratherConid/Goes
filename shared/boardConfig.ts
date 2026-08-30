@@ -1,4 +1,6 @@
 import type { GameConfig, BoardArgEntry, BoardConfig, BoardModifier, Selector, FormSelector, BoardEdge } from './types.js';
+// Type-only - see types.ts's own note on why this isn't a real circular runtime import.
+import type { ClegProgram } from './cleg.js';
 import {
     assert, BoardArgType, boardArgNumber, boardArgList, parseBoardArgToken, Embedding, projectPoint,
 } from './types.js';
@@ -577,23 +579,38 @@ export function rectangularBoard(w: number, h: number): BoardConfig {
     return hypercuboidBoard(2, [w, h]);
 }
 
+// Recognizes `config.boardDescr` as being SYNTACTICALLY exactly one bare `rectB(<NumberLit>,
+// <NumberLit>);` statement (no functions declared, nothing else) - the one shape computeStarPoints
+// below knows how to derive Go star points from. Deliberately a purely structural AST check, not an
+// evaluation of the program (which could be an arbitrarily complex construction, e.g. modify(...)
+// calls, a for loop, a helper function) - anything other than this one exact shape means "not
+// recognizable as a plain rectangular board" and disables star points, same as the old
+// boardType!=='rect' fallback did.
+function tryExtractPlainRectDims(program: ClegProgram): [number, number] | null {
+    if (program.functions.length !== 0 || program.stmts.length !== 1) return null;
+    const expr = program.stmts[0].expr;
+    if (expr.kind !== 'CallExpr' || expr.callee !== 'rectB' || expr.args.length !== 2) return null;
+    const [a, b] = expr.args;
+    if (a.kind !== 'NumberLit' || b.kind !== 'NumberLit') return null;
+    return [a.value, b.value];
+}
+
 /**
- * Traditional Go board star points ("hoshi") for a rectangular board,
- * derived from `config.boardType`/`boardArgs` - [] for any non-'rect'
- * board. Corner points sit at the 3-3 point (boards whose smaller edge is
- * 9 or 11) or the 4-4 point (smaller edge > 11), edge points sit at the
- * midpoint of an odd, >=19-length edge whose cross edge is >=9, and a
- * single center point appears when both edges are odd and >=5 - together
- * reproducing the real 9x9 (4 corners + center), 13x13 (4 corners +
- * center), and 19x19 (4 corner + 4 edge + center) star-point layouts.
- * Returned as [x, y] pairs in the same board-coordinate space as
- * BoardConfig.pos (see rectangularBoard() above), ready for the same
- * originX + x*cell / originY - y*cell screen transform.
+ * Traditional Go board star points ("hoshi") for a rectangular board, derived from
+ * `config.boardDescr` when it's syntactically just `rectB(w, h);` (see tryExtractPlainRectDims
+ * above) - [] for anything else (a different board type, or any modifier/loop/helper-function
+ * construction, however it would actually evaluate). Corner points sit at the 3-3 point (boards
+ * whose smaller edge is 9 or 11) or the 4-4 point (smaller edge > 11), edge points sit at the
+ * midpoint of an odd, >=19-length edge whose cross edge is >=9, and a single center point appears
+ * when both edges are odd and >=5 - together reproducing the real 9x9 (4 corners + center), 13x13
+ * (4 corners + center), and 19x19 (4 corner + 4 edge + center) star-point layouts. Returned as
+ * [x, y] pairs in the same board-coordinate space as BoardConfig.pos (see rectangularBoard()
+ * above), ready for the same originX + x*cell / originY - y*cell screen transform.
  */
 export function computeStarPoints(config: GameConfig): number[][] {
-    if (config.boardType !== 'rect') return [];
-    if (config.boardModifiers.length > 0) return [];
-    const [w, h] = config.boardArgs.map(boardArgNumber);
+    const dims = tryExtractPlainRectDims(config.boardDescr);
+    if (!dims) return [];
+    const [w, h] = dims;
     const toBoard = (c: number, r: number): number[] => [c - (w - 1) / 2, r - (h - 1) / 2];
     const points: number[][] = [];
     // Same inset (distance from an edge) for every star point, corner or edge-midpoint alike -
