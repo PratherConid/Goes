@@ -448,16 +448,6 @@ BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier)
         case ModifierKind::TriangleForm: return triangle_form(bc, modifier.split_n, modifier.form_sel);
         case ModifierKind::QuadForm: return quad_form(bc, modifier.split_n, modifier.form_sel);
         case ModifierKind::Form: return generic_form(bc, modifier.split_n, modifier.form_sels);
-        case ModifierKind::Prod: {
-            BoardConfig sub = apply_modifiers(
-                build_board_config(modifier.board_type, modifier.board_args), modifier.modifiers);
-            return product(bc, sub);
-        }
-        case ModifierKind::Repeat: {
-            BoardConfig current = bc;
-            for (int i = 0; i < modifier.split_n; i++) current = apply_modifiers(current, modifier.modifiers);
-            return current;
-        }
         case ModifierKind::GlobalCentralize: return global_centralize(bc);
         case ModifierKind::QuadOctarize: return quad_octarize(bc);
         case ModifierKind::Scale: return scale_board(bc, modifier.dist);

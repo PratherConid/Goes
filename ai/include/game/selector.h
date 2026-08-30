@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <memory>
 #include <optional>
+#include <random>
 #include <set>
 #include <string>
 #include <vector>
@@ -60,8 +61,10 @@ inline BoardQuad make_board_quad(int a, int b, int c, int d) {
 enum class SelectorType { Node, Edge, Tri, Quad };
 
 // The operator tag of a Selector node - mirrors the `op` field of shared/selector.ts's own
-// discriminated-union Selector type.
-enum class SelectorOp { Union, Inter, Diff, Compl, More, All, None, Deg, Conva, Conve, Rrmn, Rrmp };
+// discriminated-union Selector type. `Raw` has no textual grammar (format_selector rejects it) -
+// it's built only by game/cleg.cpp, wrapping a `set`-typed cleg selector argument directly (mirrors
+// shared/types.ts's Selector 'raw' variant).
+enum class SelectorOp { Union, Inter, Diff, Compl, More, All, None, Deg, Conva, Conve, Rrmn, Rrmp, Raw };
 
 // Mirrors the comparator argument of a Deg selector ('eq'/'gt'/'lt' in the TS grammar).
 enum class DegCmp { Eq, Gt, Lt };
@@ -96,9 +99,46 @@ struct Selector {
     // than eagerly filled in to 1 so format_selector can round-trip the exact text a Selector was
     // parsed from.
     std::optional<int> steps;
+    // meaningful iff op == Raw - the literal contents of a `set`-typed cleg selector argument (see
+    // game/cleg.cpp's resolve_selector_arg/resolve_any_kind_selector_arg), one populated per `type`
+    // (node -> raw_nodes, edge -> raw_edges, tri -> raw_tris, quad -> raw_quads) - mirrors
+    // shared/types.ts's Selector 'raw' variant/SelectedVals. raw_nodes is a std::set (like
+    // select_node's own return type) since node membership has genuine equality; the other three
+    // stay plain vectors, matching SelectedVals' own doc comment on why.
+    std::set<int> raw_nodes;
+    std::vector<BoardEdge> raw_edges;
+    std::vector<BoardTriangle> raw_tris;
+    std::vector<BoardQuad> raw_quads;
 
     bool operator==(const Selector& other) const;
 };
+
+// Returns a NEW vector with exactly remove_count (clamped to [0, items.size()], since removing more
+// than exist isn't meaningful) uniformly-randomly-chosen elements dropped, via a partial
+// Fisher-Yates shuffle (only the first remove_count positions need to be randomized to pick which
+// elements to drop) - mirrors shared/selector.ts's randomlyRemove(). A public header-only template
+// (rather than selector.cpp-private) so game/cleg.cpp's randRmN/randRmP builtins can reuse it over
+// a generic ClegValue too, not just Selector's own BoardEdge/BoardTriangle/BoardQuad - matches that
+// TS builtin's own doc comment ("reuses that file's own randomlyRemove() rather than
+// reimplementing"). Shares one process-wide RNG with select_node/select_edge/etc.'s own Rrmn/Rrmp
+// cases (below) via cleg_selector_rng() - an inline function's local static is merged across
+// translation units under the One Definition Rule, so this is the same generator either way.
+inline std::mt19937& cleg_selector_rng() {
+    static std::mt19937 rng(std::random_device{}());
+    return rng;
+}
+template <typename T>
+std::vector<T> randomly_remove(std::vector<T> items, int remove_count) {
+    int n = static_cast<int>(items.size());
+    int to_remove = std::min(std::max(remove_count, 0), n);
+    for (int i = 0; i < to_remove; i++) {
+        std::uniform_int_distribution<int> dist(i, n - 1);
+        int j = dist(cleg_selector_rng());
+        std::swap(items[i], items[j]);
+    }
+    items.erase(items.begin(), items.begin() + to_remove);
+    return items;
+}
 
 // Parses `s` as a node selector (see this file's own top comment for the grammar) - throws
 // std::runtime_error if `s` doesn't follow the grammar (an operator not valid for nodes is simply

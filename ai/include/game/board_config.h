@@ -202,34 +202,24 @@ const std::vector<int>& board_arg_list(const BoardArgEntry& e);
 std::string format_board_arg_entry(const BoardArgEntry& e);
 
 // A BoardConfig-transforming operation - see apply_modifier/apply_modifiers. Mirrors
-// shared/boardConfig.ts's BoardModifier, minus a C++ port of parseModifier(name, args)/
-// parseModifiers(text) (which parse interactive command text - no analog here): train.cpp/
-// server.cpp get their whole GameConfig (including board_modifiers) from a JSON file/HTTP body via
-// parse_game_cfg (training/self_play.cpp) instead, which reads the already-tree-shaped JSON
-// directly (see parse_game_cfg's own parse_board_modifiers()).
+// shared/types.ts's BoardModifier - a cleg `mod`-typed value (game/cleg.cpp) always wraps one of
+// these directly, built by whichever of cleg's own rectify()/edgeSplit()/.../nis()/eis() builtins
+// matches; cleg's own prod(a, b) combines two already-built boards directly (no BoardModifier of
+// its own involved), and has no Repeat equivalent at all (a cleg program just writes out a repeated
+// call, or a real `for` loop, instead) - so unlike every other variant here, nothing constructs a
+// Prod- or Repeat-kind BoardModifier value anymore.
 enum class ModifierKind {
-    Rectify, EdgeSplit, MergeClose, TriangleForm, QuadForm, Form, Prod, Repeat,
+    Rectify, EdgeSplit, MergeClose, TriangleForm, QuadForm, Form,
     GlobalCentralize, QuadOctarize, Scale, NodeInducedSubgraph, EdgeInducedSubgraph
 };
 struct BoardModifier {
     ModifierKind kind;
-    // split_n is reused for TriangleForm/QuadForm/Form's own single int parameter (its w), and for
-    // Repeat's own single int parameter (its count) - all five are "one plain int argument"
-    // modifiers, same as Prod already shares board_type/board_args below.
-    int split_n = 0;   // meaningful when kind == ModifierKind::EdgeSplit/TriangleForm/QuadForm/Form/Repeat
+    // split_n is reused for TriangleForm/QuadForm/Form's own single int parameter (its w) - all
+    // three are "one plain int argument" modifiers.
+    int split_n = 0;   // meaningful when kind == ModifierKind::EdgeSplit/TriangleForm/QuadForm/Form
     // dist is reused for Scale's own single double parameter (its factor) - both are "one plain
     // double argument" modifiers.
     double dist = 0.0;             // meaningful when kind == ModifierKind::MergeClose / Scale
-    std::string board_type;        // only meaningful when kind == ModifierKind::Prod
-    std::vector<BoardArgEntry> board_args; // only meaningful when kind == ModifierKind::Prod
-    // Prod/Repeat's own nested modifier list, applied (via apply_modifiers) to the fresh board Prod
-    // builds from board_type/board_args, or repeatedly to the current board for Repeat - this is
-    // what makes BoardModifier tree-shaped, mirroring shared/boardConfig.ts's own Prod/Repeat
-    // (which replaced a separate, non-tree-shaped Prod/BeginProd/EndProd trio - see that file's own
-    // history/doc comments). A plain std::vector<BoardModifier> member of BoardModifier itself is
-    // legal (no forward-declaration/pointer indirection needed) since C++17 relaxed std::vector's
-    // completeness requirement for its own element type.
-    std::vector<BoardModifier> modifiers; // meaningful when kind == ModifierKind::Prod / Repeat
     // Only meaningful when kind == ModifierKind::NodeInducedSubgraph / EdgeInducedSubgraph - see
     // game/selector.h. Always present for these two (unlike form_sel below), matching the TS side's
     // own non-optional `sel: Selector` field for those two variants.
@@ -243,28 +233,22 @@ struct BoardModifier {
     // FormSelector's own doc comment above.
     std::vector<FormSelector> form_sels; // meaningful when kind == ModifierKind::Form
 
-    // Needed for std::vector<BoardModifier>::operator== (used by weak_equal, training/self_play.cpp)
-    // - C++17 has no defaulted struct equality (that's a C++20 feature), so this is spelled out.
+    // Needed for std::vector<BoardModifier>::operator== (BoardModifier itself is compared inside
+    // Selector-bearing structures via this) - C++17 has no defaulted struct equality (that's a
+    // C++20 feature), so this is spelled out.
     bool operator==(const BoardModifier& other) const {
         return kind == other.kind && split_n == other.split_n && dist == other.dist &&
-               board_type == other.board_type && board_args == other.board_args &&
-               modifiers == other.modifiers && sel == other.sel &&
-               form_sel == other.form_sel && form_sels == other.form_sels;
+               sel == other.sel && form_sel == other.form_sel && form_sels == other.form_sels;
     }
 };
 
 // Applies modifier to bc, dispatching to rectify / edge_split / merge_close / triangle_form /
 // quad_form / generic_form / global_centralize / quad_octarize / scale_board / node_induced_subgraph /
-// edge_induced_subgraph (Prod builds a fresh board from its own board_type/board_args via
-// build_board_config, applies its own nested modifiers to that fresh board via apply_modifiers, then
-// multiplies the result into bc; Repeat applies its own nested modifiers to bc, via apply_modifiers,
-// split_n times in a row). Mirrors shared/boardConfig.ts's applyModifier().
+// edge_induced_subgraph. Mirrors shared/boardConfig.ts's applyModifier().
 BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier);
 
 // Applies every modifier in modifiers, in order, to bc. Mirrors shared/boardConfig.ts's
-// applyModifiers() - now a plain fold, since BoardModifier's own Prod/Repeat (unlike the old
-// Prod/BeginProd/EndProd trio) are already self-contained tree nodes needing no cross-modifier stack
-// here.
+// applyModifiers() - a plain fold.
 BoardConfig apply_modifiers(const BoardConfig& bc, const std::vector<BoardModifier>& modifiers);
 
 // A board with w nodes forming a simple line: node i is connected to node i + 1, at position [i]
@@ -492,11 +476,11 @@ BoardConfig twisted_square_board(int w, int h, int g);
 // Dispatches to the board builder above matching `kind` ("line" | "rect" | "rectd" |
 // "cublat" | "hcub" | "tri" | "sier" | "regpoly" | "tetra" | "octa" | "ortho" | "ap" | "dodeca" |
 // "icosa" | "dodflake" | "icoflake" | "octaflake" | "polyflake" | "cpolyflake" | "cpentflake" |
-// "menger" | "trihex" | "hex" | "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" | "star" - matches
-// shared/types.ts's GameConfig.boardType strings), reading each of `args` back via
-// board_arg_number()/board_arg_list() as that builder's own positional parameters expect. Throws
-// std::runtime_error for an unknown kind. Shared by
-// train.cpp (via GameConfig::board_type/board_args, loaded from
-// --game-config) and server.cpp (via the /move request's boardType/boardArgs)
-// so there's one board-kind switch instead of two near-identical copies.
+// "menger" | "trihex" | "hex" | "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" | "star"),
+// reading each of `args` back via board_arg_number()/board_arg_list() as that builder's own
+// positional parameters expect. Throws std::runtime_error for an unknown kind. The one primitive
+// game/cleg.cpp's own board-constructor builtins (each cleg name is `kind` + "B", e.g. "rectB" ->
+// "rect" - see cleg.cpp's own prescribed-board registration table) call to actually build a board -
+// no other caller invokes this directly anymore (train.cpp/server.cpp go through
+// build_board_from_cleg(), which parses/evaluates a GameConfig::board_descr cleg program instead).
 BoardConfig build_board_config(const std::string& kind, const std::vector<BoardArgEntry>& args);

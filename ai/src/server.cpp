@@ -84,6 +84,7 @@
 // find_checkpoint_dir(), below. Models are then loaded lazily on first
 // request for each matched directory and cached by that directory name.
 #include "game/board_config.h"
+#include "game/cleg.h"
 #include "game/board_state.h"
 #include "model/any_model.h"
 #include "model/features.h"
@@ -388,9 +389,7 @@ int main(int argc, char* argv[]) {
 
             GameConfig game_cfg     = parse_game_cfg(cfg);
             const std::string& tag  = find_checkpoint_dir(ss, game_cfg);
-            auto bc                 = apply_modifiers(
-                build_board_config(game_cfg.board_type, game_cfg.board_args), game_cfg.board_modifiers
-            );
+            auto bc                 = build_board_from_cleg(*parse_cleg(game_cfg.board_descr));
             auto adj_norms          = compute_adj_norms(bc, ss.device);
             auto& model_v           = load_model(ss, tag, bc);
             auto evaluator          = make_evaluator(model_v, adj_norms);

@@ -14,10 +14,13 @@
 #include <string>
 
 struct GameConfig {
-    // Mirrors shared/types.ts's GameConfig.boardType/boardArgs/boardModifiers.
-    std::string board_type;
-    std::vector<BoardArgEntry> board_args;
-    std::vector<BoardModifier> board_modifiers;
+    // Mirrors shared/gameConfig.ts's GameConfig.boardDescr - cleg source text (see
+    // game/cleg.h's parse_cleg/build_board_from_cleg), not a parsed program: unlike the TS side
+    // (which keeps the parsed ClegProgram in memory for its UI to show back via unparseCleg), a
+    // GameConfig here is built once per training run/request and only ever needs a board built from
+    // it once, so there's no benefit to persisting the AST - re-parsing this string is cheap enough
+    // to do on demand wherever a board is actually needed.
+    std::string board_descr;
     int num_stones;
     int num_players;
     std::vector<TurnInfo> turn_list;
@@ -61,12 +64,12 @@ struct GameConfig {
 
 // True iff a and b agree on every field that used to determine
 // GameConfig::model_tag()'s (now-removed) human-readable checkpoint
-// directory name: board_type/board_args/board_modifiers, num_stones, num_players, turn_list,
+// directory name: board_descr, num_stones, num_players, turn_list,
 // stone_to_player_map, forced_pass_only, allow_suicide, score_rule, komi,
-// ko_rule. board_modifiers is compared like board_type/board_args - it changes the actual board
-// topology (rectify/edge_split both change N), so a checkpoint trained on a modified board must
-// never be treated as resumable with an unmodified (or differently-modified) one. stone_to_player_map
-// compares as a sorted (stone,player) pair set
+// ko_rule. board_descr is compared as plain text (exact string equality) - it fully determines the
+// actual board topology, so a checkpoint trained on one board description must never be treated as
+// resumable with a differently-worded (even if it would evaluate to an isomorphic board) one.
+// stone_to_player_map compares as a sorted (stone,player) pair set
 // (order within one stone's player list doesn't matter), matching the old
 // tag's own flattening. playerStonePlaceLimit/globalStonePlaceLimit/maxPlies
 // are intentionally excluded, same as the old tag - use strong_equal (below)

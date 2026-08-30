@@ -3,6 +3,7 @@
 // Usage: goes_train --game-config <path> [--iterations 100] ...
 // Run with --help for the full option list.
 #include "game/board_config.h"
+#include "game/cleg.h"
 #include "model/any_model.h"
 #include "model/features.h"
 #include "model/model_config.h"
@@ -307,18 +308,19 @@ static Args parse_args(int argc, char* argv[]) {
 // ── Model factory ─────────────────────────────────────────────────────────────
 
 // Returns "cnn", "unet", "gnn", or "transformer" — the architecture that will actually be used.
-// emb_dim is bc's actual embedding dimension (after board_modifiers, if any, have already been
-// applied) - CNN/UNet's featurizer (cnn.cpp/unet.cpp) derives its grid shape dynamically from
-// bc.embed's own bounding box, not from board_args, so any board with a genuine 2D embedding works
-// regardless of board_kind or board_modifiers - checking emb_dim directly (rather than a hardcoded
-// board_kind allowlist combined with a "no modifiers" precaution) is both simpler and correct: it
-// naturally excludes non-grid boards (emb_dim=0, e.g. regpoly/tetra/dodeca/icosa), higher-dimensional
-// ones (cublat=3, hcub=4), and 1D ones (line=1) without needing a per-board-kind special case.
-static std::string effective_arch(const Args& args, const std::string& board_kind, unsigned emb_dim) {
+// emb_dim is bc's actual embedding dimension (after board_descr's own cleg program, whatever it
+// does, has already run) - CNN/UNet's featurizer (cnn.cpp/unet.cpp) derives its grid shape
+// dynamically from bc.embed's own bounding box, not from board_descr itself, so any board with a
+// genuine 2D embedding works regardless of how it was built - checking emb_dim directly (rather
+// than a hardcoded board-kind allowlist combined with a "no modifiers" precaution) is both simpler
+// and correct: it naturally excludes non-grid boards (emb_dim=0, e.g. regpoly/tetra/dodeca/icosa),
+// higher-dimensional ones (cublat=3, hcub=4), and 1D ones (line=1) without needing a per-board-kind
+// special case. board_descr is only used for the error message text below.
+static std::string effective_arch(const Args& args, const std::string& board_descr, unsigned emb_dim) {
     bool grid2d_supported = (emb_dim == 2);
     if (args.net_arch == "cnn") {
         if (!grid2d_supported) {
-            std::cerr << "Error: --net-arch cnn is not supported for board type '" << board_kind
+            std::cerr << "Error: --net-arch cnn is not supported for board description '" << board_descr
                       << "' (emb_dim=" << emb_dim << "). CNN requires a 2D grid embedding"
                          " (emb_dim == 2).\n";
             std::exit(1);
@@ -327,7 +329,7 @@ static std::string effective_arch(const Args& args, const std::string& board_kin
     }
     if (args.net_arch == "unet") {
         if (!grid2d_supported) {
-            std::cerr << "Error: --net-arch unet is not supported for board type '" << board_kind
+            std::cerr << "Error: --net-arch unet is not supported for board description '" << board_descr
                       << "' (emb_dim=" << emb_dim << "). UNet requires a 2D grid embedding"
                          " (emb_dim == 2).\n";
             std::exit(1);
@@ -1051,12 +1053,10 @@ int main(int argc, char* argv[]) {
     // rather than part of --game-config.
     game_cfg.linear_move_bound = args.linear_move_bound;
 
-    auto bc = apply_modifiers(build_board_config(game_cfg.board_type, game_cfg.board_args), game_cfg.board_modifiers);
-    std::cout << "Board: " << game_cfg.board_type;
-    for (const auto& a : game_cfg.board_args) std::cout << " " << format_board_arg_entry(a);
-    std::cout << "  N=" << bc.N << std::endl;
+    auto bc = build_board_from_cleg(*parse_cleg(game_cfg.board_descr));
+    std::cout << "Board:\n" << game_cfg.board_descr << "  N=" << bc.N << std::endl;
 
-    const std::string arch = effective_arch(args, game_cfg.board_type, bc.emb_dim);
+    const std::string arch = effective_arch(args, game_cfg.board_descr, bc.emb_dim);
 
     // Requires forced_pass_only=False, unless --net-arch transformer. When forced_pass_only is
     // enabled, a player may only pass when no traditional placement is legal. In this case, players

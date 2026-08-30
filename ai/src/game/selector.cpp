@@ -10,8 +10,6 @@
 #include <stdexcept>
 #include <unordered_map>
 
-static std::mt19937 g_rng(std::random_device{}());
-
 // ── parsing ──────────────────────────────────────────────────────────────────
 
 // '(' and ')' are always their own token, even with no surrounding whitespace (e.g. "(deg eq 5)");
@@ -267,6 +265,8 @@ std::string format_selector(const Selector& sel) {
         }
         case SelectorOp::Rrmn: return "(rrmn " + std::to_string(sel.count) + " " + format_selector(*sel.a) + ")";
         case SelectorOp::Rrmp: return "(rrmp " + format_double(sel.frac) + " " + format_selector(*sel.a) + ")";
+        case SelectorOp::Raw:
+            throw std::runtime_error("format_selector: 'raw' has no text representation");
     }
     throw std::runtime_error("format_selector: unknown op");
 }
@@ -284,6 +284,9 @@ bool Selector::operator==(const Selector& other) const {
     if (op == SelectorOp::Conva || op == SelectorOp::Conve) return from == other.from;
     if (op == SelectorOp::More) return steps == other.steps;
     if (op == SelectorOp::Union || op == SelectorOp::Inter) return items == other.items;
+    if (op == SelectorOp::Raw)
+        return raw_nodes == other.raw_nodes && raw_edges == other.raw_edges &&
+               raw_tris == other.raw_tris && raw_quads == other.raw_quads;
     return true;
 }
 
@@ -338,23 +341,6 @@ static std::vector<T> dedupe_by_key(const std::vector<T>& items, K (*key)(const 
         else out[it->second] = item;
     }
     return out;
-}
-
-// Returns a NEW vector with exactly remove_count (clamped to [0, items.size()], since removing more
-// than exist isn't meaningful) uniformly-randomly-chosen elements dropped, via a partial
-// Fisher-Yates shuffle (only the first remove_count positions need to be randomized to pick which
-// elements to drop) - mirrors shared/selector.ts's randomlyRemove().
-template <typename T>
-static std::vector<T> randomly_remove(std::vector<T> items, int remove_count) {
-    int n = static_cast<int>(items.size());
-    int to_remove = std::min(std::max(remove_count, 0), n);
-    for (int i = 0; i < to_remove; i++) {
-        std::uniform_int_distribution<int> dist(i, n - 1);
-        int j = dist(g_rng);
-        std::swap(items[i], items[j]);
-    }
-    items.erase(items.begin(), items.begin() + to_remove);
-    return items;
 }
 
 // Mirrors shared/selector.ts's node member/key convention for edge/triangle/quad (a plain node
@@ -523,6 +509,8 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
             auto kept = randomly_remove(std::move(base), remove_count);
             return std::set<int>(kept.begin(), kept.end());
         }
+        case SelectorOp::Raw:
+            return sel.raw_nodes;
         default:
             throw std::runtime_error("select_node: unexpected node-selector op");
     }
@@ -652,6 +640,8 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
             int remove_count = static_cast<int>(std::floor(sel.frac * static_cast<double>(base.size())));
             return randomly_remove(base, remove_count);
         }
+        case SelectorOp::Raw:
+            return sel.raw_edges;
         default:
             throw std::runtime_error("select_edge: unexpected edge-selector op");
     }
@@ -740,6 +730,8 @@ std::vector<BoardTriangle> select_triangle(const std::vector<std::vector<int>>& 
             int remove_count = static_cast<int>(std::floor(sel.frac * static_cast<double>(base.size())));
             return randomly_remove(base, remove_count);
         }
+        case SelectorOp::Raw:
+            return sel.raw_tris;
         default:
             throw std::runtime_error("select_triangle: unexpected triangle-selector op");
     }
@@ -828,6 +820,8 @@ std::vector<BoardQuad> select_quad(const std::vector<std::vector<int>>& adj,
             int remove_count = static_cast<int>(std::floor(sel.frac * static_cast<double>(base.size())));
             return randomly_remove(base, remove_count);
         }
+        case SelectorOp::Raw:
+            return sel.raw_quads;
         default:
             throw std::runtime_error("select_quad: unexpected quad-selector op");
     }
