@@ -1,1 +1,4 @@
-modify([globalCentralize(), triangleForm(7)], prod(regpolyB(5), lineB(2)));
+modify(
+  [globalCentralize(), triangleForm(7)],
+  prod(regpolyB(5), lineB(2))
+);

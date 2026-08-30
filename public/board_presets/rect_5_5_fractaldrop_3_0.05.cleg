@@ -1,1 +1,14 @@
-modify([eis("(rrmp 0.05 (all))"), quadForm(3), eis("(conve quad (conva node (all)))"), eis("(rrmp 0.05 (all))"), quadForm(3), eis("(conve quad (conva node (all)))"), eis("(rrmp 0.05 (all))"), quadForm(3), eis("(conve quad (conva node (all)))")], rectB(5, 5));
+modify(
+  [
+    eis("(rrmp 0.05 (all))"),
+    quadForm(3),
+    eis("(conve quad (conva node (all)))"),
+    eis("(rrmp 0.05 (all))"),
+    quadForm(3),
+    eis("(conve quad (conva node (all)))"),
+    eis("(rrmp 0.05 (all))"),
+    quadForm(3),
+    eis("(conve quad (conva node (all)))")
+  ],
+  rectB(5, 5)
+);

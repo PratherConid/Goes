@@ -849,70 +849,98 @@ export function parseCleg(source: string): ClegProgram {
  * `p` (same result type, same behavior). Every binary/unary sub-expression is always parenthesized
  * (`unparseExpr`'s own BinaryExpr/UnaryExpr cases) rather than re-deriving the parser's own
  * precedence rules to decide when parens are actually needed - always correct, just not minimal.
+ * An ArrayLit/SetLit/CallExpr's own bracketed list (see unparseBracketed) is laid out one element
+ * per line, indented, whenever its flat rendering wouldn't fit within LINE_WIDTH_BUDGET columns of
+ * its own indent - a rough, not column-exact, readability heuristic (an inner list's own
+ * flat-vs-wrapped choice is re-evaluated at its actual indent once its enclosing list has already
+ * decided to wrap).
  */
 export function unparseCleg(program: ClegProgram): string {
     const parts: string[] = [
-        ...program.functions.map(unparseFunctionDecl),
-        ...program.stmts.map(unparseStmt),
+        ...program.functions.map(fn => unparseFunctionDecl(fn, 0)),
+        ...program.stmts.map(s => unparseStmt(s, 0)),
     ];
     return parts.join('\n');
 }
 
-function unparseFunctionDecl(fn: FunctionDecl): string {
+function unparseFunctionDecl(fn: FunctionDecl, indent: number): string {
     const params = fn.params.map(p => `${typeToString(p.type)} ${p.name}`).join(', ');
-    return `${typeToString(fn.returnType)} ${fn.name}(${params}) ${unparseBlock(fn.body)}`;
+    return `${typeToString(fn.returnType)} ${fn.name}(${params}) ${unparseBlock(fn.body, indent)}`;
 }
 
-function unparseBlock(block: Block): string {
+function unparseBlock(block: Block, indent: number): string {
     if (block.stmts.length === 0) return '{}';
-    const indented = block.stmts.map(unparseStmt).join('\n').split('\n').map(line => `    ${line}`).join('\n');
-    return `{\n${indented}\n}`;
+    const inner = indent + 2;
+    const pad = ' '.repeat(inner);
+    const lines = block.stmts.map(s => `${pad}${unparseStmt(s, inner)}`);
+    return `{\n${lines.join('\n')}\n${' '.repeat(indent)}}`;
 }
 
-function unparseStmt(stmt: Stmt): string {
+function unparseStmt(stmt: Stmt, indent: number): string {
     switch (stmt.kind) {
-        case 'VarDecl': return `${typeToString(stmt.type)} ${stmt.name} = ${unparseExpr(stmt.init)};`;
-        case 'AssignStmt': return `${stmt.name} = ${unparseExpr(stmt.value)};`;
+        case 'VarDecl': return `${typeToString(stmt.type)} ${stmt.name} = ${unparseExpr(stmt.init, indent)};`;
+        case 'AssignStmt': return `${stmt.name} = ${unparseExpr(stmt.value, indent)};`;
         case 'IfStmt': {
             const elsePart = stmt.else_ === null ? ''
-                : stmt.else_.kind === 'Block' ? ` else ${unparseBlock(stmt.else_)}`
-                    : ` else ${unparseStmt(stmt.else_)}`;
-            return `if (${unparseExpr(stmt.cond)}) ${unparseBlock(stmt.then)}${elsePart}`;
+                : stmt.else_.kind === 'Block' ? ` else ${unparseBlock(stmt.else_, indent)}`
+                    : ` else ${unparseStmt(stmt.else_, indent)}`;
+            return `if (${unparseExpr(stmt.cond, indent)}) ${unparseBlock(stmt.then, indent)}${elsePart}`;
         }
         case 'ForStmt': {
-            const init = stmt.init === null ? '' : unparseForClause(stmt.init);
-            const cond = stmt.cond === null ? '' : unparseExpr(stmt.cond);
-            const update = stmt.update === null ? '' : unparseForClause(stmt.update);
-            return `for (${init}; ${cond}; ${update}) ${unparseBlock(stmt.body)}`;
+            const init = stmt.init === null ? '' : unparseForClause(stmt.init, indent);
+            const cond = stmt.cond === null ? '' : unparseExpr(stmt.cond, indent);
+            const update = stmt.update === null ? '' : unparseForClause(stmt.update, indent);
+            return `for (${init}; ${cond}; ${update}) ${unparseBlock(stmt.body, indent)}`;
         }
-        case 'ReturnStmt': return `return ${unparseExpr(stmt.value)};`;
-        case 'ExprStmt': return `${unparseExpr(stmt.expr)};`;
-        case 'Block': return unparseBlock(stmt);
+        case 'ReturnStmt': return `return ${unparseExpr(stmt.value, indent)};`;
+        case 'ExprStmt': return `${unparseExpr(stmt.expr, indent)};`;
+        case 'Block': return unparseBlock(stmt, indent);
     }
 }
 
 // FORINIT/FORUPDATE - same as unparseStmt's own VarDecl/AssignStmt/ExprStmt cases, minus the
 // trailing ';' (parseForStmt's own explicit ';'/')' delimit these, see ForStmt's own doc comment).
-function unparseForClause(stmt: VarDecl | AssignStmt | ExprStmt): string {
+function unparseForClause(stmt: VarDecl | AssignStmt | ExprStmt, indent: number): string {
     switch (stmt.kind) {
-        case 'VarDecl': return `${typeToString(stmt.type)} ${stmt.name} = ${unparseExpr(stmt.init)}`;
-        case 'AssignStmt': return `${stmt.name} = ${unparseExpr(stmt.value)}`;
-        case 'ExprStmt': return unparseExpr(stmt.expr);
+        case 'VarDecl': return `${typeToString(stmt.type)} ${stmt.name} = ${unparseExpr(stmt.init, indent)}`;
+        case 'AssignStmt': return `${stmt.name} = ${unparseExpr(stmt.value, indent)}`;
+        case 'ExprStmt': return unparseExpr(stmt.expr, indent);
     }
 }
 
-function unparseExpr(expr: Expr): string {
+function unparseExpr(expr: Expr, indent: number): string {
     switch (expr.kind) {
         case 'NumberLit': return String(expr.value);
         case 'StringLit': return `"${escapeClegString(expr.value)}"`;
         case 'BoolLit': return expr.value ? 'true' : 'false';
-        case 'ArrayLit': return `[${expr.elements.map(unparseExpr).join(', ')}]`;
-        case 'SetLit': return `{${expr.elements.map(unparseExpr).join(', ')}}`;
+        case 'ArrayLit': return unparseBracketed('[', ']', expr.elements, indent, 0);
+        case 'SetLit': return unparseBracketed('{', '}', expr.elements, indent, 0);
         case 'Identifier': return expr.name;
-        case 'CallExpr': return `${expr.callee}(${expr.args.map(unparseExpr).join(', ')})`;
-        case 'BinaryExpr': return `(${unparseExpr(expr.left)} ${expr.op} ${unparseExpr(expr.right)})`;
-        case 'UnaryExpr': return `(-${unparseExpr(expr.operand)})`;
+        case 'CallExpr': return `${expr.callee}${unparseBracketed('(', ')', expr.args, indent, expr.callee.length)}`;
+        case 'BinaryExpr': return `(${unparseExpr(expr.left, indent)} ${expr.op} ${unparseExpr(expr.right, indent)})`;
+        case 'UnaryExpr': return `(-${unparseExpr(expr.operand, indent)})`;
     }
+}
+
+// How much room a bracketed list's own flat rendering gets beyond its indent - i.e. the line-width
+// limit is `indent + LINE_WIDTH_BUDGET`, not one fixed column for every nesting depth (equivalent
+// to comparing just extraWidth + flat.length against this constant, indent cancelling out of both
+// sides - see unparseBracketed below).
+const LINE_WIDTH_BUDGET = 64;
+
+// A bracketed, comma-separated element list - an ArrayLit/SetLit's own elements, or a CallExpr's
+// own args - rendered flat on one line if that fits within `indent + LINE_WIDTH_BUDGET` columns
+// (`extraWidth` accounts for a CallExpr's own callee name, which sits before its own '(' on the
+// same line; 0 for ArrayLit/SetLit, which have no such prefix), one element per indented line
+// otherwise.
+function unparseBracketed(open: string, close: string, items: Expr[], indent: number, extraWidth: number): string {
+    if (items.length === 0) return `${open}${close}`;
+    const flat = `${open}${items.map(e => unparseExpr(e, indent)).join(', ')}${close}`;
+    if (!flat.includes('\n') && extraWidth + flat.length <= LINE_WIDTH_BUDGET) return flat;
+    const inner = indent + 2;
+    const pad = ' '.repeat(inner);
+    const lines = items.map(e => `${pad}${unparseExpr(e, inner)}`);
+    return `${open}\n${lines.join(',\n')}\n${' '.repeat(indent)}${close}`;
 }
 
 // The lexer's own string-literal escapes (see tokenize's own doc comment) - '\\'  must come first,

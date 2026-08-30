@@ -1,1 +1,4 @@
-modify([quadForm(7)], prod(modify([globalCentralize()], regpolyB(5)), lineB(2)));
+modify(
+  [quadForm(7)],
+  prod(modify([globalCentralize()], regpolyB(5)), lineB(2))
+);
