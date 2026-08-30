@@ -9,8 +9,8 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { FinishedGame } from '@shared/types.js';
 import type { ChatMessage } from '@shared/types.js';
+import { FinishedGame } from '@shared/gameConfig.js';
 
 export interface LoadedRecord {
     id: string;

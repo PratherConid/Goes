@@ -1,9 +1,10 @@
 import { MoveType, STONE_MAP, assert } from './types.js';
 import { NO_MOVE } from './types.js';
 import type {
-    MoveInfo, Situation, HistoryEntry, BoardView, ScoreData, ScoreRule, KoRule, TurnInfo, FinishedGame, ReplayMove,
+    MoveInfo, Situation, HistoryEntry, BoardView, ScoreData, ScoreRule, KoRule, TurnInfo, ReplayMove,
     BoardConfig, Embedding,
 } from './types.js';
+import type { FinishedGame } from './gameConfig.js';
 import { LegalMovesData } from './types.js';
 import { AVLTree } from './avlTree.js';
 

@@ -1,7 +1,8 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server } from 'node:http';
 import { OnlineGameManager } from './onlineGameManager.js';
-import { GameConfig, OnlinePlayerRequest } from '@shared/types.js';
+import { OnlinePlayerRequest } from '@shared/types.js';
+import { GameConfig } from '@shared/gameConfig.js';
 import { engineManager, aiMove } from './engineManager.js';
 import { loadUserStore, registerUser, verifyLogin, userExists } from './userStore.js';
 import { loadGameRecordStore } from './gameRecordStore.js';

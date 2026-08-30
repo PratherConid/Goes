@@ -1,4 +1,5 @@
-import type { GameConfig, BoardArgEntry, BoardConfig, BoardModifier, Selector, FormSelector, BoardEdge } from './types.js';
+import type { BoardArgEntry, BoardConfig, BoardModifier, Selector, FormSelector, BoardEdge } from './types.js';
+import type { GameConfig } from './gameConfig.js';
 // Type-only - see types.ts's own note on why this isn't a real circular runtime import.
 import type { ClegProgram } from './cleg.js';
 import {

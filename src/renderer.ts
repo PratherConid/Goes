@@ -1,7 +1,8 @@
 import { BoardState, MoveType, STONE_MAP } from '@shared/boardState.js';
 import {
-    PlayerInfo, GameConfig, FinishedGame, OnlinePlayerRequest, makeId, BoardArgType, projectPoint,
+    PlayerInfo, OnlinePlayerRequest, makeId, BoardArgType, projectPoint,
 } from '@shared/types.js';
+import { GameConfig, FinishedGame } from '@shared/gameConfig.js';
 import type {
     BoardView, OnlineStateResponse, PendingGame, ScoreRule, KoRule, TurnInfo, ReplayMove, ChatMessage,
     BoardConfig,

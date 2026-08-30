@@ -2,7 +2,8 @@
 // online-game config payloads sent between client and server.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GameConfig, PlayerInfo } from '../shared/types.ts';
+import { PlayerInfo } from '../shared/types.ts';
+import { GameConfig } from '../shared/gameConfig.ts';
 import { parseCleg } from '../shared/cleg.ts';
 
 function sampleConfig() {
@@ -56,7 +57,7 @@ test('GameConfig.toJSON()/fromJSON() round-trips players and scalar fields', () 
 
 test('GameConfig.fromJSON() defaults scoreRule/komi/koRule/allowSuicide/maxPlies when absent', () => {
     const raw = {
-        boardDescr: parseCleg('rectB(9, 9);'), numStones: 2, numPlayers: 2,
+        boardDescr: 'rectB(9, 9);', numStones: 2, numPlayers: 2,
         turnList: [
             { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
             { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },

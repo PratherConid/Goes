@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { BoardState, MoveType } from '../shared/boardState.ts';
 import { rectangularBoard } from '../shared/boardConfig.ts';
-import { FinishedGame, GameConfig } from '../shared/types.ts';
+import { FinishedGame, GameConfig } from '../shared/gameConfig.ts';
 import { parseCleg } from '../shared/cleg.ts';
 
 function twoPlayerGame() {

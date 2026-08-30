@@ -1,7 +1,5 @@
 {
-  "boardType": "rect",
-  "boardArgs": [{"kind": "Number", "value": 19}, {"kind": "Number", "value": 19}],
-  "boardModifiers": [],
+  "boardDescr": {"kind":"ClegProgram","functions":[],"stmts":[{"kind":"ExprStmt","expr":{"kind":"CallExpr","callee":"rectB","args":[{"kind":"NumberLit","value":19},{"kind":"NumberLit","value":19}]}}]},
   "numStones": 3,
   "numPlayers": 3,
   "turnList": [

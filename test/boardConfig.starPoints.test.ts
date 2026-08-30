@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { computeStarPoints } from '../shared/boardConfig.ts';
-import { GameConfig } from '../shared/types.ts';
+import { GameConfig } from '../shared/gameConfig.ts';
 import { parseCleg } from '../shared/cleg.ts';
 
 function mkConfig(boardDescr: string): GameConfig {

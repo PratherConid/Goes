@@ -14,7 +14,6 @@ setupDom();
 const { Renderer } = await import('../../src/renderer.ts');
 const { BoardState } = await import('../../shared/boardState.ts');
 const { rectangularBoard } = await import('../../shared/boardConfig.ts');
-const { parseCleg } = await import('../../shared/cleg.ts');
 
 const bc = rectangularBoard(3, 3);
 const initialGame = new BoardState(
@@ -57,7 +56,7 @@ test('LOGIN round trip updates the status panel\'s Your Name line', async () => 
 
 test("game/start activates the online game and passBtn reflects _isMyTurn()'s 'client' branch", async () => {
     const config = {
-        boardDescr: parseCleg('rectB(3, 3);'), numStones: 2, numPlayers: 2,
+        boardDescr: 'rectB(3, 3);', numStones: 2, numPlayers: 2,
         turnList: [
             { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
             { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
@@ -79,7 +78,7 @@ test("game/start activates the online game and passBtn reflects _isMyTurn()'s 'c
 
 test("it is not alice's turn once the opponent's slot is next", async () => {
     const config = {
-        boardDescr: parseCleg('rectB(3, 3);'), numStones: 2, numPlayers: 2,
+        boardDescr: 'rectB(3, 3);', numStones: 2, numPlayers: 2,
         turnList: [
             { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
             { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },

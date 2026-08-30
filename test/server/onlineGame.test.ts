@@ -6,8 +6,6 @@ import assert from 'node:assert/strict';
 import {
     startTestServer, startTestServerProcess, connect, waitForEvents, type TestServer, type TestClient,
 } from './testServer.ts';
-import { parseCleg } from '../../shared/cleg.ts';
-
 let server: TestServer;
 
 before(async () => { server = await startTestServer(); });
@@ -22,7 +20,7 @@ after(async () => { await server.close(); });
 // OnlinePlayerRequest-based createGame()).
 function passOnlyConfig() {
     return {
-        boardDescr: parseCleg('rectB(1, 1);'), numStones: 2, numPlayers: 2,
+        boardDescr: 'rectB(1, 1);', numStones: 2, numPlayers: 2,
         turnList: [
             { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
             { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
@@ -37,7 +35,7 @@ function passOnlyConfig() {
 // tests below, which need several distinct real moves (not just passes) to withdraw between.
 function realTwoPlayerConfig() {
     return {
-        boardDescr: parseCleg('rectB(3, 3);'), numStones: 2, numPlayers: 2,
+        boardDescr: 'rectB(3, 3);', numStones: 2, numPlayers: 2,
         turnList: [
             { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
             { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
@@ -49,7 +47,7 @@ function realTwoPlayerConfig() {
 
 function realThreePlayerConfig() {
     return {
-        boardDescr: parseCleg('rectB(5, 5);'), numStones: 3, numPlayers: 3,
+        boardDescr: 'rectB(5, 5);', numStones: 3, numPlayers: 3,
         turnList: [
             { player: 1, stones: [1, 0, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },
             { player: 2, stones: [0, 1, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },
