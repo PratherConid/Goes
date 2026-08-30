@@ -1,6 +1,6 @@
 import { BoardState, MoveType, STONE_MAP } from '@shared/boardState.js';
 import {
-    PlayerInfo, OnlinePlayerRequest, makeId, projectPoint,
+    PlayerInfo, OnlinePlayerRequest, makeId,
 } from '@shared/types.js';
 import { GameConfig, FinishedGame } from '@shared/gameConfig.js';
 import type {
@@ -17,7 +17,7 @@ import {
 } from './sidePanel.js';
 import {
     type Viewport, QUAT_IDENTITY, defaultViewport, computeAlpha, computePerspectiveScale,
-    quatToMat3, quatConjugate, applyOrbitDrag, applyRoll,
+    quatToMat3, quatConjugate, applyOrbitDrag, applyRoll, projectPoint,
 } from './camera.js';
 
 // Single persistent WebSocket connection to the main server, shared by the
@@ -189,7 +189,7 @@ const STONE_RADIUS_FACTOR = 0.42;
 //   dmax             - the board's own max raw-point distance from the origin (rotation- and
 //                      focus-invariant - see computeAlpha()'s own doc comment)
 function boardLayout(view: BoardView, w: number, h: number, viewport: Viewport) {
-    const rawPos = view.emb.project();
+    const rawPos = view.emb.pos.map(p => projectPoint(viewport.projMat, p));
     // dmax must be measured from the RAW (untranslated, unrotated) points - it's the board's own
     // fixed size scale, unrelated to where the camera currently looks (see Focus's doc comment,
     // src/camera.ts) or is oriented. 0 for an empty board (Math.max() of nothing is -Infinity, not
@@ -219,8 +219,8 @@ function boardLayout(view: BoardView, w: number, h: number, viewport: Viewport) 
 // is the ratio at which the largest such extent touches half of a unit-sized box, *0.9 for a small
 // margin. Render-area-independent (see boardLayout()'s own doc comment) - no w×h needed.
 function computeInitialScale(view: BoardView): number {
-    const viewport = defaultViewport();
-    const rawPos = view.emb.project();
+    const viewport = defaultViewport(view.emb.embDim);
+    const rawPos = view.emb.pos.map(p => projectPoint(viewport.projMat, p));
     const dmax = rawPos.length > 0 ? Math.max(...rawPos.map(p => Math.hypot(p[0], p[1], p[2]))) : 0;
     const focusPos = rawPos.map(p => p.map((v, k) => v - viewport.focus[k] * dmax));
     const rotMat = quatToMat3(quatConjugate(viewport.quat));
@@ -368,7 +368,7 @@ function drawBoardFull(
     legalMoves: (Set<number> | null)[][] | null,
     territoryOwner: number[] | null = null,
     dim = false,
-    viewport: Viewport = defaultViewport(),
+    viewport: Viewport = defaultViewport(view.emb.embDim),
     nextGradientId: () => number,
 ) {
     const { originX, originY, cell, stone_r, pos, rotMat, dmax } = boardLayout(view, boardW, boardH, viewport);
@@ -423,13 +423,12 @@ function drawBoardFull(
 
     // star points ("hoshi" board markings, rect boards only - computeStarPoints() returns [] for
     // any other boardType). computeStarPoints() returns raw (un-projected) natural-space
-    // coordinates, same as node positions before emb.project() - so they need the exact same
-    // pipeline boardLayout() itself runs to produce `pos` (projMat, then the focus translation,
-    // then the camera rotMat) to stay aligned with the actual (possibly non-identity projMat,
-    // possibly focus-shifted/rotated) projected grid. Skipped entirely (like every other item
-    // type) if behind the camera.
+    // coordinates, same as node positions before projection - so they need the exact same pipeline
+    // boardLayout() itself runs to produce `pos` (viewport.projMat, then the focus translation,
+    // then the camera rotMat) to stay aligned with the actual (possibly focus-shifted/rotated)
+    // projected grid. Skipped entirely (like every other item type) if behind the camera.
     for (const starPoint of computeStarPoints(config)) {
-        const raw = projectPoint(view.emb.projMat, starPoint);
+        const raw = projectPoint(viewport.projMat, starPoint);
         const focusPoint = raw.map((v, k) => v - viewport.focus[k] * dmax);
         const [x, y, z] = projectPoint(rotMat, focusPoint);
         const scale = scaleOf(z);
@@ -2621,10 +2620,10 @@ export class Renderer {
 
         // Projection matrix editor: one textbox per entry (2 rows x embDim columns), built via
         // DOM API since each box needs its own Enter-key listener. Pressing Enter parses the box's
-        // value and writes it straight into the live BoardState.emb.projMat, mutating in place
-        // (Embedding.project() always reads the current array, so this takes effect on the very
-        // next render), then re-renders so the board redraws with the new projection.
-        const projMat = this._active.bs.emb.projMat;
+        // value and writes it straight into the live Viewport.projMat, mutating in place
+        // (boardLayout() always reads the current array, so this takes effect on the very next
+        // render), then re-renders so the board redraws with the new projection.
+        const projMat = this._active.viewport.projMat;
         const projMatEl = document.createElement('div');
         for (let r = 0; r < projMat.length; r++) {
             const rowEl = document.createElement('div');
@@ -3013,7 +3012,7 @@ export class Renderer {
         this.engineManager.sessionId = null;
         this.activeGames.set(id, {
             bs, config, displayPlyNum: 0, idxShowHistory: 0, randomEvaled: null,
-            viewport: defaultViewport(), rotationLocked: false, chat,
+            viewport: defaultViewport(bs.emb.embDim), rotationLocked: false, chat,
         });
         this.activeIdx = id;
     }
@@ -3625,7 +3624,7 @@ export class Renderer {
                 const bs = BoardState.fromFinishedGame(fg, bc);
                 this.finishedGames.set('O_' + id, {
                     bs, config: fg.config, displayPlyNum: bs.getView().plyCount,
-                    idxShowHistory: 0, randomEvaled: null, viewport: defaultViewport(),
+                    idxShowHistory: 0, randomEvaled: null, viewport: defaultViewport(bs.emb.embDim),
                     rotationLocked: false, chat,
                 });
             } catch (e) { console.error('Failed to reconstruct finished game', id, e); }

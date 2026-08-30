@@ -49,7 +49,7 @@ test('a triangle and a quad sharing an edge glue seamlessly across kinds', () =>
     const edge = (i: number, j: number) => { adj[i][j] = 1; adj[j][i] = 1; };
     edge(0, 1); edge(1, 2); edge(2, 0);
     edge(1, 3); edge(3, 4); edge(4, 2);
-    const emb = new Embedding(2, adj.map((_, i): [number, number] => [i, 0]), [[1, 0], [0, 1], [0, 0]]);
+    const emb = new Embedding(2, adj.map((_, i): [number, number] => [i, 0]));
     const bc: BoardConfig = { N, adj, emb };
 
     const triOnly = genericForm(bc, 3, parseFormSelectors('(tri)'));

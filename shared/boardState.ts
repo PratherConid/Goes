@@ -334,7 +334,7 @@ export class BoardState {
     // STONE_MAP), nextTurn.player is the player whose turn is next
     nextTurn:     TurnInfo;
     board:        number[];
-    emb:          Embedding; // natural-dim node positions + their 2D projection - see Embedding
+    emb:          Embedding; // natural-dim node positions - see Embedding
     adj:          number[][];
     N:            number;
 

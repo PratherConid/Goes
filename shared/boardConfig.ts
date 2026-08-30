@@ -16,13 +16,8 @@ import {
     regularPolygonFractalDescr, centralPentagonFractalDescr, mengerFractalDescr,
 } from './fractal.js';
 
-// Default projMat for a plain 2D-embedded board: x/y pass straight through, z is always 0 (flat).
-const DEFAULT_2D_PROJMAT = [[1, 0], [0, 1], [0, 0]];
-// Default projMat for a plain 3D-embedded board: x/y/z all pass straight through.
-export const DEFAULT_3D_PROJMAT = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
-
 export function make(posOrEmb: number[][] | Embedding, adj: number[][]): BoardConfig {
-    const emb = Array.isArray(posOrEmb) ? new Embedding(2, posOrEmb, DEFAULT_2D_PROJMAT) : posOrEmb;
+    const emb = Array.isArray(posOrEmb) ? new Embedding(2, posOrEmb) : posOrEmb;
     const N = emb.pos.length;
     assert(adj.length === N && (N === 0 || adj[0].length === N), 'adj dimensions must match pos length');
     for (let i = 0; i < N; i++)
@@ -52,8 +47,7 @@ export function quotientBoard(bc: BoardConfig, quot: [number, number][]): BoardC
     const newN = uniqueRoots.length;
     const nodeToNew = roots.map(r => rootToNew.get(r)!);
 
-    // New positions: average of class members (in the natural embedding dimension - projMat is
-    // linear, so its projected 2D average equals the average of the already-projected positions).
+    // New positions: average of class members, in the natural embedding dimension.
     const embDim = bc.emb.embDim;
     const newPos = Array.from({ length: newN }, () => new Array<number>(embDim).fill(0));
     const cnt = new Array<number>(newN).fill(0);
@@ -74,7 +68,7 @@ export function quotientBoard(bc: BoardConfig, quot: [number, number][]): BoardC
             if (ni !== nj) newAdj[ni][nj] = 1;
         }
     }
-    return make(new Embedding(embDim, newPos, bc.emb.projMat), newAdj);
+    return make(new Embedding(embDim, newPos), newAdj);
 }
 
 /**
@@ -104,7 +98,7 @@ export function edgeSplit(bc: BoardConfig, splitN: number): BoardConfig {
 
     const adj = zeroAdj(pos.length);
     for (const [a, b] of edges) { adj[a][b] = 1; adj[b][a] = 1; }
-    return make(new Embedding(embDim, pos, bc.emb.projMat), adj);
+    return make(new Embedding(embDim, pos), adj);
 }
 
 /**
@@ -159,7 +153,7 @@ export function rectify(bc: BoardConfig): BoardConfig {
         }
     }
 
-    return make(new Embedding(embDim, pos, bc.emb.projMat), adj);
+    return make(new Embedding(embDim, pos), adj);
 }
 
 /**
@@ -182,7 +176,7 @@ export function mergeClose(bc: BoardConfig, dist: number): BoardConfig {
 
 /**
  * The subgraph induced by `nodes`: keeps only the given nodes - compacted to a fresh 0..k-1 index
- * range, in ascending original-index order, positions/embDim/projMat otherwise untouched - with two
+ * range, in ascending original-index order, positions/embDim otherwise untouched - with two
  * surviving nodes adjacent iff they were already adjacent in `bc`. Unlike quotientBoard/mergeClose,
  * nothing is merged or repositioned; a non-kept node's own incident edges are simply dropped along
  * with it. `nodes` is typically `selectNode(bc.adj, bc.emb.pos, sel)`'s own result (see
@@ -199,13 +193,13 @@ export function nodeInducedSubgraph(bc: BoardConfig, nodes: Set<number>): BoardC
         for (let b = a + 1; b < kept.length; b++)
             if (bc.adj[kept[a]][kept[b]]) { adj[a][b] = 1; adj[b][a] = 1; }
 
-    return make(new Embedding(bc.emb.embDim, pos, bc.emb.projMat), adj);
+    return make(new Embedding(bc.emb.embDim, pos), adj);
 }
 
 /**
  * The subgraph induced by `edges`: keeps only the given edges, and only the nodes touched by at
  * least one of them - compacted to a fresh 0..k-1 index range, in ascending original-index order,
- * positions/embDim/projMat otherwise untouched. Unlike nodeInducedSubgraph (which keeps every
+ * positions/embDim otherwise untouched. Unlike nodeInducedSubgraph (which keeps every
  * original edge between two surviving nodes, since it starts from a node selection), this keeps
  * exactly the given edges themselves - the standard graph-theory distinction between a node-induced
  * and an edge-induced subgraph - so a node with no kept incident edge doesn't survive at all, even
@@ -229,7 +223,7 @@ export function edgeInducedSubgraph(bc: BoardConfig, edges: BoardEdge[]): BoardC
         adj[b][a] = 1;
     }
 
-    return make(new Embedding(bc.emb.embDim, pos, bc.emb.projMat), adj);
+    return make(new Embedding(bc.emb.embDim, pos), adj);
 }
 
 /**
@@ -383,7 +377,7 @@ export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): B
             for (let k = 0; k < w; k++) quot.push([seqs[0](k), seqs[s](k)]);
     }
 
-    const combined = make(new Embedding(embDim, pos, bc.emb.projMat), adj);
+    const combined = make(new Embedding(embDim, pos), adj);
     return quotientBoard(combined, quot);
 }
 
@@ -437,25 +431,7 @@ export function globalCentralize(bc: BoardConfig): BoardConfig {
         adj[N][i] = 1;
     }
 
-    return make(new Embedding(embDim, pos, bc.emb.projMat), adj);
-}
-
-/**
- * The default projMat assigned to a freshly-`product()`-ed or `quadOctarize()`-d board (see below,
- * and shared/cleg.ts's own multiProd) - dims 0, 1, 2 map straight to x, y, z (identity - the whole
- * matrix is exactly DEFAULT_3D_PROJMAT when embDim <= 3), and every triple of dims beyond that
- * cycles through x/y/z again at a halved-again magnitude, e.g. embDim=8 gives `[[1, 0, 0, 1/2, 0, 0,
- * 1/4, 0], [0, 1, 0, 0, 1/2, 0, 0, 1/4], [0, 0, 1, 0, 0, 1/2, 0, 0]]`. Dim `d` contributes magnitude
- * `2^-floor(d/3)` to axis `d % 3` (x, y, or z), which also reproduces the d=0/1/2 identity part with
- * no separate case needed, since `2^-floor(d/3)` equals 1 for d=0/1/2.
- */
-export function defaultProductProjMat(embDim: number): number[][] {
-    const rows = [new Array<number>(embDim).fill(0), new Array<number>(embDim).fill(0), new Array<number>(embDim).fill(0)];
-    for (let d = 0; d < embDim; d++) {
-        const mag = 2 ** -Math.floor(d / 3);
-        rows[d % 3][d] = mag;
-    }
-    return rows;
+    return make(new Embedding(embDim, pos), adj);
 }
 
 /**
@@ -473,9 +449,6 @@ export function defaultProductProjMat(embDim: number): number[][] {
  * circumradius for a geometrically regular quad, since all 4 corners are then equidistant from
  * it - averaging just keeps this well-defined for a quad whose corners aren't quite equidistant
  * from their own barycenter).
- *
- * Uses a fresh default projMat (`defaultProductProjMat`, shared with `product()`) rather than
- * `bc.emb.projMat`, since the extra dimension has no meaning in the old projMat.
  */
 export function quadOctarize(bc: BoardConfig): BoardConfig {
     const N = bc.N;
@@ -515,13 +488,13 @@ export function quadOctarize(bc: BoardConfig): BoardConfig {
         }
     }
 
-    return make(new Embedding(newEmbDim, pos, defaultProductProjMat(newEmbDim)), adj);
+    return make(new Embedding(newEmbDim, pos), adj);
 }
 
-/** Multiplies every node's natural-dimension position by `factor` - adjacency/embDim/projMat untouched. */
+/** Multiplies every node's natural-dimension position by `factor` - adjacency/embDim untouched. */
 export function scaleBoard(bc: BoardConfig, factor: number): BoardConfig {
     const pos = bc.emb.pos.map(p => p.map(v => v * factor));
-    return make(new Embedding(bc.emb.embDim, pos, bc.emb.projMat), bc.adj);
+    return make(new Embedding(bc.emb.embDim, pos), bc.adj);
 }
 
 /**
@@ -532,8 +505,7 @@ export function scaleBoard(bc: BoardConfig, factor: number): BoardConfig {
  *   - `i === i2` and `j` is adjacent to `j2` in `bc2`
  *   - `j === j2` and `i` is adjacent to `i2` in `bc1`
  * (the standard graph Cartesian product - e.g. `cubeLatticeBoard(w, h, d)` is, up to embedding, the
- * product of three path graphs). Uses a fresh default projMat (see defaultProductProjMat) rather than
- * either factor's own projMat, since neither one alone is meaningful at the combined dimension.
+ * product of three path graphs).
  */
 export function product(bc1: BoardConfig, bc2: BoardConfig): BoardConfig {
     const N1 = bc1.N, N2 = bc2.N;
@@ -554,7 +526,7 @@ export function product(bc1: BoardConfig, bc2: BoardConfig): BoardConfig {
                 if (bc2.adj[j][j2]) adj[idx(i, j)][idx(i, j2)] = 1;
         }
 
-    return make(new Embedding(embDim, pos, defaultProductProjMat(embDim)), adj);
+    return make(new Embedding(embDim, pos), adj);
 }
 
 /** A board with `w` nodes forming a simple line: node `i` is connected to node `i + 1`. */
@@ -567,7 +539,7 @@ export function linearBoard(w: number): BoardConfig {
         adj[i][i + 1] = 1;
         adj[i + 1][i] = 1;
     }
-    return make(new Embedding(1, pos, [[1], [0], [0]]), adj);
+    return make(new Embedding(1, pos), adj);
 }
 
 /** A rectangular board with width `w` and height `h`. Each node is identified by (col, row) where 0 ≤ col < w, 0 ≤ row < h. */
@@ -735,7 +707,7 @@ export function hypercuboidBoard(meshdim: number, dims: number[]): BoardConfig {
                 adj[bi][nbi] = 1;
             }
     }
-    return make(new Embedding(k, pos, defaultProductProjMat(k)), adj);
+    return make(new Embedding(k, pos), adj);
 }
 
 /** A triangular board with side length `w`. */
@@ -884,7 +856,7 @@ export function sierpinskiSimplex(dim: number, n: number): BoardConfig {
     const corners = regularSimplexCoords(dim).map(p => p.map(v => v * scale));
 
     const built = sierpinskiRec(n, corners);
-    return make(new Embedding(dim, built.pos, defaultProductProjMat(dim)), built.adj);
+    return make(new Embedding(dim, built.pos), built.adj);
 }
 
 /**
@@ -904,7 +876,7 @@ export function tetrahedronBoard(): BoardConfig {
         for (let j = 0; j < 4; j++)
             if (i !== j) adj[i][j] = 1;
 
-    return make(new Embedding(3, pos, DEFAULT_3D_PROJMAT), adj);
+    return make(new Embedding(3, pos), adj);
 }
 
 /**
@@ -944,7 +916,7 @@ export function orthoplexBoard(n: number): BoardConfig {
         for (let j = 0; j < N; j++)
             if (i !== j && j !== antipode(i)) adj[i][j] = 1;
 
-    return make(new Embedding(n, pos, defaultProductProjMat(n)), adj);
+    return make(new Embedding(n, pos), adj);
 }
 
 /**
@@ -993,7 +965,7 @@ export function antiprismBoard(n: number): BoardConfig {
         connect(top(k), bot((k - 1 + n) % n));
     }
 
-    return make(new Embedding(3, pos, DEFAULT_3D_PROJMAT), adj);
+    return make(new Embedding(3, pos), adj);
 }
 
 /**
@@ -1005,7 +977,7 @@ export function dodecahedronBoard(): BoardConfig {
     const { leafPos, leafConn } = dodecahedronFractalDescr();
     const adj = zeroAdj(leafPos.length);
     for (const [a, b] of leafConn) { adj[a][b] = 1; adj[b][a] = 1; }
-    return make(new Embedding(3, leafPos, DEFAULT_3D_PROJMAT), adj);
+    return make(new Embedding(3, leafPos), adj);
 }
 
 /**
@@ -1020,7 +992,7 @@ export function dodecahedronBoard(): BoardConfig {
 export function dodecahedronFlake(n: number): BoardConfig {
     assert(Number.isInteger(n) && n >= 1, `n must be a positive integer, got ${n}`);
     const built = buildFractal(n, dodecahedronFractalDescr());
-    return make(new Embedding(3, built.pos, DEFAULT_3D_PROJMAT), built.adj);
+    return make(new Embedding(3, built.pos), built.adj);
 }
 
 /**
@@ -1032,7 +1004,7 @@ export function icosahedronBoard(): BoardConfig {
     const { leafPos, leafConn } = icosahedronFractalDescr();
     const adj = zeroAdj(leafPos.length);
     for (const [a, b] of leafConn) { adj[a][b] = 1; adj[b][a] = 1; }
-    return make(new Embedding(3, leafPos, DEFAULT_3D_PROJMAT), adj);
+    return make(new Embedding(3, leafPos), adj);
 }
 
 /**
@@ -1046,7 +1018,7 @@ export function icosahedronBoard(): BoardConfig {
 export function icosahedronFlake(n: number): BoardConfig {
     assert(Number.isInteger(n) && n >= 1, `n must be a positive integer, got ${n}`);
     const built = buildFractal(n, icosahedronFractalDescr());
-    return make(new Embedding(3, built.pos, DEFAULT_3D_PROJMAT), built.adj);
+    return make(new Embedding(3, built.pos), built.adj);
 }
 
 /**
@@ -1060,7 +1032,7 @@ export function icosahedronFlake(n: number): BoardConfig {
 export function octahedronFlake(n: number): BoardConfig {
     assert(Number.isInteger(n) && n >= 1, `n must be a positive integer, got ${n}`);
     const built = buildFractal(n, octahedronFractalDescr());
-    return make(new Embedding(3, built.pos, DEFAULT_3D_PROJMAT), built.adj);
+    return make(new Embedding(3, built.pos), built.adj);
 }
 
 /**
@@ -1125,11 +1097,6 @@ export function centralPentagonFlake(order: number): BoardConfig {
  * object). `indicator` must have exactly `dim + 1` entries (`mengerFractalDescr()`'s own
  * requirement) - `[0, 0, 1, 1]` at `dim=3` is the classical Menger sponge (the center and 6
  * face-centers removed, 12 edge-mid and 8 corner sub-cubes kept, 20 of 27 total).
- *
- * Unlike every other flake here (always 3D or 2D, so always `DEFAULT_3D_PROJMAT`/no embedding),
- * `dim` is caller-chosen and unbounded, so this uses `defaultProductProjMat` (shared with
- * sierpinskiSimplex()/orthoplexBoard(), the other arbitrary-embDim boards) rather than a fixed 3D
- * one.
  */
 export function mengerSpongeFlake(order: number, dim: number, indicator: number[]): BoardConfig {
     assert(Number.isInteger(order) && order >= 1, `order must be a positive integer, got ${order}`);
@@ -1137,7 +1104,7 @@ export function mengerSpongeFlake(order: number, dim: number, indicator: number[
     assert(indicator.length === dim + 1,
         `indicator must be a length-${dim + 1} list of 0/1 entries, got [${indicator}]`);
     const built = buildFractal(order, mengerFractalDescr(dim, indicator));
-    return make(new Embedding(dim, built.pos, defaultProductProjMat(dim)), built.adj);
+    return make(new Embedding(dim, built.pos), built.adj);
 }
 
 /**

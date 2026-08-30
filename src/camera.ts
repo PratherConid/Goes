@@ -2,6 +2,40 @@
 // representing the camera's orientation, always looking at the origin. Pure math, no DOM - the
 // game engine/C++ side has no rendering concept and never needs this.
 
+/** Applies a 3 x embDim projMat to a single embDim-length point, returning its 3D (x, y, z)
+ * projection - moved here from shared/types.ts, since projection (unlike a board's own natural-
+ * dimension geometry) is purely a rendering concern: nothing in shared/, server/, or the C++ AI
+ * engine ever needs a projMat, only src/renderer.ts. */
+export function projectPoint(projMat: number[][], p: number[]): number[] {
+    return [
+        p.reduce((s, v, k) => s + projMat[0][k] * v, 0),
+        p.reduce((s, v, k) => s + projMat[1][k] * v, 0),
+        p.reduce((s, v, k) => s + projMat[2][k] * v, 0),
+    ];
+}
+
+/**
+ * The one projMat every Viewport uses (see defaultViewport below) - dims 0, 1, 2 map straight to
+ * x, y, z (identity), and every triple of dims beyond that cycles through x/y/z again at a
+ * halved-again magnitude, e.g. embDim=8 gives `[[1, 0, 0, 1/2, 0, 0, 1/4, 0], [0, 1, 0, 0, 1/2, 0,
+ * 0, 1/4], [0, 0, 1, 0, 0, 1/2, 0, 0]]`. Dim `d` contributes magnitude `2^-floor(d/3)` to axis
+ * `d % 3` (x, y, or z), which also reproduces the d=0/1/2 identity part with no separate case
+ * needed, since `2^-floor(d/3)` equals 1 for d=0/1/2. Previously, shared/boardConfig.ts baked one
+ * of several hand-picked projMats (this same formula for higher-dimensional/product boards, or a
+ * fixed 2D/3D identity otherwise - all three coincide exactly with what this one formula already
+ * computes for embDim 1/2/3) into every BoardConfig at construction time; there is no longer any
+ * board-shape-specific projMat anywhere - every board, regardless of how it was built, gets exactly
+ * this one, computed here instead, once per game.
+ */
+export function defaultProjMat(embDim: number): number[][] {
+    const rows = [new Array<number>(embDim).fill(0), new Array<number>(embDim).fill(0), new Array<number>(embDim).fill(0)];
+    for (let d = 0; d < embDim; d++) {
+        const mag = 2 ** -Math.floor(d / 3);
+        rows[d % 3][d] = mag;
+    }
+    return rows;
+}
+
 export interface Quaternion { w: number; x: number; y: number; z: number; }
 
 export const QUAT_IDENTITY: Quaternion = { w: 1, x: 0, y: 0, z: 0 };
@@ -34,6 +68,11 @@ export type FadingConfig =
 export type Focus = [number, number, number];
 
 export interface Viewport {
+    // The linear map (3 x embDim) projecting a board's natural-dimension node positions down to a
+    // 3D (x, y, z) render position (see projectPoint above) - always defaultProjMat(embDim), built
+    // once when the game this Viewport belongs to starts (see defaultViewport below); editable
+    // afterward via the "Configure Viewport" panel (Renderer._renderConfigureViewport).
+    projMat: number[][];
     quat: Quaternion;
     fadecfg: FadingConfig;
     focus: Focus;
@@ -54,9 +93,12 @@ export interface Viewport {
 // A fresh object per call (not a shared constant) - each ActiveGame needs its own independent
 // Viewport, since the status panel's fading editor (Renderer._renderStatusPanel) mutates fadecfg's
 // fields in place; sharing one instance across games would leak one game's fade settings into
-// every other game.
-export function defaultViewport(): Viewport {
+// every other game. embDim is the board's own Embedding.embDim - projMat is built fresh here,
+// client-side, at the one moment a Viewport is ever constructed (a game starting), rather than
+// baked into the board's own construction (see projectPoint/defaultProjMat's own doc comments).
+export function defaultViewport(embDim: number): Viewport {
     return {
+        projMat: defaultProjMat(embDim),
         quat: QUAT_IDENTITY, fadecfg: { kind: 'clamp', init: 0.0, rate: 0.8 }, focus: [0, 0, 0],
         distToFocus: 3, aperture: 60, scale: 0,
     };
@@ -171,8 +213,8 @@ export function quatRotateVector(q: Quaternion, v: Vec3): Vec3 {
 
 /**
  * The 3x3 rotation matrix for q (q assumed unit-length), in the same row-major number[][] shape
- * shared/types.ts's projectPoint() expects - so a camera rotation can be applied to an
- * already-projected (x, y, z) point via `projectPoint(quatToMat3(q), point)` directly, no separate
+ * projectPoint() (above) expects - so a camera rotation can be applied to an already-projected
+ * (x, y, z) point via `projectPoint(quatToMat3(q), point)` directly, no separate
  * matrix-vector-multiply helper needed.
  */
 export function quatToMat3(q: Quaternion): number[][] {

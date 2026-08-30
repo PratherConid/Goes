@@ -149,7 +149,7 @@ import {
 } from './types.js';
 import {
     PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, product, applyModifiers,
-    make, defaultProductProjMat, nodeInducedSubgraph, edgeInducedSubgraph,
+    make, nodeInducedSubgraph, edgeInducedSubgraph,
 } from './boardConfig.js';
 import {
     randomlyRemove, parseNodeSelector, parseEdgeSelector, parseTriangleSelector, parseQuadSelector,
@@ -1834,7 +1834,7 @@ function buildFromOriginalIndices(
             }
         }
     }
-    return { bc: make(new Embedding(embDim, pos, defaultProductProjMat(embDim)), adj), origIndex };
+    return { bc: make(new Embedding(embDim, pos), adj), origIndex };
 }
 
 /**

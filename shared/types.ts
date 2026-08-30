@@ -75,44 +75,28 @@ export function makeBoardQuad(a: number, b: number, c: number, d: number): Board
 /**
  * A board's node positions in their natural embedding dimension (embDim - 2 for most boards, 3 for
  * shared/boardConfig.ts's cubeLatticeBoard/tetrahedronBoard/dodecahedronBoard/icosahedronBoard,
- * arbitrary for hypercuboidBoard/sierpinskiSimplex/orthoplexBoard), plus
- * the linear map (projMat, 3 x embDim) that projects them down to a 3D render position (x, y, z) -
- * the renderer currently ignores z (see boardLayout(), src/renderer.ts). Kept separate from the
- * render position so that geometric operations that care about real dimensionality (e.g.
- * shared/boardConfig.ts's convex-hull-based rectify()) can operate on `pos` directly instead of an
- * already-flattened approximation.
+ * arbitrary for hypercuboidBoard/sierpinskiSimplex/orthoplexBoard). The linear map that projects
+ * these down to a 3D render position (x, y, z) is no longer part of this class - the client builds
+ * that (a Viewport's own `projMat`, always `defaultProjMat(embDim)` - see src/camera.ts) once
+ * per active game, not board construction time, since projection is purely a rendering concern
+ * shared/boardConfig.ts's own board builders (and the server, and the C++ AI engine) never need.
+ * Kept as its own class (rather than a bare number[][]) so geometric operations that care about real
+ * dimensionality (e.g. shared/boardConfig.ts's convex-hull-based rectify()) still have `embDim`
+ * alongside `pos` without recomputing it from `pos[0].length` every time.
  */
-/** Applies a 3 x embDim projMat to a single embDim-length point, returning its 3D (x, y, z) projection. */
-export function projectPoint(projMat: number[][], p: number[]): number[] {
-    return [
-        p.reduce((s, v, k) => s + projMat[0][k] * v, 0),
-        p.reduce((s, v, k) => s + projMat[1][k] * v, 0),
-        p.reduce((s, v, k) => s + projMat[2][k] * v, 0),
-    ];
-}
-
 export class Embedding {
     embDim: number;
     pos: number[][];       // N x embDim
-    projMat: number[][];   // 3 x embDim - projects natural coords to a 3D (x, y, z) render position
 
-    constructor(embDim: number, pos: number[][], projMat: number[][]) {
+    constructor(embDim: number, pos: number[][]) {
         assert(pos.every(p => p.length === embDim), 'Embedding: pos row length must equal embDim');
-        assert(projMat.length === 3 && projMat.every(r => r.length === embDim),
-            'Embedding: projMat must be 3 x embDim');
         this.embDim = embDim;
         this.pos = pos;
-        this.projMat = projMat;
-    }
-
-    /** The 3D (x, y, z) render position: projMat applied to each row of pos. */
-    project(): number[][] {
-        return this.pos.map(p => projectPoint(this.projMat, p));
     }
 }
 
 export interface BoardConfig {
-    emb: Embedding;    // natural-dimension node positions + their 3D render projection
+    emb: Embedding;    // natural-dimension node positions
     adj: number[][];  // N×N symmetric adjacency matrix, entries 0/1
     N: number;
 }
@@ -593,7 +577,7 @@ export interface OnlineStateResponse {
 
 export interface BoardView {
     N: number;
-    emb: Embedding;             // natural-dim node positions + their 3D projection
+    emb: Embedding;             // natural-dim node positions
     numStones: number;
     numPlayers: number;
     turnList: TurnInfo[];
