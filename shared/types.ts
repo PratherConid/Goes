@@ -488,10 +488,12 @@ export type FormSelector =
 
 /**
  * A BoardConfig-transforming operation - see shared/boardConfig.ts's applyModifier()/
- * applyModifiers()/parseModifier()/parseModifiers() for how these are built and applied. `Prod`/
- * `Repeat`'s own nested `modifiers` make this tree-shaped (Prod multiplies a fresh board - built
- * from its own `boardType`/`boardArgs` - into the current one; Repeat applies its own nested
- * modifiers to the current board `count` times in a row).
+ * applyModifiers() for how these are built and applied. A `mod`-typed cleg value (shared/cleg.ts)
+ * always wraps one of these directly, built by whichever of cleg's own rectify()/edgeSplit()/.../
+ * nis()/eis() builtins matches - cleg's own `prod(a, b)` combines two already-built boards directly
+ * (no BoardModifier of its own involved), and has no `Repeat` equivalent at all (a cleg program just
+ * writes out a repeated call, or a real `for` loop, instead) - so unlike every other variant here,
+ * nothing constructs a `Prod`- or `Repeat`-kind BoardModifier value anymore.
  */
 export type BoardModifier =
     | { kind: 'Rectify' }
@@ -500,8 +502,6 @@ export type BoardModifier =
     | { kind: 'TriangleForm'; w: number; sel?: Selector }
     | { kind: 'QuadForm'; w: number; sel?: Selector }
     | { kind: 'Form'; w: number; sels: FormSelector[] }
-    | { kind: 'Prod'; boardType: string; boardArgs: BoardArgEntry[]; modifiers: BoardModifier[] }
-    | { kind: 'Repeat'; count: number; modifiers: BoardModifier[] }
     | { kind: 'GlobalCentralize' }
     | { kind: 'QuadOctarize' }
     | { kind: 'Scale'; factor: number }

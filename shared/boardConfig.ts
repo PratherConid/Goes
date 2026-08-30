@@ -2,15 +2,10 @@ import type { BoardArgEntry, BoardConfig, BoardModifier, Selector, FormSelector,
 import type { GameConfig } from './gameConfig.js';
 // Type-only - see types.ts's own note on why this isn't a real circular runtime import.
 import type { ClegProgram } from './cleg.js';
-import {
-    assert, BoardArgType, boardArgNumber, boardArgList, parseBoardArgToken, Embedding, projectPoint,
-} from './types.js';
+import { assert, BoardArgType, boardArgNumber, boardArgList, Embedding } from './types.js';
 import { convexHullEdges } from './geometry.js';
 import { findTriangles, findQuads, zeroAdj, mergeBoards } from './topology.js';
-import {
-    parseNodeSelector, parseEdgeSelector, parseTriangleSelector,
-    parseQuadSelector, parseFormSelectors, selectNode, selectEdge, selectTriangle, selectQuad,
-} from './selector.js';
+import { selectNode, selectEdge, selectTriangle, selectQuad } from './selector.js';
 // The FractalDescr/nodeEdgeMergeFlakeRec recursive core, and each "flake" shape's own static
 // *FractalDescr() builder, live in fractal.ts (see git history) - the actual BoardConfig-returning
 // functions built on them (dodecahedronBoard/dodecahedronFlake/etc., below) stay here alongside
@@ -1600,77 +1595,83 @@ export enum PrescribedBoard {
 // type except hypercuboidBoard, whose own trailing arg is CommaSeparatedNumbers - see its entry).
 const nums = (k: number): BoardArgType[] => new Array(k).fill(BoardArgType.Number);
 
+// Tuple shape: [argTypes, cleg name (the actual BUILTIN_FUNCTIONS key - includes cleg.ts's own "B"
+// suffix already, so no name-mangling is needed at the registration site there), a human-readable
+// bracketed argument list (already parenthesized, exactly as it'd read in a real cleg call - no
+// further processing needed to display it, e.g. "(w, h)"), description]. Used directly by
+// src/renderer.ts's "Board Types" command-reference table (no separate lookup structure of its
+// own), and by cleg.ts's board-constructor BUILTIN_FUNCTIONS registration loop.
 export const PrescribedBoardMap: Record<PrescribedBoard, [BoardArgType[], string, string, string]> = {
     [PrescribedBoard.linearBoard]:
-        [nums(1), "line", "&lt;w&gt;", "A simple line of w nodes"],
+        [nums(1), "lineB", "(w)", "A simple line of w nodes"],
     [PrescribedBoard.rectangularBoard]:
-        [nums(2), "rect", "&lt;w&gt; &lt;h&gt;", "Rectangular board"],
+        [nums(2), "rectB", "(w, h)", "Rectangular board"],
     [PrescribedBoard.rectangularDiagonalBoard]:
-        [nums(3), "rectd", "&lt;w&gt; &lt;h&gt; &lt;m&gt;", "Rectangular + diagonal connections every m squares"],
+        [nums(3), "rectdB", "(w, h, m)", "Rectangular + diagonal connections every m squares"],
     [PrescribedBoard.cubeLatticeBoard]:
-        [nums(3), "cublat", "&lt;w&gt; &lt;h&gt; &lt;d&gt;", "Cubical board"],
+        [nums(3), "cublatB", "(w, h, d)", "Cubical board"],
     [PrescribedBoard.hypercuboidBoard]:
-        [[BoardArgType.Number, BoardArgType.CommaSeparatedNumbers], "hcub", "&lt;meshdim&gt; &lt;w,h,...&gt;",
+        [[BoardArgType.Number, BoardArgType.CommaSeparatedNumbers], "hcubB", "(meshdim, [w, h, ...])",
             "Hypercuboidal board (meshdim-skeleton: max interior coords a surviving node may have, "
             + "then a comma-separated list of dimension sizes)"],
     [PrescribedBoard.triangularBoard]:
-        [nums(1), "tri", "&lt;w&gt;", "Triangular board of side w"],
+        [nums(1), "triB", "(w)", "Triangular board of side w"],
     [PrescribedBoard.regularPolygonBoard]:
-        [nums(1), "regpoly", "&lt;n&gt;", "Regular polygon with n unit-length edges"],
+        [nums(1), "regpolyB", "(n)", "Regular polygon with n unit-length edges"],
     [PrescribedBoard.tetrahedronBoard]:
-        [nums(0), "tetra", "", "Regular tetrahedron (4 vertices, all mutually adjacent, unit-length edges)"],
+        [nums(0), "tetraB", "()", "Regular tetrahedron (4 vertices, all mutually adjacent, unit-length edges)"],
     [PrescribedBoard.dodecahedronBoard]:
-        [nums(0), "dodeca", "", "Regular dodecahedron (20 vertices, 12 pentagonal faces, unit-length edges)"],
+        [nums(0), "dodecaB", "()", "Regular dodecahedron (20 vertices, 12 pentagonal faces, unit-length edges)"],
     [PrescribedBoard.icosahedronBoard]:
-        [nums(0), "icosa", "", "Regular icosahedron (12 vertices, 20 triangular faces, unit-length edges)"],
+        [nums(0), "icosaB", "()", "Regular icosahedron (12 vertices, 20 triangular faces, unit-length edges)"],
     [PrescribedBoard.triangularHexBoard]:
-        [nums(1), "trihex", "&lt;d&gt;",
+        [nums(1), "trihexB", "(d)",
             "Triangular-lattice board in a hexagon shape, with d layers of triangles around the center"],
     [PrescribedBoard.hexBoard]:
-        [nums(1), "hex", "&lt;d&gt;", "Hexagon-tiled board with d layers of hexagons around a center hexagon"],
+        [nums(1), "hexB", "(d)", "Hexagon-tiled board with d layers of hexagons around a center hexagon"],
     [PrescribedBoard.trihexBoard]:
-        [nums(1), "hexdel", "&lt;d&gt;",
+        [nums(1), "hexdelB", "(d)",
             "Trihexagonal (hexdel) board, d layers of hexagons connected by triangles around a center hexagon"],
     [PrescribedBoard.snubSquareBoard]:
-        [nums(3), "snubsq", "&lt;w&gt; &lt;h&gt; &lt;g&gt;", "Snub square board (g\xD7g squares)"],
+        [nums(3), "snubsqB", "(w, h, g)", "Snub square board (g\xD7g squares)"],
     [PrescribedBoard.snubSquareTriBoard]:
-        [nums(3), "snubsqtri", "&lt;w&gt; &lt;h&gt; &lt;g&gt;",
+        [nums(3), "snubsqtriB", "(w, h, g)",
             "Snub square board with the connecting triangles as g\xD7g triangular boards too"],
     [PrescribedBoard.twistedSquareBoard]:
-        [nums(3), "twsq", "&lt;w&gt; &lt;h&gt; &lt;g&gt;", "Twisted-square board (g\xD7g squares)"],
+        [nums(3), "twsqB", "(w, h, g)", "Twisted-square board (g\xD7g squares)"],
     [PrescribedBoard.glueTwistedSquareBoard]:
-        [nums(3), "gtsq", "&lt;w&gt; &lt;h&gt; &lt;g&gt;", "Glued-twisted-square board (g\xD7g squares)"],
+        [nums(3), "gtsqB", "(w, h, g)", "Glued-twisted-square board (g\xD7g squares)"],
     [PrescribedBoard.starBoard]:
-        [nums(1), "star", "&lt;n&gt;", "Star graph: 1 center node connected to n outer nodes"],
+        [nums(1), "starB", "(n)", "Star graph: 1 center node connected to n outer nodes"],
     [PrescribedBoard.octahedronBoard]:
-        [nums(0), "octa", "", "Regular octahedron (6 vertices, 8 triangular faces, unit-length edges)"],
+        [nums(0), "octaB", "()", "Regular octahedron (6 vertices, 8 triangular faces, unit-length edges)"],
     [PrescribedBoard.sierpinskiSimplex]:
-        [nums(2), "sier", "&lt;dim&gt; &lt;n&gt;", "Sierpinski dim-simplex (gasket) of order n"],
+        [nums(2), "sierB", "(dim, n)", "Sierpinski dim-simplex (gasket) of order n"],
     [PrescribedBoard.orthoplexBoard]:
-        [nums(1), "ortho", "&lt;n&gt;", "n-dimensional orthoplex (cross-polytope), unit-length edges"],
+        [nums(1), "orthoB", "(n)", "n-dimensional orthoplex (cross-polytope), unit-length edges"],
     [PrescribedBoard.dodecahedronFlake]:
-        [nums(1), "dodflake", "&lt;n&gt;", "Dodecahedron flake fractal of order n (n=1 is the plain dodecahedron)"],
+        [nums(1), "dodflakeB", "(n)", "Dodecahedron flake fractal of order n (n=1 is the plain dodecahedron)"],
     [PrescribedBoard.icosahedronFlake]:
-        [nums(1), "icoflake", "&lt;n&gt;", "Icosahedron flake fractal of order n (n=1 is the plain icosahedron)"],
+        [nums(1), "icoflakeB", "(n)", "Icosahedron flake fractal of order n (n=1 is the plain icosahedron)"],
     [PrescribedBoard.octahedronFlake]:
-        [nums(1), "octaflake", "&lt;n&gt;", "Octahedron flake fractal of order n (n=1 is the plain octahedron)"],
+        [nums(1), "octaflakeB", "(n)", "Octahedron flake fractal of order n (n=1 is the plain octahedron)"],
     [PrescribedBoard.regularPolygonFlake]:
-        [nums(2), "polyflake", "&lt;sides&gt; &lt;n&gt;",
+        [nums(2), "polyflakeB", "(sides, n)",
             "Regular polygon flake fractal of order n (n=1 is the plain sides-gon)"],
     [PrescribedBoard.centralRegularPolygonFlake]:
-        [nums(2), "cpolyflake", "&lt;sides&gt; &lt;n&gt;",
+        [nums(2), "cpolyflakeB", "(sides, n)",
             "Regular polygon flake with a central copy at every level (sides must be even, &gt; 4)"],
     [PrescribedBoard.centralPentagonFlake]:
-        [nums(1), "cpentflake", "&lt;n&gt;",
+        [nums(1), "cpentflakeB", "(n)",
             "Pentagon flake with an opposite-orientation central copy at every level (n=1 is the plain pentagon)"],
     [PrescribedBoard.mengerSpongeFlake]:
-        [[BoardArgType.Number, BoardArgType.Number, BoardArgType.ZeroOneList], "menger",
-            "&lt;order&gt; &lt;dim&gt; &lt;indicator&gt;",
+        [[BoardArgType.Number, BoardArgType.Number, BoardArgType.ZeroOneList], "mengerB",
+            '(order, dim, "indicator")',
             "Menger-sponge-family flake fractal (dim=1 Cantor set, dim=2 Sierpinski carpet, dim=3 Menger "
-            + "sponge, ...) of the given order; indicator is a dim+1-length 0/1 string, e.g. 0011 at dim=3 "
-            + "for the classical Menger sponge"],
+            + "sponge, ...) of the given order; indicator is a dim+1-length 0/1 string, e.g. \"0011\" at "
+            + "dim=3 for the classical Menger sponge"],
     [PrescribedBoard.antiprismBoard]:
-        [nums(1), "ap", "&lt;n&gt;", "Uniform n-gonal antiprism (2 n-gons + 2n triangles), unit-length edges"],
+        [nums(1), "apB", "(n)", "Uniform n-gonal antiprism (2 n-gons + 2n triangles), unit-length edges"],
 };
 
 // Shorthand for PrescribedBoardFns below: `num`/`list` pull a positional BoardArgEntry's own
@@ -1711,222 +1712,9 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: BoardArgEntry
 };
 
 /**
- * Command name (PrescribedBoardMap[pb][1], e.g. 'rect', 'cublat') -> PrescribedBoard enum value -
- * shared by buildPrescribedBoard below and parseModifiers's beginprod validation.
- */
-const PRESCRIBED_BOARD_BY_NAME = new Map<string, PrescribedBoard>(
-    (Object.entries(PrescribedBoardMap) as [string, [BoardArgType[], string, string, string]][])
-        .map(([k, [, cmd]]) => [cmd, Number(k) as PrescribedBoard]),
-);
-
-/**
- * Builds a board from its command-name kind (e.g. 'rect', 'cublat' - see PrescribedBoardMap) and
- * positional args - the same string-keyed dispatch renderer.ts's `_cmdToBoard` builds from the same
- * PrescribedBoardMap/PrescribedBoardFns pairing. Used by applyModifier's Prod handling (to build the
- * fresh board a Prod node multiplies in) and parseModifiers's beginprod handling below.
- * Throws for an unrecognized kind.
- */
-function buildPrescribedBoard(kind: string, args: BoardArgEntry[]): BoardConfig {
-    const pb = PRESCRIBED_BOARD_BY_NAME.get(kind);
-    if (pb === undefined) throw new Error(`Unknown board type: ${kind}`);
-    return PrescribedBoardFns[pb](...args);
-}
-
-/** mc's default `dist` when called with no argument - see parseModifier and renderer.ts's command reference panel. */
-export const MC_DEFAULT_DIST = 0.01;
-
-/**
- * Parses a board-type command name (e.g. 'rect', 'cublat' - see PrescribedBoardMap) plus its
- * positional dimension args, shared by `prod`'s parseModifier branch and `beginprod`'s
- * parseModifiers branch below: the
- * board type is validated eagerly via PRESCRIBED_BOARD_BY_NAME, and its args must number at least
- * PrescribedBoardMap's declared arg-type count for that type or this throws; extras beyond that
- * count are silently truncated (so e.g. a leftover product-context arg doesn't need to be
- * stripped by the caller). Each token is parsed per its own declared BoardArgType into exactly one
- * `BoardArgEntry` (see parseBoardArgToken/BoardArgEntry's own doc comments) - `boardArgs` always has
- * exactly `argTypes.length` entries, one per positional arg, regardless of how many raw numbers a
- * `CommaSeparatedNumbers`/`ZeroOneList` entry's own `values` holds.
- */
-function parseBoardTypeArgs(cmdName: string, args: string[]): { boardType: string; boardArgs: BoardArgEntry[] } {
-    assert(args.length >= 1, `${cmdName} takes at least 1 argument (board type), got ${args.length}`);
-    const [boardType, ...argStrs] = args;
-    const pb = PRESCRIBED_BOARD_BY_NAME.get(boardType);
-    if (pb === undefined) throw new Error(`${cmdName}: unknown board type "${boardType}"`);
-    const argTypes = PrescribedBoardMap[pb][0];
-    assert(argStrs.length >= argTypes.length,
-        `${cmdName}: board type "${boardType}" requires ${argTypes.length} argument(s), got ${argStrs.length}`);
-    const boardArgs = argTypes.map((type, i) => parseBoardArgToken(type, argStrs[i]));
-    const allNums = boardArgs.flatMap(e => e.kind === BoardArgType.Number ? [e.value] : e.values);
-    assert(allNums.every(n => Number.isInteger(n)),
-        `${cmdName}: board args must be integers, got "${argStrs.join(' ')}"`);
-    return { boardType, boardArgs };
-}
-
-/**
- * Parses a BoardModifier from its command name ('rect', 'es', 'mc', 'triform', 'quadform', 'form',
- * 'prod', 'gcent', 'quadocta', 'scale', 'nis', 'eis') and string args - see
- * applyModifier/applyModifiers. mc's arg is optional: with none, `dist` defaults to
- * MC_DEFAULT_DIST. prod's first arg is a board-type command name and the rest are that type's own
- * positional dimension args - see parseBoardTypeArgs; parsed this way, prod's own `modifiers` is
- * always empty (the one-shot case). nis/eis's arg is a node/edge selector (see shared/selector.ts) -
- * see nodeInducedSubgraph/edgeInducedSubgraph. triform/quadform's `w` may be followed by an optional
- * triangle/quad selector restricting which ones get replaced (default: every one found) - see
- * triangleForm/quadForm, each a single-kind special case of genericForm. form's `w` is followed by
- * one or more form selectors (`(tri [SEL])`/`(quad [SEL])`, see FormSelector's own doc comment in
- * shared/selector.ts) naming every kind/subset to replace at once, sharing that one `w` - see
- * genericForm; unlike triform/quadform, its own edge-gluing spans mixed triangle/quad selections
- * that share an original edge. Does NOT accept 'beginprod'/'endprod' or
- * 'repeat'/'endrepeat' - unlike every other name, resolving those isn't possible from one command in
- * isolation (a 'beginprod'/'repeat' needs everything up to its own matching closer, however many
- * commands away that is) - see parseModifiers (which handles a whole modifiers-list text, calling
- * this function for every other command).
- */
-export function parseModifier(name: string, args: string[]): BoardModifier {
-    if (name === 'rect') {
-        assert(args.length === 0, `rect takes no arguments, got ${args.length}`);
-        return { kind: 'Rectify' };
-    }
-    if (name === 'gcent') {
-        assert(args.length === 0, `gcent takes no arguments, got ${args.length}`);
-        return { kind: 'GlobalCentralize' };
-    }
-    if (name === 'quadocta') {
-        assert(args.length === 0, `quadocta takes no arguments, got ${args.length}`);
-        return { kind: 'QuadOctarize' };
-    }
-    if (name === 'scale') {
-        assert(args.length === 1, `scale takes exactly 1 argument (factor), got ${args.length}`);
-        const factor = Number(args[0]);
-        assert(Number.isFinite(factor), `scale: factor must be a number, got "${args[0]}"`);
-        return { kind: 'Scale', factor };
-    }
-    if (name === 'es') {
-        assert(args.length === 1, `es takes exactly 1 argument (splitN), got ${args.length}`);
-        const splitN = Number(args[0]);
-        assert(Number.isInteger(splitN) && splitN >= 1, `es: splitN must be a positive integer, got "${args[0]}"`);
-        return { kind: 'EdgeSplit', splitN };
-    }
-    if (name === 'mc') {
-        assert(args.length <= 1, `mc takes at most 1 argument (dist), got ${args.length}`);
-        const dist = args.length === 0 ? MC_DEFAULT_DIST : Number(args[0]);
-        assert(Number.isFinite(dist) && dist > 0, `mc: dist must be a positive number, got "${args[0]}"`);
-        return { kind: 'MergeClose', dist };
-    }
-    if (name === 'triform') {
-        assert(args.length >= 1, `triform takes at least 1 argument (w), got ${args.length}`);
-        const w = Number(args[0]);
-        assert(Number.isInteger(w) && w >= 1, `triform: w must be a positive integer, got "${args[0]}"`);
-        if (args.length === 1) return { kind: 'TriangleForm', w };
-        return { kind: 'TriangleForm', w, sel: parseTriangleSelector(args.slice(1).join(' ')) };
-    }
-    if (name === 'quadform') {
-        assert(args.length >= 1, `quadform takes at least 1 argument (w), got ${args.length}`);
-        const w = Number(args[0]);
-        assert(Number.isInteger(w) && w >= 1, `quadform: w must be a positive integer, got "${args[0]}"`);
-        if (args.length === 1) return { kind: 'QuadForm', w };
-        return { kind: 'QuadForm', w, sel: parseQuadSelector(args.slice(1).join(' ')) };
-    }
-    if (name === 'form') {
-        assert(args.length >= 1, `form takes at least 1 argument (w), got ${args.length}`);
-        const w = Number(args[0]);
-        assert(Number.isInteger(w) && w >= 1, `form: w must be a positive integer, got "${args[0]}"`);
-        const sels = parseFormSelectors(args.slice(1).join(' '));
-        assert(sels.length >= 1, `form: requires at least 1 form selector, got 0`);
-        return { kind: 'Form', w, sels };
-    }
-    if (name === 'prod') {
-        const { boardType, boardArgs } = parseBoardTypeArgs('prod', args);
-        return { kind: 'Prod', boardType, boardArgs, modifiers: [] };
-    }
-    if (name === 'nis') {
-        assert(args.length >= 1, `nis takes at least 1 argument (a node selector), got ${args.length}`);
-        // args is already whitespace-split (see renderer.ts's _parseCommand) - rejoining with single
-        // spaces reconstructs one string for parseNodeSelector's own tokenizer, which doesn't care
-        // about the exact whitespace between tokens either way.
-        return { kind: 'NodeInducedSubgraph', sel: parseNodeSelector(args.join(' ')) };
-    }
-    if (name === 'eis') {
-        assert(args.length >= 1, `eis takes at least 1 argument (an edge selector), got ${args.length}`);
-        return { kind: 'EdgeInducedSubgraph', sel: parseEdgeSelector(args.join(' ')) };
-    }
-    throw new Error(`Unknown board modifier: ${name}`);
-}
-
-// The two "opener" names parseModifiers (below) resolves itself - unlike every other modifier
-// name, neither is resolved by its own command alone, so parseModifier rejects both (see its own
-// doc comment) - each maps to its own required closer.
-const MODIFIER_CLOSERS: Record<string, string> = { beginprod: 'endprod', repeat: 'endrepeat' };
-
-/**
- * Parses a whole modifiers-list text - the same "&lt;name&gt; &lt;args&gt;; &lt;name&gt;
- * &lt;args&gt;; ..." syntax `fmtModifiers` (src/sidePanel.ts) renders back out, one semicolon-
- * separated command per BoardModifier (see parseModifier's own doc comment for the per-command
- * grammar) - into a BoardModifier[]. Every command is self-contained and parsed via parseModifier,
- * *except* 'beginprod'/'repeat' (see MODIFIER_CLOSERS above): parseModifiers instead recurses on
- * itself (see the internal `run` below) to fold the whole beginprod...endprod or repeat...endrepeat
- * span, however many commands long, into a single nested 'Prod'/'Repeat' node (BoardModifier's own
- * tree shape) - the two nest freely inside each other, provided each opener's own matching closer is
- * the next one that ends it (bracket-style; a 'repeat' opened inside a 'beginprod' must be closed by
- * its own 'endrepeat' before that 'beginprod's own 'endprod', not after). Throws on an unmatched
- * closer, a closer that doesn't match its nearest still-open opener, or a still-open opener at the
- * end of the text.
- */
-export function parseModifiers(text: string): BoardModifier[] {
-    const commands = text.split(';').map(s => s.trim()).filter(s => s.length > 0);
-    const closers = new Set(Object.values(MODIFIER_CLOSERS));
-
-    // Consumes commands off the front of `cs`, in order, until either it's exhausted or the next
-    // one is any closer (left unconsumed - for this same function's own opener case, always the
-    // caller one level up, to consume itself and check it's the right one) - returns the parsed
-    // modifiers plus whatever commands are left. The opener cases' own recursive calls are what
-    // make this self-recursive.
-    function run(cs: string[]): [BoardModifier[], string[]] {
-        const modifiers: BoardModifier[] = [];
-        let rest = cs;
-        while (rest.length > 0 && !closers.has(rest[0].split(/\s+/)[0])) {
-            const [name, ...args] = rest[0].split(/\s+/);
-            rest = rest.slice(1);
-            const closer = MODIFIER_CLOSERS[name];
-            if (closer === undefined) {
-                modifiers.push(parseModifier(name, args));
-                continue;
-            }
-            const [nested, afterNested] = run(rest);
-            assert(afterNested.length > 0, `${name}: missing matching ${closer}`);
-            const [gotCloser, ...endArgs] = afterNested[0].split(/\s+/);
-            assert(gotCloser === closer, `${name}: expected matching ${closer}, got '${gotCloser}'`);
-            assert(endArgs.length === 0, `${closer} takes no arguments, got ${endArgs.length}`);
-            rest = afterNested.slice(1);
-            if (name === 'beginprod') {
-                const { boardType, boardArgs } = parseBoardTypeArgs('beginprod', args);
-                modifiers.push({ kind: 'Prod', boardType, boardArgs, modifiers: nested });
-            } else {
-                assert(args.length === 1, `repeat takes exactly 1 argument (count), got ${args.length}`);
-                const count = Number(args[0]);
-                assert(Number.isInteger(count) && count >= 0,
-                    `repeat: count must be a nonnegative integer, got "${args[0]}"`);
-                modifiers.push({ kind: 'Repeat', count, modifiers: nested });
-            }
-        }
-        return [modifiers, rest];
-    }
-
-    const [modifiers, rest] = run(commands);
-    if (rest.length > 0) {
-        const closer = rest[0].split(/\s+/)[0];
-        const opener = Object.keys(MODIFIER_CLOSERS).find(k => MODIFIER_CLOSERS[k] === closer);
-        throw new Error(`${closer}: no matching ${opener}`);
-    }
-    return modifiers;
-}
-
-/**
  * Applies `modifier` to `bc`, dispatching to `rectify` / `edgeSplit` / `mergeClose` /
  * `triangleForm` / `quadForm` / `globalCentralize` / `quadOctarize` / `scaleBoard` /
- * `nodeInducedSubgraph` / `edgeInducedSubgraph` (Prod builds a fresh board from its own
- * boardType/boardArgs via buildPrescribedBoard, applies its own nested `modifiers` to that fresh
- * board via applyModifiers, then multiplies the result into `bc`; Repeat applies its own nested
- * `modifiers` to `bc`, via applyModifiers, `count` times in a row).
+ * `nodeInducedSubgraph` / `edgeInducedSubgraph`.
  */
 export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardConfig {
     switch (modifier.kind) {
@@ -1936,15 +1724,6 @@ export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardCo
         case 'TriangleForm': return triangleForm(bc, modifier.w, modifier.sel);
         case 'QuadForm': return quadForm(bc, modifier.w, modifier.sel);
         case 'Form': return genericForm(bc, modifier.w, modifier.sels);
-        case 'Prod': {
-            const sub = applyModifiers(buildPrescribedBoard(modifier.boardType, modifier.boardArgs), modifier.modifiers);
-            return product(bc, sub);
-        }
-        case 'Repeat': {
-            let current = bc;
-            for (let i = 0; i < modifier.count; i++) current = applyModifiers(current, modifier.modifiers);
-            return current;
-        }
         case 'GlobalCentralize': return globalCentralize(bc);
         case 'QuadOctarize': return quadOctarize(bc);
         case 'Scale': return scaleBoard(bc, modifier.factor);

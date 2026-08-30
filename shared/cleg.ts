@@ -1017,16 +1017,17 @@ function fixedSignature(params: ClegType[], returnType: ClegType): BuiltinFuncti
 const BUILTIN_FUNCTIONS: Record<string, BuiltinFunction> = {};
 
 // One builtin per shared/boardConfig.ts's own PrescribedBoardMap/PrescribedBoardFns entry, named
-// after its own command-line token plus a trailing "B" (PrescribedBoardMap[pb][1], e.g. "menger" ->
-// "mengerB", "rect" -> "rectB") - built generically from that existing table (rather than one
-// hand-written cleg function per board type) so this list never drifts out of sync with it. The "B"
-// suffix keeps every one of these names clear of TYPE_KEYWORDS by construction (rather than
-// special-casing the one existing collision, "tri" vs. the `tri` triangle-value type - a future
-// command-line token could collide too, e.g. if "mod" or "egr" were ever added as one).
-for (const [pbKey, [argTypes, cmdName]] of
+// after PrescribedBoardMap's own cleg-name field (e.g. "mengerB", "rectB" - already carrying its own
+// trailing "B", so no name-mangling happens here) - built generically from that existing table
+// (rather than one hand-written cleg function per board type) so this list never drifts out of sync
+// with it. The "B" suffix (baked into PrescribedBoardMap itself) keeps every one of these names
+// clear of TYPE_KEYWORDS by construction (rather than special-casing the one existing collision,
+// "tri" vs. the `tri` triangle-value type - a future board name could collide too, e.g. "mod" or
+// "egr").
+for (const [pbKey, [argTypes, clegName]] of
     Object.entries(PrescribedBoardMap) as [string, [BoardArgType[], string, string, string]][]) {
     const pb = Number(pbKey) as PrescribedBoard;
-    BUILTIN_FUNCTIONS[`${cmdName}B`] = {
+    BUILTIN_FUNCTIONS[clegName] = {
         checkCall: fixedSignature(argTypes.map(argTypeToClegType), { kind: 'egr' }),
         call: (args: ClegValue[]): ClegValue =>
             ({ kind: 'egr', value: PrescribedBoardFns[pb](...argTypes.map((t, i) => valueToBoardArgEntry(t, args[i]))) }),

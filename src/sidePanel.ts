@@ -420,7 +420,7 @@ export function currentGameSetupHtml(v: BoardView, players: Map<number, PlayerIn
 export function newGameSetupHtml(cfg: GameConfig): string {
     return `
         <div><b>Board description:</b></div>
-        <pre>${escapeHtml(unparseCleg(cfg.boardDescr))}</pre>
+        <pre class="board-descr-pre">${escapeHtml(unparseCleg(cfg.boardDescr))}</pre>
         <div><b>Type of stones:</b> ${cfg.numStones}</div>
         <div><b>Number of players:</b> ${cfg.numPlayers}</div>
         <div><b>Turn list:</b> ${fmtTurnList(cfg.turnList, cfg.players)}</div>

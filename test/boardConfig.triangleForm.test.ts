@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    triangleForm, triangularBoard, icosahedronBoard, dodecahedronBoard, parseModifier, applyModifier,
+    triangleForm, triangularBoard, icosahedronBoard, dodecahedronBoard, applyModifier,
 } from '../shared/boardConfig.ts';
 import { Embedding, type BoardConfig } from '../shared/types.ts';
 import { parseTriangleSelector } from '../shared/selector.ts';
@@ -113,29 +113,16 @@ test('runs cleanly (no crash, stays connected/symmetric) on the dodecahedron, wh
     assert.deepEqual(result.adj, bc.adj);
 });
 
-test('parseModifier("triform", ...) parses w and rejects malformed input', () => {
-    assert.deepEqual(parseModifier('triform', ['3']), { kind: 'TriangleForm', w: 3 });
-    assert.throws(() => parseModifier('triform', []));
-    assert.throws(() => parseModifier('triform', ['0']));
-    assert.throws(() => parseModifier('triform', ['abc']));
-});
-
-test('applyModifier("TriangleForm", ...) round-trips through the same result as calling triangleForm directly', () => {
+test('applyModifier("TriangleForm", ...) matches calling triangleForm directly', () => {
     const bc = triangularBoard(2);
-    const modifier = parseModifier('triform', ['3']);
-    assert.deepEqual(applyModifier(bc, modifier), triangleForm(bc, 3));
+    assert.deepEqual(applyModifier(bc, { kind: 'TriangleForm', w: 3 }), triangleForm(bc, 3));
 });
 
 test('an optional trailing triangle selector restricts triform to only the triangles it selects', () => {
-    // _parseCommand (src/renderer.ts) splits the whole command line on whitespace before calling
-    // parseModifier, so a selector's own internal parens/spaces arrive pre-split like this.
-    const modifier = parseModifier('triform', ['3', '(conve', 'node', '(deg', 'eq', '3))']);
-    assert.deepEqual(modifier, {
-        kind: 'TriangleForm', w: 3, sel: parseTriangleSelector('(conve node (deg eq 3))'),
-    });
+    const sel = parseTriangleSelector('(conve node (deg eq 3))');
     const bc = triangularBoard(2);
-    const direct = triangleForm(bc, 3, parseTriangleSelector('(conve node (deg eq 3))'));
-    assert.deepEqual(applyModifier(bc, modifier), direct);
+    const direct = triangleForm(bc, 3, sel);
+    assert.deepEqual(applyModifier(bc, { kind: 'TriangleForm', w: 3, sel }), direct);
 });
 
 test('sel restricts triangleForm to only the selected triangles - an unselected one is left ' +

@@ -97,9 +97,9 @@ test('rejects a non-positive/non-integer dim, or a non-positive/non-integer n', 
     assert.throws(() => sierpinskiSimplex(2, 1.5));
 });
 
-test('is registered as the "sier" prescribed board type, taking exactly 2 Number arguments', () => {
+test('is registered as the "sierB" prescribed board type, taking exactly 2 Number arguments', () => {
     const [argTypes, cmd] = PrescribedBoardMap[PrescribedBoard.sierpinskiSimplex];
-    assert.equal(cmd, 'sier');
+    assert.equal(cmd, 'sierB');
     assert.deepEqual(argTypes, [BoardArgType.Number, BoardArgType.Number]);
     assert.deepEqual(PrescribedBoardFns[PrescribedBoard.sierpinskiSimplex](numArg(2), numArg(3)), sierpinskiSimplex(2, 3));
 });

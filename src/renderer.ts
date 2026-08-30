@@ -1,15 +1,13 @@
 import { BoardState, MoveType, STONE_MAP } from '@shared/boardState.js';
 import {
-    PlayerInfo, OnlinePlayerRequest, makeId, BoardArgType, projectPoint,
+    PlayerInfo, OnlinePlayerRequest, makeId, projectPoint,
 } from '@shared/types.js';
 import { GameConfig, FinishedGame } from '@shared/gameConfig.js';
 import type {
     BoardView, OnlineStateResponse, PendingGame, ScoreRule, KoRule, TurnInfo, ReplayMove, ChatMessage,
     BoardConfig,
 } from '@shared/types.js';
-import {
-    PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, computeStarPoints, MC_DEFAULT_DIST,
-} from '@shared/boardConfig.js';
+import { PrescribedBoardMap, computeStarPoints } from '@shared/boardConfig.js';
 import { parseCleg, unparseCleg, typecheckClegAsBoard, buildBoardFromCleg, type ClegProgram } from '@shared/cleg.js';
 import { ServerConnection, type RequestHandle } from './serverConnection.js';
 import {
@@ -25,15 +23,6 @@ import {
 // Single persistent WebSocket connection to the main server, shared by the
 // EngineManager (AI proxy) and the online-game commands.
 const conn = new ServerConnection();
-
-
-const _cmdToBoard = new Map(
-    (Object.entries(PrescribedBoardMap) as [string, [BoardArgType[], string, string, string]][])
-        .map(([k, [argTypes, cmd, argStr, desc]]) =>
-            [cmd, {
-                boardType: Number(k), argTypes, fn: PrescribedBoardFns[Number(k) as PrescribedBoard], argStr, desc,
-            }])
-);
 
 // Filename stems (under public/game_presets/) of the GameConfig JSON presets
 // loaded at startup into Renderer.presets - see _loadPresets() - each paired
@@ -1660,71 +1649,61 @@ export class Renderer {
         `);
 
         this.commandReferenceBoardTypesPanel.innerHTML = table(
-            [..._cmdToBoard.entries()].map(([cmd, { argStr, desc }]) => row(`${cmd} ${argStr}`, desc)).join('\n            '),
+            Object.values(PrescribedBoardMap)
+                .map(([, clegName, argStr, desc]) => row(`${clegName}${argStr}`, desc))
+                .join('\n            '),
         );
 
         this.commandReferenceBoardModifiersPanel.innerHTML = table(`
-            ${row('rect',
+            ${row('modify([mods…], egr)',
+                'Applies every mod in the array, in order, to the given board (egr) - each function '
+                + 'below builds one mod value; wrap the ones you want in modify([...], ...) to '
+                + 'actually transform a board with them, '
+                + 'e.g. modify([rectify(), scale(0.5)], rectB(9, 9))')}
+            ${row('rectify()',
                 'Rectify: place a node at each edge midpoint, connected via the convex-hull vertex figure '
                 + 'around each original node')}
-            ${row('es &lt;splitN&gt;',
+            ${row('edgeSplit(splitN)',
                 'EdgeSplit: split every edge into splitN sub-edges '
-                + '(e.g. "es 2; rect" gives an effect similar to truncation)')}
-            ${row('mc [dist]',
-                `MergeClose: merge every pair of nodes closer than dist into one node `
-                + `(default ${MC_DEFAULT_DIST})`)}
-            ${row('triform &lt;w&gt; [SEL]',
+                + '(e.g. modify([edgeSplit(2), rectify()], ...) gives an effect similar to truncation)')}
+            ${row('mergeClose(dist)',
+                'MergeClose: merge every pair of nodes closer than dist into one node')}
+            ${row('triangleForm(w, sel?)',
                 'TriangleForm: replace every triangle (3 mutually-adjacent nodes) - or, if a triangle '
-                + 'selector SEL is given, only the ones it selects - with a side-length-w triangular '
-                + 'board, gluing new corners to the old vertices and gluing shared triangle edges '
-                + 'together (w=1 collapses each triangle to a point; w=2 is a no-op); an unselected '
-                + "triangle is left untouched, as if it weren't there at all")}
-            ${row('quadform &lt;w&gt; [SEL]',
+                + 'selector sel (a string - see the Selectors page) is given, only the ones it selects '
+                + '- with a side-length-w triangular board, gluing new corners to the old vertices and '
+                + 'gluing shared triangle edges together (w=1 collapses each triangle to a point; w=2 '
+                + "is a no-op); an unselected triangle is left untouched, as if it weren't there at all")}
+            ${row('quadForm(w, sel?)',
                 'QuadForm: replace every quad (4-cycle with no diagonal edges) - or, if a quad '
-                + 'selector SEL is given, only the ones it selects - with a w-by-w grid, gluing new '
+                + 'selector sel is given, only the ones it selects - with a w-by-w grid, gluing new '
                 + 'corners to the old vertices and gluing shared quad edges together (w=1 collapses '
                 + "each quad to a point; w=2 is a no-op); an unselected quad is left untouched, as if it weren't there at all")}
-            ${row('form &lt;w&gt; &lt;FSEL…&gt;',
-                'Form: generalizes triform/quadform to one or more form selectors at once (see the Form '
-                + 'Selectors page), all sharing this one w - replaces every triangle/quad any FSEL '
-                + 'names with its own side-length-w lattice, gluing new corners to the old vertices '
-                + 'and gluing every original edge\'s new boundary points together across every '
-                + 'lattice that has it as a side, regardless of whether that lattice came from a '
-                + 'triangle or a quad FSEL (unlike calling triform/quadform separately, a triangle '
-                + 'and a quad sharing an edge still glue seamlessly here)')}
-            ${row('prod &lt;board-type&gt; &lt;args…&gt;',
-                'Prod: builds a second board (of the given type/args) and immediately multiplies it '
-                + 'into the current one (Cartesian product) - a one-shot shorthand for '
-                + '"beginprod ...; endprod" with no modifiers of its own in between')}
-            ${row('beginprod &lt;board-type&gt; &lt;args…&gt;',
-                'Starts building a second board (of the given type/args) to multiply into the current '
-                + 'one - modifiers up to the matching endprod apply to this new board, not the outer one')}
-            ${row('endprod',
-                'Ends the innermost beginprod: multiplies its finished board into the board that was '
-                + 'active before that beginprod (Cartesian product), and resumes modifying the result')}
-            ${row('repeat &lt;num&gt;',
-                'Repeat: starts building a modifier list to apply, in order, num times in a row - '
-                + 'modifiers up to the matching endrepeat are the ones repeated, each application '
-                + 'transforming the result of the previous one')}
-            ${row('endrepeat',
-                'Ends the innermost repeat: applies its modifiers to the board that was active before '
-                + 'that repeat, num times in a row, and resumes modifying the result')}
-            ${row('gcent',
+            ${row('form(w, [mkFormSel(kind, sel?)…])',
+                'Form: generalizes triangleForm/quadForm to one or more form selectors at once (each '
+                + 'built via mkFormSel("tri"|"quad", sel?) - see the Form Selectors page), all '
+                + 'sharing this one w - replaces every triangle/quad any of them names with its own '
+                + 'side-length-w lattice, gluing new corners to the old vertices and gluing every '
+                + 'original edge\'s new boundary points together across every lattice that has it as '
+                + 'a side, regardless of whether that lattice came from a triangle or a quad selector '
+                + '(unlike calling triangleForm/quadForm separately, a triangle and a quad sharing an '
+                + 'edge still glue seamlessly here)')}
+            ${row('globalCentralize()',
                 'GlobalCentralize: add one new node at the barycenter of every existing node, connected '
                 + 'to all of them')}
-            ${row('quadocta',
+            ${row('quadOctarize()',
                 'QuadOctarize: add a new dimension, then replace every quad (4-cycle with no diagonal '
                 + 'edges) with an octahedron - two new apex nodes, one on each side along the new '
                 + "dimension, each connected to that quad's 4 corners")}
-            ${row('scale &lt;num&gt;', 'Scale: multiply every node\'s natural-dimension position by num')}
-            ${row('nis &lt;node-selector&gt;',
-                'NodeInducedSubgraph: keep only the nodes the given node selector selects (see '
-                + 'the Selectors page), dropping every other node and any edge touching one')}
-            ${row('eis &lt;edge-selector&gt;',
-                'EdgeInducedSubgraph: keep only the edges the given edge selector selects (see '
-                + 'the Selectors page), and only the nodes touched by at least one of them - unlike '
-                + 'nis, a node with no selected incident edge is dropped even if adjacent to a '
-                + 'surviving node via some other, non-selected edge')}
+            ${row('scale(num)', 'Scale: multiply every node\'s natural-dimension position by num')}
+            ${row('nis(sel)',
+                'NodeInducedSubgraph: keep only the nodes the given node selector sel (a string, see '
+                + 'the Selectors page) selects, dropping every other node and any edge touching one')}
+            ${row('eis(sel)',
+                'EdgeInducedSubgraph: keep only the edges the given edge selector sel selects, and '
+                + 'only the nodes touched by at least one of them - unlike nis, a node with no '
+                + 'selected incident edge is dropped even if adjacent to a surviving node via some '
+                + 'other, non-selected edge')}
         `);
 
         this.commandReferenceSelectorsPanel.innerHTML = table(`
@@ -1760,11 +1739,11 @@ export class Renderer {
         `);
 
         this.commandReferenceFormSelectorsPanel.innerHTML = table(`
-            ${row('(tri [SEL])',
+            ${row('mkFormSel("tri", sel?)',
                 'Names triangles for the form modifier (see Board Modifiers): every triangle, '
-                + 'or (if a triangle selector SEL is given) only the ones it selects')}
-            ${row('(quad [SEL])',
-                'Names quads for the form modifier: every quad, or (if a quad selector SEL is '
+                + 'or (if a triangle selector sel is given) only the ones it selects')}
+            ${row('mkFormSel("quad", sel?)',
+                'Names quads for the form modifier: every quad, or (if a quad selector sel is '
                 + 'given) only the ones it selects')}
         `);
     }

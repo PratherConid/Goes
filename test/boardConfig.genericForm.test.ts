@@ -5,10 +5,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    genericForm, triangleForm, quadForm, triangularBoard, rectangularBoard, parseModifier, applyModifier,
+    genericForm, triangleForm, quadForm, triangularBoard, rectangularBoard, applyModifier,
 } from '../shared/boardConfig.ts';
 import { Embedding, type BoardConfig } from '../shared/types.ts';
-import { parseFormSelectors, formatFormSelectors, parseTriangleSelector } from '../shared/selector.ts';
+import { parseFormSelectors, formatFormSelectors } from '../shared/selector.ts';
 
 function edgeCount(adj: number[][]): number {
     return adj.flat().reduce((s, v) => s + v, 0) / 2;
@@ -70,27 +70,9 @@ test('an empty sels list is a total no-op', () => {
     assert.deepEqual(result.adj, bc.adj);
 });
 
-test('parseModifier("form", ...) parses w and one or more form selectors, rejecting malformed input', () => {
-    assert.deepEqual(parseModifier('form', ['3', '(tri)']), { kind: 'Form', w: 3, sels: [{ kind: 'tri' }] });
-    assert.deepEqual(
-        parseModifier('form', ['4', '(tri)', '(quad)']),
-        { kind: 'Form', w: 4, sels: [{ kind: 'tri' }, { kind: 'quad' }] },
-    );
-    assert.deepEqual(
-        parseModifier('form', ['4', '(tri', '(conve', 'node', '(deg', 'gt', '1)))']),
-        { kind: 'Form', w: 4, sels: [{ kind: 'tri', sel: parseTriangleSelector('(conve node (deg gt 1))') }] },
-    );
-    assert.throws(() => parseModifier('form', []));
-    assert.throws(() => parseModifier('form', ['0', '(tri)']));
-    assert.throws(() => parseModifier('form', ['abc', '(tri)']));
-    assert.throws(() => parseModifier('form', ['3']), /at least 1 form selector/);
-    assert.throws(() => parseModifier('form', ['3', '(rect)']), /expected 'tri' or 'quad'/);
-});
-
-test('applyModifier("Form", ...) round-trips through the same result as calling genericForm directly', () => {
+test('applyModifier("Form", ...) matches calling genericForm directly', () => {
     const bc = triangularBoard(2);
-    const modifier = parseModifier('form', ['3', '(tri)']);
-    assert.deepEqual(applyModifier(bc, modifier), genericForm(bc, 3, [{ kind: 'tri' }]));
+    assert.deepEqual(applyModifier(bc, { kind: 'Form', w: 3, sels: [{ kind: 'tri' }] }), genericForm(bc, 3, [{ kind: 'tri' }]));
 });
 
 test('formatFormSelectors round-trips parseFormSelectors', () => {
