@@ -152,6 +152,7 @@ static const std::vector<PrescribedEntry>& prescribed_boards() {
         {"star", {BoardArgKind::Number}},
         {"octa", {}},
         {"sier", {BoardArgKind::Number, BoardArgKind::Number}},
+        {"simplex", {BoardArgKind::Number, BoardArgKind::Number, BoardArgKind::Number}},
         {"ortho", {BoardArgKind::Number}},
         {"dodflake", {BoardArgKind::Number}},
         {"icoflake", {BoardArgKind::Number}},

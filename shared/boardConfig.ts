@@ -938,23 +938,88 @@ export function sierpinskiSimplex(dim: number, n: number): BoardConfig {
 }
 
 /**
+ * The `meshdim`-skeleton of a regular `dim`-simplex subdivided into a lattice of side length `w`:
+ * lattice points are identified by barycentric coordinates `(c_0, ..., c_dim)`, non-negative
+ * integers summing to `w - 1`, one per simplex vertex; a point survives (occurs on the board) iff
+ * at most `meshdim + 1` of its coordinates are nonzero, i.e. it lies on some face of dimension
+ * <= `meshdim` (the face spanned by exactly its nonzero-coordinate vertices) - the same "faces of
+ * dimension <= meshdim survive" rule as `hypercuboidBoard`, just expressed in barycentric rather
+ * than axis-aligned terms. Two surviving points are adjacent iff their coordinates differ by
+ * transferring one unit from one coordinate to another (`c_i -= 1, c_j += 1`) AND the smallest
+ * face containing both of them (spanned by the union of their two nonzero-coordinate sets, which
+ * is always just `c`'s own nonzero set plus the incoming coordinate `j`) still has dimension
+ * <= `meshdim` - both endpoints individually surviving is not enough on its own, since a single
+ * transfer can otherwise jump between two different low-dimension faces straight through a
+ * higher-dimension one they don't share (e.g. `(1,1,1,0) -> (1,1,0,1)`, two different triangular
+ * faces of a subdivided tetrahedron, would wrongly connect directly through the solid interior).
+ * Each point embeds as the sum of its coordinates against `regularSimplexCoords(dim)`'s own
+ * unit-edge vertex positions, which keeps every lattice edge exactly unit length.
+ *
+ * `meshdim = dim` (or higher) keeps everything - the full solid simplex, `dim = 2` then matching
+ * `triangularBoard(w)` node-for-node. `meshdim = 0` keeps only the `dim + 1` corners (each with a
+ * single nonzero coordinate equal to `w - 1`), not adjacent to each other for `w > 1`, same as
+ * `hypercuboidBoard`'s own `meshdim = 0` case. `meshdim = dim - 1` is the hollow boundary - every
+ * proper face glued at its shared sub-faces, solid interior excluded.
+ */
+export function simplexBoard(meshdim: number, dim: number, w: number): BoardConfig {
+    assert(Number.isInteger(dim) && dim >= 1, `dim must be a positive integer, got ${dim}`);
+    assert(Number.isInteger(w) && w >= 1, `w must be a positive integer, got ${w}`);
+    assert(Number.isInteger(meshdim) && meshdim >= 0, `meshdim must be a non-negative integer, got ${meshdim}`);
+    const m = dim + 1, n = w - 1;
+
+    const allCoords: number[][] = [];
+    const build = (prefix: number[], remaining: number) => {
+        if (prefix.length === m - 1) { allCoords.push([...prefix, remaining]); return; }
+        for (let c = 0; c <= remaining; c++) build([...prefix, c], remaining - c);
+    };
+    build([], n);
+
+    const corners = regularSimplexCoords(dim);
+    const boardIdxOf = new Map<string, number>();
+    const survivingCoords: number[][] = [];
+    const nonzeroCounts: number[] = [];
+    const pos: number[][] = [];
+    for (const c of allCoords) {
+        const nonzeroCount = c.filter(x => x > 0).length;
+        if (nonzeroCount > meshdim + 1) continue;
+        boardIdxOf.set(c.join(','), survivingCoords.length);
+        survivingCoords.push(c);
+        nonzeroCounts.push(nonzeroCount);
+        const p = new Array(dim).fill(0);
+        for (let i = 0; i < m; i++)
+            for (let d = 0; d < dim; d++) p[d] += c[i] * corners[i][d];
+        pos.push(p);
+    }
+    const N = survivingCoords.length;
+
+    const adj = zeroAdj(N);
+    for (let bi = 0; bi < N; bi++) {
+        const c = survivingCoords[bi];
+        for (let i = 0; i < m; i++) {
+            if (c[i] === 0) continue;
+            for (let j = 0; j < m; j++) {
+                if (j === i) continue;
+                const extra = c[j] === 0 ? 1 : 0;
+                if (nonzeroCounts[bi] + extra > meshdim + 1) continue;
+                const nc = c.slice();
+                nc[i]--; nc[j]++;
+                const nbi = boardIdxOf.get(nc.join(','));
+                if (nbi === undefined) continue;
+                adj[bi][nbi] = 1;
+            }
+        }
+    }
+    return make(new Embedding(dim, pos), adj);
+}
+
+/**
  * A regular tetrahedron: 4 vertices, all mutually adjacent (K4), 6 unit-length edges. A
  * side-length-w subdivision of its 4 triangular faces is no longer built in here directly - apply
  * the `triangleForm(w)` modifier afterward instead (findTriangles finds exactly its 4 faces on this
  * board, since every 3-subset of K4's vertices is a triangle).
  */
 export function tetrahedronBoard(): BoardConfig {
-    const edgeScale = 1 / (2 * Math.sqrt(2));
-    const pos: number[][] = [
-        [1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1],
-    ].map(v => v.map(x => x * edgeScale));
-
-    const adj = zeroAdj(4);
-    for (let i = 0; i < 4; i++)
-        for (let j = 0; j < 4; j++)
-            if (i !== j) adj[i][j] = 1;
-
-    return make(new Embedding(3, pos), adj);
+    return simplexBoard(3, 3, 2);
 }
 
 /**
@@ -995,6 +1060,43 @@ export function orthoplexBoard(n: number): BoardConfig {
             if (i !== j && j !== antipode(i)) adj[i][j] = 1;
 
     return make(new Embedding(n, pos), adj);
+}
+
+/**
+ * The 24-cell (icositetrachoron): the regular 4-dimensional polytope with 24 vertices, 96
+ * unit-length edges, 96 triangular faces and 24 octahedral cells - the unique self-dual regular
+ * 4-polytope, with no 3-dimensional analog. Vertices are every point in R^4 with exactly two
+ * coordinates equal to `+-1` (any of the `C(4,2) = 6` axis pairs, either of the 4 sign
+ * combinations - the D4 root system, 24 points total), pre-scaled by `edgeScale = 1/sqrt(2)` so
+ * adjacent vertices come out exactly unit distance apart. Two vertices are adjacent iff their raw
+ * (pre-scale) dot product is 1 (raw squared distance 2, matching the unit-scaled edge length) -
+ * every vertex works out to exactly 8 such neighbors (`24*8/2 = 96` edges, matching the known edge
+ * count).
+ */
+export function reg24CellBoard(): BoardConfig {
+    const edgeScale = 1 / Math.sqrt(2);
+    const raw: number[][] = [];
+    for (let i = 0; i < 4; i++)
+        for (let j = i + 1; j < 4; j++)
+            for (const si of [1, -1])
+                for (const sj of [1, -1]) {
+                    const v = [0, 0, 0, 0];
+                    v[i] = si;
+                    v[j] = sj;
+                    raw.push(v);
+                }
+
+    const N = raw.length;
+    const pos = raw.map(v => v.map(x => x * edgeScale));
+
+    const adj = zeroAdj(N);
+    for (let a = 0; a < N; a++)
+        for (let b = a + 1; b < N; b++) {
+            const dot = raw[a].reduce((s, x, k) => s + x * raw[b][k], 0);
+            if (dot === 1) { adj[a][b] = 1; adj[b][a] = 1; }
+        }
+
+    return make(new Embedding(4, pos), adj);
 }
 
 /**
@@ -1482,7 +1584,9 @@ export enum PrescribedBoard {
     starBoard,
     octahedronBoard,
     sierpinskiSimplex,
+    simplexBoard,
     orthoplexBoard,
+    reg24CellBoard,
     dodecahedronFlake,
     icosahedronFlake,
     octahedronFlake,
@@ -1546,8 +1650,14 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [BoardArgType[], string
         [nums(0), "octaB", "()", "Regular octahedron (6 vertices, 8 triangular faces, unit-length edges)"],
     [PrescribedBoard.sierpinskiSimplex]:
         [nums(2), "sierB", "(dim, n)", "Sierpinski dim-simplex (gasket) of order n"],
+    [PrescribedBoard.simplexBoard]:
+        [nums(3), "simplexB", "(meshdim, dim, w)",
+            "Simplex board (meshdim-skeleton of a regular dim-simplex, side length w)"],
     [PrescribedBoard.orthoplexBoard]:
         [nums(1), "orthoB", "(n)", "n-dimensional orthoplex (cross-polytope), unit-length edges"],
+    [PrescribedBoard.reg24CellBoard]:
+        [nums(0), "reg24CellB", "()",
+            "Regular 24-cell (24 vertices, 96 triangular faces, unit-length edges)"],
     [PrescribedBoard.dodecahedronFlake]:
         [nums(1), "dodflakeB", "(n)", "Dodecahedron flake fractal of order n (n=1 is the plain dodecahedron)"],
     [PrescribedBoard.icosahedronFlake]:
@@ -1598,7 +1708,9 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: BoardArgEntry
     [PrescribedBoard.starBoard]:                 (...a) => starBoard(num(a[0])),
     [PrescribedBoard.octahedronBoard]:          () => octahedronBoard(),
     [PrescribedBoard.sierpinskiSimplex]:        (...a) => sierpinskiSimplex(num(a[0]), num(a[1])),
+    [PrescribedBoard.simplexBoard]:             (...a) => simplexBoard(num(a[0]), num(a[1]), num(a[2])),
     [PrescribedBoard.orthoplexBoard]:           (...a) => orthoplexBoard(num(a[0])),
+    [PrescribedBoard.reg24CellBoard]:           () => reg24CellBoard(),
     [PrescribedBoard.dodecahedronFlake]:        (...a) => dodecahedronFlake(num(a[0])),
     [PrescribedBoard.icosahedronFlake]:         (...a) => icosahedronFlake(num(a[0])),
     [PrescribedBoard.octahedronFlake]:          (...a) => octahedronFlake(num(a[0])),

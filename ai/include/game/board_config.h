@@ -76,8 +76,8 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<Selecto
 // computes real (generally non-integer, since it divides by w-1) node positions, but every C++
 // board with a genuine (non-zero) emb_dim is an exact-integer invariant throughout this file, so
 // this always produces an emb_dim = 0 board instead (same reasoning as regular_polygon_board /
-// tetrahedron_board / dodecahedron_board / icosahedron_board) - adjacency only, regardless of
-// whether bc itself had a real embedding.
+// dodecahedron_board / icosahedron_board) - adjacency only, regardless of whether bc itself had a
+// real embedding.
 BoardConfig triangle_form(const BoardConfig& bc, int w, std::optional<Selector> sel = std::nullopt);
 
 // Replaces every quad (4 distinct vertices forming a cycle with no diagonal edges - see
@@ -314,6 +314,16 @@ BoardConfig triangular_board(int w);
 // a standard basis vector scaled by its own side length (see the .cpp file's own comment).
 BoardConfig sierpinski_simplex_board(int dim, int n);
 
+// Mirrors shared/boardConfig.ts's simplexBoard() - the meshdim-skeleton of a regular dim-simplex
+// subdivided into a lattice of side length w: lattice points are barycentric coordinates
+// (c_0, ..., c_dim) summing to w-1, a point survives iff at most meshdim+1 of its coordinates are
+// nonzero, and two surviving points are adjacent iff a single c_i -= 1, c_j += 1 transfer connects
+// them AND the smallest face containing both (not just each separately) still has dimension
+// <= meshdim (see the .cpp file's own comment for why checking each endpoint alone isn't enough).
+// Same exact-integer embedding deviation as sierpinski_simplex_board() above - see the .cpp file's
+// own comment.
+BoardConfig simplex_board(int meshdim, int dim, int w);
+
 // A regular polygon with n edges (a simple n-cycle graph), n >= 3. Unlike every other board type
 // here, a unit-edge-length regular n-gon has no exact-integer Cartesian embedding for general n
 // (see shared/boardConfig.ts's regularPolygonBoard() and ai/Readme.md's now-resolved TODO note).
@@ -330,12 +340,12 @@ BoardConfig regular_polygon_board(int n);
 // shared/boardConfig.ts's starBoard() for the coordinates this mirrors, adjacency only).
 BoardConfig star_board(int n);
 
-// A regular tetrahedron: 4 vertices, all mutually adjacent (K4), 6 edges. Same emb_dim = 0 / empty
-// embed[] approach as regular_polygon_board, for the same reason - see shared/boardConfig.ts's
-// tetrahedronBoard() for the coordinates this mirrors, adjacency only. A side-length-w subdivision
-// of its 4 triangular faces is built via triangle_form(w), not in here directly - see its own doc
-// comment; find_triangles finds exactly this board's 4 faces, since every 3-subset of K4's
-// vertices is a triangle.
+// A regular tetrahedron: 4 vertices, all mutually adjacent (K4), 6 edges - the meshdim=dim=3, w=2
+// case of simplex_board() above (see its own doc comment for the construction and the
+// exact-integer embedding it uses in place of the TS side's real-valued one). A side-length-w
+// subdivision of its 4 triangular faces is built via triangle_form(w), not in here directly - see
+// its own doc comment; find_triangles finds exactly this board's 4 faces, since every 3-subset of
+// K4's vertices is a triangle.
 BoardConfig tetrahedron_board();
 
 // A regular octahedron: the n=3 case of orthoplex_board() below - 6 vertices, 12 edges, 8
@@ -488,7 +498,7 @@ BoardConfig glue_twisted_square_board(int w, int h, int g);
 BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("line" | "rect" | "rectd" |
-// "cublat" | "hcub" | "tri" | "sier" | "regpoly" | "tetra" | "octa" | "ortho" | "ap" | "dodeca" |
+// "cublat" | "hcub" | "tri" | "sier" | "simplex" | "regpoly" | "tetra" | "octa" | "ortho" | "ap" | "dodeca" |
 // "icosa" | "dodflake" | "icoflake" | "octaflake" | "polyflake" | "cpolyflake" | "cpentflake" |
 // "menger" | "trihex" | "hex" | "hexdel" | "snubsq" | "twsq" | "gtsq" | "star"),
 // reading each of `args` back via board_arg_number()/board_arg_list() as that builder's own

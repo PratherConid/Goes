@@ -110,7 +110,7 @@ BoardConfig edge_split(const BoardConfig& bc, int split_n) {
 BoardConfig rectify(const BoardConfig& bc) {
     // A real (always-active) check, not assert() - rectify's connectivity is decided by the angular
     // ordering of real edge directions around each vertex (see convex_hull_edges below), which is
-    // undefined for an emb_dim=0 board (e.g. dodeca/icosa/tetra/regpoly, or triform/sqform output -
+    // undefined for an emb_dim=0 board (e.g. dodeca/icosa/regpoly, or triform/sqform output -
     // see board_config.h). Left unchecked, the convex-hull LP degenerates on 0-dimensional points and
     // silently returns no edges at all, rather than failing loudly.
     if (bc.emb_dim == 0)
@@ -171,7 +171,7 @@ BoardConfig rectify(const BoardConfig& bc) {
 BoardConfig merge_close(const BoardConfig& bc, double dist) {
     assert(dist > 0 && "dist must be positive");
     // A real (always-active) check, not assert() - merge_close needs real coordinates to compute a
-    // meaningful distance. Left unchecked, an emb_dim=0 board (e.g. dodeca/icosa/tetra/regpoly, or
+    // meaningful distance. Left unchecked, an emb_dim=0 board (e.g. dodeca/icosa/regpoly, or
     // triform/sqform output - see board_config.h) makes every pairwise distance compute to 0 (the
     // loop over emb_dim coordinates never runs), silently collapsing the entire board into one node.
     if (bc.emb_dim == 0)
@@ -709,6 +709,76 @@ BoardConfig sierpinski_simplex_board(int dim, int n) {
     return make_bc(std::move(adj), static_cast<unsigned>(dim), std::move(pos));
 }
 
+// Mirrors shared/boardConfig.ts's simplexBoard(), with the same exact-integer embedding deviation
+// sierpinski_simplex_board() above already uses: rather than regularSimplexCoords(dim) (irrational
+// for dim >= 2), corner 0 sits at the origin and corner k (1 <= k <= dim) at the k-th standard
+// basis vector, so a lattice point's own barycentric coordinates (c_0, ..., c_dim) embed as the
+// same c_i * corner_i sum the TS side uses, which here reduces to simply (c_1, ..., c_dim) -
+// corner 0 contributes nothing.
+BoardConfig simplex_board(int meshdim, int dim, int w) {
+    assert(dim >= 1 && "dim must be at least 1");
+    assert(w >= 1 && "w must be at least 1");
+    assert(meshdim >= 0 && "meshdim must be non-negative");
+    int m = dim + 1, n = w - 1;
+
+    std::vector<std::vector<int>> all_coords;
+    std::function<void(std::vector<int>&, int)> build = [&](std::vector<int>& prefix, int remaining) {
+        if (static_cast<int>(prefix.size()) == m - 1) {
+            prefix.push_back(remaining);
+            all_coords.push_back(prefix);
+            prefix.pop_back();
+            return;
+        }
+        for (int c = 0; c <= remaining; c++) {
+            prefix.push_back(c);
+            build(prefix, remaining - c);
+            prefix.pop_back();
+        }
+    };
+    std::vector<int> prefix;
+    build(prefix, n);
+
+    std::vector<std::vector<unsigned>> corners(m, std::vector<unsigned>(dim, 0u));
+    for (int k = 1; k <= dim; k++) corners[k][k - 1] = 1u;
+
+    std::map<std::vector<int>, int> board_idx_of;
+    std::vector<std::vector<int>> surviving_coords;
+    std::vector<int> nonzero_counts;
+    std::vector<std::vector<unsigned>> pos;
+    for (auto& c : all_coords) {
+        int nonzero_count = 0;
+        for (int x : c) if (x > 0) nonzero_count++;
+        if (nonzero_count > meshdim + 1) continue;
+        board_idx_of[c] = static_cast<int>(surviving_coords.size());
+        nonzero_counts.push_back(nonzero_count);
+        surviving_coords.push_back(c);
+        std::vector<unsigned> p(dim, 0u);
+        for (int i = 0; i < m; i++)
+            for (int d = 0; d < dim; d++) p[d] += static_cast<unsigned>(c[i]) * corners[i][d];
+        pos.push_back(std::move(p));
+    }
+    int N = static_cast<int>(surviving_coords.size());
+
+    auto adj = zero_adj(N);
+    for (int bi = 0; bi < N; bi++) {
+        auto& c = surviving_coords[bi];
+        for (int i = 0; i < m; i++) {
+            if (c[i] == 0) continue;
+            for (int j = 0; j < m; j++) {
+                if (j == i) continue;
+                int extra = c[j] == 0 ? 1 : 0;
+                if (nonzero_counts[bi] + extra > meshdim + 1) continue;
+                std::vector<int> nc = c;
+                nc[i]--; nc[j]++;
+                auto it = board_idx_of.find(nc);
+                if (it == board_idx_of.end()) continue;
+                adj[bi][it->second] = 1;
+            }
+        }
+    }
+    return make_bc(std::move(adj), static_cast<unsigned>(dim), std::move(pos));
+}
+
 BoardConfig regular_polygon_board(int n) {
     assert(n >= 3 && "n must be at least 3");
     auto adj = zero_adj(n);
@@ -735,22 +805,10 @@ BoardConfig star_board(int n) {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// Mirrors shared/boardConfig.ts's tetrahedronBoard() connectivity (adjacency only - no
-// position/embedding, see board_config.h's own doc comment on this function). 4 faces, each
-// triangular_board(w)-shaped (n_face = w*(w+1)/2 nodes, same left/right/bottom boundary convention
-// as triangular_board's own row/col indexing), glued along shared tetrahedron edges via
-// quotient_board - every pair of distinct faces shares exactly one edge (the 2 vertex indices not
-// excluded by either face), and since each face lists its own 3 corners in ascending vertex-index
-// order, both faces' boundary node sequences for a shared edge are always already aligned
-// position-for-position (see the TS side's doc comment for the full argument), so no
-// direction-flipping is ever needed here.
+// Mirrors shared/boardConfig.ts's tetrahedronBoard(), which now just calls simplexBoard(3, 3, 2) -
+// same delegation here, to simplex_board's own exact-integer embedding (see its doc comment).
 BoardConfig tetrahedron_board() {
-    auto adj = zero_adj(4);
-    for (int i = 0; i < 4; i++)
-        for (int j = 0; j < 4; j++)
-            if (i != j) adj[i][j] = 1;
-    std::vector<std::vector<unsigned>> embed(4); // emb_dim=0
-    return make_bc(std::move(adj), 0u, std::move(embed));
+    return simplex_board(3, 3, 2);
 }
 
 BoardConfig octahedron_board() {
@@ -1217,6 +1275,7 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<BoardA
     if (kind == "hcub")  return hypercuboid_board(num(v[0]), list(v[1]));
     if (kind == "tri")   return triangular_board(num(v[0]));
     if (kind == "sier")  return sierpinski_simplex_board(num(v[0]), num(v[1]));
+    if (kind == "simplex") return simplex_board(num(v[0]), num(v[1]), num(v[2]));
     if (kind == "regpoly") return regular_polygon_board(num(v[0]));
     if (kind == "star")  return star_board(num(v[0]));
     if (kind == "tetra") return tetrahedron_board();

@@ -314,7 +314,7 @@ static Args parse_args(int argc, char* argv[]) {
 // dynamically from bc.embed's own bounding box, not from board_descr itself, so any board with a
 // genuine 2D embedding works regardless of how it was built - checking emb_dim directly (rather
 // than a hardcoded board-kind allowlist combined with a "no modifiers" precaution) is both simpler
-// and correct: it naturally excludes non-grid boards (emb_dim=0, e.g. regpoly/tetra/dodeca/icosa),
+// and correct: it naturally excludes non-grid boards (emb_dim=0, e.g. regpoly/dodeca/icosa),
 // higher-dimensional ones (cublat=3, hcub=4), and 1D ones (line=1) without needing a per-board-kind
 // special case. board_descr is only used for the error message text below.
 static std::string effective_arch(const Args& args, const std::string& board_descr, unsigned emb_dim) {
