@@ -519,27 +519,31 @@ BUILTIN_FUNCTIONS['quadForm'] = {
 };
 
 // `form(w, ...sels)`: builds a Form BoardModifier - `w` (the shared lattice width) followed by one
-// or more `sel` arguments (each typically built via `mkSel("(all tri)")`/`mkSel("(conve tri ...)")`/
-// etc.), mirroring genericForm's own (bc, w, sels) signature (genericForm itself accepts an empty
-// `sels` as a no-op; `form` requires at least one, below, since a cleg call with none would be a pointless
-// no-op board program). `sel` carries no kind at the type level (see ClegType's own 'sel' doc
-// comment), so a non-tri/quad `sel` type-checks here but is rejected at runtime by genericForm
-// itself - the same tri-or-quad check any hand-built Selector needs, not something `form` repeats.
+// or more selector arguments, each a `sel` (typically built via `mkSel(...)`), a bare `string`
+// (parsed via selector.ts's own context-free parseSelector - kind inferred bottom-up from the text
+// itself, exactly like mkSel's own string case, so `mkSel` is no longer needed just to wrap one), or
+// a `set` of number/edge/tri/quad (kind read off the set's own element type) - resolved via
+// resolveAnyKindSelectorArg below, the same resolution mkSel/msBase already use. Mirrors genericForm's
+// own (bc, w, sels) signature (genericForm itself accepts an empty `sels` as a no-op; `form` requires
+// at least one, below, since a cleg call with none would be a pointless no-op board program). None of
+// `sel`/`string`/`set` carries a tri-or-quad kind at the type level, so a non-tri/quad argument
+// type-checks here but is rejected at runtime by genericForm itself - the same check any hand-built
+// Selector needs, not something `form` repeats.
 function formCheckCall(callee: string, argTypes: ClegType[]): ClegType {
     if (argTypes.length < 2)
         throw new Error(`cleg: '${callee}' expects at least 2 argument(s) (w, and >= 1 sel), got ${argTypes.length}`);
     if (argTypes[0].kind !== 'number')
         throw new Error(`cleg: '${callee}' argument 1: expected number, got ${typeToString(argTypes[0])}`);
     for (let i = 1; i < argTypes.length; i++)
-        if (argTypes[i].kind !== 'sel')
-            throw new Error(`cleg: '${callee}' argument ${i + 1}: expected sel, got ${typeToString(argTypes[i])}`);
+        if (argTypes[i].kind !== 'sel' && argTypes[i].kind !== 'string' && argTypes[i].kind !== 'set')
+            throw new Error(`cleg: '${callee}' argument ${i + 1}: expected sel, string, or set, got ${typeToString(argTypes[i])}`);
     return MOD_TYPE;
 }
 BUILTIN_FUNCTIONS['form'] = {
     checkCall: formCheckCall,
     call: (args) => {
         const w = (args[0] as { value: number }).value;
-        const sels = args.slice(1).map(a => (a as { value: Selector }).value);
+        const sels = args.slice(1).map(a => resolveAnyKindSelectorArg('form', a));
         return { kind: 'mod', value: { kind: 'Form', w, sels } };
     },
 };
@@ -571,8 +575,8 @@ const SELECTOR_TYPE_BY_SET_ELEM_KIND: Partial<Record<ClegType['kind'], SelectorT
     number: 'node', edge: 'edge', tri: 'tri', quad: 'quad',
 };
 
-// Resolves a selector argument whose own kind isn't fixed ahead of the call (mkSel/msBase) into a
-// real Selector - a `sel` value (used directly, whatever SelectorType it is), a `string` (parsed via
+// Resolves a selector argument whose own kind isn't fixed ahead of the call (mkSel/form/msBase) into
+// a real Selector - a `sel` value (used directly, whatever SelectorType it is), a `string` (parsed via
 // selector.ts's own context-free parseSelector, whichever kind the text itself turns out to be -
 // unlike resolveSelectorArg's own string case, which parses against one fixed wantKind), or a `set`
 // (of number/edge/tri/quad, wrapped into a `raw` Selector the same way resolveSelectorArg's own
@@ -595,8 +599,8 @@ function msBaseCheckCall(callee: string, argTypes: ClegType[]): ClegType {
         throw new Error(`cleg: '${callee}' expects 2 argument(s), got ${argTypes.length}`);
     if (argTypes[0].kind !== 'number')
         throw new Error(`cleg: '${callee}' argument 1: expected number, got ${typeToString(argTypes[0])}`);
-    if (argTypes[1].kind !== 'sel' && argTypes[1].kind !== 'set')
-        throw new Error(`cleg: '${callee}' argument 2: expected sel or set, got ${typeToString(argTypes[1])}`);
+    if (argTypes[1].kind !== 'sel' && argTypes[1].kind !== 'string' && argTypes[1].kind !== 'set')
+        throw new Error(`cleg: '${callee}' argument 2: expected sel, string, or set, got ${typeToString(argTypes[1])}`);
     return MSEL_TYPE;
 }
 // `msAll()`: every node of the full product, unrestricted - see MultiSelector's own 'all' doc
@@ -607,7 +611,9 @@ BUILTIN_FUNCTIONS['msAll'] = {
 };
 
 // `msBase(number, X)`: "every full-product node whose `number`-th coordinate is kept by X, every
-// other coordinate unrestricted" - see MultiSelector's own doc comment for what X may be.
+// other coordinate unrestricted" - see MultiSelector's own doc comment for what X may be. X is a
+// `sel`, a bare `string` (parsed via resolveAnyKindSelectorArg below - kind inferred bottom-up from
+// the text itself, same as form/mkSel), or a `set`.
 BUILTIN_FUNCTIONS['msBase'] = {
     checkCall: msBaseCheckCall,
     call: ([numberVal, arg]) => {

@@ -709,14 +709,14 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                 if (arg_types[0].kind != CTKind::Number)
                     throw std::runtime_error("cleg: '" + callee + "' argument 1: expected number, got " + type_to_string(arg_types[0]));
                 for (size_t i = 1; i < arg_types.size(); i++)
-                    if (arg_types[i].kind != CTKind::Sel)
-                        throw std::runtime_error("cleg: '" + callee + "' argument " + std::to_string(i + 1) + ": expected sel, got " + type_to_string(arg_types[i]));
+                    if (arg_types[i].kind != CTKind::Sel && arg_types[i].kind != CTKind::String && arg_types[i].kind != CTKind::Set)
+                        throw std::runtime_error("cleg: '" + callee + "' argument " + std::to_string(i + 1) + ": expected sel, string, or set, got " + type_to_string(arg_types[i]));
                 return MOD_TYPE;
             },
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 BoardModifier bm{ModifierKind::Form};
                 bm.split_n = static_cast<int>(args[0].number);
-                for (size_t i = 1; i < args.size(); i++) bm.form_sels.push_back(args[i].sel_v);
+                for (size_t i = 1; i < args.size(); i++) bm.form_sels.push_back(resolve_any_kind_selector_arg("form", args[i]));
                 return make_mod(bm);
             },
         };
@@ -739,8 +739,8 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                     throw std::runtime_error("cleg: '" + callee + "' expects 2 argument(s), got " + std::to_string(arg_types.size()));
                 if (arg_types[0].kind != CTKind::Number)
                     throw std::runtime_error("cleg: '" + callee + "' argument 1: expected number, got " + type_to_string(arg_types[0]));
-                if (arg_types[1].kind != CTKind::Sel && arg_types[1].kind != CTKind::Set)
-                    throw std::runtime_error("cleg: '" + callee + "' argument 2: expected sel or set, got " + type_to_string(arg_types[1]));
+                if (arg_types[1].kind != CTKind::Sel && arg_types[1].kind != CTKind::String && arg_types[1].kind != CTKind::Set)
+                    throw std::runtime_error("cleg: '" + callee + "' argument 2: expected sel, string, or set, got " + type_to_string(arg_types[1]));
                 return MSEL_TYPE;
             },
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
