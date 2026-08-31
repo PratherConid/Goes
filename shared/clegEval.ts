@@ -275,6 +275,23 @@ const NUMBER_TYPE: ClegType = { kind: 'number' };
 // read there, since a TopStmt is never a ReturnStmt).
 export const EGR_TYPE: ClegType = { kind: 'egr' };
 
+// `abs(x)`/`sqrt(x)`: fixed-signature `number -> number`, built with fixedSignature(...) like
+// mkEdge/mkTri/mkQuad below. `sqrt` throws at evaluation time for a negative `x` (not statically
+// knowable from `number`'s type alone) rather than returning NaN, matching every other cleg
+// evaluation-time validity check (e.g. requireRepeatCount's own nonnegative-integer requirement).
+BUILTIN_FUNCTIONS['abs'] = {
+    checkCall: fixedSignature([NUMBER_TYPE], NUMBER_TYPE),
+    call: ([x]) => ({ kind: 'number', value: Math.abs((x as { value: number }).value) }),
+};
+BUILTIN_FUNCTIONS['sqrt'] = {
+    checkCall: fixedSignature([NUMBER_TYPE], NUMBER_TYPE),
+    call: ([x]) => {
+        const v = (x as { value: number }).value;
+        if (v < 0) throw new Error(`cleg: 'sqrt' argument must be nonnegative, got ${v}`);
+        return { kind: 'number', value: Math.sqrt(v) };
+    },
+};
+
 // `mkEdge`/`mkTri`/`mkQuad`: build an edge/tri/quad from node indices, canonicalized exactly as
 // shared/types.ts's own makeBoardEdge/makeBoardTriangle/makeBoardQuad do (mkQuad's arguments must
 // already be in cycle order, same requirement as makeBoardQuad's own - see its doc comment). All
@@ -856,8 +873,11 @@ BUILTIN_FUNCTIONS['multiProd'] = {
 };
 
 // `subHcublat(bounds, cond)`: a "sub-region" of an N-dimensional hypercubical lattice - `bounds` is
-// an N-length array of `[lo, hi]` pairs (inclusive integer bounds, one pair per dimension)
-// describing the bounding hyperrectangle; `cond` decides which lattice points inside it actually
+// an N-length array of `[lo, hi]` pairs (inclusive bounds, one pair per dimension, describing the
+// bounding hyperrectangle - not necessarily integers themselves: `lo` is rounded UP and `hi` rounded
+// DOWN to the nearest integer lattice point before use, i.e. the actual integer range is
+// `[Math.ceil(lo), Math.floor(hi)]`, so a non-integer bound just trims the lattice down to the
+// integer points genuinely inside `[lo, hi]` rather than being rejected); `cond` decides which lattice points inside it actually
 // become nodes, called once per candidate point (as that point's own N coordinates, a `number[]`)
 // via callUserFunction - the one builtin so far that needs to call back into a `func`-typed argument,
 // which is why `funcs` is threaded through BuiltinFunction's own `call` signature. Surviving nodes
@@ -887,11 +907,15 @@ BUILTIN_FUNCTIONS['subHcublat'] = {
             const pair = (pairVal as { value: ClegValue[] }).value;
             if (pair.length !== 2)
                 throw new Error(`cleg: 'subHcublat' bounds[${i}] must have exactly 2 entries (lower, upper), got ${pair.length}`);
-            const a = (pair[0] as { value: number }).value;
-            const b = (pair[1] as { value: number }).value;
-            if (!Number.isInteger(a) || !Number.isInteger(b) || a > b)
+            // `lo`/`hi` need not themselves be integers - rounded to the nearest integer lattice
+            // point INWARD (lo up, hi down) before use, so e.g. `[0.5, 2.5]` becomes the integer
+            // range `[1, 2]`, not an error.
+            const a = Math.ceil((pair[0] as { value: number }).value);
+            const b = Math.floor((pair[1] as { value: number }).value);
+            if (a > b)
                 throw new Error(
-                    `cleg: 'subHcublat' bounds[${i}] must be integers with lower <= upper, got [${a}, ${b}]`);
+                    `cleg: 'subHcublat' bounds[${i}] has no integer lattice point in range after ` +
+                    `rounding (lower up, upper down), got [${a}, ${b}]`);
             lo[i] = a;
             dims[i] = b - a + 1;
         });

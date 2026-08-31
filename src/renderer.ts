@@ -145,6 +145,7 @@ const _boardConfigDescriptions = new Map([
     ['biTemple_13_13_9_3', 'Temple with both top and bottom'],
     ['twsqCluster4D_4_4_2', 'Copies of twsq boards connected in 4 dimensions'],
     ['goDesk_19_19_5_2_6_2', 'A nice go desk that you can play go on'],
+    ['ring_5_12.5', 'Two dimensional circular ring'],
 ]);
 
 

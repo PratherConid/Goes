@@ -1,0 +1,16 @@
+bool ringCond(number mi, number ma, number[] coords) {
+  number x = coords[0];
+  number y = coords[1];
+  number sum = ((x * x) + (y * y));
+  return ((sum >= (mi * mi)) && (sum <= (ma * ma)));
+}
+egr ringB(number r1, number r2) {
+  number mi = r1;
+  number ma = r2;
+  if ((r1 > r2)) {
+    mi = r2;
+    ma = r1;
+  }
+  return subHcublat([[(-ma), ma], [(-ma), ma]], ringCond(mi, ma, #));
+}
+ringB(5, 12.5);

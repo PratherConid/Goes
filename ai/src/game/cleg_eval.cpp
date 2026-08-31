@@ -515,6 +515,23 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
         };
 
+        // Mirrors shared/clegEval.ts's `abs`/`sqrt` - fixed-signature `number -> number`. `sqrt`
+        // throws at evaluation time for a negative argument (not statically knowable from `number`'s
+        // type alone) rather than returning NaN, matching every other cleg evaluation-time validity
+        // check.
+        m["abs"] = BuiltinFunction{
+            fixed_signature({NUMBER_TYPE}, NUMBER_TYPE),
+            [](const std::vector<ClegValue>& args, UserFuncTable&) { return make_number(std::abs(args[0].number)); },
+        };
+        m["sqrt"] = BuiltinFunction{
+            fixed_signature({NUMBER_TYPE}, NUMBER_TYPE),
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+                double v = args[0].number;
+                if (v < 0) throw std::runtime_error("cleg: 'sqrt' argument must be nonnegative, got " + format_number_display(v));
+                return make_number(std::sqrt(v));
+            },
+        };
+
         m["mkEdge"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE, NUMBER_TYPE}, EDGE_TYPE),
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
@@ -811,8 +828,11 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
 
         // Mirrors shared/clegEval.ts's subHcublat(bounds, cond): a "sub-region" of an N-dimensional
         // hypercubical lattice - `bounds` is an N-length array of `[lo, hi]` pairs (inclusive
-        // integer bounds, one pair per dimension) describing the bounding hyperrectangle; `cond`
-        // decides which lattice points inside it actually become nodes, called once per candidate
+        // bounds, one pair per dimension, describing the bounding hyperrectangle - not necessarily
+        // integers themselves: `lo` is rounded UP (std::ceil) and `hi` rounded DOWN (std::floor) to
+        // the nearest integer lattice point before use, so a non-integer bound just trims the
+        // lattice down to the integer points genuinely inside `[lo, hi]` rather than being
+        // rejected); `cond` decides which lattice points inside it actually become nodes, called once per candidate
         // point (as that point's own N ABSOLUTE coordinates, a number[]) via call_user_function -
         // fill_holes lets `cond` be a plain reference OR a partial application, same as any other
         // func-typed argument call. Surviving nodes keep the plain grid adjacency (connected iff
@@ -849,11 +869,15 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                         throw std::runtime_error(
                             "cleg: 'subHcublat' bounds[" + std::to_string(i) + "] must have exactly 2 entries "
                             "(lower, upper), got " + std::to_string(pair.size()));
-                    double a = pair[0].number, b = pair[1].number;
-                    if (a != std::floor(a) || b != std::floor(b) || a > b)
+                    // `lo`/`hi` need not themselves be integers - rounded to the nearest integer
+                    // lattice point INWARD (lo up, hi down) before use, so e.g. [0.5, 2.5] becomes
+                    // the integer range [1, 2], not an error.
+                    double a = std::ceil(pair[0].number), b = std::floor(pair[1].number);
+                    if (a > b)
                         throw std::runtime_error(
-                            "cleg: 'subHcublat' bounds[" + std::to_string(i) + "] must be integers with lower <= "
-                            "upper, got [" + format_number_display(a) + ", " + format_number_display(b) + "]");
+                            "cleg: 'subHcublat' bounds[" + std::to_string(i) + "] has no integer lattice point in "
+                            "range after rounding (lower up, upper down), got [" + format_number_display(a) + ", " +
+                            format_number_display(b) + "]");
                     lo[i] = static_cast<int>(a);
                     dims[i] = static_cast<int>(b - a) + 1;
                 }
