@@ -267,18 +267,24 @@ static Selector parse_sel_expr(ParseCursor& c) {
     throw std::runtime_error("selector: unknown selector operator '" + op + "'");
 }
 
-// Shared by parse_node_selector/parse_edge_selector/parse_triangle_selector/parse_quad_selector:
-// tokenizes s, runs the context-free parse_sel_expr over the whole thing, rejects any leftover
-// trailing input, and checks the result's own bottom-up-inferred `type` against `want` (the mirror
-// image of the old top-down scheme, where `want` was threaded in as parsing context and this check
-// was unreachable). Mirrors shared/selector.ts's parseTopLevel().
-static Selector parse_top_level(const std::string& s, SelectorType want) {
+// Mirrors shared/selector.ts's parseSelector().
+Selector parse_selector(const std::string& s) {
     auto tokens = tokenize(s);
     if (tokens.empty()) throw std::runtime_error("selector: empty input");
     ParseCursor c(std::move(tokens));
     Selector sel = parse_sel_expr(c);
     if (!c.at_end())
         throw std::runtime_error("selector: unexpected trailing input starting at '" + c.peek() + "'");
+    return sel;
+}
+
+// Shared by parse_node_selector/parse_edge_selector/parse_triangle_selector/parse_quad_selector:
+// parses s via parse_selector() above, then checks the result's own bottom-up-inferred `type`
+// against `want` (the mirror image of the old top-down scheme, where `want` was threaded in as
+// parsing context and this check was unreachable). Mirrors shared/selector.ts's
+// parseSelectorAsType().
+static Selector parse_top_level(const std::string& s, SelectorType want) {
+    Selector sel = parse_selector(s);
     if (sel.type != want)
         throw std::runtime_error(
             "selector: expected " + describe_selector_type(want) + " selector, got " +

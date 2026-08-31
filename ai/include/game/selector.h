@@ -147,13 +147,19 @@ std::vector<T> randomly_remove(std::vector<T> items, int remove_count) {
     return items;
 }
 
+// Parses `s` as a selector of whichever kind it turns out to be, inferred bottom-up from `s` itself
+// (see this file's own top comment) - throws std::runtime_error if `s` doesn't follow the grammar.
+// Unlike the four parse_*_selector functions below, doesn't check the result's own kind against
+// anything; used wherever a selector's own kind isn't fixed ahead of the call (e.g. cleg's own mkSel
+// builtin, game/cleg_eval.cpp). Mirrors shared/selector.ts's parseSelector().
+Selector parse_selector(const std::string& s);
+
 // Parses `s` as a node selector (see this file's own top comment for the grammar) - throws
 // std::runtime_error if `s` doesn't follow the grammar, or parses to a selector of a different kind.
-// Mirrors shared/selector.ts's parseNodeSelector() - see the .cpp file's own parse_sel_expr, the
-// single context-free function all four parse_*_selector entry points below share (each infers its
-// own `type` bottom-up rather than being told what to expect, then parse_top_level checks the
-// result's own `type` against what each of these four promises to return - see parse_sel_expr's own
-// doc comment).
+// Mirrors shared/selector.ts's parseNodeSelector() - built on parse_selector() above (see the .cpp
+// file's own parse_top_level), the single context-free function all four parse_*_selector entry
+// points below share, each just checking the result's own bottom-up-inferred `type` against what it
+// promises to return.
 Selector parse_node_selector(const std::string& s);
 
 // Parses `s` as an edge selector - the edge-selector counterpart of parse_node_selector above.

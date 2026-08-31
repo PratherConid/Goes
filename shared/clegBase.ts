@@ -140,21 +140,22 @@
  * set's own element type is restricted. A set literal `{x1, ..., xn}` (SetLit) duplicate-collapses
  * its elements by value (so `{1, 1, 2}` is the same set as `{1, 2}`) - see makeClegSet.
  *
- * One more basic type, `sel`, wraps a real shared/types.ts Selector - built via `mkSel(kind, X)`,
- * where `kind` is `"node"`/`"edge"`/`"tri"`/`"quad"` and `X` is either a `string`, parsed exactly as
- * shared/selector.ts's own grammar/semantics define (see that file's own top comment) via whichever
- * of its four real parse*Selector functions matches `kind` (see SELECTOR_PARSERS in
- * shared/clegEval.ts), or a `set` of the ClegType matching `kind` (see SELECTOR_SET_ELEM_KIND),
- * wrapped directly into a `raw` Selector with no parsing at all. `sel` itself carries no kind at the
- * type level - `kind` is an ordinary runtime string argument, not something the type checker can see
- * ahead of a call - so two `sel`-typed locals can hold selectors of two different actual kinds;
- * ClegValue's own 'sel' variant carries the real kind (`selType`) once a value actually exists. There
- * is no selector literal syntax and (like `edge`/`tri`/`quad`) no way to read a `sel` value's contents
- * back out - it's passed straight through to whichever consuming builtin's own selector-shaped
- * argument resolves it (`nis`/`eis`/`triangleForm`/`quadForm`/`form` - see resolveSelectorArg in
- * shared/clegEval.ts, their one shared "sel, string, or set" resolution). `mkSel`'s own `selArg`
- * (its second argument) is optional the same way - omitted, `mkSel(kind)` builds a `sel` matching
- * every object of `kind`. `form`'s own arguments are plain `sel` values too - its own argument-kind
+ * One more basic type, `sel`, wraps a real shared/types.ts Selector - built via `mkSel(X)`, where
+ * `X` is either a `string`, parsed exactly as shared/selector.ts's own grammar/semantics define (see
+ * that file's own top comment) via its one context-free parseSelector - whichever kind the text
+ * itself turns out to be, bottom-up, is `sel`'s own kind, so unlike the old design `mkSel` no longer
+ * needs to be told separately what kind to parse X as - or a `set` of number/edge/tri/quad, wrapped
+ * directly into a `raw` Selector with no parsing at all, its own kind read off the set's own element
+ * type (see resolveAnyKindSelectorArg in shared/clegEval.ts, also used by `msBase` for the same
+ * kind-from-the-value-itself resolution). `sel` itself carries no kind at the type level - the kind a
+ * given `mkSel(X)` call actually produces depends on X's own runtime value, not something the type
+ * checker can see ahead of a call - so two `sel`-typed locals can hold selectors of two different
+ * actual kinds; ClegValue's own 'sel' variant carries the real kind (`selType`) once a value actually
+ * exists. There is no selector literal syntax and (like `edge`/`tri`/`quad`) no way to read a `sel`
+ * value's contents back out - it's passed straight through to whichever consuming builtin's own
+ * selector-shaped argument resolves it (`nis`/`eis`/`triangleForm`/`quadForm`/`form` - see
+ * resolveSelectorArg in shared/clegEval.ts, their one shared "sel, string, or set against one fixed
+ * wantKind" resolution). `form`'s own arguments are plain `sel` values too - its own argument-kind
  * check just confirms each is tri- or quad-typed at runtime, the same check shared/boardConfig.ts's
  * genericForm itself makes - see its own doc comment.
  *
@@ -182,8 +183,11 @@
  * `globalCentralize`, `quadOctarize`, `scale` - each of which BUILDS a `mod` value (see "Types" above)
  * rather than applying it to a board immediately; `modify(mods, bc)` is the one builtin that actually
  * applies a whole `mod[]` list, in order, to a board (shared/boardConfig.ts's own applyModifiers()).
- * `nis`/`eis`/`triangleForm`/`quadForm`/`mkSel` each accept a `sel`, a `string`, or a `set` of the
- * matching element type, resolved via their one shared resolveSelectorArg.
+ * `nis`/`eis`/`triangleForm`/`quadForm` each accept a `sel`, a `string`, or a `set` of the matching
+ * element type, resolved via their one shared resolveSelectorArg against one fixed wantKind; `mkSel`
+ * accepts a `string` or `set` too (not a `sel` - see `sel`'s own doc comment above), but has no fixed
+ * wantKind of its own to resolve against, so it goes through resolveAnyKindSelectorArg instead (also
+ * shared/clegEval.ts, also used by `msBase`).
  *
  * `selectNode`/`selectEdge`/`selectTriangle`/`selectQuad` (X, bc) similarly each accept a `sel`,
  * `string`, or `set`, but evaluate it immediately against a real board `bc` (an `egr`) and return the
@@ -277,10 +281,10 @@ export type ClegType =
     | { kind: 'tri' }
     | { kind: 'quad' }
     /** One flat type for a selector of any of the four SelectorType kinds (node/edge/tri/quad) -
-     * unlike 'array'/'set', not parameterized by that kind, since mkSel's own kind argument is an
-     * ordinary runtime string (see BUILTIN_FUNCTIONS['mkSel']), not something the type checker can
-     * know ahead of a call. ClegValue's own 'sel' variant carries the actual kind (`selType`) at
-     * runtime instead. */
+     * unlike 'array'/'set', not parameterized by that kind, since which kind a given `sel` value
+     * actually holds is decided at runtime (mkSel(X)'s own X - see BUILTIN_FUNCTIONS['mkSel']), not
+     * something the type checker can know ahead of a call. ClegValue's own 'sel' variant carries the
+     * actual kind (`selType`) at runtime instead. */
     | { kind: 'sel' }
     /** Wraps a real shared/types.ts BoardModifier - built via one of the modifier-constructor
      * builtins below (`rectify`, `edgeSplit`, `triangleForm`, `form`, ...). One flat type covering

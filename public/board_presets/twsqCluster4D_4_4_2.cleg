@@ -4,11 +4,11 @@ multiProd(
     [
       msBase(
         0,
-        mkSel("node", "(diff (more 2 (deg lt 3)) (more 1 (deg lt 3)))")
+        mkSel("(diff (more 2 (deg lt 3)) (more 1 (deg lt 3)))")
       ),
       msBase(
         1,
-        mkSel("node", "(diff (more 2 (deg lt 3)) (more 1 (deg lt 3)))")
+        mkSel("(diff (more 2 (deg lt 3)) (more 1 (deg lt 3)))")
       )
     ]
   )

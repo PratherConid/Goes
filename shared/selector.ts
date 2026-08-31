@@ -128,11 +128,11 @@ function nextNonnegNumber(c: ParseCursor, context: string): number {
 }
 
 // Display name for `type` used in parseSelExpr's own rejection messages - 'tri' reads as
-// "triangle" there (unlike describeSelectorType's "a tri" below, used by parseTopLevel's own and
+// "triangle" there (unlike describeSelectorType's "a tri" below, used by parseSelectorAsType's own and
 // each evaluator's own wrong-kind-selector messages).
 const selectorKindName: Record<SelectorType, string> = { node: 'node', edge: 'edge', tri: 'triangle', quad: 'quad' };
 
-// "a node"/"an edge"/"a tri"/"a quad" - shared by parseTopLevel's own wrong-result-kind message
+// "a node"/"an edge"/"a tri"/"a quad" - shared by parseSelectorAsType's own wrong-result-kind message
 // below, and by each evaluator's own wrong-kind error message further down.
 function describeSelectorType(type: SelectorType): string {
     return `${type === 'edge' ? 'an' : 'a'} ${type}`;
@@ -241,16 +241,26 @@ function parseSelExpr(c: ParseCursor): Selector {
     }
 }
 
-// Shared by parseNodeSelector/parseEdgeSelector/parseTriangleSelector/parseQuadSelector: tokenizes
-// `s`, runs the context-free parseSelExpr over the whole thing, rejects any leftover trailing input,
-// and checks the result's own bottom-up-inferred `type` against `want` (the mirror image of the old
-// top-down scheme, where `want` was threaded in as parsing context and this check was unreachable).
-function parseTopLevel(s: string, want: SelectorType): Selector {
+/** Parses `s` as a selector of whichever kind it turns out to be, inferred bottom-up from `s` itself
+ * (see this file's own top comment) - throws if `s` doesn't follow the grammar. Unlike
+ * parseNodeSelector/parseEdgeSelector/parseTriangleSelector/parseQuadSelector below, doesn't check
+ * the result's own kind against anything; used wherever a selector's own kind isn't fixed ahead of
+ * the call (e.g. cleg's own mkSel builtin, shared/clegEval.ts). */
+export function parseSelector(s: string): Selector {
     const tokens = tokenize(s);
     if (tokens.length === 0) throw new Error('selector: empty input');
     const c = new ParseCursor(tokens);
     const sel = parseSelExpr(c);
     if (!c.atEnd()) throw new Error(`selector: unexpected trailing input starting at '${c.peek()}'`);
+    return sel;
+}
+
+// Shared by parseNodeSelector/parseEdgeSelector/parseTriangleSelector/parseQuadSelector: parses `s`
+// via parseSelector above, then checks the result's own bottom-up-inferred `type` against `want` (the
+// mirror image of the old top-down scheme, where `want` was threaded in as parsing context and this
+// check was unreachable).
+function parseSelectorAsType(s: string, want: SelectorType): Selector {
+    const sel = parseSelector(s);
     if (sel.type !== want)
         throw new Error(`selector: expected ${describeSelectorType(want)} selector, got ${describeSelectorType(sel.type)} selector (op '${sel.op}')`);
     return sel;
@@ -259,25 +269,25 @@ function parseTopLevel(s: string, want: SelectorType): Selector {
 /** Parses `s` as a node selector (see this file's own top comment for the grammar) - throws if `s`
  * doesn't follow the grammar, or parses to a selector of a different kind. */
 export function parseNodeSelector(s: string): Selector {
-    return parseTopLevel(s, 'node');
+    return parseSelectorAsType(s, 'node');
 }
 
 /** Parses `s` as an edge selector (see this file's own top comment for the grammar) - throws if `s`
  * doesn't follow the grammar, or parses to a selector of a different kind. */
 export function parseEdgeSelector(s: string): Selector {
-    return parseTopLevel(s, 'edge');
+    return parseSelectorAsType(s, 'edge');
 }
 
 /** Parses `s` as a triangle selector (see this file's own top comment for the grammar) - throws if
  * `s` doesn't follow the grammar, or parses to a selector of a different kind. */
 export function parseTriangleSelector(s: string): Selector {
-    return parseTopLevel(s, 'tri');
+    return parseSelectorAsType(s, 'tri');
 }
 
 /** Parses `s` as a quad selector (see this file's own top comment for the grammar) - throws if `s`
  * doesn't follow the grammar, or parses to a selector of a different kind. */
 export function parseQuadSelector(s: string): Selector {
-    return parseTopLevel(s, 'quad');
+    return parseSelectorAsType(s, 'quad');
 }
 
 /** Formats `sel` back into the S-expression syntax parseNodeSelector()/parseEdgeSelector()/

@@ -69,23 +69,6 @@ static std::string selector_type_word(SelectorType t) {
     }
     throw std::runtime_error("cleg: selector_type_word: unexpected SelectorType");
 }
-static SelectorType selector_type_from_word(const std::string& w) {
-    if (w == "node") return SelectorType::Node;
-    if (w == "edge") return SelectorType::Edge;
-    if (w == "tri") return SelectorType::Tri;
-    if (w == "quad") return SelectorType::Quad;
-    throw std::runtime_error("cleg: mkSel: unknown selector kind '" + w + "' - expected node/edge/tri/quad");
-}
-using SelectorParseFn = Selector (*)(const std::string&);
-static SelectorParseFn selector_parser_for(SelectorType t) {
-    switch (t) {
-        case SelectorType::Node: return parse_node_selector;
-        case SelectorType::Edge: return parse_edge_selector;
-        case SelectorType::Tri: return parse_triangle_selector;
-        case SelectorType::Quad: return parse_quad_selector;
-    }
-    throw std::runtime_error("cleg: selector_parser_for: unexpected SelectorType");
-}
 // Mirrors shared/clegEval.ts's SELECTOR_SET_ELEM_KIND.
 static CTKind selector_set_elem_kind(SelectorType t) {
     switch (t) {
@@ -118,6 +101,8 @@ static Selector raw_selector_from_set(SelectorType want_kind, const std::vector<
     }
     return sel;
 }
+
+using SelectorParseFn = Selector (*)(const std::string&);
 
 // Mirrors shared/clegEval.ts's resolveSelectorArg().
 static Selector resolve_selector_arg(
@@ -238,9 +223,13 @@ static SelectorType selector_type_from_set_elem_kind(CTKind k) {
     }
 }
 
-// Mirrors shared/clegEval.ts's resolveAnyKindSelectorArg().
+// Mirrors shared/clegEval.ts's resolveAnyKindSelectorArg() - a `sel` value (used directly), a
+// `string` (parsed via game/selector.h's own context-free parse_selector, whichever kind the text
+// itself turns out to be), or a `set` (of number/edge/tri/quad, wrapped into a `raw` Selector, its
+// own kind read off the set's own element type).
 static Selector resolve_any_kind_selector_arg(const std::string& callee, const ClegValue& arg) {
     if (arg.kind == CTKind::Sel) return arg.sel_v;
+    if (arg.kind == CTKind::String) return parse_selector(arg.str);
     if (arg.kind == CTKind::Set) {
         if (!is_selector_set_elem_kind(arg.elem.kind))
             throw std::runtime_error(
@@ -249,7 +238,7 @@ static Selector resolve_any_kind_selector_arg(const std::string& callee, const C
         SelectorType want_kind = selector_type_from_set_elem_kind(arg.elem.kind);
         return raw_selector_from_set(want_kind, arg.arr_v);
     }
-    throw std::runtime_error("cleg: '" + callee + "': expected sel or set, got " + type_to_string(cleg_value_type(arg)));
+    throw std::runtime_error("cleg: '" + callee + "': expected sel, string, or set, got " + type_to_string(cleg_value_type(arg)));
 }
 
 // Mirrors shared/clegEval.ts's FullProductIndex/makeFullProductIndex/fullIndexOf/tupleOfFullIndex - a
@@ -560,19 +549,15 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
 
         m["mkSel"] = BuiltinFunction{
             [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
-                if (arg_types.size() != 1 && arg_types.size() != 2)
-                    throw std::runtime_error("cleg: '" + callee + "' expects 1 or 2 argument(s), got " + std::to_string(arg_types.size()));
-                if (arg_types[0].kind != CTKind::String)
-                    throw std::runtime_error("cleg: '" + callee + "' argument 1: expected string, got " + type_to_string(arg_types[0]));
-                if (arg_types.size() == 2 && arg_types[1].kind != CTKind::String && arg_types[1].kind != CTKind::Set)
-                    throw std::runtime_error("cleg: '" + callee + "' argument 2: expected string or set, got " + type_to_string(arg_types[1]));
+                if (arg_types.size() != 1)
+                    throw std::runtime_error("cleg: '" + callee + "' expects 1 argument(s), got " + std::to_string(arg_types.size()));
+                if (arg_types[0].kind != CTKind::String && arg_types[0].kind != CTKind::Set)
+                    throw std::runtime_error("cleg: '" + callee + "' argument 1: expected string or set, got " + type_to_string(arg_types[0]));
                 return ClegType{CTKind::Sel, nullptr};
             },
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
-                SelectorType kind = selector_type_from_word(args[0].str);
-                ClegValue v; v.kind = CTKind::Sel; v.sel_type = kind;
-                if (args.size() == 1) { v.sel_v = Selector{SelectorOp::All, kind}; return v; }
-                v.sel_v = resolve_selector_arg("mkSel", args[1], kind, selector_parser_for(kind));
+                Selector sel = resolve_any_kind_selector_arg("mkSel", args[0]);
+                ClegValue v; v.kind = CTKind::Sel; v.sel_type = sel.type; v.sel_v = std::move(sel);
                 return v;
             },
         };

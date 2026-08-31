@@ -1695,10 +1695,10 @@ export class Renderer {
                 + 'selector sel is given, only the ones it selects - with a w-by-w grid, gluing new '
                 + 'corners to the old vertices and gluing shared quad edges together (w=1 collapses '
                 + "each quad to a point; w=2 is a no-op); an unselected quad is left untouched, as if it weren't there at all")}
-            ${row('form(w, [mkSel(kind, sel?)…])',
+            ${row('form(w, [mkSel(SEL)…])',
                 'Form: generalizes triangleForm/quadForm to one or more selectors at once (each a '
-                + 'triangle or quad selector - typically built via mkSel("tri"|"quad", sel?), see '
-                + 'Builtin Functions), all sharing this one w - replaces every triangle/quad any of '
+                + 'triangle or quad selector - typically built via mkSel("(all tri)"/"(all quad)"/...), '
+                + 'see Builtin Functions), all sharing this one w - replaces every triangle/quad any of '
                 + 'them names with its own side-length-w lattice, gluing new corners to the old '
                 + 'vertices and gluing every '
                 + 'original edge\'s new boundary points together across every lattice that has it as '
@@ -1771,10 +1771,11 @@ export class Renderer {
             ${row('mkQuad(a, b, c, d)',
                 'Builds a quad value from four node indices, which must already be in cycle order')}
             ${row('prod(egr, egr)', 'The graph (tensor) product of two boards')}
-            ${row('mkSel(kind, X?)',
-                'Builds a selector value (type sel) of the given kind ("node"/"edge"/"tri"/"quad") '
-                + 'from X - a string (parsed with that kind\'s own grammar - see Selectors) or a set '
-                + 'of the matching element type; omitted, matches every object of that kind')}
+            ${row('mkSel(X)',
+                'Builds a selector value (type sel) from X - a string (parsed as a selector, kind '
+                + 'inferred from the text itself - see Selectors) or a set of number/edge/tri/quad '
+                + '(kind read off the set\'s own element type). For "every object of kind K" pass the '
+                + 'string "(all K)"')}
             ${row('selectNode(X, egr)',
                 'Evaluates a node selector X (a sel, string, or set) against a real board, returning '
                 + 'the exact set of nodes it selects (a number{}) - unlike nis, this runs immediately '

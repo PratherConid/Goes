@@ -28,8 +28,8 @@ import {
     make, nodeInducedSubgraph, edgeInducedSubgraph,
 } from './boardConfig.js';
 import {
-    randomlyRemove, parseNodeSelector, parseEdgeSelector, parseTriangleSelector, parseQuadSelector,
-    selectNode, selectEdge, selectTriangle, selectQuad,
+    randomlyRemove, parseSelector, parseNodeSelector, parseEdgeSelector, parseTriangleSelector,
+    parseQuadSelector, selectNode, selectEdge, selectTriangle, selectQuad,
 } from './selector.js';
 import { zeroAdj } from './topology.js';
 import {
@@ -227,8 +227,8 @@ BUILTIN_FUNCTIONS['randRmP'] = {
 
 // The ClegType 'kind' a set of SelectorType `k` is made of - 'node' selections are plain numbers
 // (node indices), the other three match their own SelectorType name exactly. Shared by
-// resolveSelectorArg/mkSel below (both need to validate/convert a `set`-typed selector argument)
-// and Selector's own 'raw' variant (shared/types.ts), which this builds.
+// resolveSelectorArg below (which needs to validate a `set`-typed selector argument against an
+// already-known wantKind) and Selector's own 'raw' variant (shared/types.ts), which this builds.
 const SELECTOR_SET_ELEM_KIND: Record<SelectorType, ClegType['kind']> = {
     node: 'number', edge: 'edge', tri: 'tri', quad: 'quad',
 };
@@ -332,44 +332,29 @@ BUILTIN_FUNCTIONS['prod'] = {
     }),
 };
 
-// One real parse*Selector function per SelectorType - shared/selector.ts itself has no single
-// kind-agnostic parse entry point (each of the four instead checks the parsed selector's own
-// bottom-up-inferred kind against what it promises to return - see that file's own top comment), so
-// mkSel's own `call` below dispatches through this table on its first (runtime string) argument.
-const SELECTOR_PARSERS: Record<SelectorType, (s: string) => Selector> = {
-    node: parseNodeSelector,
-    edge: parseEdgeSelector,
-    tri: parseTriangleSelector,
-    quad: parseQuadSelector,
-};
-
-// `mkSel(kind, [X])`: builds a selector of the given `kind` ("node"/"edge"/"tri"/"quad") - `X`, if
-// given, is a `string` (parsed via the matching real parse*Selector function above, following
-// shared/selector.ts's own grammar/semantics exactly, including its own error messages on a
-// malformed string) or a `set` (of the ClegType matching `kind` - see SELECTOR_SET_ELEM_KIND -
-// wrapped directly into a `raw` Selector, no parsing involved), resolved via resolveSelectorArg
-// exactly like nis/eis/etc below, once `kind` is known; omitted, the built selector is `(all kind)`
-// - every object of that kind. Hand-written checkCall (rather than fixedSignature(...)) since `X`'s
-// own accepted type isn't just one fixed ClegType, `X` itself is optional, and `sel` isn't
-// parameterized by kind at the type level (see ClegType's own 'sel' doc comment) - `kind` is only
-// validated/dispatched on at call time, not check time.
+// `mkSel(X)`: builds a selector from X - a `string` (parsed via selector.ts's own context-free
+// parseSelector, whichever kind it turns out to be bottom-up - see that file's own top comment) or a
+// `set` (of number/edge/tri/quad, wrapped into a `raw` Selector, its own kind read off the set's own
+// element type), resolved via resolveAnyKindSelectorArg below exactly like msBase's own selector
+// argument - there's no separate `kind` argument anymore, since a Selector already self-describes its
+// own kind, so reading it off X directly replaces the old design where mkSel had to be told which
+// kind to parse X as. For "every object of some kind K", pass the text "(all K)" directly rather than
+// omitting an argument - there's no longer a second, optional argument to omit either. Hand-written
+// checkCall (rather than fixedSignature(...)) since X's own accepted type isn't just one fixed
+// ClegType, and `sel` isn't parameterized by kind at the type level (see ClegType's own 'sel' doc
+// comment).
 function mkSelCheckCall(callee: string, argTypes: ClegType[]): ClegType {
-    if (argTypes.length !== 1 && argTypes.length !== 2)
-        throw new Error(`cleg: '${callee}' expects 1 or 2 argument(s), got ${argTypes.length}`);
-    if (argTypes[0].kind !== 'string')
-        throw new Error(`cleg: '${callee}' argument 1: expected string, got ${typeToString(argTypes[0])}`);
-    if (argTypes.length === 2 && argTypes[1].kind !== 'string' && argTypes[1].kind !== 'set')
-        throw new Error(`cleg: '${callee}' argument 2: expected string or set, got ${typeToString(argTypes[1])}`);
+    if (argTypes.length !== 1)
+        throw new Error(`cleg: '${callee}' expects 1 argument(s), got ${argTypes.length}`);
+    if (argTypes[0].kind !== 'string' && argTypes[0].kind !== 'set')
+        throw new Error(`cleg: '${callee}' argument 1: expected string or set, got ${typeToString(argTypes[0])}`);
     return { kind: 'sel' };
 }
 BUILTIN_FUNCTIONS['mkSel'] = {
     checkCall: mkSelCheckCall,
-    call: (args) => {
-        const kind = (args[0] as { value: string }).value as SelectorType;
-        const parse = SELECTOR_PARSERS[kind];
-        if (!parse) throw new Error(`cleg: mkSel: unknown selector kind '${kind}' - expected node/edge/tri/quad`);
-        if (args.length === 1) return { kind: 'sel', selType: kind, value: { op: 'all', type: kind } };
-        return { kind: 'sel', selType: kind, value: resolveSelectorArg('mkSel', args[1], kind, parse) };
+    call: ([arg]) => {
+        const sel = resolveAnyKindSelectorArg('mkSel', arg);
+        return { kind: 'sel', selType: sel.type, value: sel };
     },
 };
 
@@ -503,7 +488,8 @@ BUILTIN_FUNCTIONS['selectQuad'] = {
 // `triangleForm(w, [selArg])`/`quadForm(w, [selArg])`: builds a TriangleForm/QuadForm
 // BoardModifier - `selArg` (a `sel`, `string`, or `set`, resolved via resolveSelectorArg) restricts which
 // triangles/quads get replaced, mirroring TriangleForm/QuadForm's own optional `sel?: Selector`
-// field exactly - omitted, every one found gets replaced. Variable-arity like mkSel above.
+// field exactly - omitted, every one found gets replaced. Variable-arity (1 or 2 args) rather than
+// fixedSignature(...), to mirror that optionality exactly.
 function formModCheckCall(callee: string, argTypes: ClegType[]): ClegType {
     if (argTypes.length !== 1 && argTypes.length !== 2)
         throw new Error(`cleg: '${callee}' expects 1 or 2 argument(s), got ${argTypes.length}`);
@@ -533,9 +519,9 @@ BUILTIN_FUNCTIONS['quadForm'] = {
 };
 
 // `form(w, ...sels)`: builds a Form BoardModifier - `w` (the shared lattice width) followed by one
-// or more `sel` arguments (each typically built via `mkSel("tri", ...)`/`mkSel("quad", ...)`),
-// mirroring genericForm's own (bc, w, sels) signature (genericForm itself accepts an empty `sels` as
-// a no-op; `form` requires at least one, below, since a cleg call with none would be a pointless
+// or more `sel` arguments (each typically built via `mkSel("(all tri)")`/`mkSel("(conve tri ...)")`/
+// etc.), mirroring genericForm's own (bc, w, sels) signature (genericForm itself accepts an empty
+// `sels` as a no-op; `form` requires at least one, below, since a cleg call with none would be a pointless
 // no-op board program). `sel` carries no kind at the type level (see ClegType's own 'sel' doc
 // comment), so a non-tri/quad `sel` type-checks here but is rejected at runtime by genericForm
 // itself - the same tri-or-quad check any hand-built Selector needs, not something `form` repeats.
@@ -585,15 +571,15 @@ const SELECTOR_TYPE_BY_SET_ELEM_KIND: Partial<Record<ClegType['kind'], SelectorT
     number: 'node', edge: 'edge', tri: 'tri', quad: 'quad',
 };
 
-// Resolves an msBase-style selector argument into a real Selector - a `sel` value (used directly,
-// whatever SelectorType it is) or a `set` (of number/edge/tri/quad, wrapped into a `raw` Selector
-// the same way resolveSelectorArg's own `set` case does) - but NOT a bare `string`, unlike
-// resolveSelectorArg: every resolveSelectorArg call site has one fixed wantKind to parse a string
-// against, but msBase doesn't know its own kind ahead of time (that's the whole point - see
-// MultiSelector's own doc comment in shared/clegBase.ts), so there is no parser to pick for a plain
-// string here.
+// Resolves a selector argument whose own kind isn't fixed ahead of the call (mkSel/msBase) into a
+// real Selector - a `sel` value (used directly, whatever SelectorType it is), a `string` (parsed via
+// selector.ts's own context-free parseSelector, whichever kind the text itself turns out to be -
+// unlike resolveSelectorArg's own string case, which parses against one fixed wantKind), or a `set`
+// (of number/edge/tri/quad, wrapped into a `raw` Selector the same way resolveSelectorArg's own
+// `set` case does, its own kind read off the set's own element type).
 function resolveAnyKindSelectorArg(callee: string, arg: ClegValue): Selector {
     if (arg.kind === 'sel') return arg.value;
+    if (arg.kind === 'string') return parseSelector((arg as { value: string }).value);
     if (arg.kind === 'set') {
         const wantKind = SELECTOR_TYPE_BY_SET_ELEM_KIND[arg.elem.kind];
         if (!wantKind)
@@ -601,7 +587,7 @@ function resolveAnyKindSelectorArg(callee: string, arg: ClegValue): Selector {
                 `cleg: '${callee}': a selector set must be a set of number/edge/tri/quad, got a set of ${typeToString(arg.elem)}`);
         return { op: 'raw', type: wantKind, items: setValueToSelectedVals(wantKind, arg.value) };
     }
-    throw new Error(`cleg: '${callee}': expected sel or set, got ${typeToString(clegValueType(arg))}`);
+    throw new Error(`cleg: '${callee}': expected sel, string, or set, got ${typeToString(clegValueType(arg))}`);
 }
 
 function msBaseCheckCall(callee: string, argTypes: ClegType[]): ClegType {
