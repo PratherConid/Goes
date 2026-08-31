@@ -114,11 +114,6 @@ struct MultiSelector {
     std::shared_ptr<MultiSelector> a, b;  // Diff
 };
 
-// Defined in full in the AST section below (game/cleg.h's own top comment - private to this file) -
-// ClegValue only ever holds a raw pointer to one (see its own `func_decl` field's doc comment), so a
-// forward declaration is enough here.
-struct FunctionDecl;
-
 // ── Values ───────────────────────────────────────────────────────────────────
 
 // Mirrors shared/cleg.ts's ClegValue - one flat tagged struct (same "meaningful iff kind == X"
@@ -142,17 +137,25 @@ struct ClegValue {
     BoardModifier mod_v{ModifierKind::Rectify};
     MultiSelector msel_v;
     std::vector<ClegValue> arr_v;                    // Array or Set (Set: deduplicated by cleg_set_key)
-    // Func only - mirrors shared/cleg.ts's ClegValue own 'func' variant: cleg has no closures, so a
-    // function-pointer value is nothing more than a reference to one of `program`'s own top-level
-    // FunctionDecls. `func_params`/`func_return_type` are cached from `*func_decl` itself (rather
-    // than re-derived on every use) purely so cleg_value_type can report this value's own ClegType
-    // without needing `*func_decl`'s own Param wrapper. `func_decl` is a raw pointer into whichever
-    // ClegProgram::functions vector declared it - safe for the same reason UserFuncTable's own
-    // pointers are (see this file's own top comment): evaluation never outlives the ClegProgram that
-    // owns it.
+    // Func only - mirrors shared/cleg.ts's ClegValue own 'func' variant: a function-pointer value is
+    // a reference to one of `program`'s own top-level functions, held by `func_name` (looked up in
+    // `funcs`/UserFuncTable again at call time - see eval_expr's own CallExpr case) rather than a
+    // direct FunctionDecl pointer, matching the TS side's own reasoning for doing the same (keeps
+    // this type free of any dependency on this file's own AST shape). `func_bound_args` has one slot
+    // per entry of the ORIGINAL function's own full parameter list - std::nullopt at every still-
+    // uninstantiated ('#') position, the actual (already-evaluated) argument everywhere else - so a
+    // plain, uncalled reference (built from a bare Identifier) is simply the all-nullopt case, and a
+    // partial application (`f(a, #, b)`, see CallExpr's own doc comment, shared/cleg.ts) is the
+    // general one; calling either kind of value later interleaves the caller's own supplied
+    // arguments into the nullopt slots, in order (see fill_holes below). `func_params`/
+    // `func_return_type` describe this VALUE's own callable signature, not the original function's -
+    // for a plain reference the two coincide, but a partial application's `func_params` is only the
+    // '#' positions' types, in order. Cached here (rather than re-derived on every use) purely so
+    // cleg_value_type can report this value's own ClegType without needing a funcs-table lookup.
     std::vector<ClegType> func_params;
     ClegType func_return_type;
-    const FunctionDecl* func_decl = nullptr;
+    std::string func_name;
+    std::vector<std::optional<ClegValue>> func_bound_args;
 };
 
 static ClegType cleg_value_type(const ClegValue& v) {
@@ -458,6 +461,8 @@ static const std::unordered_map<std::string, std::vector<BinaryOverload>>& binar
         m["%"] = { number_overload([](double a, double b) { return std::fmod(a, b); }) };
         m["=="] = { comparison_overload(CTKind::Number, [](double a, double b) { return a == b; }),
                     comparison_overload(CTKind::Bool, [](double a, double b) { return a == b; }) };
+        m["!="] = { comparison_overload(CTKind::Number, [](double a, double b) { return a != b; }),
+                    comparison_overload(CTKind::Bool, [](double a, double b) { return a != b; }) };
         m["<"] = { comparison_overload(CTKind::Number, [](double a, double b) { return a < b; }),
                    comparison_overload(CTKind::Bool, [](double a, double b) { return a < b; }) };
         m[">"] = { comparison_overload(CTKind::Number, [](double a, double b) { return a > b; }),
@@ -477,7 +482,7 @@ static const std::unordered_map<std::string, std::vector<BinaryOverload>>& binar
 
 struct Param { ClegType type; std::string name; };
 
-enum class ExprKind { NumberLit, StringLit, BoolLit, ArrayLit, SetLit, Identifier, CallExpr, BinaryExpr, UnaryExpr, NilExpr, IndexExpr };
+enum class ExprKind { NumberLit, StringLit, BoolLit, ArrayLit, SetLit, Identifier, CallExpr, BinaryExpr, UnaryExpr, NilExpr, IndexExpr, HoleExpr };
 
 // Mirrors shared/cleg.ts's Expr union - one flat tagged struct, same convention as ClegValue above.
 // `string_value` doubles as StringLit's text, Identifier's name, and CallExpr's callee;
@@ -553,7 +558,7 @@ struct ClegProgram {
 enum class TokKind { Ident, Number, String, Punct, Eof };
 struct Token { TokKind kind; std::string text; size_t pos; };
 
-static const std::string PUNCTUATION = "(){}[],;+-*/%!";
+static const std::string PUNCTUATION = "(){}[],;+-*/%!#";
 
 static bool is_ident_start(char c) { return std::isalpha(static_cast<unsigned char>(c)) || c == '_'; }
 static bool is_ident_cont(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
@@ -598,7 +603,7 @@ static std::vector<Token> tokenize(const std::string& src) {
             i = j + 1;
             continue;
         }
-        if (c == '=' || c == '<' || c == '>') {
+        if (c == '=' || c == '<' || c == '>' || c == '!') {
             if (i + 1 < n && src[i + 1] == '=') {
                 tokens.push_back({TokKind::Punct, std::string(1, c) + "=", i});
                 i += 2;
@@ -1061,7 +1066,7 @@ static Expr parse_logical_and(TokenCursor& c) {
     return left;
 }
 static Expr parse_equality(TokenCursor& c) {
-    static const std::set<std::string> EQ_OPS = {"=="};
+    static const std::set<std::string> EQ_OPS = {"==", "!="};
     Expr left = parse_relational(c);
     while (is_punct_in(c, EQ_OPS)) {
         std::string op = c.next().text;
@@ -1176,8 +1181,15 @@ static Expr parse_atom(TokenCursor& c) {
         std::string name = c.expect_ident();
         if (c.is_punct("(")) {
             c.next();
+            // Each argument is either a real EXPR or a bare '#' (HoleExpr) - only ever meaningful
+            // for a partial application (see CallExpr's own doc comment, shared/cleg.ts), but that
+            // isn't known yet at parse time, so '#' is always syntactically accepted here and
+            // rejected later by check_expr if `name` doesn't qualify.
             Expr e; e.kind = ExprKind::CallExpr; e.string_value = name;
-            e.elements = parse_comma_separated<Expr>(c, ")", [&]() { return parse_expr(c); });
+            e.elements = parse_comma_separated<Expr>(c, ")", [&]() -> Expr {
+                if (c.is_punct("#")) { c.next(); Expr h; h.kind = ExprKind::HoleExpr; return h; }
+                return parse_expr(c);
+            });
             return e;
         }
         Expr e; e.kind = ExprKind::Identifier; e.string_value = name;
@@ -1205,10 +1217,25 @@ static ClegProgram parse_cleg_impl(const std::string& source) {
 
 // ── Predefined (board-construction) functions ─────────────────────────────────
 
+// Moved up from its own more natural spot alongside the rest of the Evaluation section below, since
+// CallFn (right after) already needs it - FunctionDecl (above) is already a complete type by here,
+// so nothing about the alias itself requires waiting.
+using UserFuncTable = std::unordered_map<std::string, const FunctionDecl*>;
+
 // Mirrors shared/cleg.ts's BuiltinFunction.
 using CheckCallFn = std::function<ClegType(const std::string&, const std::vector<ClegType>&)>;
-using CallFn = std::function<ClegValue(const std::vector<ClegValue>&)>;
+// `funcs` is only ever needed by a builtin that itself calls a `func`-typed argument back (e.g.
+// sub_hcublat's own `cond`, via call_user_function) - every other builtin's own `call` simply
+// ignores it.
+using CallFn = std::function<ClegValue(const std::vector<ClegValue>&, UserFuncTable&)>;
 struct BuiltinFunction { CheckCallFn check_call; CallFn call; };
+
+// Forward-declared here (real definitions live in the Evaluation section below, their own more
+// natural spot) purely so sub_hcublat's own call lambda - defined further down in THIS section, but
+// needing to call back into a func-typed argument - can use them.
+static ClegValue call_user_function(const FunctionDecl& fn, const std::vector<ClegValue>& args, UserFuncTable& funcs);
+static std::vector<ClegValue> fill_holes(
+    const std::vector<std::optional<ClegValue>>& bound_args, const std::vector<ClegValue>& supplied_args);
 
 // Mirrors shared/cleg.ts's fixedSignature().
 static CheckCallFn fixed_signature(std::vector<ClegType> params, ClegType return_type) {
@@ -1611,7 +1638,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
             std::vector<BoardArgKind> arg_kinds = entry.arg_kinds;
             m[cleg_name] = BuiltinFunction{
                 fixed_signature(params, EGR_TYPE),
-                [old_kind, arg_kinds](const std::vector<ClegValue>& args) {
+                [old_kind, arg_kinds](const std::vector<ClegValue>& args, UserFuncTable&) {
                     std::vector<BoardArgEntry> board_args;
                     for (size_t i = 0; i < arg_kinds.size(); i++)
                         board_args.push_back(value_to_board_arg_entry(arg_kinds[i], args[i]));
@@ -1628,7 +1655,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
                     throw std::runtime_error("cleg: '" + callee + "' argument 1: expected an array or set, got " + type_to_string(arg_types[0]));
                 return NUMBER_TYPE;
             },
-            [](const std::vector<ClegValue>& args) { return make_number(static_cast<double>(args[0].arr_v.size())); },
+            [](const std::vector<ClegValue>& args, UserFuncTable&) { return make_number(static_cast<double>(args[0].arr_v.size())); },
         };
 
         // `has(x, e)`: whether `x` (a `T[]` or `T{}`) contains `e` (a `T`), as a `bool` - like `len`,
@@ -1656,7 +1683,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
                         "argument 1), got " + type_to_string(arg_types[1]));
                 return ClegType{CTKind::Bool, nullptr};
             },
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 std::string key = cleg_set_key(args[1]);
                 for (auto& v : args[0].arr_v) if (cleg_set_key(v) == key) return make_bool(true);
                 return make_bool(false);
@@ -1674,7 +1701,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
         };
         m["randRmN"] = BuiltinFunction{
             rand_rm_check_call,
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 double count = args[1].number;
                 if (count != std::floor(count) || count < 0)
                     throw std::runtime_error("cleg: 'randRmN' count must be a nonnegative integer, got " + format_number_display(count));
@@ -1685,7 +1712,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
         };
         m["randRmP"] = BuiltinFunction{
             rand_rm_check_call,
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 double frac = args[1].number;
                 if (!std::isfinite(frac) || frac < 0)
                     throw std::runtime_error("cleg: 'randRmP' portion must be a nonnegative number, got " + format_number_display(frac));
@@ -1698,20 +1725,20 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
 
         m["mkEdge"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE, NUMBER_TYPE}, EDGE_TYPE),
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 return make_edge_v(make_board_edge(static_cast<int>(args[0].number), static_cast<int>(args[1].number)));
             },
         };
         m["mkTri"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE, NUMBER_TYPE, NUMBER_TYPE}, TRI_TYPE),
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 return make_tri_v(make_board_triangle(
                     static_cast<int>(args[0].number), static_cast<int>(args[1].number), static_cast<int>(args[2].number)));
             },
         };
         m["mkQuad"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE, NUMBER_TYPE, NUMBER_TYPE, NUMBER_TYPE}, QUAD_TYPE),
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 return make_quad_v(make_board_quad(
                     static_cast<int>(args[0].number), static_cast<int>(args[1].number),
                     static_cast<int>(args[2].number), static_cast<int>(args[3].number)));
@@ -1720,7 +1747,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
 
         m["prod"] = BuiltinFunction{
             fixed_signature({EGR_TYPE, EGR_TYPE}, EGR_TYPE),
-            [](const std::vector<ClegValue>& args) { return make_egr(product(*args[0].egr_v, *args[1].egr_v)); },
+            [](const std::vector<ClegValue>& args, UserFuncTable&) { return make_egr(product(*args[0].egr_v, *args[1].egr_v)); },
         };
 
         m["mkSel"] = BuiltinFunction{
@@ -1733,7 +1760,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
                     throw std::runtime_error("cleg: '" + callee + "' argument 2: expected string or set, got " + type_to_string(arg_types[1]));
                 return ClegType{CTKind::Sel, nullptr};
             },
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 SelectorType kind = selector_type_from_word(args[0].str);
                 ClegValue v; v.kind = CTKind::Sel; v.sel_type = kind;
                 v.sel_v = resolve_selector_arg("mkSel", args[1], kind, selector_parser_for(kind));
@@ -1752,7 +1779,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
         };
         m["mkFormSel"] = BuiltinFunction{
             mk_form_sel_check_call,
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 const std::string& kind = args[0].str;
                 if (kind != "tri" && kind != "quad")
                     throw std::runtime_error("cleg: mkFormSel: unknown form-selector kind '" + kind + "' - expected tri/quad");
@@ -1764,31 +1791,31 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
         };
 
         m["rectify"] = BuiltinFunction{
-            fixed_signature({}, MOD_TYPE), [](const std::vector<ClegValue>&) { return make_mod(BoardModifier{ModifierKind::Rectify}); },
+            fixed_signature({}, MOD_TYPE), [](const std::vector<ClegValue>&, UserFuncTable&) { return make_mod(BoardModifier{ModifierKind::Rectify}); },
         };
         m["globalCentralize"] = BuiltinFunction{
-            fixed_signature({}, MOD_TYPE), [](const std::vector<ClegValue>&) { return make_mod(BoardModifier{ModifierKind::GlobalCentralize}); },
+            fixed_signature({}, MOD_TYPE), [](const std::vector<ClegValue>&, UserFuncTable&) { return make_mod(BoardModifier{ModifierKind::GlobalCentralize}); },
         };
         m["quadOctarize"] = BuiltinFunction{
-            fixed_signature({}, MOD_TYPE), [](const std::vector<ClegValue>&) { return make_mod(BoardModifier{ModifierKind::QuadOctarize}); },
+            fixed_signature({}, MOD_TYPE), [](const std::vector<ClegValue>&, UserFuncTable&) { return make_mod(BoardModifier{ModifierKind::QuadOctarize}); },
         };
         m["edgeSplit"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE}, MOD_TYPE),
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 BoardModifier bm{ModifierKind::EdgeSplit}; bm.split_n = static_cast<int>(args[0].number);
                 return make_mod(bm);
             },
         };
         m["mergeClose"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE}, MOD_TYPE),
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 BoardModifier bm{ModifierKind::MergeClose}; bm.dist = args[0].number;
                 return make_mod(bm);
             },
         };
         m["scale"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE}, MOD_TYPE),
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 BoardModifier bm{ModifierKind::Scale}; bm.dist = args[0].number;
                 return make_mod(bm);
             },
@@ -1803,7 +1830,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
         };
         m["nis"] = BuiltinFunction{
             induced_subgraph_mod_check_call,
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 BoardModifier bm{ModifierKind::NodeInducedSubgraph};
                 bm.sel = resolve_selector_arg("nis", args[0], SelectorType::Node, parse_node_selector);
                 return make_mod(bm);
@@ -1811,7 +1838,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
         };
         m["eis"] = BuiltinFunction{
             induced_subgraph_mod_check_call,
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 BoardModifier bm{ModifierKind::EdgeInducedSubgraph};
                 bm.sel = resolve_selector_arg("eis", args[0], SelectorType::Edge, parse_edge_selector);
                 return make_mod(bm);
@@ -1831,7 +1858,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
         };
         m["selectNode"] = BuiltinFunction{
             select_set_check_call(NUMBER_TYPE),
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 Selector sel = resolve_selector_arg("selectNode", args[0], SelectorType::Node, parse_node_selector);
                 const BoardConfig& bc = *args[1].egr_v;
                 auto nodes = select_node(bc.adj, bc.embed, sel);
@@ -1842,7 +1869,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
         };
         m["selectEdge"] = BuiltinFunction{
             select_set_check_call(EDGE_TYPE),
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 Selector sel = resolve_selector_arg("selectEdge", args[0], SelectorType::Edge, parse_edge_selector);
                 const BoardConfig& bc = *args[1].egr_v;
                 auto edges = select_edge(bc.adj, bc.embed, sel);
@@ -1853,7 +1880,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
         };
         m["selectTriangle"] = BuiltinFunction{
             select_set_check_call(TRI_TYPE),
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 Selector sel = resolve_selector_arg("selectTriangle", args[0], SelectorType::Tri, parse_triangle_selector);
                 const BoardConfig& bc = *args[1].egr_v;
                 auto tris = select_triangle(bc.adj, bc.embed, sel);
@@ -1864,7 +1891,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
         };
         m["selectQuad"] = BuiltinFunction{
             select_set_check_call(QUAD_TYPE),
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 Selector sel = resolve_selector_arg("selectQuad", args[0], SelectorType::Quad, parse_quad_selector);
                 const BoardConfig& bc = *args[1].egr_v;
                 auto quads = select_quad(bc.adj, bc.embed, sel);
@@ -1885,7 +1912,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
         };
         m["triangleForm"] = BuiltinFunction{
             form_mod_check_call,
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 BoardModifier bm{ModifierKind::TriangleForm};
                 bm.split_n = static_cast<int>(args[0].number);
                 if (args.size() == 2) bm.form_sel = resolve_selector_arg("triangleForm", args[1], SelectorType::Tri, parse_triangle_selector);
@@ -1894,7 +1921,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
         };
         m["quadForm"] = BuiltinFunction{
             form_mod_check_call,
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 BoardModifier bm{ModifierKind::QuadForm};
                 bm.split_n = static_cast<int>(args[0].number);
                 if (args.size() == 2) bm.form_sel = resolve_selector_arg("quadForm", args[1], SelectorType::Quad, parse_quad_selector);
@@ -1914,7 +1941,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
                         throw std::runtime_error("cleg: '" + callee + "' argument " + std::to_string(i + 1) + ": expected formSel, got " + type_to_string(arg_types[i]));
                 return MOD_TYPE;
             },
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 BoardModifier bm{ModifierKind::Form};
                 bm.split_n = static_cast<int>(args[0].number);
                 for (size_t i = 1; i < args.size(); i++) bm.form_sels.push_back(args[i].formsel_v);
@@ -1924,7 +1951,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
 
         m["modify"] = BuiltinFunction{
             fixed_signature({ClegType{CTKind::Array, std::make_shared<ClegType>(MOD_TYPE)}, EGR_TYPE}, EGR_TYPE),
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 std::vector<BoardModifier> mods;
                 for (auto& v : args[0].arr_v) mods.push_back(v.mod_v);
                 return make_egr(apply_modifiers(*args[1].egr_v, mods));
@@ -1932,7 +1959,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
         };
 
         m["msAll"] = BuiltinFunction{
-            fixed_signature({}, MSEL_TYPE), [](const std::vector<ClegValue>&) { return make_msel(MultiSelector{MSelOp::All}); },
+            fixed_signature({}, MSEL_TYPE), [](const std::vector<ClegValue>&, UserFuncTable&) { return make_msel(MultiSelector{MSelOp::All}); },
         };
         m["msBase"] = BuiltinFunction{
             [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
@@ -1944,7 +1971,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
                     throw std::runtime_error("cleg: '" + callee + "' argument 2: expected sel or set, got " + type_to_string(arg_types[1]));
                 return MSEL_TYPE;
             },
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 double number = args[0].number;
                 if (number != std::floor(number) || number < 0)
                     throw std::runtime_error("cleg: msBase: number must be a nonnegative integer, got " + format_number_display(number));
@@ -1955,7 +1982,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
         };
         m["msUnion"] = BuiltinFunction{
             fixed_signature({ClegType{CTKind::Array, std::make_shared<ClegType>(MSEL_TYPE)}}, MSEL_TYPE),
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 MultiSelector ms; ms.op = MSelOp::Union;
                 for (auto& v : args[0].arr_v) ms.items.push_back(v.msel_v);
                 return make_msel(ms);
@@ -1963,7 +1990,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
         };
         m["msInter"] = BuiltinFunction{
             fixed_signature({ClegType{CTKind::Array, std::make_shared<ClegType>(MSEL_TYPE)}}, MSEL_TYPE),
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 MultiSelector ms; ms.op = MSelOp::Inter;
                 for (auto& v : args[0].arr_v) ms.items.push_back(v.msel_v);
                 return make_msel(ms);
@@ -1971,7 +1998,7 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
         };
         m["msDiff"] = BuiltinFunction{
             fixed_signature({MSEL_TYPE, MSEL_TYPE}, MSEL_TYPE),
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 MultiSelector ms; ms.op = MSelOp::Diff;
                 ms.a = std::make_shared<MultiSelector>(args[0].msel_v);
                 ms.b = std::make_shared<MultiSelector>(args[1].msel_v);
@@ -1980,13 +2007,115 @@ static const std::unordered_map<std::string, BuiltinFunction>& builtin_functions
         };
         m["multiProd"] = BuiltinFunction{
             fixed_signature({ClegType{CTKind::Array, std::make_shared<ClegType>(EGR_TYPE)}, MSEL_TYPE}, EGR_TYPE),
-            [](const std::vector<ClegValue>& args) {
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 std::vector<BoardConfig> boards;
                 for (auto& v : args[0].arr_v) boards.push_back(*v.egr_v);
                 if (boards.empty()) throw std::runtime_error("cleg: multiProd: boards must be non-empty");
                 FullProductIndex fpi = make_full_product_index(boards);
                 auto result = eval_multi_selector(boards, fpi, args[1].msel_v);
                 return make_egr(std::move(result.bc));
+            },
+        };
+
+        // Mirrors shared/cleg.ts's subHcublat(bounds, cond): a "sub-region" of an N-dimensional
+        // hypercubical lattice - `bounds` is an N-length array of `[lo, hi]` pairs (inclusive
+        // integer bounds, one pair per dimension) describing the bounding hyperrectangle; `cond`
+        // decides which lattice points inside it actually become nodes, called once per candidate
+        // point (as that point's own N ABSOLUTE coordinates, a number[]) via call_user_function -
+        // fill_holes lets `cond` be a plain reference OR a partial application, same as any other
+        // func-typed argument call. Surviving nodes keep the plain grid adjacency (connected iff
+        // their coordinates differ by exactly 1 in exactly one dimension), via the same full-
+        // lattice-index/stride bookkeeping as this file's own hypercuboid_board (board_config.cpp)
+        // and its own TS-side analog, hypercuboidBoard, to avoid an O(survivors^2) adjacency scan.
+        // ONE deviation from the TS side, scoped to the embedding only (see this file's own top
+        // comment on why a deviation like this is sometimes needed): TS re-centers the final
+        // embedding by subtracting each dimension's own (generally negative, or a half-integer)
+        // midpoint, but BoardConfig::embed here is exact non-negative-integer-only - so, exactly
+        // like hypercuboid_board's own convention, each surviving node's embedding position is
+        // simply its own LOCAL (0-based, always a non-negative integer) lattice coordinate, never
+        // `lo`-shifted or re-centered; `cond` itself is still always called with the point's real
+        // ABSOLUTE coordinates (`lo[i] + local[i]`), exactly matching the TS side.
+        m["subHcublat"] = BuiltinFunction{
+            fixed_signature(
+                {
+                    ClegType{CTKind::Array, std::make_shared<ClegType>(ClegType{CTKind::Array, std::make_shared<ClegType>(NUMBER_TYPE)})},
+                    ClegType{
+                        CTKind::Func, nullptr,
+                        {ClegType{CTKind::Array, std::make_shared<ClegType>(NUMBER_TYPE)}},
+                        std::make_shared<ClegType>(ClegType{CTKind::Bool, nullptr}),
+                    },
+                },
+                EGR_TYPE),
+            [](const std::vector<ClegValue>& args, UserFuncTable& funcs) {
+                const auto& bounds_arr = args[0].arr_v;
+                size_t k = bounds_arr.size();
+                if (k == 0) throw std::runtime_error("cleg: 'subHcublat' bounds must be non-empty");
+                std::vector<int> lo(k), dims(k);
+                for (size_t i = 0; i < k; i++) {
+                    const auto& pair = bounds_arr[i].arr_v;
+                    if (pair.size() != 2)
+                        throw std::runtime_error(
+                            "cleg: 'subHcublat' bounds[" + std::to_string(i) + "] must have exactly 2 entries "
+                            "(lower, upper), got " + std::to_string(pair.size()));
+                    double a = pair[0].number, b = pair[1].number;
+                    if (a != std::floor(a) || b != std::floor(b) || a > b)
+                        throw std::runtime_error(
+                            "cleg: 'subHcublat' bounds[" + std::to_string(i) + "] must be integers with lower <= "
+                            "upper, got [" + format_number_display(a) + ", " + format_number_display(b) + "]");
+                    lo[i] = static_cast<int>(a);
+                    dims[i] = static_cast<int>(b - a) + 1;
+                }
+                const ClegValue& cond = args[1];
+
+                std::vector<long long> strides(k);
+                strides[0] = 1;
+                for (size_t i = 1; i < k; i++) strides[i] = strides[i - 1] * dims[i - 1];
+                long long full_n = 1;
+                for (int d : dims) full_n *= d;
+                auto local_coords_of = [&](long long n) {
+                    std::vector<int> coords(k);
+                    for (size_t i = 0; i < k; i++) { coords[i] = static_cast<int>(n % dims[i]); n /= dims[i]; }
+                    return coords;
+                };
+
+                // Only surviving (cond-kept) nodes get a board index (compacted, in ascending
+                // full-lattice-index order) - board_idx_of maps a full-lattice index to that
+                // compacted index, absent for a point cond rejected.
+                std::unordered_map<long long, int> board_idx_of;
+                std::vector<std::vector<int>> surviving_local;
+                std::vector<std::vector<unsigned>> pos;
+                for (long long n = 0; n < full_n; n++) {
+                    std::vector<int> local = local_coords_of(n);
+                    ClegValue point_arg; point_arg.kind = CTKind::Array; point_arg.elem = NUMBER_TYPE;
+                    for (size_t i = 0; i < k; i++) point_arg.arr_v.push_back(make_number(local[i] + lo[i]));
+                    bool keep = call_user_function(
+                        *funcs.at(cond.func_name), fill_holes(cond.func_bound_args, {point_arg}), funcs).boolean;
+                    if (!keep) continue;
+                    board_idx_of[n] = static_cast<int>(surviving_local.size());
+                    surviving_local.push_back(local);
+                    std::vector<unsigned> p(k);
+                    for (size_t i = 0; i < k; i++) p[i] = static_cast<unsigned>(local[i]);
+                    pos.push_back(std::move(p));
+                }
+                int N = static_cast<int>(surviving_local.size());
+
+                auto adj = zero_adj(N);
+                for (int bi = 0; bi < N; bi++) {
+                    const auto& local = surviving_local[bi];
+                    for (size_t i = 0; i < k; i++)
+                        for (int delta : {1, -1}) {
+                            int nc = local[i] + delta;
+                            if (nc < 0 || nc >= dims[i]) continue;
+                            std::vector<int> nlocal = local;
+                            nlocal[i] = nc;
+                            long long flat = 0;
+                            for (size_t j = 0; j < k; j++) flat += nlocal[j] * strides[j];
+                            auto it = board_idx_of.find(flat);
+                            if (it == board_idx_of.end()) continue;
+                            adj[bi][it->second] = 1;
+                        }
+                }
+                return make_egr(BoardConfig{N, std::move(adj), static_cast<unsigned>(k), std::move(pos)});
             },
         };
 
@@ -2032,6 +2161,34 @@ static void check_call_args(const std::string& callee, const std::vector<ClegTyp
 static void check_block(const Stmt& block, TypeEnv* parent, FuncTable& funcs, const ClegType& return_type, bool in_loop);
 static void check_stmt(const Stmt& stmt, TypeEnv& env, FuncTable& funcs, const ClegType& return_type, bool in_loop);
 static ClegType check_expr(const Expr& expr, TypeEnv& env, FuncTable& funcs);
+
+// Mirrors shared/cleg.ts's checkPartialApplication() - type-checks a partial-application CallExpr's
+// own `args` (at least one is a HoleExpr) against `ref_params`, the currently-callable parameter
+// list of whatever `callee` refers to, one entry per `args` position. Shared by both partial-
+// application sources (see CallExpr's own doc comment, shared/cleg.ts): a bare top-level function
+// name (`ref_params` is its own full signature, since nothing is bound yet) and an existing local
+// variable holding a func value, itself possibly already a partial application (`ref_params` is that
+// value's own, already-reduced, params - the positions still open). Returns the resulting closure's
+// own new params - the subset of `ref_params` at exactly the hole positions, in order.
+static std::vector<ClegType> check_partial_application(
+    const std::string& callee, const std::vector<Expr>& args, const std::vector<ClegType>& ref_params,
+    TypeEnv& env, FuncTable& funcs)
+{
+    if (args.size() != ref_params.size())
+        throw std::runtime_error(
+            "cleg: '" + callee + "' expects " + std::to_string(ref_params.size()) + " argument(s), got " +
+            std::to_string(args.size()));
+    std::vector<ClegType> hole_params;
+    for (size_t i = 0; i < args.size(); i++) {
+        if (args[i].kind == ExprKind::HoleExpr) { hole_params.push_back(ref_params[i]); continue; }
+        ClegType t = check_expr(args[i], env, funcs);
+        if (!type_equals(t, ref_params[i]))
+            throw std::runtime_error(
+                "cleg: '" + callee + "' argument " + std::to_string(i + 1) + ": expected " +
+                type_to_string(ref_params[i]) + ", got " + type_to_string(t));
+    }
+    return hole_params;
+}
 
 static void check_block(const Stmt& block, TypeEnv* parent, FuncTable& funcs, const ClegType& return_type, bool in_loop) {
     TypeEnv env; env.parent = parent;
@@ -2182,6 +2339,28 @@ static ClegType check_expr(const Expr& expr, TypeEnv& env, FuncTable& funcs) {
             return ClegType{CTKind::Set, std::make_shared<ClegType>(elem_types[0])};
         }
         case ExprKind::CallExpr: {
+            if (std::any_of(expr.elements.begin(), expr.elements.end(),
+                             [](const Expr& a) { return a.kind == ExprKind::HoleExpr; })) {
+                // Partial application - a bare top-level function name, or an existing local
+                // variable holding a func value (a plain pointer, or itself already a partial
+                // application - see check_partial_application's own doc comment) - never a builtin
+                // (no single fixed signature to close over for the generic/overloaded ones).
+                const ClegType* var_type = lookup_var_type(env, expr.string_value);
+                if (var_type) {
+                    if (var_type->kind != CTKind::Func)
+                        throw std::runtime_error("cleg: '" + expr.string_value + "' is not callable (" + type_to_string(*var_type) + ")");
+                    auto hole_params = check_partial_application(expr.string_value, expr.elements, var_type->params, env, funcs);
+                    return ClegType{CTKind::Func, nullptr, std::move(hole_params), std::make_shared<ClegType>(*var_type->return_type)};
+                }
+                if (builtin_functions().count(expr.string_value))
+                    throw std::runtime_error(
+                        "cleg: partial application ('#') is only supported for a cleg-declared function or a "
+                        "func-typed variable, not builtin '" + expr.string_value + "'");
+                auto fit = funcs.find(expr.string_value);
+                if (fit == funcs.end()) throw std::runtime_error("cleg: call to undeclared function '" + expr.string_value + "'");
+                auto hole_params = check_partial_application(expr.string_value, expr.elements, fit->second.params, env, funcs);
+                return ClegType{CTKind::Func, nullptr, std::move(hole_params), std::make_shared<ClegType>(fit->second.return_type)};
+            }
             std::vector<ClegType> arg_types;
             for (auto& a : expr.elements) arg_types.push_back(check_expr(a, env, funcs));
             auto& builtins = builtin_functions();
@@ -2337,7 +2516,21 @@ static size_t validate_array_index(double idx, size_t length) {
     return static_cast<size_t>(idx);
 }
 
-using UserFuncTable = std::unordered_map<std::string, const FunctionDecl*>;
+// Mirrors shared/cleg.ts's fillHoles() - interleaves `supplied_args` (in order) into `bound_args`'
+// own nullopt ("still uninstantiated") slots, producing the full argument list the original function
+// actually needs - used by eval_expr's own CallExpr case whenever it calls through a func value,
+// whether that value is a plain function-pointer reference (every slot nullopt, so this is just
+// `supplied_args` unchanged) or a partial application (see ClegValue's own 'func' doc comment) - one
+// shared interleaving rule for both, rather than treating them as two different cases.
+static std::vector<ClegValue> fill_holes(
+    const std::vector<std::optional<ClegValue>>& bound_args, const std::vector<ClegValue>& supplied_args)
+{
+    std::vector<ClegValue> out;
+    out.reserve(bound_args.size());
+    size_t i = 0;
+    for (auto& b : bound_args) out.push_back(b ? *b : supplied_args[i++]);
+    return out;
+}
 
 // Mirrors shared/cleg.ts's ReturnSignal - thrown to unwind out of nested blocks/if-statements on
 // `return`, always caught by call_user_function below.
@@ -2352,6 +2545,29 @@ static void eval_block(const Stmt& block, ValueEnv* parent, UserFuncTable& funcs
 static void eval_stmt(const Stmt& stmt, ValueEnv& env, UserFuncTable& funcs);
 static ClegValue eval_expr(const Expr& expr, ValueEnv& env, UserFuncTable& funcs);
 static ClegValue call_user_function(const FunctionDecl& fn, const std::vector<ClegValue>& args, UserFuncTable& funcs);
+
+// Mirrors shared/cleg.ts's mergeBoundArgs() - merges a partial-application CallExpr's own `args` (at
+// least one is a HoleExpr) into `bound_args`' own currently-open (nullopt) slots, in order -
+// evaluating each non-hole argument now (once, eagerly) and leaving each hole slot open, producing
+// the NEW bound_args for the resulting (possibly still-partial) closure. Starting from a fresh
+// all-nullopt bound_args (a bare top-level function name, nothing bound yet) or an existing value's
+// own bound_args (a plain pointer, still all-nullopt, or an already-partial closure) is the exact
+// same operation, just a different starting point.
+static std::vector<std::optional<ClegValue>> merge_bound_args(
+    const std::vector<std::optional<ClegValue>>& bound_args, const std::vector<Expr>& args,
+    ValueEnv& env, UserFuncTable& funcs)
+{
+    std::vector<std::optional<ClegValue>> out;
+    out.reserve(bound_args.size());
+    size_t j = 0;
+    for (auto& b : bound_args) {
+        if (b) { out.push_back(b); continue; }
+        const Expr& a = args[j++];
+        if (a.kind == ExprKind::HoleExpr) out.push_back(std::nullopt);
+        else out.push_back(clone_array_value(eval_expr(a, env, funcs)));
+    }
+    return out;
+}
 
 static void eval_block(const Stmt& block, ValueEnv* parent, UserFuncTable& funcs) {
     ValueEnv env; env.parent = parent;
@@ -2457,8 +2673,8 @@ static ClegValue eval_expr(const Expr& expr, ValueEnv& env, UserFuncTable& funcs
             // Not a variable - a bare reference to one of program's own top-level functions, used as
             // a function-pointer value (check_expr already confirmed this resolves and is func-typed).
             const FunctionDecl* fn = funcs.at(expr.string_value);
-            ClegValue fv; fv.kind = CTKind::Func; fv.func_decl = fn;
-            for (auto& p : fn->params) fv.func_params.push_back(p.type);
+            ClegValue fv; fv.kind = CTKind::Func; fv.func_name = expr.string_value;
+            for (auto& p : fn->params) { fv.func_params.push_back(p.type); fv.func_bound_args.push_back(std::nullopt); }
             fv.func_return_type = fn->return_type;
             return fv;
         }
@@ -2480,15 +2696,36 @@ static ClegValue eval_expr(const Expr& expr, ValueEnv& env, UserFuncTable& funcs
             return make_cleg_set(std::move(elem), std::move(values));
         }
         case ExprKind::CallExpr: {
+            if (std::any_of(expr.elements.begin(), expr.elements.end(),
+                             [](const Expr& a) { return a.kind == ExprKind::HoleExpr; })) {
+                // Partial application - check_expr already confirmed expr.string_value names either
+                // a top-level function or a local func-typed variable (never a builtin) whenever any
+                // arg is '#'. merge_bound_args evaluates each non-hole argument now (once, eagerly).
+                // Starting from a variable's own bound_args (rather than a fresh all-nullopt one) is
+                // what lets this further-apply an already-partial closure.
+                ClegValue* var_value = lookup_value_ptr(env, expr.string_value);
+                const std::string& name = var_value ? var_value->func_name : expr.string_value;
+                const FunctionDecl* fn = funcs.at(name);
+                std::vector<std::optional<ClegValue>> starting_bound_args = var_value
+                    ? var_value->func_bound_args
+                    : std::vector<std::optional<ClegValue>>(fn->params.size());
+                auto bound_args = merge_bound_args(starting_bound_args, expr.elements, env, funcs);
+                ClegValue fv; fv.kind = CTKind::Func; fv.func_name = name; fv.func_bound_args = bound_args;
+                for (size_t i = 0; i < fn->params.size(); i++) if (!bound_args[i]) fv.func_params.push_back(fn->params[i].type);
+                fv.func_return_type = fn->return_type;
+                return fv;
+            }
             std::vector<ClegValue> args;
             for (auto& a : expr.elements) args.push_back(eval_expr(a, env, funcs));
             auto& builtins = builtin_functions();
             auto bit = builtins.find(expr.string_value);
-            if (bit != builtins.end()) return bit->second.call(args);
+            if (bit != builtins.end()) return bit->second.call(args, funcs);
             // A local variable of func type shadows a same-named top-level function - see
             // check_expr's own CallExpr case, which already required this to resolve the same way.
+            // fill_holes handles a plain (never-partially-applied) function value transparently,
+            // since its own bound_args is all nullopt.
             ClegValue* var_value = lookup_value_ptr(env, expr.string_value);
-            if (var_value) return call_user_function(*var_value->func_decl, args, funcs);
+            if (var_value) return call_user_function(*funcs.at(var_value->func_name), fill_holes(var_value->func_bound_args, args), funcs);
             return call_user_function(*funcs.at(expr.string_value), args, funcs);
         }
         case ExprKind::BinaryExpr: {
