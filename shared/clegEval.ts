@@ -548,6 +548,59 @@ BUILTIN_FUNCTIONS['form'] = {
     },
 };
 
+// `triCentralize([selArg])`/`quadCentralize([selArg])`: builds a TriCentralize/QuadCentralize
+// BoardModifier - `selArg` (a `sel`, `string`, or `set`, resolved via resolveSelectorArg) restricts
+// which triangles/quads get centralized, mirroring TriCentralize/QuadCentralize's own optional
+// `sel?: Selector` field exactly - omitted, every one found gets centralized. Variable-arity (0 or 1
+// args) rather than fixedSignature(...), to mirror that optionality exactly.
+function centralizeModCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length !== 0 && argTypes.length !== 1)
+        throw new Error(`cleg: '${callee}' expects 0 or 1 argument(s), got ${argTypes.length}`);
+    if (argTypes.length === 1 && argTypes[0].kind !== 'sel' && argTypes[0].kind !== 'string' && argTypes[0].kind !== 'set')
+        throw new Error(`cleg: '${callee}' argument 1: expected sel, string, or set, got ${typeToString(argTypes[0])}`);
+    return MOD_TYPE;
+}
+BUILTIN_FUNCTIONS['triCentralize'] = {
+    checkCall: centralizeModCheckCall,
+    call: (args) => {
+        if (args.length === 0) return { kind: 'mod', value: { kind: 'TriCentralize' } };
+        const sel = resolveSelectorArg('triCentralize', args[0], 'tri', parseTriangleSelector);
+        return { kind: 'mod', value: { kind: 'TriCentralize', sel } };
+    },
+};
+BUILTIN_FUNCTIONS['quadCentralize'] = {
+    checkCall: centralizeModCheckCall,
+    call: (args) => {
+        if (args.length === 0) return { kind: 'mod', value: { kind: 'QuadCentralize' } };
+        const sel = resolveSelectorArg('quadCentralize', args[0], 'quad', parseQuadSelector);
+        return { kind: 'mod', value: { kind: 'QuadCentralize', sel } };
+    },
+};
+
+// `centralize(...sels)`: builds a Centralize BoardModifier - one or more selector arguments (each a
+// `sel`, bare `string`, or `set` - resolved via resolveAnyKindSelectorArg, same as form/mkSel/msBase),
+// mirroring genericCentralize's own (bc, sels) signature (genericCentralize itself accepts an empty
+// `sels` as a no-op; `centralize` requires at least one, below, since a cleg call with none would be
+// a pointless no-op board program). None of `sel`/`string`/`set` carries a tri-or-quad kind at the
+// type level, so a non-tri/quad argument type-checks here but is rejected at runtime by
+// genericCentralize itself - the same check any hand-built Selector needs, not something
+// `centralize` repeats.
+function centralizeCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length < 1)
+        throw new Error(`cleg: '${callee}' expects at least 1 argument(s), got ${argTypes.length}`);
+    for (let i = 0; i < argTypes.length; i++)
+        if (argTypes[i].kind !== 'sel' && argTypes[i].kind !== 'string' && argTypes[i].kind !== 'set')
+            throw new Error(`cleg: '${callee}' argument ${i + 1}: expected sel, string, or set, got ${typeToString(argTypes[i])}`);
+    return MOD_TYPE;
+}
+BUILTIN_FUNCTIONS['centralize'] = {
+    checkCall: centralizeCheckCall,
+    call: (args) => {
+        const sels = args.map(a => resolveAnyKindSelectorArg('centralize', a));
+        return { kind: 'mod', value: { kind: 'Centralize', sels } };
+    },
+};
+
 // `modify(mods, bc)`: applies every modifier in `mods`, in order, to `bc` - shared/boardConfig.ts's
 // own applyModifiers(), the one builtin that actually turns a list of `mod` values into a
 // transformed board (every rectify/edgeSplit/.../form/nis/eis builtin above only constructs an

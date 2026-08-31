@@ -496,6 +496,11 @@ export type BoardModifier =
     // sels: one Selector per face to look for - each must be tri- or quad-typed, checked at runtime
     // by shared/boardConfig.ts's own genericForm, which this wraps - see its own doc comment.
     | { kind: 'Form'; w: number; sels: Selector[] }
+    | { kind: 'TriCentralize'; sel?: Selector }
+    | { kind: 'QuadCentralize'; sel?: Selector }
+    // sels: same convention as Form's own field above, but for shared/boardConfig.ts's
+    // genericCentralize - see its own doc comment.
+    | { kind: 'Centralize'; sels: Selector[] }
     | { kind: 'GlobalCentralize' }
     | { kind: 'QuadOctarize' }
     | { kind: 'Scale'; factor: number }

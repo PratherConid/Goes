@@ -180,14 +180,16 @@
  *
  * Every BoardModifier kind except `Prod`/`Repeat` (handled elsewhere) has its own constructor
  * builtin - `nis`, `eis`, `rectify`, `edgeSplit`, `mergeClose`, `triangleForm`, `quadForm`, `form`,
- * `globalCentralize`, `quadOctarize`, `scale` - each of which BUILDS a `mod` value (see "Types" above)
- * rather than applying it to a board immediately; `modify(mods, bc)` is the one builtin that actually
- * applies a whole `mod[]` list, in order, to a board (shared/boardConfig.ts's own applyModifiers()).
- * `nis`/`eis`/`triangleForm`/`quadForm` each accept a `sel`, a `string`, or a `set` of the matching
- * element type, resolved via their one shared resolveSelectorArg against one fixed wantKind; `mkSel`
- * accepts a `string` or `set` too (not a `sel` - see `sel`'s own doc comment above), but has no fixed
- * wantKind of its own to resolve against, so it goes through resolveAnyKindSelectorArg instead (also
- * shared/clegEval.ts, also used by `msBase`).
+ * `triCentralize`, `quadCentralize`, `centralize`, `globalCentralize`, `quadOctarize`, `scale` - each
+ * of which BUILDS a `mod` value (see "Types" above) rather than applying it to a board immediately;
+ * `modify(mods, bc)` is the one builtin that actually applies a whole `mod[]` list, in order, to a
+ * board (shared/boardConfig.ts's own applyModifiers()). `nis`/`eis`/`triangleForm`/`quadForm`/
+ * `triCentralize`/`quadCentralize` each accept a `sel`, a `string`, or a `set` of the matching element
+ * type, resolved via their one shared resolveSelectorArg against one fixed wantKind; `mkSel` accepts
+ * a `string` or `set` too (not a `sel` - see `sel`'s own doc comment above), but has no fixed wantKind
+ * of its own to resolve against, so it goes through resolveAnyKindSelectorArg instead (also
+ * shared/clegEval.ts, also used by `form`/`centralize`'s own variadic selector arguments and by
+ * `msBase`).
  *
  * `selectNode`/`selectEdge`/`selectTriangle`/`selectQuad` (X, bc) similarly each accept a `sel`,
  * `string`, or `set`, but evaluate it immediately against a real board `bc` (an `egr`) and return the

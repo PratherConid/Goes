@@ -401,6 +401,89 @@ export function quadForm(bc: BoardConfig, w: number, sel?: Selector): BoardConfi
 }
 
 /**
+ * Adds one new node ("centralizes") for every selected triangle and/or quad in `bc` (see
+ * topology.ts's findTriangles/findQuads), at that face's own barycenter (the component-wise average
+ * of its own corner positions) - unlike genericForm, this doesn't subdivide/glue anything, it just
+ * adds one hub per selected face, connected to all of that face's own original corner nodes; every
+ * other node/edge (including the face's own original ones) is left completely untouched. Each
+ * element of `sels` is itself a Selector naming which faces to look for AND restricting which ones
+ * of that kind qualify in one go (its own bottom-up-inferred `type` already says tri or quad) - pass
+ * `(all tri)`/`(all quad)` for "every one found, no restriction". Every element must be tri- or
+ * quad-typed, checked at runtime (a `type` of 'node'/'edge' throws) since nothing else constrains it
+ * structurally. triCentralize/quadCentralize below are the single-kind special cases, each just
+ * calling this with one `(all tri)`/`(all quad)`-or-`sel` selector.
+ */
+export function genericCentralize(bc: BoardConfig, sels: Selector[]): BoardConfig {
+    const N = bc.N;
+    const embDim = bc.emb.embDim;
+
+    const extraPos: number[][] = [];
+    const extraEdges: [number, number][] = [];
+    let nextIdx = N;
+
+    for (const sel of sels) {
+        if (sel.type === 'tri') {
+            const triangles = selectTriangle(bc.adj, bc.emb.pos, sel);
+            for (const { n1: A, n2: B, n3: C } of triangles) {
+                const hub = nextIdx++;
+                extraPos[hub - N] = bc.emb.pos[A].map((_, k) =>
+                    (bc.emb.pos[A][k] + bc.emb.pos[B][k] + bc.emb.pos[C][k]) / 3);
+                extraEdges.push([hub, A], [hub, B], [hub, C]);
+            }
+        } else if (sel.type === 'quad') {
+            const quads = selectQuad(bc.adj, bc.emb.pos, sel);
+            for (const { n1: A, n2: B, n3: C, n4: D } of quads) {
+                const hub = nextIdx++;
+                extraPos[hub - N] = bc.emb.pos[A].map((_, k) =>
+                    (bc.emb.pos[A][k] + bc.emb.pos[B][k] + bc.emb.pos[C][k] + bc.emb.pos[D][k]) / 4);
+                extraEdges.push([hub, A], [hub, B], [hub, C], [hub, D]);
+            }
+        } else {
+            throw new Error(`genericCentralize: each selector in sels must be a triangle or quad selector, got a ${sel.type} selector`);
+        }
+    }
+
+    const totalN = nextIdx;
+    const pos: number[][] = new Array(totalN);
+    for (let i = 0; i < N; i++) pos[i] = bc.emb.pos[i];
+    for (let i = N; i < totalN; i++) pos[i] = extraPos[i - N];
+
+    const adj = zeroAdj(totalN);
+    for (let i = 0; i < N; i++)
+        for (let j = i + 1; j < N; j++) {
+            if (!bc.adj[i][j]) continue;
+            adj[i][j] = 1;
+            adj[j][i] = 1;
+        }
+    for (const [a, b] of extraEdges) {
+        adj[a][b] = 1;
+        adj[b][a] = 1;
+    }
+
+    return make(new Embedding(embDim, pos), adj);
+}
+
+/**
+ * Adds one new node ("centralizes") for every triangle in `bc`, connected to all 3 of its own
+ * corners - the single-kind special case of genericCentralize (see its own doc comment). `sel`, if
+ * given, restricts this to only the triangles it selects (evaluated against `bc`'s own adj/pos) -
+ * every other triangle is left untouched, as if it didn't exist.
+ */
+export function triCentralize(bc: BoardConfig, sel?: Selector): BoardConfig {
+    return genericCentralize(bc, [sel ?? { op: 'all', type: 'tri' }]);
+}
+
+/**
+ * Adds one new node ("centralizes") for every quad in `bc`, connected to all 4 of its own corners -
+ * the single-kind special case of genericCentralize (see its own doc comment), the same way
+ * triCentralize is. `sel`, if given, restricts this to only the quads it selects (evaluated against
+ * `bc`'s own adj/pos) - every other quad is left untouched, as if it didn't exist.
+ */
+export function quadCentralize(bc: BoardConfig, sel?: Selector): BoardConfig {
+    return genericCentralize(bc, [sel ?? { op: 'all', type: 'quad' }]);
+}
+
+/**
  * Adds one new node at `bc`'s barycenter (the component-wise average of every existing node's
  * natural-dimension position), connected to every existing node - a single hub adjacent to the
  * whole board at once, unlike quadForm/triangleForm's per-face subdivision. Existing nodes/edges
@@ -1677,8 +1760,9 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: BoardArgEntry
 
 /**
  * Applies `modifier` to `bc`, dispatching to `rectify` / `edgeSplit` / `mergeClose` /
- * `triangleForm` / `quadForm` / `globalCentralize` / `quadOctarize` / `scaleBoard` /
- * `nodeInducedSubgraph` / `edgeInducedSubgraph`.
+ * `triangleForm` / `quadForm` / `genericForm` / `triCentralize` / `quadCentralize` /
+ * `genericCentralize` / `globalCentralize` / `quadOctarize` / `scaleBoard` / `nodeInducedSubgraph` /
+ * `edgeInducedSubgraph`.
  */
 export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardConfig {
     switch (modifier.kind) {
@@ -1688,6 +1772,9 @@ export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardCo
         case 'TriangleForm': return triangleForm(bc, modifier.w, modifier.sel);
         case 'QuadForm': return quadForm(bc, modifier.w, modifier.sel);
         case 'Form': return genericForm(bc, modifier.w, modifier.sels);
+        case 'TriCentralize': return triCentralize(bc, modifier.sel);
+        case 'QuadCentralize': return quadCentralize(bc, modifier.sel);
+        case 'Centralize': return genericCentralize(bc, modifier.sels);
         case 'GlobalCentralize': return globalCentralize(bc);
         case 'QuadOctarize': return quadOctarize(bc);
         case 'Scale': return scaleBoard(bc, modifier.factor);

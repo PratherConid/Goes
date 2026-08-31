@@ -73,7 +73,7 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<Selecto
 // the single-kind special case of generic_form (see its own doc comment) with `sel` (if given)
 // restricting this to only the triangles it selects, every other triangle left untouched. Mirrors
 // shared/boardConfig.ts's triangleForm(), with one difference: the TS version
-// computes real (generally irrational, since it divides by w-1) node positions, but every C++
+// computes real (generally non-integer, since it divides by w-1) node positions, but every C++
 // board with a genuine (non-zero) emb_dim is an exact-integer invariant throughout this file, so
 // this always produces an emb_dim = 0 board instead (same reasoning as regular_polygon_board /
 // tetrahedron_board / dodecahedron_board / icosahedron_board) - adjacency only, regardless of
@@ -87,6 +87,34 @@ BoardConfig triangle_form(const BoardConfig& bc, int w, std::optional<Selector> 
 // every other quad left untouched - see triangle_form's own doc comment for why this always
 // produces an emb_dim = 0 board. Mirrors shared/boardConfig.ts's quadForm().
 BoardConfig quad_form(const BoardConfig& bc, int w, std::optional<Selector> sel = std::nullopt);
+
+// Adds one new node ("centralizes") for every triangle/quad any of `sels` names, at that face's own
+// barycenter, connected to all of that face's own original corner nodes - unlike generic_form, this
+// doesn't subdivide/glue anything; every original node/edge (including the selected face's own) is
+// left completely untouched. Each element of `sels` is itself a Selector naming which faces to look
+// for AND restricting which ones of that kind qualify in one go (its own `type` already says tri or
+// quad) - pass an `(all tri)`/`(all quad)` selector for "every one found, no restriction". Every
+// element must be tri- or quad-typed, checked at runtime (a `type` of Node/Edge throws) since nothing
+// else constrains it structurally. Mirrors shared/boardConfig.ts's genericCentralize(), with the same
+// difference triangle_form/quad_form have from their own TS counterparts: the TS version computes a
+// real (generally non-integer, since it divides by 3 or 4) barycenter position, but this always
+// produces an emb_dim = 0 board instead (same reasoning as triangle_form/quad_form/global_centralize
+// above) - adjacency only, regardless of whether bc itself had a real embedding. tri_centralize/
+// quad_centralize below are the single-kind special cases, each just calling this with one
+// `(all tri)`/`(all quad)`-or-`sel` selector.
+BoardConfig generic_centralize(const BoardConfig& bc, const std::vector<Selector>& sels);
+
+// Adds one new node ("centralizes") for every triangle in bc, connected to all 3 of its own corners -
+// the single-kind special case of generic_centralize (see its own doc comment) with `sel` (if given)
+// restricting this to only the triangles it selects, every other triangle left untouched. Mirrors
+// shared/boardConfig.ts's triCentralize().
+BoardConfig tri_centralize(const BoardConfig& bc, std::optional<Selector> sel = std::nullopt);
+
+// Adds one new node ("centralizes") for every quad in bc, connected to all 4 of its own corners - the
+// single-kind special case of generic_centralize (see its own doc comment), the same way
+// tri_centralize is. `sel`, if given, restricts this to only the quads it selects, every other quad
+// left untouched. Mirrors shared/boardConfig.ts's quadCentralize().
+BoardConfig quad_centralize(const BoardConfig& bc, std::optional<Selector> sel = std::nullopt);
 
 // Adds one new node connected to every existing node of bc, at the barycenter of bc's existing
 // node positions - mirrors shared/boardConfig.ts's globalCentralize() connectivity, but
@@ -201,12 +229,15 @@ std::string format_board_arg_entry(const BoardArgEntry& e);
 // Prod- or Repeat-kind BoardModifier value anymore.
 enum class ModifierKind {
     Rectify, EdgeSplit, MergeClose, TriangleForm, QuadForm, Form,
+    TriCentralize, QuadCentralize, Centralize,
     GlobalCentralize, QuadOctarize, Scale, NodeInducedSubgraph, EdgeInducedSubgraph
 };
 struct BoardModifier {
     ModifierKind kind;
     // split_n is reused for TriangleForm/QuadForm/Form's own single int parameter (its w) - all
-    // three are "one plain int argument" modifiers.
+    // three are "one plain int argument" modifiers. TriCentralize/QuadCentralize/Centralize have no
+    // such parameter (see generic_centralize's own doc comment on why - unlike generic_form, nothing
+    // needs a shared lattice width), so none of the three ever reads this field.
     int split_n = 0;   // meaningful when kind == ModifierKind::EdgeSplit/TriangleForm/QuadForm/Form
     // dist is reused for Scale's own single double parameter (its factor) - both are "one plain
     // double argument" modifiers.
@@ -215,14 +246,16 @@ struct BoardModifier {
     // game/selector.h. Always present for these two (unlike form_sel below), matching the TS side's
     // own non-optional `sel: Selector` field for those two variants.
     Selector sel;
-    // TriangleForm/QuadForm's own optional restricting selector (nullopt = every triangle/quad
-    // found, matching the TS side's `sel?: Selector`) - see triangle_form/quad_form's own doc
-    // comments (board_config.h). A separate field from `sel` above (rather than reusing it) since
-    // NodeInducedSubgraph/EdgeInducedSubgraph's own `sel` is mandatory, not optional.
-    std::optional<Selector> form_sel; // meaningful when kind == ModifierKind::TriangleForm/QuadForm
-    // Form's own list of face selectors, one per face to look for - see generic_form's own doc
-    // comment above (each must be tri- or quad-typed, checked there at runtime).
-    std::vector<Selector> form_sels; // meaningful when kind == ModifierKind::Form
+    // TriangleForm/QuadForm/TriCentralize/QuadCentralize's own optional restricting selector
+    // (nullopt = every triangle/quad found, matching the TS side's `sel?: Selector`) - see
+    // triangle_form/quad_form/tri_centralize/quad_centralize's own doc comments (board_config.h). A
+    // separate field from `sel` above (rather than reusing it) since NodeInducedSubgraph/
+    // EdgeInducedSubgraph's own `sel` is mandatory, not optional.
+    std::optional<Selector> form_sel; // meaningful when kind == TriangleForm/QuadForm/TriCentralize/QuadCentralize
+    // Form/Centralize's own list of face selectors, one per face to look for - see generic_form's/
+    // generic_centralize's own doc comments above (each must be tri- or quad-typed, checked there at
+    // runtime).
+    std::vector<Selector> form_sels; // meaningful when kind == ModifierKind::Form/Centralize
 
     // Needed for std::vector<BoardModifier>::operator== (BoardModifier itself is compared inside
     // Selector-bearing structures via this) - C++17 has no defaulted struct equality (that's a
@@ -234,8 +267,9 @@ struct BoardModifier {
 };
 
 // Applies modifier to bc, dispatching to rectify / edge_split / merge_close / triangle_form /
-// quad_form / generic_form / global_centralize / quad_octarize / scale_board / node_induced_subgraph /
-// edge_induced_subgraph. Mirrors shared/boardConfig.ts's applyModifier().
+// quad_form / generic_form / tri_centralize / quad_centralize / generic_centralize /
+// global_centralize / quad_octarize / scale_board / node_induced_subgraph / edge_induced_subgraph.
+// Mirrors shared/boardConfig.ts's applyModifier().
 BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier);
 
 // Applies every modifier in modifiers, in order, to bc. Mirrors shared/boardConfig.ts's

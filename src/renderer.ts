@@ -1705,6 +1705,20 @@ export class Renderer {
                 + 'a side, regardless of whether that lattice came from a triangle or a quad selector '
                 + '(unlike calling triangleForm/quadForm separately, a triangle and a quad sharing an '
                 + 'edge still glue seamlessly here)')}
+            ${row('triCentralize(sel?)',
+                'TriCentralize: add one new node for every triangle (3 mutually-adjacent nodes) - or, '
+                + 'if a triangle selector sel is given, only the ones it selects - at that '
+                + "triangle's own barycenter, connected to all 3 of its corners; every original node/"
+                + 'edge (including the selected triangle\'s own) is left untouched')}
+            ${row('quadCentralize(sel?)',
+                'QuadCentralize: same as triCentralize, but for quads (4-cycles with no diagonal '
+                + 'edges) - the new node connects to all 4 corners')}
+            ${row('centralize([SEL…])',
+                'Centralize: generalizes triCentralize/quadCentralize to one or more selectors at '
+                + 'once (each a triangle or quad selector, string or sel - see Builtin Functions) - '
+                + 'adds one new barycenter-connected node per selected face across all of them, the '
+                + 'same way form generalizes triangleForm/quadForm (but without form\'s own w or '
+                + 'edge-gluing - each new node only connects to its own face\'s corners)')}
             ${row('globalCentralize()',
                 'GlobalCentralize: add one new node at the barycenter of every existing node, connected '
                 + 'to all of them')}

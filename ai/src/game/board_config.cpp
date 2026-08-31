@@ -323,6 +323,61 @@ BoardConfig quad_form(const BoardConfig& bc, int w, std::optional<Selector> sel)
     return generic_form(bc, w, { sel.value_or(Selector{SelectorOp::All, SelectorType::Quad}) });
 }
 
+BoardConfig generic_centralize(const BoardConfig& bc, const std::vector<Selector>& sels) {
+    int N = bc.N;
+    int next_idx = N;
+    std::vector<std::pair<int, int>> extra_edges;
+
+    for (auto& sel : sels) {
+        if (sel.type == SelectorType::Tri) {
+            auto triangles = select_triangle(bc.adj, bc.embed, sel);
+            for (auto& [A, B, C] : triangles) {
+                int hub = next_idx++;
+                extra_edges.push_back({hub, A});
+                extra_edges.push_back({hub, B});
+                extra_edges.push_back({hub, C});
+            }
+        } else if (sel.type == SelectorType::Quad) {
+            auto quads = select_quad(bc.adj, bc.embed, sel);
+            for (auto& [A, B, C, D] : quads) {
+                int hub = next_idx++;
+                extra_edges.push_back({hub, A});
+                extra_edges.push_back({hub, B});
+                extra_edges.push_back({hub, C});
+                extra_edges.push_back({hub, D});
+            }
+        } else {
+            throw std::runtime_error(
+                "generic_centralize: each selector in sels must be a triangle or quad selector, got a " +
+                selector_type_name(sel.type) + " selector");
+        }
+    }
+
+    int total_n = next_idx;
+    auto adj = zero_adj(total_n);
+    for (int i = 0; i < N; i++)
+        for (int j = i + 1; j < N; j++) {
+            if (!bc.adj[i][j]) continue;
+            adj[i][j] = 1;
+            adj[j][i] = 1;
+        }
+    for (auto& [a, b] : extra_edges) {
+        adj[a][b] = 1;
+        adj[b][a] = 1;
+    }
+
+    std::vector<std::vector<unsigned>> embed(total_n); // emb_dim=0 - see board_config.h's doc comment
+    return make_bc(std::move(adj), 0u, std::move(embed));
+}
+
+BoardConfig tri_centralize(const BoardConfig& bc, std::optional<Selector> sel) {
+    return generic_centralize(bc, { sel.value_or(Selector{SelectorOp::All, SelectorType::Tri}) });
+}
+
+BoardConfig quad_centralize(const BoardConfig& bc, std::optional<Selector> sel) {
+    return generic_centralize(bc, { sel.value_or(Selector{SelectorOp::All, SelectorType::Quad}) });
+}
+
 BoardConfig global_centralize(const BoardConfig& bc) {
     int N = bc.N;
     int hub = N;
@@ -446,6 +501,9 @@ BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier)
         case ModifierKind::TriangleForm: return triangle_form(bc, modifier.split_n, modifier.form_sel);
         case ModifierKind::QuadForm: return quad_form(bc, modifier.split_n, modifier.form_sel);
         case ModifierKind::Form: return generic_form(bc, modifier.split_n, modifier.form_sels);
+        case ModifierKind::TriCentralize: return tri_centralize(bc, modifier.form_sel);
+        case ModifierKind::QuadCentralize: return quad_centralize(bc, modifier.form_sel);
+        case ModifierKind::Centralize: return generic_centralize(bc, modifier.form_sels);
         case ModifierKind::GlobalCentralize: return global_centralize(bc);
         case ModifierKind::QuadOctarize: return quad_octarize(bc);
         case ModifierKind::Scale: return scale_board(bc, modifier.dist);

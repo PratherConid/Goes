@@ -721,6 +721,46 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
         };
 
+        CheckCallFn centralize_mod_check_call = [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
+            if (arg_types.size() != 0 && arg_types.size() != 1)
+                throw std::runtime_error("cleg: '" + callee + "' expects 0 or 1 argument(s), got " + std::to_string(arg_types.size()));
+            if (arg_types.size() == 1 && arg_types[0].kind != CTKind::Sel && arg_types[0].kind != CTKind::String && arg_types[0].kind != CTKind::Set)
+                throw std::runtime_error("cleg: '" + callee + "' argument 1: expected sel, string, or set, got " + type_to_string(arg_types[0]));
+            return MOD_TYPE;
+        };
+        m["triCentralize"] = BuiltinFunction{
+            centralize_mod_check_call,
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+                BoardModifier bm{ModifierKind::TriCentralize};
+                if (args.size() == 1) bm.form_sel = resolve_selector_arg("triCentralize", args[0], SelectorType::Tri, parse_triangle_selector);
+                return make_mod(bm);
+            },
+        };
+        m["quadCentralize"] = BuiltinFunction{
+            centralize_mod_check_call,
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+                BoardModifier bm{ModifierKind::QuadCentralize};
+                if (args.size() == 1) bm.form_sel = resolve_selector_arg("quadCentralize", args[0], SelectorType::Quad, parse_quad_selector);
+                return make_mod(bm);
+            },
+        };
+
+        m["centralize"] = BuiltinFunction{
+            [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
+                if (arg_types.size() < 1)
+                    throw std::runtime_error("cleg: '" + callee + "' expects at least 1 argument(s), got " + std::to_string(arg_types.size()));
+                for (size_t i = 0; i < arg_types.size(); i++)
+                    if (arg_types[i].kind != CTKind::Sel && arg_types[i].kind != CTKind::String && arg_types[i].kind != CTKind::Set)
+                        throw std::runtime_error("cleg: '" + callee + "' argument " + std::to_string(i + 1) + ": expected sel, string, or set, got " + type_to_string(arg_types[i]));
+                return MOD_TYPE;
+            },
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+                BoardModifier bm{ModifierKind::Centralize};
+                for (auto& a : args) bm.form_sels.push_back(resolve_any_kind_selector_arg("centralize", a));
+                return make_mod(bm);
+            },
+        };
+
         m["modify"] = BuiltinFunction{
             fixed_signature({ClegType{CTKind::Array, std::make_shared<ClegType>(MOD_TYPE)}, EGR_TYPE}, EGR_TYPE),
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
