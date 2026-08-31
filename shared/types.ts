@@ -420,8 +420,8 @@ export function cloneBoardArgEntry(e: BoardArgEntry): BoardArgEntry {
     return e.kind === BoardArgType.Number ? { ...e } : { ...e, values: [...e.values] };
 }
 
-/** The four kinds of object a Selector/FormSelector can denote - see shared/selector.ts's own top
- * comment for the full grammar this drives. */
+/** The four kinds of object a Selector can denote - see shared/selector.ts's own top comment for the
+ * full grammar this drives. */
 export type SelectorType = 'node' | 'edge' | 'tri' | 'quad';
 
 /**
@@ -479,19 +479,6 @@ export type Selector =
     | { op: 'raw'; type: SelectorType; items: SelectedVals };
 
 /**
- * A tiny extension of the Selector grammar above for shared/boardConfig.ts's `genericForm` - a
- * FormSelector names which KIND of object (triangle or quad) genericForm should look for, plus an
- * optional inner SEL (of that same kind) restricting which ones of that kind qualify (default: every
- * one found). Written as its own small S-expression, `(tri [SEL])` / `(quad [SEL])` (see
- * shared/selector.ts's own parseFormSelectors/formatFormSelector(s)) - distinct from a plain
- * Selector, since a FormSelector isn't itself selecting FROM an existing known-kind set; it's
- * declaring which kind to look for in the first place.
- */
-export type FormSelector =
-    | { kind: 'tri'; sel?: Selector }
-    | { kind: 'quad'; sel?: Selector };
-
-/**
  * A BoardConfig-transforming operation - see shared/boardConfig.ts's applyModifier()/
  * applyModifiers() for how these are built and applied. A `mod`-typed cleg value (shared/clegBase.ts)
  * always wraps one of these directly, built by whichever of cleg's own rectify()/edgeSplit()/.../
@@ -506,7 +493,9 @@ export type BoardModifier =
     | { kind: 'MergeClose'; dist: number }
     | { kind: 'TriangleForm'; w: number; sel?: Selector }
     | { kind: 'QuadForm'; w: number; sel?: Selector }
-    | { kind: 'Form'; w: number; sels: FormSelector[] }
+    // sels: one Selector per face to look for - each must be tri- or quad-typed, checked at runtime
+    // by shared/boardConfig.ts's own genericForm, which this wraps - see its own doc comment.
+    | { kind: 'Form'; w: number; sels: Selector[] }
     | { kind: 'GlobalCentralize' }
     | { kind: 'QuadOctarize' }
     | { kind: 'Scale'; factor: number }

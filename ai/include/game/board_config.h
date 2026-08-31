@@ -50,31 +50,22 @@ BoardConfig rectify(const BoardConfig& bc);
 // there are no real coordinates to compute a distance from.
 BoardConfig merge_close(const BoardConfig& bc, double dist);
 
-// Mirrors shared/selector.ts's FormSelector - names which kind of face (triangle or quad)
-// genericForm should look for, plus an optional restricting selector (nullopt = every one found,
-// matching the TS side's `sel === undefined`) - see genericForm's own doc comment (shared/
-// boardConfig.ts) for the full grammar/semantics this mirrors.
-enum class FormSelectorKind { Tri, Quad };
-struct FormSelector {
-    FormSelectorKind kind;
-    std::optional<Selector> sel;
-
-    bool operator==(const FormSelector& other) const { return kind == other.kind && sel == other.sel; }
-};
-
 // Mirrors shared/boardConfig.ts's genericForm(): replaces every triangle/quad any of `sels` names
-// (each FormSelector's own optional selector restricts which ones of that kind qualify - default:
-// every one found) with its own w-sided lattice - a triangular_board(w)-shaped lattice for a
-// triangle, a w-by-w grid for a quad - gluing new corners back to the original vertices and gluing
-// every original edge's own new boundary points together across every lattice that consumes that
-// edge as one of its own sides, regardless of whether that lattice came from a 'tri' or 'quad'
-// FormSelector (a triangle and a quad sharing an edge still glue seamlessly, since gluing is
-// driven by shared ORIGINAL edges, not by matching kinds). `w` is shared by every FormSelector in
-// `sels`, since two lattices sharing an edge can only glue node-for-node if their own boundary
-// sequences are the same length. Like triangle_form/quad_form below (each a single-FormSelector
-// special case of this), and for the same reason (see their own doc comments before this
-// generalization), this always produces an emb_dim = 0 board.
-BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSelector>& sels);
+// with its own w-sided lattice - a triangular_board(w)-shaped lattice for a triangle, a w-by-w grid
+// for a quad - gluing new corners back to the original vertices and gluing every original edge's own
+// new boundary points together across every lattice that consumes that edge as one of its own sides,
+// regardless of whether that lattice came from a triangle- or quad-typed selector (a triangle and a
+// quad sharing an edge still glue seamlessly, since gluing is driven by shared ORIGINAL edges, not by
+// matching kinds). Each element of `sels` is itself a Selector naming which faces to look for AND
+// restricting which ones of that kind qualify in one go (its own `type` already says tri or quad) -
+// pass an `(all tri)`/`(all quad)` selector for "every one found, no restriction". Every element
+// must be tri- or quad-typed, checked at runtime (a `type` of Node/Edge throws) since nothing else
+// constrains it structurally. `w` is shared by every selector in `sels`, since two lattices sharing
+// an edge can only glue node-for-node if their own boundary sequences are the same length. Like
+// triangle_form/quad_form below (each a single-selector special case of this), and for the same
+// reason (see their own doc comments before this generalization), this always produces an
+// emb_dim = 0 board.
+BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<Selector>& sels);
 
 // Replaces every triangle (3 mutually-adjacent, distinct vertices - see topology.h's
 // find_triangles) in bc with a triangular_board(w)-shaped lattice, gluing new corners back to the
@@ -229,9 +220,9 @@ struct BoardModifier {
     // comments (board_config.h). A separate field from `sel` above (rather than reusing it) since
     // NodeInducedSubgraph/EdgeInducedSubgraph's own `sel` is mandatory, not optional.
     std::optional<Selector> form_sel; // meaningful when kind == ModifierKind::TriangleForm/QuadForm
-    // Form's own form-selector list - see generic_form's own doc comment (board_config.h) and
-    // FormSelector's own doc comment above.
-    std::vector<FormSelector> form_sels; // meaningful when kind == ModifierKind::Form
+    // Form's own list of face selectors, one per face to look for - see generic_form's own doc
+    // comment above (each must be tri- or quad-typed, checked there at runtime).
+    std::vector<Selector> form_sels; // meaningful when kind == ModifierKind::Form
 
     // Needed for std::vector<BoardModifier>::operator== (BoardModifier itself is compared inside
     // Selector-bearing structures via this) - C++17 has no defaulted struct equality (that's a

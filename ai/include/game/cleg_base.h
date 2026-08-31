@@ -22,7 +22,7 @@
 //   - No garbage collector: recursive AST/value substructures use std::shared_ptr for genuine
 //     sharing (Expr/Stmt children, ClegValue's `egr` payload) or plain std::vector/value members
 //     where TS's own object-reference semantics never actually needed sharing (Array/Set contents,
-//     Selector/BoardModifier/FormSelector/MultiSelector payloads - each already cheap to copy, since
+//     Selector/BoardModifier/MultiSelector payloads - each already cheap to copy, since
 //     Selector/MultiSelector use shared_ptr internally for their own recursive children).
 //   - TS's `number` (a JS double) is a C++ `double` throughout; an int is only ever produced at the
 //     C++/board-primitive boundary (mkEdge/mkTri/mkQuad, board-arg conversion, msBase's index), via
@@ -37,7 +37,7 @@
 // ── Types ────────────────────────────────────────────────────────────────────
 
 enum class CTKind {
-    Egr, Number, String, Bool, Edge, Tri, Quad, Sel, FormSel, Mod, Msel, Array, Set, Func
+    Egr, Number, String, Bool, Edge, Tri, Quad, Sel, Mod, Msel, Array, Set, Func
 };
 
 // Mirrors shared/clegBase.ts's ClegType - `elem` meaningful iff kind == Array/Set; `params`/
@@ -83,7 +83,6 @@ struct ClegValue {
     std::shared_ptr<BoardConfig> egr_v;
     SelectorType sel_type = SelectorType::Node;      // Sel only
     Selector sel_v;
-    FormSelector formsel_v{FormSelectorKind::Tri, std::nullopt};
     BoardModifier mod_v{ModifierKind::Rectify};
     MultiSelector msel_v;
     std::vector<ClegValue> arr_v;                    // Array or Set (Set: deduplicated by cleg_set_key)
@@ -120,7 +119,6 @@ inline ClegValue make_egr(BoardConfig bc) {
     ClegValue v; v.kind = CTKind::Egr; v.egr_v = std::make_shared<BoardConfig>(std::move(bc)); return v;
 }
 inline ClegValue make_mod(BoardModifier m) { ClegValue v; v.kind = CTKind::Mod; v.mod_v = std::move(m); return v; }
-inline ClegValue make_form_sel(FormSelector fs) { ClegValue v; v.kind = CTKind::FormSel; v.formsel_v = std::move(fs); return v; }
 inline ClegValue make_msel(MultiSelector m) { ClegValue v; v.kind = CTKind::Msel; v.msel_v = std::move(m); return v; }
 
 // Renders a double for error messages/number-string concatenation - an integral value prints with

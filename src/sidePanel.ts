@@ -30,7 +30,6 @@ export enum SidePanelContent {
     CommandReferenceBoardTypes        = 'commandReferenceBoardTypes',
     CommandReferenceBoardModifiers    = 'commandReferenceBoardModifiers',
     CommandReferenceSelectors         = 'commandReferenceSelectors',
-    CommandReferenceFormSelectors     = 'commandReferenceFormSelectors',
     CommandReferenceBuiltinFunctions  = 'commandReferenceBuiltinFunctions',
     CurrentGameSetup    = 'currentGameSetup',
     NewGame             = 'newGame',
@@ -86,17 +85,14 @@ export const SidePanelHierarchy: Record<SidePanelContent, [SidePanelContent | nu
     [SidePanelContent.CommandReferenceOnlineMultiplayer]: [SidePanelContent.CommandReference, []],
     // ClegReference is itself a pure hub (like CommandReference above), and a direct child of Home
     // - every cleg-language reference page (prescribed board constructors, board modifiers, the
-    // selector grammar, form selectors, and every other builtin function) lives under it, one leaf
-    // page each.
+    // selector grammar, and every other builtin function) lives under it, one leaf page each.
     [SidePanelContent.ClegReference]: [SidePanelContent.Home, [
         SidePanelContent.CommandReferenceBoardTypes, SidePanelContent.CommandReferenceBoardModifiers,
-        SidePanelContent.CommandReferenceSelectors, SidePanelContent.CommandReferenceFormSelectors,
-        SidePanelContent.CommandReferenceBuiltinFunctions,
+        SidePanelContent.CommandReferenceSelectors, SidePanelContent.CommandReferenceBuiltinFunctions,
     ]],
     [SidePanelContent.CommandReferenceBoardTypes]:        [SidePanelContent.ClegReference, []],
     [SidePanelContent.CommandReferenceBoardModifiers]:    [SidePanelContent.ClegReference, []],
     [SidePanelContent.CommandReferenceSelectors]:         [SidePanelContent.ClegReference, []],
-    [SidePanelContent.CommandReferenceFormSelectors]:     [SidePanelContent.ClegReference, []],
     [SidePanelContent.CommandReferenceBuiltinFunctions]:  [SidePanelContent.ClegReference, []],
     [SidePanelContent.CurrentGameSetup]: [SidePanelContent.Home, [SidePanelContent.History]],
     // GamePresetSelection/BoardPresetSelection's nav buttons are likewise rendered by
@@ -142,7 +138,6 @@ export const SidePanelTitle: Record<SidePanelContent, string> = {
     [SidePanelContent.CommandReferenceBoardTypes]:        'Prescribed Boards',
     [SidePanelContent.CommandReferenceBoardModifiers]:    'Board Modifiers',
     [SidePanelContent.CommandReferenceSelectors]:         'Selectors',
-    [SidePanelContent.CommandReferenceFormSelectors]:     'Form Selectors',
     [SidePanelContent.CommandReferenceBuiltinFunctions]:  'Builtin Functions',
     [SidePanelContent.CurrentGameSetup]: 'Current Game Info',
     [SidePanelContent.NewGame]:          'New Game',
@@ -211,7 +206,6 @@ export interface SidePanelElements {
     commandReferenceBoardTypesPanel:        HTMLDivElement;
     commandReferenceBoardModifiersPanel:    HTMLDivElement;
     commandReferenceSelectorsPanel:         HTMLDivElement;
-    commandReferenceFormSelectorsPanel:     HTMLDivElement;
     commandReferenceBuiltinFunctionsPanel:  HTMLDivElement;
     currentGameSetupPanel: HTMLDivElement;
     newGamePanel:          HTMLDivElement;
@@ -262,8 +256,6 @@ export function renderSidePanelChrome(current: SidePanelContent, els: SidePanelE
         current === SidePanelContent.CommandReferenceBoardModifiers ? 'block' : 'none';
     els.commandReferenceSelectorsPanel.style.display =
         current === SidePanelContent.CommandReferenceSelectors ? 'block' : 'none';
-    els.commandReferenceFormSelectorsPanel.style.display =
-        current === SidePanelContent.CommandReferenceFormSelectors ? 'block' : 'none';
     els.commandReferenceBuiltinFunctionsPanel.style.display =
         current === SidePanelContent.CommandReferenceBuiltinFunctions ? 'block' : 'none';
     els.currentGameSetupPanel.style.display    = current === SidePanelContent.CurrentGameSetup    ? 'block' : 'none';

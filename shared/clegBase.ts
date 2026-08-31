@@ -151,18 +151,17 @@
  * ClegValue's own 'sel' variant carries the real kind (`selType`) once a value actually exists. There
  * is no selector literal syntax and (like `edge`/`tri`/`quad`) no way to read a `sel` value's contents
  * back out - it's passed straight through to whichever consuming builtin's own selector-shaped
- * argument resolves it (`nis`/`eis`/`triangleForm`/`quadForm`/`mkFormSel` - see resolveSelectorArg in
- * shared/clegEval.ts, their one shared "sel, string, or set" resolution).
+ * argument resolves it (`nis`/`eis`/`triangleForm`/`quadForm`/`form` - see resolveSelectorArg in
+ * shared/clegEval.ts, their one shared "sel, string, or set" resolution). `mkSel`'s own `selArg`
+ * (its second argument) is optional the same way - omitted, `mkSel(kind)` builds a `sel` matching
+ * every object of `kind`. `form`'s own arguments are plain `sel` values too - its own argument-kind
+ * check just confirms each is tri- or quad-typed at runtime, the same check shared/boardConfig.ts's
+ * genericForm itself makes - see its own doc comment.
  *
- * Two more basic types round out the board-modifier builtins: `formSel` wraps a real
- * shared/types.ts FormSelector (`(tri [SEL])`/`(quad [SEL])`, see that type's own doc comment) -
- * built via `mkFormSel(kind, [selArg])`, the `form`-modifier counterpart of `sel`/`mkSel` (`kind` is
- * `"tri"`/`"quad"`; `selArg`, like `triangleForm`/`quadForm`'s own, is optional - a `sel` or
- * `string`, resolved the same way, restricting which tri/quads qualify, default every one found).
- * `mod` wraps a real shared/types.ts BoardModifier - one flat type covering every kind (`Rectify`,
- * `EdgeSplit`, `TriangleForm`, `Form`, ...), built by whichever of the modifier-constructor builtins
- * below matches. Both are opaque the same way `sel`/`edge`/`tri`/`quad` are - no literal syntax, no
- * way to read fields back out.
+ * One more basic type rounds out the board-modifier builtins: `mod` wraps a real shared/types.ts
+ * BoardModifier - one flat type covering every kind (`Rectify`, `EdgeSplit`, `TriangleForm`, `Form`,
+ * ...), built by whichever of the modifier-constructor builtins below matches. Opaque the same way
+ * `sel`/`edge`/`tri`/`quad` are - no literal syntax, no way to read fields back out.
  *
  * ## Builtins
  *
@@ -183,7 +182,7 @@
  * `globalCentralize`, `quadOctarize`, `scale` - each of which BUILDS a `mod` value (see "Types" above)
  * rather than applying it to a board immediately; `modify(mods, bc)` is the one builtin that actually
  * applies a whole `mod[]` list, in order, to a board (shared/boardConfig.ts's own applyModifiers()).
- * `nis`/`eis`/`triangleForm`/`quadForm`/`mkFormSel` each accept a `sel`, a `string`, or a `set` of the
+ * `nis`/`eis`/`triangleForm`/`quadForm`/`mkSel` each accept a `sel`, a `string`, or a `set` of the
  * matching element type, resolved via their one shared resolveSelectorArg.
  *
  * `selectNode`/`selectEdge`/`selectTriangle`/`selectQuad` (X, bc) similarly each accept a `sel`,
@@ -259,7 +258,7 @@
 
 import {
     type BoardConfig, type BoardEdge, type BoardTriangle, type BoardQuad,
-    type Selector, type SelectorType, type FormSelector, type BoardModifier,
+    type Selector, type SelectorType, type BoardModifier,
 } from './types.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -283,21 +282,16 @@ export type ClegType =
      * know ahead of a call. ClegValue's own 'sel' variant carries the actual kind (`selType`) at
      * runtime instead. */
     | { kind: 'sel' }
-    /** Wraps a real shared/types.ts FormSelector (`(tri [SEL])`/`(quad [SEL])`) - built via
-     * `mkFormSel(kind, [selArg])`, the `form`-modifier counterpart of `sel`/`mkSel`. Not itself a
-     * `sel` - a FormSelector isn't selecting FROM an existing known-kind set, it's declaring which
-     * kind (tri/quad) to look for in the first place (see FormSelector's own doc comment). */
-    | { kind: 'formSel' }
     /** Wraps a real shared/types.ts BoardModifier - built via one of the modifier-constructor
      * builtins below (`rectify`, `edgeSplit`, `triangleForm`, `form`, ...). One flat type covering
      * every BoardModifier kind, the same way `sel`/`egr` are each one flat type regardless of which
      * SelectorType/PrescribedBoard they actually hold. */
     | { kind: 'mod' }
     /** Wraps a MultiSelector (defined below, near ClegValue's own 'msel' variant) - a cleg-internal-
-     * only concept, unlike sel/formSel/mod, none of which are exposed via shared/types.ts either but
-     * wrap something a consumer OUTSIDE cleg's own files also builds/uses (a real
-     * Selector/FormSelector/BoardModifier) - nothing outside shared/clegEval.ts ever builds or
-     * consumes a MultiSelector directly. */
+     * only concept, unlike sel/mod (neither of which is exposed via shared/types.ts either, but each
+     * wraps something a consumer OUTSIDE cleg's own files also builds/uses: a real
+     * Selector/BoardModifier) - nothing outside shared/clegEval.ts ever builds or consumes a
+     * MultiSelector directly. */
     | { kind: 'msel' }
     | { kind: 'array'; elem: ClegType }
     | { kind: 'set'; elem: ClegType }
@@ -365,7 +359,6 @@ export type ClegValue =
      * own 'sel' doc comment) - always set from whichever parse*Selector function built `value`, so
      * it's never out of sync with `value.type`. */
     | { kind: 'sel'; selType: SelectorType; value: Selector }
-    | { kind: 'formSel'; value: FormSelector }
     | { kind: 'mod'; value: BoardModifier }
     | { kind: 'msel'; value: MultiSelector }
     | { kind: 'array'; elem: ClegType; value: ClegValue[] }

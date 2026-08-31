@@ -136,7 +136,7 @@ private:
 
 static const std::set<std::string>& type_keywords() {
     static const std::set<std::string> kws = {
-        "egr", "number", "string", "bool", "edge", "tri", "quad", "sel", "formSel", "mod", "msel",
+        "egr", "number", "string", "bool", "edge", "tri", "quad", "sel", "mod", "msel",
     };
     return kws;
 }
@@ -157,7 +157,6 @@ static CTKind base_type_kind(const std::string& base) {
     if (base == "tri") return CTKind::Tri;
     if (base == "quad") return CTKind::Quad;
     if (base == "sel") return CTKind::Sel;
-    if (base == "formSel") return CTKind::FormSel;
     if (base == "mod") return CTKind::Mod;
     if (base == "msel") return CTKind::Msel;
     throw std::runtime_error("cleg: base_type_kind: unknown base type '" + base + "'");
@@ -177,7 +176,7 @@ static ClegType parse_type(TokenCursor& c) {
     } else {
         std::string base = c.expect_ident();
         if (!type_keywords().count(base))
-            throw std::runtime_error("cleg: expected a type (egr/number/string/bool/edge/tri/quad/sel/formSel/mod), got '" + base + "'");
+            throw std::runtime_error("cleg: expected a type (egr/number/string/bool/edge/tri/quad/sel/mod), got '" + base + "'");
         type = ClegType{base_type_kind(base), nullptr};
         if (c.is_punct("{")) {
             if (!set_elem_kind_words().count(base))

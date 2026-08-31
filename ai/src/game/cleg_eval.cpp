@@ -51,7 +51,6 @@ static const ClegType EDGE_TYPE{CTKind::Edge, nullptr};
 static const ClegType TRI_TYPE{CTKind::Tri, nullptr};
 static const ClegType QUAD_TYPE{CTKind::Quad, nullptr};
 static const ClegType MOD_TYPE{CTKind::Mod, nullptr};
-static const ClegType FORMSEL_TYPE{CTKind::FormSel, nullptr};
 static const ClegType MSEL_TYPE{CTKind::Msel, nullptr};
 
 // CTKind-based counterpart of set_elem_kind_words() (game/cleg_parser.cpp) - used by the type
@@ -561,41 +560,20 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
 
         m["mkSel"] = BuiltinFunction{
             [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
-                if (arg_types.size() != 2)
-                    throw std::runtime_error("cleg: '" + callee + "' expects 2 argument(s), got " + std::to_string(arg_types.size()));
+                if (arg_types.size() != 1 && arg_types.size() != 2)
+                    throw std::runtime_error("cleg: '" + callee + "' expects 1 or 2 argument(s), got " + std::to_string(arg_types.size()));
                 if (arg_types[0].kind != CTKind::String)
                     throw std::runtime_error("cleg: '" + callee + "' argument 1: expected string, got " + type_to_string(arg_types[0]));
-                if (arg_types[1].kind != CTKind::String && arg_types[1].kind != CTKind::Set)
+                if (arg_types.size() == 2 && arg_types[1].kind != CTKind::String && arg_types[1].kind != CTKind::Set)
                     throw std::runtime_error("cleg: '" + callee + "' argument 2: expected string or set, got " + type_to_string(arg_types[1]));
                 return ClegType{CTKind::Sel, nullptr};
             },
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 SelectorType kind = selector_type_from_word(args[0].str);
                 ClegValue v; v.kind = CTKind::Sel; v.sel_type = kind;
+                if (args.size() == 1) { v.sel_v = Selector{SelectorOp::All, kind}; return v; }
                 v.sel_v = resolve_selector_arg("mkSel", args[1], kind, selector_parser_for(kind));
                 return v;
-            },
-        };
-
-        CheckCallFn mk_form_sel_check_call = [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
-            if (arg_types.size() != 1 && arg_types.size() != 2)
-                throw std::runtime_error("cleg: '" + callee + "' expects 1 or 2 argument(s), got " + std::to_string(arg_types.size()));
-            if (arg_types[0].kind != CTKind::String)
-                throw std::runtime_error("cleg: '" + callee + "' argument 1: expected string, got " + type_to_string(arg_types[0]));
-            if (arg_types.size() == 2 && arg_types[1].kind != CTKind::Sel && arg_types[1].kind != CTKind::String && arg_types[1].kind != CTKind::Set)
-                throw std::runtime_error("cleg: '" + callee + "' argument 2: expected sel, string, or set, got " + type_to_string(arg_types[1]));
-            return FORMSEL_TYPE;
-        };
-        m["mkFormSel"] = BuiltinFunction{
-            mk_form_sel_check_call,
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
-                const std::string& kind = args[0].str;
-                if (kind != "tri" && kind != "quad")
-                    throw std::runtime_error("cleg: mkFormSel: unknown form-selector kind '" + kind + "' - expected tri/quad");
-                SelectorType st = kind == "tri" ? SelectorType::Tri : SelectorType::Quad;
-                FormSelector fs; fs.kind = kind == "tri" ? FormSelectorKind::Tri : FormSelectorKind::Quad;
-                if (args.size() == 2) fs.sel = resolve_selector_arg("mkFormSel", args[1], st, selector_parser_for(st));
-                return make_form_sel(fs);
             },
         };
 
@@ -742,18 +720,18 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
                 if (arg_types.size() < 2)
                     throw std::runtime_error(
-                        "cleg: '" + callee + "' expects at least 2 argument(s) (w, and >= 1 formSel), got " + std::to_string(arg_types.size()));
+                        "cleg: '" + callee + "' expects at least 2 argument(s) (w, and >= 1 sel), got " + std::to_string(arg_types.size()));
                 if (arg_types[0].kind != CTKind::Number)
                     throw std::runtime_error("cleg: '" + callee + "' argument 1: expected number, got " + type_to_string(arg_types[0]));
                 for (size_t i = 1; i < arg_types.size(); i++)
-                    if (arg_types[i].kind != CTKind::FormSel)
-                        throw std::runtime_error("cleg: '" + callee + "' argument " + std::to_string(i + 1) + ": expected formSel, got " + type_to_string(arg_types[i]));
+                    if (arg_types[i].kind != CTKind::Sel)
+                        throw std::runtime_error("cleg: '" + callee + "' argument " + std::to_string(i + 1) + ": expected sel, got " + type_to_string(arg_types[i]));
                 return MOD_TYPE;
             },
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 BoardModifier bm{ModifierKind::Form};
                 bm.split_n = static_cast<int>(args[0].number);
-                for (size_t i = 1; i < args.size(); i++) bm.form_sels.push_back(args[i].formsel_v);
+                for (size_t i = 1; i < args.size(); i++) bm.form_sels.push_back(args[i].sel_v);
                 return make_mod(bm);
             },
         };

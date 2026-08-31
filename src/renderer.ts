@@ -737,7 +737,6 @@ export class Renderer {
     private commandReferenceBoardTypesPanel:        HTMLDivElement;
     private commandReferenceBoardModifiersPanel:    HTMLDivElement;
     private commandReferenceSelectorsPanel:         HTMLDivElement;
-    private commandReferenceFormSelectorsPanel:     HTMLDivElement;
     private commandReferenceBuiltinFunctionsPanel:  HTMLDivElement;
     private historyPanel:  HTMLDivElement;
     private panelDockBtn: HTMLButtonElement;
@@ -820,8 +819,6 @@ export class Renderer {
             document.getElementById('cmdref-board-modifiers-panel') as HTMLDivElement;
         this.commandReferenceSelectorsPanel =
             document.getElementById('cmdref-selectors-panel') as HTMLDivElement;
-        this.commandReferenceFormSelectorsPanel =
-            document.getElementById('cmdref-form-selectors-panel') as HTMLDivElement;
         this.commandReferenceBuiltinFunctionsPanel =
             document.getElementById('cmdref-builtin-functions-panel') as HTMLDivElement;
         this.historyPanel  = document.getElementById('history-panel')   as HTMLDivElement;
@@ -931,7 +928,6 @@ export class Renderer {
             commandReferenceBoardTypesPanel:        this.commandReferenceBoardTypesPanel,
             commandReferenceBoardModifiersPanel:    this.commandReferenceBoardModifiersPanel,
             commandReferenceSelectorsPanel:         this.commandReferenceSelectorsPanel,
-            commandReferenceFormSelectorsPanel:     this.commandReferenceFormSelectorsPanel,
             commandReferenceBuiltinFunctionsPanel:  this.commandReferenceBuiltinFunctionsPanel,
             currentGameSetupPanel: this.currentGameSetupPanel,
             newGamePanel:          this.newGamePanel,
@@ -1699,11 +1695,12 @@ export class Renderer {
                 + 'selector sel is given, only the ones it selects - with a w-by-w grid, gluing new '
                 + 'corners to the old vertices and gluing shared quad edges together (w=1 collapses '
                 + "each quad to a point; w=2 is a no-op); an unselected quad is left untouched, as if it weren't there at all")}
-            ${row('form(w, [mkFormSel(kind, sel?)…])',
-                'Form: generalizes triangleForm/quadForm to one or more form selectors at once (each '
-                + 'built via mkFormSel("tri"|"quad", sel?) - see the Form Selectors page), all '
-                + 'sharing this one w - replaces every triangle/quad any of them names with its own '
-                + 'side-length-w lattice, gluing new corners to the old vertices and gluing every '
+            ${row('form(w, [mkSel(kind, sel?)…])',
+                'Form: generalizes triangleForm/quadForm to one or more selectors at once (each a '
+                + 'triangle or quad selector - typically built via mkSel("tri"|"quad", sel?), see '
+                + 'Builtin Functions), all sharing this one w - replaces every triangle/quad any of '
+                + 'them names with its own side-length-w lattice, gluing new corners to the old '
+                + 'vertices and gluing every '
                 + 'original edge\'s new boundary points together across every lattice that has it as '
                 + 'a side, regardless of whether that lattice came from a triangle or a quad selector '
                 + '(unlike calling triangleForm/quadForm separately, a triangle and a quad sharing an '
@@ -1757,15 +1754,6 @@ export class Renderer {
                 + 'size, rounded down')}
         `);
 
-        this.commandReferenceFormSelectorsPanel.innerHTML = table(`
-            ${row('mkFormSel("tri", sel?)',
-                'Names triangles for the form modifier (see Board Modifiers): every triangle, '
-                + 'or (if a triangle selector sel is given) only the ones it selects')}
-            ${row('mkFormSel("quad", sel?)',
-                'Names quads for the form modifier: every quad, or (if a quad selector sel is '
-                + 'given) only the ones it selects')}
-        `);
-
         this.commandReferenceBuiltinFunctionsPanel.innerHTML = table(`
             ${row('nil(TYPE)', 'An empty array of the given element type - e.g. nil(number) is an '
                 + 'empty number[] - needed anywhere an empty [...]/{...} literal can\'t infer its own '
@@ -1783,10 +1771,10 @@ export class Renderer {
             ${row('mkQuad(a, b, c, d)',
                 'Builds a quad value from four node indices, which must already be in cycle order')}
             ${row('prod(egr, egr)', 'The graph (tensor) product of two boards')}
-            ${row('mkSel(kind, X)',
+            ${row('mkSel(kind, X?)',
                 'Builds a selector value (type sel) of the given kind ("node"/"edge"/"tri"/"quad") '
                 + 'from X - a string (parsed with that kind\'s own grammar - see Selectors) or a set '
-                + 'of the matching element type')}
+                + 'of the matching element type; omitted, matches every object of that kind')}
             ${row('selectNode(X, egr)',
                 'Evaluates a node selector X (a sel, string, or set) against a real board, returning '
                 + 'the exact set of nodes it selects (a number{}) - unlike nis, this runs immediately '

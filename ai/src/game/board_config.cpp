@@ -4,7 +4,6 @@
 #include "game/fractal.h"
 #include <cassert>
 #include <algorithm>
-#include <array>
 #include <functional>
 #include <numeric>
 #include <cmath>
@@ -194,7 +193,20 @@ BoardConfig merge_close(const BoardConfig& bc, double dist) {
     return quotient_board(bc, quot);
 }
 
-BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSelector>& sels) {
+// "tri"/"quad" (etc.) for generic_form's own wrong-kind error message below - mirrors
+// shared/selector.ts's selectorKindName, kept local here since selector.cpp's own copy is
+// translation-unit-private.
+static std::string selector_type_name(SelectorType t) {
+    switch (t) {
+        case SelectorType::Node: return "node";
+        case SelectorType::Edge: return "edge";
+        case SelectorType::Tri:  return "triangle";
+        case SelectorType::Quad: return "quad";
+    }
+    return "?";
+}
+
+BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<Selector>& sels) {
     assert(w >= 1 && "w must be at least 1");
     int N = bc.N;
 
@@ -215,23 +227,14 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
     };
 
     // New nodes' own internal edges, collected face by face (a face's own global index range isn't
-    // known ahead of time, since it depends on how many triangles/quads each FormSelector
+    // known ahead of time, since it depends on how many triangles/quads each selector in `sels`
     // selects) - merged into one adj array only once every face has been processed.
     std::vector<std::pair<int,int>> extra_edges;
     int next_idx = N;
 
-    for (auto& fs : sels) {
-        if (fs.kind == FormSelectorKind::Tri) {
-            auto triangles = find_triangles(bc.adj);
-            if (fs.sel.has_value()) {
-                auto selected = select_triangle(bc.adj, bc.embed, *fs.sel);
-                std::set<std::array<int,3>> selected_keys;
-                for (auto& t : selected) selected_keys.insert({t.n1, t.n2, t.n3});
-                std::vector<BoardTriangle> filtered;
-                for (auto& tri : triangles)
-                    if (selected_keys.count({tri.n1, tri.n2, tri.n3})) filtered.push_back(tri);
-                triangles = std::move(filtered);
-            }
+    for (auto& sel : sels) {
+        if (sel.type == SelectorType::Tri) {
+            auto triangles = select_triangle(bc.adj, bc.embed, sel);
             int n_face = w * (w + 1) / 2;
             auto local_idx = [](int i, int j) { return i * (i + 1) / 2 + j; };
             const int dirs[6][2] = {{1,0},{1,1},{0,1},{-1,0},{-1,-1},{0,-1}};
@@ -253,17 +256,8 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
                 add_side(A, C, [=](int k) { return global_idx(k, k); });
                 add_side(B, C, [=](int k) { return global_idx(w - 1, k); });
             }
-        } else {
-            auto quads = find_quads(bc.adj);
-            if (fs.sel.has_value()) {
-                auto selected = select_quad(bc.adj, bc.embed, *fs.sel);
-                std::set<std::array<int,4>> selected_keys;
-                for (auto& s : selected) selected_keys.insert({s.n1, s.n2, s.n3, s.n4});
-                std::vector<BoardQuad> filtered;
-                for (auto& q : quads)
-                    if (selected_keys.count({q.n1, q.n2, q.n3, q.n4})) filtered.push_back(q);
-                quads = std::move(filtered);
-            }
+        } else if (sel.type == SelectorType::Quad) {
+            auto quads = select_quad(bc.adj, bc.embed, sel);
             int n_face = w * w;
             auto local_idx = [&](int i, int j) { return i * w + j; };
             const int dirs[4][2] = {{0,1},{1,0},{0,-1},{-1,0}};
@@ -290,6 +284,10 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
                 add_side(C, D, [=](int k) { return global_idx(w - 1, w - 1 - k); });
                 add_side(D, A, [=](int k) { return global_idx(w - 1 - k, 0); });
             }
+        } else {
+            throw std::runtime_error(
+                "generic_form: each selector in sels must be a triangle or quad selector, got a " +
+                selector_type_name(sel.type) + " selector");
         }
     }
 
@@ -318,11 +316,11 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
 }
 
 BoardConfig triangle_form(const BoardConfig& bc, int w, std::optional<Selector> sel) {
-    return generic_form(bc, w, { FormSelector{ FormSelectorKind::Tri, std::move(sel) } });
+    return generic_form(bc, w, { sel.value_or(Selector{SelectorOp::All, SelectorType::Tri}) });
 }
 
 BoardConfig quad_form(const BoardConfig& bc, int w, std::optional<Selector> sel) {
-    return generic_form(bc, w, { FormSelector{ FormSelectorKind::Quad, std::move(sel) } });
+    return generic_form(bc, w, { sel.value_or(Selector{SelectorOp::All, SelectorType::Quad}) });
 }
 
 BoardConfig global_centralize(const BoardConfig& bc) {

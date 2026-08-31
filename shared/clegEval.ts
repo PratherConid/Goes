@@ -21,7 +21,7 @@ import {
     BoardArgType, numArg, csvArg, parseBoardArgToken,
     makeBoardEdge, makeBoardTriangle, makeBoardQuad, Embedding,
     type BoardArgEntry, type BoardConfig, type BoardEdge, type BoardTriangle, type BoardQuad,
-    type Selector, type SelectorType, type SelectedVals, type FormSelector, type BoardModifier,
+    type Selector, type SelectorType, type SelectedVals, type BoardModifier,
 } from './types.js';
 import {
     PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, product, applyModifiers,
@@ -343,63 +343,37 @@ const SELECTOR_PARSERS: Record<SelectorType, (s: string) => Selector> = {
     quad: parseQuadSelector,
 };
 
-// `mkSel(kind, X)`: builds a selector of the given `kind` ("node"/"edge"/"tri"/"quad") from `X` - a
-// `string` (parsed via the matching real parse*Selector function above, following
+// `mkSel(kind, [X])`: builds a selector of the given `kind` ("node"/"edge"/"tri"/"quad") - `X`, if
+// given, is a `string` (parsed via the matching real parse*Selector function above, following
 // shared/selector.ts's own grammar/semantics exactly, including its own error messages on a
 // malformed string) or a `set` (of the ClegType matching `kind` - see SELECTOR_SET_ELEM_KIND -
 // wrapped directly into a `raw` Selector, no parsing involved), resolved via resolveSelectorArg
-// exactly like nis/eis/etc below, once `kind` is known. Hand-written checkCall (rather than
-// fixedSignature(...)) since `X`'s own accepted type isn't just one fixed ClegType, and `sel` itself
-// isn't parameterized by kind at the type level (see ClegType's own 'sel' doc comment) - `kind` is
-// only validated/dispatched on at call time, not check time.
+// exactly like nis/eis/etc below, once `kind` is known; omitted, the built selector is `(all kind)`
+// - every object of that kind. Hand-written checkCall (rather than fixedSignature(...)) since `X`'s
+// own accepted type isn't just one fixed ClegType, `X` itself is optional, and `sel` isn't
+// parameterized by kind at the type level (see ClegType's own 'sel' doc comment) - `kind` is only
+// validated/dispatched on at call time, not check time.
 function mkSelCheckCall(callee: string, argTypes: ClegType[]): ClegType {
-    if (argTypes.length !== 2)
-        throw new Error(`cleg: '${callee}' expects 2 argument(s), got ${argTypes.length}`);
+    if (argTypes.length !== 1 && argTypes.length !== 2)
+        throw new Error(`cleg: '${callee}' expects 1 or 2 argument(s), got ${argTypes.length}`);
     if (argTypes[0].kind !== 'string')
         throw new Error(`cleg: '${callee}' argument 1: expected string, got ${typeToString(argTypes[0])}`);
-    if (argTypes[1].kind !== 'string' && argTypes[1].kind !== 'set')
+    if (argTypes.length === 2 && argTypes[1].kind !== 'string' && argTypes[1].kind !== 'set')
         throw new Error(`cleg: '${callee}' argument 2: expected string or set, got ${typeToString(argTypes[1])}`);
     return { kind: 'sel' };
 }
 BUILTIN_FUNCTIONS['mkSel'] = {
     checkCall: mkSelCheckCall,
-    call: ([kindVal, arg]) => {
-        const kind = (kindVal as { value: string }).value as SelectorType;
+    call: (args) => {
+        const kind = (args[0] as { value: string }).value as SelectorType;
         const parse = SELECTOR_PARSERS[kind];
         if (!parse) throw new Error(`cleg: mkSel: unknown selector kind '${kind}' - expected node/edge/tri/quad`);
-        return { kind: 'sel', selType: kind, value: resolveSelectorArg('mkSel', arg, kind, parse) };
+        if (args.length === 1) return { kind: 'sel', selType: kind, value: { op: 'all', type: kind } };
+        return { kind: 'sel', selType: kind, value: resolveSelectorArg('mkSel', args[1], kind, parse) };
     },
 };
 
 const MOD_TYPE: ClegType = { kind: 'mod' };
-const FORMSEL_TYPE: ClegType = { kind: 'formSel' };
-
-// `mkFormSel(kind, [selArg])`: builds a real shared/types.ts FormSelector - `kind` is
-// "tri"/"quad" (validated/dispatched at call time, same convention as mkSel's own `kind`), and the
-// optional `selArg` (a `sel`, `string`, or `set`, resolved via resolveSelectorArg - see FormSelector's own
-// optional `sel?: Selector` field) restricts which tri/quads of that kind qualify (omitted: every
-// one found). Variable-arity (1 or 2 args) rather than fixedSignature(...), to mirror that
-// optionality exactly.
-function mkFormSelCheckCall(callee: string, argTypes: ClegType[]): ClegType {
-    if (argTypes.length !== 1 && argTypes.length !== 2)
-        throw new Error(`cleg: '${callee}' expects 1 or 2 argument(s), got ${argTypes.length}`);
-    if (argTypes[0].kind !== 'string')
-        throw new Error(`cleg: '${callee}' argument 1: expected string, got ${typeToString(argTypes[0])}`);
-    if (argTypes.length === 2 && argTypes[1].kind !== 'sel' && argTypes[1].kind !== 'string' && argTypes[1].kind !== 'set')
-        throw new Error(`cleg: '${callee}' argument 2: expected sel, string, or set, got ${typeToString(argTypes[1])}`);
-    return FORMSEL_TYPE;
-}
-BUILTIN_FUNCTIONS['mkFormSel'] = {
-    checkCall: mkFormSelCheckCall,
-    call: (args) => {
-        const kind = (args[0] as { value: string }).value;
-        if (kind !== 'tri' && kind !== 'quad')
-            throw new Error(`cleg: mkFormSel: unknown form-selector kind '${kind}' - expected tri/quad`);
-        if (args.length === 1) return { kind: 'formSel', value: { kind } };
-        const sel = resolveSelectorArg('mkFormSel', args[1], kind, SELECTOR_PARSERS[kind]);
-        return { kind: 'formSel', value: { kind, sel } };
-    },
-};
 
 // `rectify`/`globalCentralize`/`quadOctarize`: zero-argument BoardModifier constructors, one per
 // shared/types.ts's own like-named BoardModifier kind - build the value directly (`{ kind: 'X' }`)
@@ -529,7 +503,7 @@ BUILTIN_FUNCTIONS['selectQuad'] = {
 // `triangleForm(w, [selArg])`/`quadForm(w, [selArg])`: builds a TriangleForm/QuadForm
 // BoardModifier - `selArg` (a `sel`, `string`, or `set`, resolved via resolveSelectorArg) restricts which
 // triangles/quads get replaced, mirroring TriangleForm/QuadForm's own optional `sel?: Selector`
-// field exactly - omitted, every one found gets replaced. Variable-arity like mkFormSel above.
+// field exactly - omitted, every one found gets replaced. Variable-arity like mkSel above.
 function formModCheckCall(callee: string, argTypes: ClegType[]): ClegType {
     if (argTypes.length !== 1 && argTypes.length !== 2)
         throw new Error(`cleg: '${callee}' expects 1 or 2 argument(s), got ${argTypes.length}`);
@@ -559,23 +533,27 @@ BUILTIN_FUNCTIONS['quadForm'] = {
 };
 
 // `form(w, ...sels)`: builds a Form BoardModifier - `w` (the shared lattice width) followed by one
-// or more `formSel` arguments, mirroring genericForm's own (bc, w, sels) signature and
-// parseModifier's own `assert(sels.length >= 1, ...)` requirement (see its 'form' case).
+// or more `sel` arguments (each typically built via `mkSel("tri", ...)`/`mkSel("quad", ...)`),
+// mirroring genericForm's own (bc, w, sels) signature (genericForm itself accepts an empty `sels` as
+// a no-op; `form` requires at least one, below, since a cleg call with none would be a pointless
+// no-op board program). `sel` carries no kind at the type level (see ClegType's own 'sel' doc
+// comment), so a non-tri/quad `sel` type-checks here but is rejected at runtime by genericForm
+// itself - the same tri-or-quad check any hand-built Selector needs, not something `form` repeats.
 function formCheckCall(callee: string, argTypes: ClegType[]): ClegType {
     if (argTypes.length < 2)
-        throw new Error(`cleg: '${callee}' expects at least 2 argument(s) (w, and >= 1 formSel), got ${argTypes.length}`);
+        throw new Error(`cleg: '${callee}' expects at least 2 argument(s) (w, and >= 1 sel), got ${argTypes.length}`);
     if (argTypes[0].kind !== 'number')
         throw new Error(`cleg: '${callee}' argument 1: expected number, got ${typeToString(argTypes[0])}`);
     for (let i = 1; i < argTypes.length; i++)
-        if (argTypes[i].kind !== 'formSel')
-            throw new Error(`cleg: '${callee}' argument ${i + 1}: expected formSel, got ${typeToString(argTypes[i])}`);
+        if (argTypes[i].kind !== 'sel')
+            throw new Error(`cleg: '${callee}' argument ${i + 1}: expected sel, got ${typeToString(argTypes[i])}`);
     return MOD_TYPE;
 }
 BUILTIN_FUNCTIONS['form'] = {
     checkCall: formCheckCall,
     call: (args) => {
         const w = (args[0] as { value: number }).value;
-        const sels = args.slice(1).map(a => (a as { value: FormSelector }).value);
+        const sels = args.slice(1).map(a => (a as { value: Selector }).value);
         return { kind: 'mod', value: { kind: 'Form', w, sels } };
     },
 };

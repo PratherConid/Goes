@@ -121,7 +121,7 @@ class TokenCursor {
 }
 
 const TYPE_KEYWORDS = new Set([
-    'egr', 'number', 'string', 'bool', 'edge', 'tri', 'quad', 'sel', 'formSel', 'mod', 'msel',
+    'egr', 'number', 'string', 'bool', 'edge', 'tri', 'quad', 'sel', 'mod', 'msel',
 ]);
 
 function parseType(c: TokenCursor): ClegType {
@@ -131,9 +131,9 @@ function parseType(c: TokenCursor): ClegType {
     } else {
         const base = c.expectIdent();
         if (!TYPE_KEYWORDS.has(base))
-            throw new Error(`cleg: expected a type (egr/number/string/bool/edge/tri/quad/sel/formSel/mod), got '${base}'`);
+            throw new Error(`cleg: expected a type (egr/number/string/bool/edge/tri/quad/sel/mod), got '${base}'`);
         type = {
-            kind: base as 'egr' | 'number' | 'string' | 'bool' | 'edge' | 'tri' | 'quad' | 'sel' | 'formSel' | 'mod',
+            kind: base as 'egr' | 'number' | 'string' | 'bool' | 'edge' | 'tri' | 'quad' | 'sel' | 'mod',
         };
         if (c.isPunct('{')) {
             if (!SET_ELEM_KINDS.has(base))

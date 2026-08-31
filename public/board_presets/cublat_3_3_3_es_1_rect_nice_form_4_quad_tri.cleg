@@ -5,8 +5,8 @@ modify(
     eis("(conve edge (all quad))"),
     form(
       4,
-      mkFormSel("tri"),
-      mkFormSel("quad", "(conve quad (deg lt 6))")
+      mkSel("tri"),
+      mkSel("quad", "(conve quad (deg lt 6))")
     ),
     scale(0.75)
   ],

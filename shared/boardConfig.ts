@@ -1,10 +1,10 @@
-import type { BoardArgEntry, BoardConfig, BoardModifier, Selector, FormSelector, BoardEdge } from './types.js';
+import type { BoardArgEntry, BoardConfig, BoardModifier, Selector, BoardEdge } from './types.js';
 import type { GameConfig } from './gameConfig.js';
 // Type-only - see types.ts's own note on why this isn't a real circular runtime import.
 import type { ClegProgram } from './clegBase.js';
 import { assert, BoardArgType, boardArgNumber, boardArgList, Embedding } from './types.js';
 import { convexHullEdges } from './geometry.js';
-import { findTriangles, findQuads, zeroAdj, mergeBoards } from './topology.js';
+import { findQuads, zeroAdj, mergeBoards } from './topology.js';
 import { selectNode, selectEdge, selectTriangle, selectQuad } from './selector.js';
 // The FractalDescr/nodeEdgeMergeFlakeRec recursive core, and each "flake" shape's own static
 // *FractalDescr() builder, live in fractal.ts (see git history) - the actual BoardConfig-returning
@@ -231,17 +231,20 @@ export function edgeInducedSubgraph(bc: BoardConfig, edges: BoardEdge[]): BoardC
  * `bc` with its own w-sided lattice - a `triangularBoard(w)`-shaped lattice for a triangle, a
  * `w`-by-`w` grid for a quad - gluing new corners back to the original vertices and gluing every
  * original edge's own new boundary points together across every lattice that consumes that edge as
- * one of its own sides, regardless of whether that lattice came from a 'tri' or 'quad' FormSelector -
- * this is what makes a mixed `sels` list meaningful: a triangle and a quad sharing an edge still
- * glue seamlessly, since gluing is driven by shared ORIGINAL edges, not by matching kinds. Each
- * FormSelector names which kind to look for and an optional selector restricting which ones of that
- * kind qualify (default: every one found - see FormSelector's own doc comment, shared/selector.ts);
- * an unselected/not-looked-for triangle or quad is left untouched, as if it didn't exist. `w` is
- * shared by every FormSelector, since two lattices sharing an edge can only glue node-for-node if
- * their own boundary sequences are the same length. triangleForm/quadForm below are the
- * single-kind special cases, each just calling this with one FormSelector.
+ * one of its own sides, regardless of whether that lattice came from a triangle- or quad-typed
+ * selector - this is what makes a mixed `sels` list meaningful: a triangle and a quad sharing an
+ * edge still glue seamlessly, since gluing is driven by shared ORIGINAL edges, not by matching
+ * kinds. Each element of `sels` is itself a Selector naming which faces to look for AND restricting
+ * which ones of that kind qualify in one go (its own bottom-up-inferred `type` already says tri or
+ * quad) - pass `(all tri)`/`(all quad)` for "every one found, no restriction". Every element must be
+ * tri- or quad-typed, checked at runtime (a `type` of 'node'/'edge' throws) since nothing else
+ * constrains it structurally. An unselected/not-looked-for triangle or quad is left untouched, as if
+ * it didn't exist. `w` is shared by every selector in `sels`, since two lattices sharing an edge can only glue
+ * node-for-node if their own boundary sequences are the same length. triangleForm/quadForm below are
+ * the single-kind special cases, each just calling this with one `(all tri)`/`(all quad)`-or-`sel`
+ * selector.
  */
-export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): BoardConfig {
+export function genericForm(bc: BoardConfig, w: number, sels: Selector[]): BoardConfig {
     assert(w >= 1, `w must be at least 1, got ${w}`);
     const N = bc.N;
     const embDim = bc.emb.embDim;
@@ -265,20 +268,15 @@ export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): B
     }
 
     // New nodes' own positions/internal edges, collected face by face (a face's own global index
-    // range isn't known ahead of time, since it depends on how many triangles/quads each
-    // FormSelector selects) - merged into one pos/adj array only once every face has been processed.
+    // range isn't known ahead of time, since it depends on how many triangles/quads each selector
+    // in `sels` selects) - merged into one pos/adj array only once every face has been processed.
     const extraPos: number[][] = [];
     const extraEdges: [number, number][] = [];
     let nextIdx = N;
 
-    for (const fs of sels) {
-        if (fs.kind === 'tri') {
-            let triangles = findTriangles(bc.adj);
-            if (fs.sel !== undefined) {
-                const selectedKeys =
-                    new Set(selectTriangle(bc.adj, bc.emb.pos, fs.sel).map(t => `${t.n1},${t.n2},${t.n3}`));
-                triangles = triangles.filter(t => selectedKeys.has(`${t.n1},${t.n2},${t.n3}`));
-            }
+    for (const sel of sels) {
+        if (sel.type === 'tri') {
+            const triangles = selectTriangle(bc.adj, bc.emb.pos, sel);
             const nFace = w * (w + 1) / 2;
             const localIdx = (i: number, j: number) => i * (i + 1) / 2 + j;
             const dirs: [number, number][] = [[1, 0], [1, 1], [0, 1], [-1, 0], [-1, -1], [0, -1]];
@@ -306,13 +304,8 @@ export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): B
                 addSide(A, C, k => globalIdx(k, k));
                 addSide(B, C, k => globalIdx(w - 1, k));
             }
-        } else {
-            let quads = findQuads(bc.adj);
-            if (fs.sel !== undefined) {
-                const selectedKeys =
-                    new Set(selectQuad(bc.adj, bc.emb.pos, fs.sel).map(s => `${s.n1},${s.n2},${s.n3},${s.n4}`));
-                quads = quads.filter(s => selectedKeys.has(`${s.n1},${s.n2},${s.n3},${s.n4}`));
-            }
+        } else if (sel.type === 'quad') {
+            const quads = selectQuad(bc.adj, bc.emb.pos, sel);
             const nFace = w * w;
             const localIdx = (i: number, j: number) => i * w + j;
             const dirs: [number, number][] = [[0, 1], [1, 0], [0, -1], [-1, 0]];
@@ -350,6 +343,8 @@ export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): B
                 addSide(C, D, k => globalIdx(w - 1, w - 1 - k));
                 addSide(D, A, k => globalIdx(w - 1 - k, 0));
             }
+        } else {
+            throw new Error(`genericForm: each selector in sels must be a triangle or quad selector, got a ${sel.type} selector`);
         }
     }
 
@@ -390,7 +385,7 @@ export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): B
  * by/glued to a selected triangle's new subdivided boundary).
  */
 export function triangleForm(bc: BoardConfig, w: number, sel?: Selector): BoardConfig {
-    return genericForm(bc, w, [{ kind: 'tri', sel }]);
+    return genericForm(bc, w, [sel ?? { op: 'all', type: 'tri' }]);
 }
 
 /**
@@ -402,7 +397,7 @@ export function triangleForm(bc: BoardConfig, w: number, sel?: Selector): BoardC
  * have been consumed by/glued to a selected quad's new subdivided boundary).
  */
 export function quadForm(bc: BoardConfig, w: number, sel?: Selector): BoardConfig {
-    return genericForm(bc, w, [{ kind: 'quad', sel }]);
+    return genericForm(bc, w, [sel ?? { op: 'all', type: 'quad' }]);
 }
 
 /**

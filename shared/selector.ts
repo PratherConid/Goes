@@ -1,6 +1,6 @@
 import {
     type BoardEdge, makeBoardEdge, type BoardTriangle, type BoardQuad,
-    type Selector, type FormSelector, type SelectorType,
+    type Selector, type SelectorType,
 } from './types.js';
 import { findTriangles, findQuads } from './topology.js';
 
@@ -128,12 +128,12 @@ function nextNonnegNumber(c: ParseCursor, context: string): number {
 }
 
 // Display name for `type` used in parseSelExpr's own rejection messages - 'tri' reads as
-// "triangle" there (unlike describeSelectorType's "a tri" below, used by the select*() evaluators'
-// own wrong-kind-selector messages, and by parseTopLevel/parseFormSelExpr's own).
+// "triangle" there (unlike describeSelectorType's "a tri" below, used by parseTopLevel's own and
+// each evaluator's own wrong-kind-selector messages).
 const selectorKindName: Record<SelectorType, string> = { node: 'node', edge: 'edge', tri: 'triangle', quad: 'quad' };
 
-// "a node"/"an edge"/"a tri"/"a quad" - shared by parseTopLevel/parseFormSelExpr's own
-// wrong-result-kind messages below, and by each evaluator's own wrong-kind error message further down.
+// "a node"/"an edge"/"a tri"/"a quad" - shared by parseTopLevel's own wrong-result-kind message
+// below, and by each evaluator's own wrong-kind error message further down.
 function describeSelectorType(type: SelectorType): string {
     return `${type === 'edge' ? 'an' : 'a'} ${type}`;
 }
@@ -317,50 +317,6 @@ export function formatSelector(sel: Selector): string {
             // programmatically, never round-tripped through source text.
             throw new Error(`selector: 'raw' has no text representation`);
     }
-}
-
-// Parses one `(tri [SEL])` / `(quad [SEL])` - mirrors parseSelExpr's own "consume '(', read a
-// leading token, dispatch" shape, but there's no mutual recursion here: a FormSelector's own SEL
-// is parsed via the ordinary parseSelExpr, not another parseFormSelExpr.
-function parseFormSelExpr(c: ParseCursor): FormSelector {
-    c.expect('(');
-    const kind = c.next();
-    if (kind !== 'tri' && kind !== 'quad')
-        throw new Error(`form selector: expected 'tri' or 'quad', got '${kind}'`);
-    if (c.peek() === ')') { c.next(); return { kind }; }
-    const sel = parseSelExpr(c);
-    c.expect(')');
-    if (sel.type !== kind)
-        throw new Error(`form selector: expected ${describeSelectorType(kind)} selector, got ${describeSelectorType(sel.type)} selector (op '${sel.op}')`);
-    return { kind, sel };
-}
-
-/**
- * Parses `s` as zero or more back-to-back form selectors (`(tri [SEL])` / `(quad [SEL])`, see
- * FormSelector's own doc comment) - unlike parseNodeSelector/parseEdgeSelector/etc. above, which
- * each parse exactly one SEL and reject any leftover input, this keeps parsing form selectors until
- * the input is exhausted (an empty/whitespace-only `s` yields an empty list). Used by
- * shared/boardConfig.ts's parseModifier for the `form` modifier's own trailing form-selector list.
- */
-export function parseFormSelectors(s: string): FormSelector[] {
-    const tokens = tokenize(s);
-    const c = new ParseCursor(tokens);
-    const out: FormSelector[] = [];
-    while (!c.atEnd()) out.push(parseFormSelExpr(c));
-    return out;
-}
-
-/** Formats one FormSelector back into the `(tri [SEL])` / `(quad [SEL])` syntax parseFormSelectors()
- * accepts - the inverse of parsing. */
-export function formatFormSelector(fs: FormSelector): string {
-    return fs.sel === undefined ? `(${fs.kind})` : `(${fs.kind} ${formatSelector(fs.sel)})`;
-}
-
-/** Formats a whole FormSelector[] back into the space-separated syntax parseFormSelectors() accepts -
- * used e.g. to round-trip a BoardModifier's own `sels` back into command-line text for display (see
- * src/sidePanel.ts's fmtModifiers). */
-export function formatFormSelectors(fss: FormSelector[]): string {
-    return fss.map(formatFormSelector).join(' ');
 }
 
 // ── evaluation ───────────────────────────────────────────────────────────────
