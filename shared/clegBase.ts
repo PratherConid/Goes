@@ -1,111 +1,139 @@
 /**
  * CLEG - "Construction Language for Embedded Graphs": a small typed language for describing
  * boards, built on top of shared/boardConfig.ts's own board-construction functions. This is the
- * first, deliberately minimal version. Every BoardModifier kind except `Prod`/`Repeat` (handled
- * elsewhere) now has its own builtin - all of them (`nis`, `eis`, `rectify`, `edgeSplit`,
- * `mergeClose`, `triangleForm`, `quadForm`, `form`, `globalCentralize`, `quadOctarize`, `scale`)
- * BUILD a `mod` value (see that type's own doc comment below) rather than applying it to a board
- * immediately - there is no cleg builtin yet that takes a `mod` and an `egr` and applies one to the
- * other. The language has two C++-style loop constructs - `for` (see ForStmt below) and a plain
- * pretest `while` (see WhileStmt below, equivalent to a `for` with empty init/update clauses) - each
- * with its own `break`/`continue` (BreakStmt/ContinueStmt, rejected by checkStmt outside a loop) -
- * recursion is otherwise still the only other way to repeat anything. An array value's elements can
- * now be read back out via indexing (`arr[i]`, IndexExpr below) - a postfix operator, binding tighter
- * than unary `-`/`!` (so `arr[i][j]`/`f()[0]`/`-arr[0]` all parse as expected) - `arr` must be
- * array-typed (never set-typed - sets are unordered, so indexing one has no defined meaning) and `i`
- * a `number`, checked to be a nonnegative in-bounds integer at evaluation time (not statically
- * knowable). An AssignStmt's own left-hand side may now carry zero or more of these same `[...]`
- * indices (`arr[i] = x;`, `arr[i][j] = x;`, ... - see AssignStmt's own doc comment), mutating one
- * element of an already-declared array IN PLACE rather than rebinding `arr` itself to a whole new
- * value (checkStmt's own AssignStmt case walks one `array` level per index, requiring `name`'s own
- * declared type to be nested at least that deep). Arrays are VALUE types, not references, despite
- * this in-place mutation - assigning an array to another variable, or passing one as a function
- * argument, always copies it first (cloneArrayValue, called at every VarDecl init / whole-value
- * AssignStmt / function-argument binding site), so `b = a; b[0] = 9;` can never affect `a` even
- * though nothing in cleg's own AST distinguishes "the same array" from "an equal-looking copy" -
- * this is the one place evaluation performs a defensive copy that TS's own object-reference
- * semantics wouldn't otherwise need, mirroring this language's own "deliberately C++-like" design
- * brief (std::vector-style containers, not shared references). A function
- * can now also be passed around as a value - a monomorphic (fully concrete, no type variables/
- * generics) function-pointer type, `(T1, T2, ...) -> R` (FUNCTYPE, ClegType's own 'func' variant),
- * usable anywhere a TYPE is (a param, a VARDECL, a return type, even another FUNCTYPE's own param/
- * return for a higher-order function). A bare reference to one of `program`'s own top-level
+ * first, deliberately minimal version, with a "deliberately C++-like" design brief throughout
+ * (std::vector-style value containers rather than shared references, C++-style loops/precedence,
+ * ...) - see each section below for where that shows up concretely.
+ *
+ * ## File layout
+ *
+ * The language is implemented across four files, in dependency order:
+ *   - shared/clegBase.ts (this file) - the data-structure declarations shared by all three below:
+ *     ClegType/ClegValue and their small set of pure operations, the binary-operator overload
+ *     table, and the AST node types.
+ *   - shared/clegParser.ts - the lexer, recursive-descent parser (source text -> AST), and the
+ *     unparser (AST -> source text, the inverse).
+ *   - shared/clegCheck.ts - the static type checker (typecheckCleg and friends).
+ *   - shared/clegEval.ts - the builtin-function table (BUILTIN_FUNCTIONS) and the tree-walking
+ *     evaluator, plus the runCleg/buildBoardFromCleg-style entry points.
+ *
+ * ## Control flow
+ *
+ * The language has two C++-style loop constructs - `for` (see ForStmt below) and a plain pretest
+ * `while` (see WhileStmt below, equivalent to a `for` with empty init/update clauses) - each with
+ * its own `break`/`continue` (BreakStmt/ContinueStmt, rejected outside a loop by shared/clegCheck.ts's
+ * own checkStmt) - recursion is otherwise still the only other way to repeat anything. Since
+ * comparison operators produce `bool` (see "Operators" below), `if`/`for` conditions are not limited
+ * to bare literals - `if (x < 10) { ... }` works exactly as it looks.
+ *
+ * ## Arrays
+ *
+ * An array value's elements can be read back out via indexing (`arr[i]`, IndexExpr below) - a
+ * postfix operator, binding tighter than unary `-`/`!` (so `arr[i][j]`/`f()[0]`/`-arr[0]` all parse
+ * as expected) - `arr` must be array-typed (never set-typed - sets are unordered, so indexing one has
+ * no defined meaning) and `i` a `number`, checked to be a nonnegative in-bounds integer at evaluation
+ * time (not statically knowable). An AssignStmt's own left-hand side may carry zero or more of these
+ * same `[...]` indices (`arr[i] = x;`, `arr[i][j] = x;`, ... - see AssignStmt's own doc comment),
+ * mutating one element of an already-declared array IN PLACE rather than rebinding `arr` itself to a
+ * whole new value (shared/clegCheck.ts's own checkStmt AssignStmt case walks one `array` level per
+ * index, requiring `name`'s own declared type to be nested at least that deep).
+ *
+ * Arrays are VALUE types, not references, despite this in-place mutation - assigning an array to
+ * another variable, or passing one as a function argument, always copies it first
+ * (shared/clegEval.ts's own cloneArrayValue, called at every VarDecl init / whole-value AssignStmt /
+ * function-argument binding site), so `b = a; b[0] = 9;` can never affect `a` even though nothing in
+ * cleg's own AST distinguishes "the same array" from "an equal-looking copy" - this is the one place
+ * evaluation performs a defensive copy that TS's own object-reference semantics wouldn't otherwise
+ * need, mirroring this language's own design brief.
+ *
+ * ## Functions as values
+ *
+ * A function can be passed around as a value - a monomorphic (fully concrete, no type
+ * variables/generics) function-pointer type, `(T1, T2, ...) -> R` (FUNCTYPE, ClegType's own 'func'
+ * variant), usable anywhere a TYPE is (a param, a VARDECL, a return type, even another FUNCTYPE's own
+ * param/return for a higher-order function). A bare reference to one of `program`'s own top-level
  * functions by name (not immediately followed by `(`, which would instead call it directly) IS a
  * value of this type - the whole mechanism riding entirely on Identifier/CallExpr's EXISTING
- * resolution logic (see checkExpr/evalExpr's own cases) rather than needing new AST nodes: passing
- * `cmp` where a `(number, number) -> bool` is expected, then later calling `cmp(a, b)` inside that
- * function's own body, both already worked once Identifier could resolve to a function and CallExpr
- * could dispatch through a local variable of func type. Only a cleg-declared function can be
- * referenced this way - a builtin can't, since BUILTIN_FUNCTIONS' own checkCall/call pair has no
- * single static signature for the generic/overloaded ones (`+`, `len`, ...) to describe as a `func`
- * ClegType. A bare Identifier reference to a top-level function names it by itself - see
- * ClegValue's own 'func' variant - there is no way to construct a `func` value from an arbitrary
- * expression, only to name an existing top-level function, either directly or (below) partially
- * applied. A trailing `[]` on a bare FUNCTYPE binds to its return type, not
- * the whole thing (`(number) -> bool[]` is a function returning `bool[]`) - wrapping it in an extra
- * pair of parens first (`((number) -> bool)[]`, parseType's own grouping alternative for a func type
+ * resolution logic (see shared/clegCheck.ts's checkExpr and shared/clegEval.ts's evalExpr, their own
+ * cases) rather than needing new AST nodes: passing `cmp` where a `(number, number) -> bool` is
+ * expected, then later calling `cmp(a, b)` inside that function's own body, both already worked once
+ * Identifier could resolve to a function and CallExpr could dispatch through a local variable of func
+ * type.
+ *
+ * Only a cleg-declared function can be referenced this way - a builtin can't, since BUILTIN_FUNCTIONS'
+ * own checkCall/call pair (shared/clegEval.ts) has no single static signature for the
+ * generic/overloaded ones (`+`, `len`, ...) to describe as a `func` ClegType. A bare Identifier
+ * reference to a top-level function names it by itself - see ClegValue's own 'func' variant - there
+ * is no way to construct a `func` value from an arbitrary expression, only to name an existing
+ * top-level function, either directly or (see "Partial application" below) partially applied.
+ *
+ * A trailing `[]` on a bare FUNCTYPE binds to its return type, not the whole thing (`(number) ->
+ * bool[]` is a function returning `bool[]`) - wrapping it in an extra pair of parens first
+ * (`((number) -> bool)[]`, shared/clegParser.ts's own parseType grouping alternative for a func type
  * specifically, see parseParenType) makes the array apply to the func type as a whole instead, an
  * array of comparator-shaped functions (a func type can never have a `{}` set suffix either way - it
- * isn't one of SET_ELEM_KINDS, same as `egr`). cleg now has a limited form of closure: writing `#`
- * (HoleExpr) in place of one or more of a CALL's own arguments - `f(a, #, b)` - is a PARTIAL
- * APPLICATION rather than an ordinary call, producing a `func` value that closes over the non-`#`
- * arguments (each evaluated once, right there) and expects only the `#` positions' own values later,
- * interleaved back into their original slots (see CallExpr's own doc comment, and ClegValue's own
- * 'func'/`boundArgs` for the representation). This is deliberately narrow, not general
- * closures-over-arbitrary-expressions: `f` must be either a bare reference to one of `program`'s own
- * top-level functions, or an existing local variable already holding a `func` value (itself a plain
- * pointer or an already-partial closure - further-applying it narrows its own remaining open
- * positions, rather than starting over) - never a builtin (most have no single fixed signature to
- * close over). There is still no way to construct a `bool` value from a literal
- * other than `true`/`false` - see the design notes scattered through this file (each marked "Simplification:")
- * for what's deliberately left out for now and would need revisiting to grow the language further.
- * The five arithmetic operators (`+ - * / %`), six comparison operators (`== != < > <= >=`), and two
- * logical operators (`&& ||`, both short-circuiting - see evalExpr's own BinaryExpr case) are
- * supported, with `()` for grouping/precedence; each is
- * resolved against a small overload table (BINARY_OPERATOR_OVERLOADS below) rather than being
- * hardcoded to one signature, so operators can be polymorphic - `+` currently has five overloads
- * (`number, number -> number`; string concatenation, `string, string -> string`; number/string
- * concatenation, `number, string -> string` and `string, number -> string`, converting the number
- * operand to a string - see stringConcatOverload/numberStringConcatOverload; array concatenation,
- * `T[], T[] -> T[]`; set union, `T{}, T{} -> T{}`, see below), `-` has two (`number, number ->
- * number` and set difference), `*` has four
- * (`number, number -> number`; set intersection; array/string replication, `T[], number -> T[]` and
- * `string, number -> string`, each also accepted with the two operands swapped - `n` must be a
- * nonnegative integer, checked at evaluation time since it isn't knowable from `number`'s type alone
- * - see repeatArrayOverload/repeatStringOverload), `/ %` currently have only the one `number,
- * number -> number` overload each, and each comparison operator has two (`number, number -> bool`
- * and `bool, bool -> bool`, the latter via C++'s own false=0/true=1 convention, e.g. `false < true`
- * is `true` - see toComparable/comparisonOverload).
- * Besides the per-prescribed-board functions and `prod` (shared/boardConfig.ts's own product() -
- * the graph/tensor product of two `egr`s, fixed-signature like `mkEdge`/`mkTri`/`mkQuad` below),
- * there's also a small set of generic built-ins whose result type depends on their actual argument
- * types rather than one fixed signature (BUILTIN_FUNCTIONS below covers both kinds under one
- * interface) - `len` (an array's or set's length, as a `number`), `has(x, e)` (whether `x`, a `T[]`
- * or `T{}`, contains `e` - `T` restricted to SET_ELEM_KINDS, the same equality-bearing types a set's
- * own elements are already restricted to, since nothing else in the language has a defined equality -
- * see hasCheckCall below), `randRmN`/`randRmP` (a set with
- * elements removed uniformly at random, by count or by portion, mirroring shared/selector.ts's own
- * `(rrmn <num> SEL)`/`(rrmp <num> SEL)`), and `nis`/`eis`/`triangleForm`/`quadForm`/`mkFormSel`
- * (each accepts a `sel`, a `string`, or a `set` of the matching element type, resolved via their one
- * shared resolveSelectorArg). `selectNode`/`selectEdge`/`selectTriangle`/`selectQuad` (X, bc)
- * similarly each accept a `sel`, `string`, or `set`, but evaluate it immediately against a real
- * board `bc` (an `egr`) and return the exact set of nodes/edges/triangles/quads selected -
- * `number{}`/`edge{}`/`tri{}`/`quad{}` respectively -
- * rather than building something to apply later. One builtin per kind rather than a single
- * overloaded name, since a `sel` value's own actual kind (see below) is only known at evaluation
- * time, never from its ClegType alone - there would be no way for checkCall to know which of the
- * four set types a single `select(X, bc)` should statically return.
+ * isn't one of SET_ELEM_KINDS, same as `egr`).
  *
- * Three more basic types mirror shared/types.ts's own board primitives: `edge`, `tri`, and `quad`
+ * ## Partial application
+ *
+ * cleg has a limited form of closure: writing `#` (HoleExpr) in place of one or more of a CALL's own
+ * arguments - `f(a, #, b)` - is a PARTIAL APPLICATION rather than an ordinary call, producing a `func`
+ * value that closes over the non-`#` arguments (each evaluated once, right there) and expects only
+ * the `#` positions' own values later, interleaved back into their original slots (see CallExpr's own
+ * doc comment, and ClegValue's own 'func'/`boundArgs` for the representation).
+ *
+ * This is deliberately narrow, not general closures-over-arbitrary-expressions: `f` must be either a
+ * bare reference to one of `program`'s own top-level functions, or an existing local variable already
+ * holding a `func` value (itself a plain pointer or an already-partial closure - further-applying it
+ * narrows its own remaining open positions, rather than starting over) - never a builtin (most have no
+ * single fixed signature to close over).
+ *
+ * There is still no way to construct a `bool` value from a literal other than `true`/`false` - see the
+ * design notes scattered through this file (each marked "Simplification:") for what's deliberately
+ * left out for now and would need revisiting to grow the language further.
+ *
+ * ## Operators
+ *
+ * The five arithmetic operators (`+ - * / %`), six comparison operators (`== != < > <= >=`), and two
+ * logical operators (`&& ||`, both short-circuiting - see shared/clegEval.ts's own evalExpr BinaryExpr
+ * case) are supported, with `()` for grouping/precedence. Each is resolved against a small overload
+ * table (BINARY_OPERATOR_OVERLOADS below) rather than being hardcoded to one signature, so operators
+ * can be polymorphic:
+ *   - `+` has five overloads: `number, number -> number`; string concatenation, `string, string ->
+ *     string`; number/string concatenation, `number, string -> string` and `string, number -> string`,
+ *     converting the number operand to a string (see stringConcatOverload/numberStringConcatOverload);
+ *     array concatenation, `T[], T[] -> T[]`; set union, `T{}, T{} -> T{}`.
+ *   - `-` has two: `number, number -> number` and set difference.
+ *   - `*` has four: `number, number -> number`; set intersection; array/string replication, `T[],
+ *     number -> T[]` and `string, number -> string`, each also accepted with the two operands swapped
+ *     - `n` must be a nonnegative integer, checked at evaluation time since it isn't knowable from
+ *     `number`'s type alone (see repeatArrayOverload/repeatStringOverload).
+ *   - `/` and `%` each have only the one `number, number -> number` overload.
+ *   - Each comparison operator has two: `number, number -> bool` and `bool, bool -> bool`, the latter
+ *     via C++'s own false=0/true=1 convention, e.g. `false < true` is `true` (see
+ *     toComparable/comparisonOverload).
+ *
+ * `//` line comments are supported. Precedence follows standard C++ rules - `||` loosest, then `&&`,
+ * then `== !=`, then `< > <= >=`, then `+ -`, then `* / %` tightest, unary `-`/`!` tighter still,
+ * postfix `[]` indexing tighter still - all left-associative, `()` overrides precedence. `&&`/`||`
+ * short-circuit exactly like C++/JS (the right operand is only evaluated if the left doesn't already
+ * determine the result) - relevant since a right operand can have visible effects (e.g.
+ * `randRmN`/`randRmP`'s RNG draw). Besides operators, the only other way to combine or inspect values
+ * is by calling a function (either a builtin, see BUILTIN_FUNCTIONS in shared/clegEval.ts, or another
+ * cleg function).
+ *
+ * ## Types
+ *
+ * Three basic types mirror shared/types.ts's own board primitives: `edge`, `tri`, and `quad`
  * (wrapping a BoardEdge/BoardTriangle/BoardQuad respectively), built via the `mkEdge(n1, n2)`,
  * `mkTri(n1, n2, n3)`, `mkQuad(n1, n2, n3, n4)` builtins. `mkTri`/`mkQuad` canonicalize their
  * arguments the same way shared/types.ts's own makeBoardTriangle/makeBoardQuad do (`mkQuad`'s
  * arguments must already be in cycle order, exactly like makeBoardQuad's own) - there is no way yet
  * to read `n1`/`n2`/etc. back out of one of these values (no field access of any kind exists), so
- * for now they're only useful as opaque values to pass to a future selector/modifier API.
+ * for now they're only useful as opaque values to pass to a selector/modifier builtin.
  *
- * A second type constructor, `{}` (set), pairs with `[]` (array) - `number{}` is a set of numbers.
- * Unlike `[]`, `{}` may only directly follow one of `number`/`string`/`bool`/`edge`/`tri`/`quad` (see
+ * A type constructor, `{}` (set), pairs with `[]` (array) - `number{}` is a set of numbers. Unlike
+ * `[]`, `{}` may only directly follow one of `number`/`string`/`bool`/`edge`/`tri`/`quad` (see
  * SET_ELEM_KINDS) - sets of `egr`, sets of sets, and sets of arrays are all rejected, the first two
  * as a parse error (the grammar has no production for them) and the third (e.g. a set literal mixing
  * in an array-typed element) at typecheck time. An array of sets (`number{}[]`) is fine - only a
@@ -115,16 +143,16 @@
  * One more basic type, `sel`, wraps a real shared/types.ts Selector - built via `mkSel(kind, X)`,
  * where `kind` is `"node"`/`"edge"`/`"tri"`/`"quad"` and `X` is either a `string`, parsed exactly as
  * shared/selector.ts's own grammar/semantics define (see that file's own top comment) via whichever
- * of its four real parse*Selector functions matches `kind` (see SELECTOR_PARSERS below), or a `set`
- * of the ClegType matching `kind` (see SELECTOR_SET_ELEM_KIND), wrapped directly into a `raw`
- * Selector with no parsing at all. `sel` itself carries no kind at the type level - `kind` is an
- * ordinary runtime string argument, not something the type checker can see ahead of a call - so two
- * `sel`-typed locals can hold selectors of two different actual kinds; ClegValue's own 'sel' variant
- * carries the real kind (`selType`) once a value actually exists. There is no selector literal
- * syntax and (like `edge`/`tri`/`quad`) no way to read a `sel` value's contents back out - it's
- * passed straight through to whichever consuming builtin's own selector-shaped argument resolves it
- * (`nis`/`eis`/`triangleForm`/`quadForm`/`mkFormSel` - see resolveSelectorArg below, their one shared
- * "sel, string, or set" resolution).
+ * of its four real parse*Selector functions matches `kind` (see SELECTOR_PARSERS in
+ * shared/clegEval.ts), or a `set` of the ClegType matching `kind` (see SELECTOR_SET_ELEM_KIND),
+ * wrapped directly into a `raw` Selector with no parsing at all. `sel` itself carries no kind at the
+ * type level - `kind` is an ordinary runtime string argument, not something the type checker can see
+ * ahead of a call - so two `sel`-typed locals can hold selectors of two different actual kinds;
+ * ClegValue's own 'sel' variant carries the real kind (`selType`) once a value actually exists. There
+ * is no selector literal syntax and (like `edge`/`tri`/`quad`) no way to read a `sel` value's contents
+ * back out - it's passed straight through to whichever consuming builtin's own selector-shaped
+ * argument resolves it (`nis`/`eis`/`triangleForm`/`quadForm`/`mkFormSel` - see resolveSelectorArg in
+ * shared/clegEval.ts, their one shared "sel, string, or set" resolution).
  *
  * Two more basic types round out the board-modifier builtins: `formSel` wraps a real
  * shared/types.ts FormSelector (`(tri [SEL])`/`(quad [SEL])`, see that type's own doc comment) -
@@ -132,23 +160,55 @@
  * `"tri"`/`"quad"`; `selArg`, like `triangleForm`/`quadForm`'s own, is optional - a `sel` or
  * `string`, resolved the same way, restricting which tri/quads qualify, default every one found).
  * `mod` wraps a real shared/types.ts BoardModifier - one flat type covering every kind (`Rectify`,
- * `EdgeSplit`, `TriangleForm`, `Form`, ...), built by whichever of the constructor builtins listed
- * two paragraphs up matches. Both are opaque the same way `sel`/`edge`/`tri`/`quad` are - no literal
- * syntax, no way to read fields back out.
+ * `EdgeSplit`, `TriangleForm`, `Form`, ...), built by whichever of the modifier-constructor builtins
+ * below matches. Both are opaque the same way `sel`/`edge`/`tri`/`quad` are - no literal syntax, no
+ * way to read fields back out.
+ *
+ * ## Builtins
+ *
+ * Besides the per-prescribed-board functions and `prod` (shared/boardConfig.ts's own product() - the
+ * graph/tensor product of two `egr`s, fixed-signature like `mkEdge`/`mkTri`/`mkQuad` above), there's
+ * also a small set of generic built-ins whose result type depends on their actual argument types
+ * rather than one fixed signature (BUILTIN_FUNCTIONS in shared/clegEval.ts covers both kinds under one
+ * interface):
+ *   - `len` - an array's or set's length, as a `number`.
+ *   - `has(x, e)` - whether `x`, a `T[]` or `T{}`, contains `e` - `T` restricted to SET_ELEM_KINDS, the
+ *     same equality-bearing types a set's own elements are already restricted to, since nothing else
+ *     in the language has a defined equality (see hasCheckCall in shared/clegEval.ts).
+ *   - `randRmN`/`randRmP` - a set with elements removed uniformly at random, by count or by portion,
+ *     mirroring shared/selector.ts's own `(rrmn <num> SEL)`/`(rrmp <num> SEL)`.
+ *
+ * Every BoardModifier kind except `Prod`/`Repeat` (handled elsewhere) has its own constructor
+ * builtin - `nis`, `eis`, `rectify`, `edgeSplit`, `mergeClose`, `triangleForm`, `quadForm`, `form`,
+ * `globalCentralize`, `quadOctarize`, `scale` - each of which BUILDS a `mod` value (see "Types" above)
+ * rather than applying it to a board immediately; `modify(mods, bc)` is the one builtin that actually
+ * applies a whole `mod[]` list, in order, to a board (shared/boardConfig.ts's own applyModifiers()).
+ * `nis`/`eis`/`triangleForm`/`quadForm`/`mkFormSel` each accept a `sel`, a `string`, or a `set` of the
+ * matching element type, resolved via their one shared resolveSelectorArg.
+ *
+ * `selectNode`/`selectEdge`/`selectTriangle`/`selectQuad` (X, bc) similarly each accept a `sel`,
+ * `string`, or `set`, but evaluate it immediately against a real board `bc` (an `egr`) and return the
+ * exact set of nodes/edges/triangles/quads selected - `number{}`/`edge{}`/`tri{}`/`quad{}`
+ * respectively - rather than building something to apply later. One builtin per kind rather than a
+ * single overloaded name, since a `sel` value's own actual kind is only known at evaluation time,
+ * never from its ClegType alone - there would be no way for checkCall to know which of the four set
+ * types a single `select(X, bc)` should statically return.
+ *
+ * ## Program structure
  *
  * A cleg program is a sequence of top-level items: function declarations, and TOPSTMTs (a VARDECL,
  * an ASSIGNSTMT, or a bare EXPRSTMT) - there is no `main` and no other designated entry-point
  * function. Every function must declare its own return type and always returns a value via `return
- * EXPR;` (there is no `void`). runCleg() runs every top-level TOPSTMT in order (function
- * declarations aren't executed, just collected - order-independent, see ClegProgram's own doc
- * comment), sharing one flat scope across all of them (so a VARDECL near the top of the program is
+ * EXPR;` (there is no `void`). runCleg() (shared/clegEval.ts) runs every top-level TOPSTMT in order
+ * (function declarations aren't executed, just collected - order-independent, see ClegProgram's own
+ * doc comment), sharing one flat scope across all of them (so a VARDECL near the top of the program is
  * visible to every TOPSTMT after it) - but that scope is entirely separate from every function's own
  * (cleg has no closures at all: a function body only ever sees its own parameters, never any
  * top-level variable), and returns whatever the LAST one (which must itself be an EXPRSTMT) evaluated
  * to - the only way a cleg program produces an overall value, and (since there's no `main` to hand
  * external input to as parameters) also currently the only thing a cleg program actually "does".
  *
- * Concrete syntax (deliberately C++-like, per this language's own design brief):
+ * ## Grammar
  *
  *   TYPE       := (BASETYPE ('{' '}')? | FUNCTYPE | '(' FUNCTYPE ')') ('[' ']')*
  *   BASETYPE   := 'egr' | 'number' | 'string' | 'bool' | 'edge' | 'tri' | 'quad'
@@ -188,33 +248,13 @@
  *   CALL       := IDENT '(' (CALLARG (',' CALLARG)*)? ')'
  *   CALLARG    := EXPR | '#'
  *
- * `//` line comments are supported. Besides the thirteen (possibly overloaded, see
- * BINARY_OPERATOR_OVERLOADS above) arithmetic/comparison/logical operators plus unary `!` (standard
- * C++ precedence - `||` loosest, then `&&`, then `== !=`, then `< > <= >=`, then `+ -`, then `* / %`
- * tightest, unary `-`/`!` tighter still, postfix `[]` indexing tighter still - all left-associative,
- * `()` overrides precedence), the only other way to combine or inspect values is by calling a
- * function (either a builtin, see BUILTIN_FUNCTIONS below, or another cleg function). Since
- * comparison operators now produce `bool`, `if`/`for`
- * conditions are no longer limited to bare literals - `if (x < 10) { ... }` works exactly as it
- * looks, and `&&`/`||` short-circuit exactly like C++/JS (the right operand is only evaluated if the
- * left doesn't already determine the result) - relevant since a right operand can have visible
- * effects (e.g. `randRmN`/`randRmP`'s RNG draw).
+ * ## Example
  *
- * Example - the program's own value is whatever its last top-level statement evaluates to:
+ * A program's own value is whatever its last top-level statement evaluates to:
  *   egr helper() {
  *       return mengerB(3, 3, "0011");
  *   }
  *   helper();
- *
- * This language is split across four files, in dependency order:
- *   - shared/clegBase.ts (this file) - the data-structure declarations shared by all three below:
- *     ClegType/ClegValue and their small set of pure operations, the binary-operator overload
- *     table, and the AST node types.
- *   - shared/clegParser.ts - the lexer, recursive-descent parser (source text -> AST), and the
- *     unparser (AST -> source text, the inverse).
- *   - shared/clegCheck.ts - the static type checker (typecheckCleg and friends).
- *   - shared/clegEval.ts - the builtin-function table (BUILTIN_FUNCTIONS) and the tree-walking
- *     evaluator, plus the runCleg/buildBoardFromCleg-style entry points.
  */
 
 import {
