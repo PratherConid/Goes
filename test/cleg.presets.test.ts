@@ -76,6 +76,7 @@ const BOARD_PRESET_GOLDEN: Record<string, { N: number; edges: number }> = {
     'roundTable_9.5_5_3_2.cleg': { N: 457, edges: 884 },
     'shell_6_7.5.cleg': { N: 896, edges: 1830 },
     'sier_3_5.cleg': { N: 514, edges: 1536 },
+    'snubsqtri_4_4_4.cleg': { N: 286, edges: 645 },
     'star_5_es_6_prod_line_5.cleg': { N: 155, edges: 274 },
     'tri_4_fractaldrop_3_0.05.cleg': { N: 275, edges: 689 },
     'twsqCluster4D_4_4_2.cleg': { N: 960, edges: 1408 },

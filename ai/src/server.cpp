@@ -6,7 +6,7 @@
 //
 // POST /move - JSON body fields:
 //   config            object with game configuration:
-//     boardType         "rect"|"rectd"|"cublat"|"hcub"|"tri"|"trihex"|"hex"|"hexdel"|"snubsq"|"snubsqtri"|"twsq"|"gtsq"
+//     boardType         "rect"|"rectd"|"cublat"|"hcub"|"tri"|"trihex"|"hex"|"hexdel"|"snubsq"|"twsq"|"gtsq"
 //     boardArgs         [{kind:"Number",value}|{kind:"CommaSeparatedNumbers"|"ZeroOneList",values}, ...]
 //                       one entry per positional dimension arg the board type expects - see
 //                       shared/boardConfig.ts's BoardArgEntry

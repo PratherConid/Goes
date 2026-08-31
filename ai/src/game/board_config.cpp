@@ -1109,52 +1109,41 @@ tilted_disconnected_square_board(int w, int h, int g, int gap) {
     return {std::move(pos), std::move(adj), std::move(inter_conn)};
 }
 
-BoardConfig snub_square_board(int w, int h, int g) {
-    assert(w > 0 && h > 0 && g > 0 && "w, h, and g must be positive");
+BoardConfig snub_square_board(int w, int h) {
+    assert(w > 0 && h > 0 && "w and h must be positive");
     // Same 45deg-integer-rotation embedding as tilted_disconnected_square_board (gap=0, i.e. the
     // glue_twisted_square_board case) - embed coordinates must be integers, unlike
     // shared/boardConfig.ts's own literal +-30-degree floating-point layout.
-    const unsigned sq_width = (g - 1) * 2;
     std::vector<std::vector<unsigned>> pos;
     for (int rb = 0; rb < h; rb++)
         for (int cb = 0; cb < w; cb++) {
-            unsigned bx = cb * sq_width;
-            unsigned by = rb * sq_width;
-            for (unsigned r = 0; r < g; r++)
-                for (unsigned c = 0; c < g; c++)
-                    pos.push_back({bx + c + (g - 1 - r), by + c + r});
+            unsigned bx = cb * 2, by = rb * 2;
+            pos.push_back({bx + 1, by});     // NW
+            pos.push_back({bx + 2, by + 1}); // NE
+            pos.push_back({bx,     by + 1}); // SW
+            pos.push_back({bx + 1, by + 2}); // SE
         }
-    int N = w * h * g * g;
+    int N = w * h * 4;
     auto adj = zero_adj(N);
-    auto b_idx = [&](int rb, int cb) { return (rb*w + cb)*g*g; };
-    const int dirs[4][2] = {{0,1},{1,0},{0,-1},{-1,0}};
+    auto b_idx = [&](int rb, int cb) { return (rb*w + cb)*4; };
 
-    // Edges within each square (ordinary rectangular grid)
+    // Each cell's own 4-cycle (a genuine quad face - no diagonal edges). 0=NW 1=NE 2=SW 3=SE,
+    // matching the position order pushed above and shared/boardConfig.ts's cornerIdx.
+    const int sides[4][2] = {{0,1},{0,2},{1,3},{2,3}};
     for (int rb = 0; rb < h; rb++)
         for (int cb = 0; cb < w; cb++) {
             int b = b_idx(rb, cb);
-            for (int r = 0; r < g; r++)
-                for (int c = 0; c < g; c++)
-                    for (auto& d : dirs) {
-                        int nr = r+d[0], nc = c+d[1];
-                        if (nr>=0 && nr<g && nc>=0 && nc<g)
-                            adj[b+r*g+c][b+nr*g+nc] = 1;
-                    }
+            for (auto& s : sides) {
+                adj[b+s[0]][b+s[1]] = 1;
+                adj[b+s[1]][b+s[0]] = 1;
+            }
         }
 
-    // Corner (r,c) offsets: 0=NW 1=NE 2=SW 3=SE - matches shared/boardConfig.ts's cornerRC.
-    auto corner = [&](int which) -> std::pair<int,int> {
-        switch (which) {
-            case 0: return {0, 0};
-            case 1: return {0, g-1};
-            case 2: return {g-1, 0};
-            default: return {g-1, g-1};
-        }
-    };
     // glue/tri corner indices per self-cell checkerboard parity and direction (H: dr=0,dc=1;
-    // V: dr=1,dc=0) - mirrors shared/boardConfig.ts's snubSquareBoard CONN table: each
-    // orthogonal neighbor shares one glued corner plus one new triangle-connecting edge between two
-    // of their other corners.
+    // V: dr=1,dc=0) - mirrors shared/boardConfig.ts's snubSquareBoard CONN table: each orthogonal
+    // neighbor shares one glued corner plus one new triangle-connecting edge between two of their
+    // other corners - that new edge, together with each square's own two boundary edges reaching its
+    // own glued/joined corners, closes into a genuine 3-node triangular gap face.
     struct Conn { int glue_self, glue_other, tri_self, tri_other; };
     const Conn conn[2][2] = {
         // parity 0:   H (dc=1)        V (dr=1)
@@ -1174,154 +1163,10 @@ BoardConfig snub_square_board(int w, int h, int g) {
                 if (nrb<0||nrb>=h||ncb<0||ncb>=w) continue;
                 int nb = b_idx(nrb, ncb);
                 const Conn& c = conn[parity][dir];
-                auto [sr,sc] = corner(c.glue_self);
-                auto [or_,oc] = corner(c.glue_other);
-                inter_conn.push_back({b + sr*g + sc, nb + or_*g + oc});
-                auto [tsr,tsc] = corner(c.tri_self);
-                auto [tor,toc] = corner(c.tri_other);
-                int i = b + tsr*g + tsc, j = nb + tor*g + toc;
+                inter_conn.push_back({b + c.glue_self, nb + c.glue_other});
+                int i = b + c.tri_self, j = nb + c.tri_other;
                 adj[i][j] = 1;
                 adj[j][i] = 1;
-            }
-        }
-
-    return quotient_board(make_bc(std::move(adj), 2u, std::move(pos)), inter_conn);
-}
-
-BoardConfig snub_square_tri_board(int w, int h, int g) {
-    assert(w > 0 && h > 0 && g > 0 && "w, h, and g must be positive");
-
-    int n_tri = g * (g + 1) / 2;
-    auto tri_idx = [&](int i, int j) { return i*(i+1)/2 + j; };
-    auto sq_idx = [&](int x, int y) { return (y*w + x)*g*g; };
-    int sq_n = w * h * g * g;
-    int h_count = (w-1) * h;
-    int v_count = w * (h-1);
-    auto h_base = [&](int x, int y) { return sq_n + (y*(w-1) + x)*n_tri; };
-    auto v_base = [&](int x, int y) { return sq_n + h_count*n_tri + (y*w + x)*n_tri; };
-    int N = sq_n + (h_count + v_count) * n_tri;
-
-    // Squares: same per-cell 45deg-integer-rotation shape {c+(g-1-r), c+r} as snub_square_board -
-    // but NOT the same bx=x*sq_width, by=y*sq_width placement. That placement only needs to support
-    // snub_square_board's own single-corner glue (which never derives a *new* position - it just
-    // identifies two already-computed corners via inter_conn, so it works regardless of how the
-    // corners' raw values relate). Here, a triangle's interior nodes are *derived* by interpolating
-    // between the two square corners it glues to, and two vertically-stacked h-triangles (or
-    // horizontally-adjacent v-triangles) must derive IDENTICAL values at their shared third side -
-    // which requires the two squares each one interpolates from to already have matching corners
-    // *before* interpolation, not just after quotient_board's merge. Solving that (square(x,y) and
-    // square(x,y+1)'s relevant H-triangle corners equal; square(x,y) and square(x+1,y)'s relevant
-    // V-triangle corners equal) for a per-cell offset bx(x,y), by(x,y) gives bx = (x-y)*(g-1) (shifted
-    // by +(h-1)*(g-1) to stay non-negative) and by = (x+y)*(g-1) - unlike the simple bx=x*sq_width
-    // used elsewhere, both offsets now depend on both x and y.
-    std::vector<std::vector<unsigned>> pos(N);
-    for (int y = 0; y < h; y++)
-        for (int x = 0; x < w; x++) {
-            unsigned bx = (unsigned)(x - y + (h - 1)) * (g - 1);
-            unsigned by = (unsigned)(x + y) * (g - 1);
-            int b = sq_idx(x, y);
-            for (unsigned r = 0; r < g; r++)
-                for (unsigned c = 0; c < g; c++)
-                    pos[b + r*g + c] = {bx + c + (g - 1 - r), by + c + r};
-        }
-    for (int y = 0; y < h; y++)
-        for (int x = 0; x < w - 1; x++) {
-            int p = (x + y) % 2;
-            int base = h_base(x, y);
-            for (int i = 0; i < g; i++) {
-                int self_r = p == 0 ? g-1-i : i;
-                const auto& left = pos[sq_idx(x, y) + self_r*g + (g-1)];
-                const auto& right = pos[sq_idx(x+1, y) + self_r*g + 0];
-                for (int j = 0; j <= i; j++) {
-                    double t = i == 0 ? 0.0 : (double)j / (double)i;
-                    pos[base + tri_idx(i,j)] = {
-                        (unsigned)std::lround(left[0] + ((double)right[0] - (double)left[0]) * t),
-                        (unsigned)std::lround(left[1] + ((double)right[1] - (double)left[1]) * t)
-                    };
-                }
-            }
-        }
-    for (int y = 0; y < h - 1; y++)
-        for (int x = 0; x < w; x++) {
-            int p = (x + y) % 2;
-            int base = v_base(x, y);
-            for (int i = 0; i < g; i++) {
-                int self_c = p == 0 ? i : g-1-i;
-                const auto& left = pos[sq_idx(x, y) + (g-1)*g + self_c];
-                const auto& right = pos[sq_idx(x, y+1) + 0*g + self_c];
-                for (int j = 0; j <= i; j++) {
-                    double t = i == 0 ? 0.0 : (double)j / (double)i;
-                    pos[base + tri_idx(i,j)] = {
-                        (unsigned)std::lround(left[0] + ((double)right[0] - (double)left[0]) * t),
-                        (unsigned)std::lround(left[1] + ((double)right[1] - (double)left[1]) * t)
-                    };
-                }
-            }
-        }
-
-    auto adj = zero_adj(N);
-    const int dirs4[4][2] = {{0,1},{1,0},{0,-1},{-1,0}};
-
-    // Intra-square edges (ordinary rectangular grid; no direct square-to-square connections here).
-    for (int y = 0; y < h; y++)
-        for (int x = 0; x < w; x++) {
-            int b = sq_idx(x, y);
-            for (int r = 0; r < g; r++)
-                for (int c = 0; c < g; c++)
-                    for (auto& d : dirs4) {
-                        int nr = r+d[0], nc = c+d[1];
-                        if (nr>=0 && nr<g && nc>=0 && nc<g)
-                            adj[b+r*g+c][b+nr*g+nc] = 1;
-                    }
-        }
-
-    // Intra-triangle edges (mirrors triangular_board's own edge loop).
-    const int dirs6[6][2] = {{1,0},{1,1},{0,1},{-1,0},{-1,-1},{0,-1}};
-    auto add_tri_edges = [&](int base) {
-        for (int i = 0; i < g; i++)
-            for (int j = 0; j <= i; j++)
-                for (auto& d : dirs6) {
-                    int ni = i+d[0], nj = j+d[1];
-                    if (ni>=0 && ni<g && nj>=0 && nj<=ni)
-                        adj[base+tri_idx(i,j)][base+tri_idx(ni,nj)] = 1;
-                }
-    };
-    for (int y = 0; y < h; y++)
-        for (int x = 0; x < w - 1; x++) add_tri_edges(h_base(x, y));
-    for (int y = 0; y < h - 1; y++)
-        for (int x = 0; x < w; x++) add_tri_edges(v_base(x, y));
-
-    // Gluing: every square-triangle and triangle-triangle edge, merged via a single quotient_board
-    // call - mirrors shared/boardConfig.ts's snubSquareTriBoard.
-    std::vector<std::pair<int,int>> inter_conn;
-    for (int y = 0; y < h; y++)
-        for (int x = 0; x < w - 1; x++) {
-            int p = (x + y) % 2;
-            int base = h_base(x, y);
-            for (int i = 0; i < g; i++) {
-                int self_r = p == 0 ? g-1-i : i;
-                inter_conn.push_back({base + tri_idx(i,0), sq_idx(x, y) + self_r*g + (g-1)});
-                inter_conn.push_back({base + tri_idx(i,i), sq_idx(x+1, y) + self_r*g + 0});
-            }
-            if (p == 1 && y + 1 <= h - 1) {
-                int nbase = h_base(x, y+1);
-                for (int j = 0; j < g; j++)
-                    inter_conn.push_back({base + tri_idx(g-1,j), nbase + tri_idx(g-1,j)});
-            }
-        }
-    for (int y = 0; y < h - 1; y++)
-        for (int x = 0; x < w; x++) {
-            int p = (x + y) % 2;
-            int base = v_base(x, y);
-            for (int i = 0; i < g; i++) {
-                int self_c = p == 0 ? i : g-1-i;
-                inter_conn.push_back({base + tri_idx(i,0), sq_idx(x, y) + (g-1)*g + self_c});
-                inter_conn.push_back({base + tri_idx(i,i), sq_idx(x, y+1) + 0*g + self_c});
-            }
-            if (p == 0 && x + 1 <= w - 1) {
-                int nbase = v_base(x+1, y);
-                for (int j = 0; j < g; j++)
-                    inter_conn.push_back({base + tri_idx(g-1,j), nbase + tri_idx(g-1,j)});
             }
         }
 
@@ -1390,8 +1235,7 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<BoardA
     if (kind == "trihex") return triangular_hex_board(num(v[0]));
     if (kind == "hex")   return hex_board(num(v[0]));
     if (kind == "hexdel") return trihex_board(num(v[0]));
-    if (kind == "snubsq") return snub_square_board(num(v[0]), num(v[1]), num(v[2]));
-    if (kind == "snubsqtri") return snub_square_tri_board(num(v[0]), num(v[1]), num(v[2]));
+    if (kind == "snubsq") return snub_square_board(num(v[0]), num(v[1]));
     if (kind == "twsq")  return twisted_square_board(num(v[0]), num(v[1]), num(v[2]));
     if (kind == "gtsq")  return glue_twisted_square_board(num(v[0]), num(v[1]), num(v[2]));
     throw std::runtime_error("Unknown board type: " + kind);

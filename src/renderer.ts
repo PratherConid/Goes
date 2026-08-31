@@ -148,6 +148,7 @@ const _boardConfigDescriptions = new Map([
     ['ring_5_12.5', 'Two dimensional circular ring'],
     ['shell_6_7.5', '3D shell'],
     ['roundTable_9.5_5_3_2', 'A round table with four legs'],
+    ['snubsqtri_4_4_4', 'Snub square tiling with triangular gaps filled in'],
 ]);
 
 

@@ -467,26 +467,15 @@ BoardConfig hex_board(int d);
 // as hex_board's own embedding.
 BoardConfig trihex_board(int d);
 
-// A w x h grid of g x g squares, each rotated +-30 degrees in a checkerboard pattern, arranged as
-// a snub square tiling. Mirrors shared/boardConfig.ts's snubSquareBoard() for the connectivity
-// (each pair of horizontally/vertically adjacent squares shares one glued corner plus one
-// triangle-connecting edge between two of their other corners - see that function's CONN table),
-// but embeds nodes the same integer way as tilted_disconnected_square_board/
-// glue_twisted_square_board (each g x g square rotated 45 degrees via integer arithmetic) rather
-// than the TypeScript side's literal +-30-degree floating-point layout, since embed coordinates
-// must be integers here.
-BoardConfig snub_square_board(int w, int h, int g);
-
-// Triangle-inflated variant of snub_square_board: same w x h grid of g x g squares (same per-cell
-// 45-degree-integer shape), but every square-to-square gap is filled by an actual side-length-g
-// triangular sub-board (same construction as triangular_board(g)) instead of a single glued corner
-// plus a bare edge - mirrors shared/boardConfig.ts's snubSquareTriBoard() for the connectivity. A
-// triangle's boundary nodes copy their glued square corner's embed value exactly; interior nodes are
-// placed by rounded linear interpolation between them. Unlike snub_square_board, each square's
-// per-cell placement offset depends on both x and y (not just its own axis) - required so that two
-// triangles gluing to the same pair of squares from opposite sides derive identical interpolated
-// values before quotient_board ever runs, not just after merging (see the .cpp for the derivation).
-BoardConfig snub_square_tri_board(int w, int h, int g);
+// A w x h grid of unit squares, each rotated +-30 degrees in a checkerboard pattern, arranged as a
+// snub square tiling. Mirrors shared/boardConfig.ts's snubSquareBoard() for the connectivity (each
+// pair of horizontally/vertically adjacent squares shares one glued corner plus one
+// triangle-connecting edge between two of their other corners, closing a genuine triangular gap face
+// - see that function's own CONN table), but embeds nodes the same integer way as
+// tilted_disconnected_square_board/glue_twisted_square_board (each unit square rotated 45 degrees via
+// integer arithmetic) rather than the TypeScript side's literal +-30-degree floating-point layout,
+// since embed coordinates must be integers here.
+BoardConfig snub_square_board(int w, int h);
 
 // A board of w x h squares each rotated 45 degrees, arranged in a rectangle.
 // The squares have the usual square topology. The closest nodes of two adjacent
@@ -501,7 +490,7 @@ BoardConfig twisted_square_board(int w, int h, int g);
 // Dispatches to the board builder above matching `kind` ("line" | "rect" | "rectd" |
 // "cublat" | "hcub" | "tri" | "sier" | "regpoly" | "tetra" | "octa" | "ortho" | "ap" | "dodeca" |
 // "icosa" | "dodflake" | "icoflake" | "octaflake" | "polyflake" | "cpolyflake" | "cpentflake" |
-// "menger" | "trihex" | "hex" | "hexdel" | "snubsq" | "snubsqtri" | "twsq" | "gtsq" | "star"),
+// "menger" | "trihex" | "hex" | "hexdel" | "snubsq" | "twsq" | "gtsq" | "star"),
 // reading each of `args` back via board_arg_number()/board_arg_list() as that builder's own
 // positional parameters expect. Throws std::runtime_error for an unknown kind. The one primitive
 // game/cleg.cpp's own board-constructor builtins (each cleg name is `kind` + "B", e.g. "rectB" ->
