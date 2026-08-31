@@ -13,6 +13,6 @@ egr shellB(number r1, number r2, number dim) {
     mi = r2;
     ma = r1;
   }
-  return subHcublat(([[(-ma), ma]] * dim), shellCond(mi, ma, #));
+  return subHcublatB(([[(-ma), ma]] * dim), shellCond(mi, ma, #));
 }
 shellB(6, 7.5, 3);

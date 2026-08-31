@@ -73,6 +73,7 @@ const BOARD_PRESET_GOLDEN: Record<string, { N: number; edges: number }> = {
     'regpoly_5_gcent_prod_line_2_quadform_7.cleg': { N: 392, edges: 756 },
     'regpoly_5_prod_line_2_gcent_triform_7.cleg': { N: 286, edges: 825 },
     'ring_5_12.5.cleg': { N: 420, edges: 772 },
+    'roundTable_9.5_5_3_2.cleg': { N: 457, edges: 884 },
     'shell_6_7.5.cleg': { N: 896, edges: 1830 },
     'sier_3_5.cleg': { N: 514, edges: 1536 },
     'star_5_es_6_prod_line_5.cleg': { N: 155, edges: 274 },

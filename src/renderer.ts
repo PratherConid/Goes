@@ -147,6 +147,7 @@ const _boardConfigDescriptions = new Map([
     ['goDesk_19_19_5_2_6_2', 'A nice go desk that you can play go on'],
     ['ring_5_12.5', 'Two dimensional circular ring'],
     ['shell_6_7.5', '3D shell'],
+    ['roundTable_9.5_5_3_2', 'A round table with four legs'],
 ]);
 
 

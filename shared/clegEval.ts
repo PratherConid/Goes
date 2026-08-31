@@ -88,7 +88,7 @@ export interface BuiltinFunction {
      * result type. */
     checkCall: (callee: string, argTypes: ClegType[]) => ClegType;
     /** `funcs` is only ever needed by a builtin that itself calls a `func`-typed argument back
-     * (e.g. subHcublat's own `cond`, via callUserFunction) - every other builtin's own `call` simply
+     * (e.g. subHcublatB's own `cond`, via callUserFunction) - every other builtin's own `call` simply
      * ignores it, which TypeScript allows (a function declared with fewer parameters than a call
      * signature requires is still a valid implementation of it). */
     call: (args: ClegValue[], funcs: UserFuncTable) => ClegValue;
@@ -895,7 +895,7 @@ BUILTIN_FUNCTIONS['multiProd'] = {
     },
 };
 
-// `subHcublat(bounds, cond)`: a "sub-region" of an N-dimensional hypercubical lattice - `bounds` is
+// `subHcublatB(bounds, cond)`: a "sub-region" of an N-dimensional hypercubical lattice - `bounds` is
 // an N-length array of `[lo, hi]` pairs (inclusive bounds, one pair per dimension, describing the
 // bounding hyperrectangle - not necessarily integers themselves: `lo` is rounded UP and `hi` rounded
 // DOWN to the nearest integer lattice point before use, i.e. the actual integer range is
@@ -912,7 +912,7 @@ BUILTIN_FUNCTIONS['multiProd'] = {
 // than always starting at 0 - unlike hypercuboidBoard, the re-centering (see the end of `call`
 // below) is computed from the SURVIVING nodes' own bounding box, not from `bounds` itself, since
 // `cond` may keep a shape nowhere near centered within the hyperrectangle it was given.
-BUILTIN_FUNCTIONS['subHcublat'] = {
+BUILTIN_FUNCTIONS['subHcublatB'] = {
     checkCall: fixedSignature(
         [
             { kind: 'array', elem: { kind: 'array', elem: NUMBER_TYPE } },
@@ -923,13 +923,13 @@ BUILTIN_FUNCTIONS['subHcublat'] = {
     call([boundsVal, condVal], funcs) {
         const boundsArr = (boundsVal as { value: ClegValue[] }).value;
         const k = boundsArr.length;
-        if (k === 0) throw new Error(`cleg: 'subHcublat' bounds must be non-empty`);
+        if (k === 0) throw new Error(`cleg: 'subHcublatB' bounds must be non-empty`);
         const lo = new Array<number>(k);
         const dims = new Array<number>(k);
         boundsArr.forEach((pairVal, i) => {
             const pair = (pairVal as { value: ClegValue[] }).value;
             if (pair.length !== 2)
-                throw new Error(`cleg: 'subHcublat' bounds[${i}] must have exactly 2 entries (lower, upper), got ${pair.length}`);
+                throw new Error(`cleg: 'subHcublatB' bounds[${i}] must have exactly 2 entries (lower, upper), got ${pair.length}`);
             // `lo`/`hi` need not themselves be integers - rounded to the nearest integer lattice
             // point INWARD (lo up, hi down) before use, so e.g. `[0.5, 2.5]` becomes the integer
             // range `[1, 2]`, not an error.
@@ -937,7 +937,7 @@ BUILTIN_FUNCTIONS['subHcublat'] = {
             const b = Math.floor((pair[1] as { value: number }).value);
             if (a > b)
                 throw new Error(
-                    `cleg: 'subHcublat' bounds[${i}] has no integer lattice point in range after ` +
+                    `cleg: 'subHcublatB' bounds[${i}] has no integer lattice point in range after ` +
                     `rounding (lower up, upper down), got [${a}, ${b}]`);
             lo[i] = a;
             dims[i] = b - a + 1;

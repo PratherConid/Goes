@@ -30,7 +30,7 @@ bool goDeskCond(number l, number w, number h, number fw, number fh, number in, n
   return ((((xlyl || xlyr) || xryl) || xryr) || desk);
 }
 egr goDesk(number l, number w, number h, number fw, number fh, number in) {
-  return subHcublat(
+  return subHcublatB(
     [[0, l], [0, w], [0, (h + fh)]],
     goDeskCond(l, w, h, fw, fh, in, #)
   );

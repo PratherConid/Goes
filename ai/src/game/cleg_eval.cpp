@@ -829,7 +829,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
         };
 
-        // Mirrors shared/clegEval.ts's subHcublat(bounds, cond): a "sub-region" of an N-dimensional
+        // Mirrors shared/clegEval.ts's subHcublatB(bounds, cond): a "sub-region" of an N-dimensional
         // hypercubical lattice - `bounds` is an N-length array of `[lo, hi]` pairs (inclusive
         // bounds, one pair per dimension, describing the bounding hyperrectangle - not necessarily
         // integers themselves: `lo` is rounded UP (std::ceil) and `hi` rounded DOWN (std::floor) to
@@ -850,7 +850,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         // simply its own LOCAL (0-based, always a non-negative integer) lattice coordinate, never
         // `lo`-shifted or re-centered; `cond` itself is still always called with the point's real
         // ABSOLUTE coordinates (`lo[i] + local[i]`), exactly matching the TS side.
-        m["subHcublat"] = BuiltinFunction{
+        m["subHcublatB"] = BuiltinFunction{
             fixed_signature(
                 {
                     ClegType{CTKind::Array, std::make_shared<ClegType>(ClegType{CTKind::Array, std::make_shared<ClegType>(NUMBER_TYPE)})},
@@ -864,13 +864,13 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             [](const std::vector<ClegValue>& args, UserFuncTable& funcs) {
                 const auto& bounds_arr = args[0].arr_v;
                 size_t k = bounds_arr.size();
-                if (k == 0) throw std::runtime_error("cleg: 'subHcublat' bounds must be non-empty");
+                if (k == 0) throw std::runtime_error("cleg: 'subHcublatB' bounds must be non-empty");
                 std::vector<int> lo(k), dims(k);
                 for (size_t i = 0; i < k; i++) {
                     const auto& pair = bounds_arr[i].arr_v;
                     if (pair.size() != 2)
                         throw std::runtime_error(
-                            "cleg: 'subHcublat' bounds[" + std::to_string(i) + "] must have exactly 2 entries "
+                            "cleg: 'subHcublatB' bounds[" + std::to_string(i) + "] must have exactly 2 entries "
                             "(lower, upper), got " + std::to_string(pair.size()));
                     // `lo`/`hi` need not themselves be integers - rounded to the nearest integer
                     // lattice point INWARD (lo up, hi down) before use, so e.g. [0.5, 2.5] becomes
@@ -878,7 +878,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                     double a = std::ceil(pair[0].number), b = std::floor(pair[1].number);
                     if (a > b)
                         throw std::runtime_error(
-                            "cleg: 'subHcublat' bounds[" + std::to_string(i) + "] has no integer lattice point in "
+                            "cleg: 'subHcublatB' bounds[" + std::to_string(i) + "] has no integer lattice point in "
                             "range after rounding (lower up, upper down), got [" + format_number_display(a) + ", " +
                             format_number_display(b) + "]");
                     lo[i] = static_cast<int>(a);
