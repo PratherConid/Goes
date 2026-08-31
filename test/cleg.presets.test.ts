@@ -7,7 +7,8 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseCleg, buildBoardFromCleg } from '../shared/cleg.ts';
+import { parseCleg } from '../shared/clegParser.ts';
+import { buildBoardFromCleg } from '../shared/clegEval.ts';
 import { GameConfig } from '../shared/gameConfig.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

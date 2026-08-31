@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { BoardState, MoveType } from '../shared/boardState.ts';
 import { rectangularBoard } from '../shared/boardConfig.ts';
 import { FinishedGame, GameConfig } from '../shared/gameConfig.ts';
-import { parseCleg } from '../shared/cleg.ts';
+import { parseCleg } from '../shared/clegParser.ts';
 
 function twoPlayerGame() {
     const bc = rectangularBoard(5, 5);

@@ -84,7 +84,8 @@
 // find_checkpoint_dir(), below. Models are then loaded lazily on first
 // request for each matched directory and cached by that directory name.
 #include "game/board_config.h"
-#include "game/cleg.h"
+#include "game/cleg_eval.h"
+#include "game/cleg_parser.h"
 #include "game/board_state.h"
 #include "model/any_model.h"
 #include "model/features.h"

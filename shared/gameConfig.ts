@@ -1,22 +1,26 @@
 // GameConfig/FinishedGame live in their own module, separate from shared/types.ts, specifically to
 // avoid a circular-import hazard: both classes need real (not just type) values from BOTH
-// shared/types.ts (PlayerInfo) AND shared/cleg.ts (parseCleg/unparseCleg, for boardDescr's own
-// text<->AST conversion - see that field's own doc comment below). shared/cleg.ts itself imports
-// real values from shared/boardConfig.ts, which imports real values (e.g. the BoardArgType enum)
-// from shared/types.ts, eagerly at its own module top level - so if shared/types.ts imported
-// cleg.ts back (which it would need to, for GameConfig's own toJSON()/fromJSON()), a native ESM
-// loader (Node's test runner, a dev server) can end up evaluating shared/boardConfig.ts's top-level
-// code BEFORE shared/types.ts has defined BoardArgType yet, crashing with "cannot read properties
-// of undefined". Keeping GameConfig/FinishedGame here instead breaks that cycle entirely:
-// shared/types.ts no longer needs to import anything real from here (PendingGame's own `config:
-// GameConfig` field below is a type-only reference), so there's no edge back into this module's own
-// dependency chain.
+// shared/types.ts (PlayerInfo) AND cleg's own parseCleg/unparseCleg (shared/clegParser.ts, for
+// boardDescr's own text<->AST conversion - see that field's own doc comment below). This file only
+// needs shared/clegParser.ts (which itself only imports type-only from shared/clegBase.ts) - the
+// hazard is with cleg's OTHER half, shared/clegEval.ts, which imports real values from
+// shared/boardConfig.ts, which imports real values (e.g. the BoardArgType enum) from
+// shared/types.ts, eagerly at its own module top level. So if shared/types.ts imported this file
+// back (which it would need to, for GameConfig's own toJSON()/fromJSON()) AND this file ever needed
+// clegEval.ts too (it doesn't today, but GameConfig is exactly the kind of type a future addition
+// might reach for buildBoardFromCleg from), a native ESM loader (Node's test runner, a dev server)
+// could end up evaluating shared/boardConfig.ts's top-level code BEFORE shared/types.ts has defined
+// BoardArgType yet, crashing with "cannot read properties of undefined". Keeping GameConfig/
+// FinishedGame here instead breaks that cycle entirely: shared/types.ts no longer needs to import
+// anything real from here (PendingGame's own `config: GameConfig` field below is a type-only
+// reference), so there's no edge back into this module's own dependency chain.
 import { PlayerInfo, type TurnInfo, type ScoreRule, type KoRule, type PlayerType, type ReplayMove } from './types.js';
-import { parseCleg, unparseCleg, type ClegProgram } from './cleg.js';
+import { parseCleg, unparseCleg } from './clegParser.js';
+import type { ClegProgram } from './clegBase.js';
 
 export class GameConfig {
-    // The board's own construction program - a cleg (shared/cleg.ts) AST, run via
-    // buildBoardFromCleg (shared/cleg.ts) to get the actual BoardConfig when this GameConfig
+    // The board's own construction program - a cleg (shared/clegBase.ts) AST, run via
+    // buildBoardFromCleg (shared/clegEval.ts) to get the actual BoardConfig when this GameConfig
     // becomes a real game. In memory this is always the parsed AST, not source text (see
     // ClegProgram's own doc comment) - the Configure Board popup (src/renderer.ts) round-trips it
     // through parseCleg/unparseCleg directly for editing. On the wire/on disk, though, toJSON()/

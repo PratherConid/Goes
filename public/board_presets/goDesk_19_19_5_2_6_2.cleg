@@ -1,16 +1,15 @@
 bool hcCond(number[] mins, number[] maxs, number numeq, number[] coords) {
   number l = len(mins);
   number rnumeq = 0;
-  number rnumin = 0;
   for (number i = 0; (i < l); i = (i + 1)) {
-    if (((mins[i] <= coords[i]) && (maxs[i] >= coords[i]))) {
-      rnumin = (rnumin + 1);
+    if (((mins[i] > coords[i]) || (maxs[i] < coords[i]))) {
+      return false;
     }
     if (((mins[i] == coords[i]) || (maxs[i] == coords[i]))) {
       rnumeq = (rnumeq + 1);
     }
   }
-  return ((rnumin == l) && (rnumeq >= numeq));
+  return (rnumeq >= numeq);
 }
 bool goDeskCond(number l, number w, number h, number fw, number fh, number in, number[] coords) {
   number zmid = fh;

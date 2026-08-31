@@ -5,7 +5,7 @@
 
 import type { BoardView, PlayerInfo, TurnInfo } from '@shared/types.js';
 import type { GameConfig } from '@shared/gameConfig.js';
-import { unparseCleg } from '@shared/cleg.js';
+import { unparseCleg } from '@shared/clegParser.js';
 import { STONE_MAP } from '@shared/boardState.js';
 
 // Minimal HTML-escaping for text embedded in an innerHTML template - needed for cleg source text

@@ -3,7 +3,8 @@
 // Usage: goes_train --game-config <path> [--iterations 100] ...
 // Run with --help for the full option list.
 #include "game/board_config.h"
-#include "game/cleg.h"
+#include "game/cleg_eval.h"
+#include "game/cleg_parser.h"
 #include "model/any_model.h"
 #include "model/features.h"
 #include "model/model_config.h"

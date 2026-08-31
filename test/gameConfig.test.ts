@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PlayerInfo } from '../shared/types.ts';
 import { GameConfig } from '../shared/gameConfig.ts';
-import { parseCleg } from '../shared/cleg.ts';
+import { parseCleg } from '../shared/clegParser.ts';
 
 function sampleConfig() {
     const config = new GameConfig(

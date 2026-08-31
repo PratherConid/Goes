@@ -1,5 +1,5 @@
 import { BoardState } from '@shared/boardState.js';
-import { buildBoardFromCleg } from '@shared/cleg.js';
+import { buildBoardFromCleg } from '@shared/clegEval.js';
 import { GameConfig } from '@shared/gameConfig.js';
 import { Renderer } from './renderer.js';
 

@@ -1,5 +1,5 @@
 // GameConfig/FinishedGame live in shared/gameConfig.ts, not here - see that file's own top comment
-// for why (a real circular-import hazard through shared/cleg.ts and shared/boardConfig.ts). The
+// for why (a real circular-import hazard through shared/clegEval.ts and shared/boardConfig.ts). The
 // only reference to GameConfig left in this file (PendingGame's own `config: GameConfig` field
 // below) is type-only, so this file has no real runtime dependency on gameConfig.ts at all.
 import type { GameConfig } from './gameConfig.js';
@@ -429,7 +429,7 @@ export type SelectorType = 'node' | 'edge' | 'tri' | 'quad';
  * SelectorType, holding exactly what that kind's own shared/selector.ts evaluator (selectNode/
  * selectEdge/selectTriangle/selectQuad) itself returns: a real `Set<number>` for nodes (numbers
  * have genuine equality, so a JS Set works as an actual set), plain arrays for edge/tri/quad
- * (which don't - see ClegValue's own 'set' variant in shared/cleg.ts for why every other edge/
+ * (which don't - see ClegValue's own 'set' variant in shared/clegBase.ts for why every other edge/
  * tri/quad collection in this codebase is a plain array, never a JS Set, deduplicated by a real key
  * function rather than reference equality).
  */
@@ -493,7 +493,7 @@ export type FormSelector =
 
 /**
  * A BoardConfig-transforming operation - see shared/boardConfig.ts's applyModifier()/
- * applyModifiers() for how these are built and applied. A `mod`-typed cleg value (shared/cleg.ts)
+ * applyModifiers() for how these are built and applied. A `mod`-typed cleg value (shared/clegBase.ts)
  * always wraps one of these directly, built by whichever of cleg's own rectify()/edgeSplit()/.../
  * nis()/eis() builtins matches - cleg's own `prod(a, b)` combines two already-built boards directly
  * (no BoardModifier of its own involved), and has no `Repeat` equivalent at all (a cleg program just

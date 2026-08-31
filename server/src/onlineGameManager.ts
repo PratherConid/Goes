@@ -1,5 +1,5 @@
 import { BoardState } from '@shared/boardState.js';
-import { buildBoardFromCleg, typecheckClegAsBoard } from '@shared/cleg.js';
+import { buildBoardFromCleg, typecheckClegAsBoard } from '@shared/clegEval.js';
 import { PlayerInfo, OnlinePlayerRequest, makeId } from '@shared/types.js';
 import type { OnlineStateResponse, PendingGame, ReplayMove, ChatMessage } from '@shared/types.js';
 import { GameConfig, FinishedGame } from '@shared/gameConfig.js';

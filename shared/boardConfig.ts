@@ -1,7 +1,7 @@
 import type { BoardArgEntry, BoardConfig, BoardModifier, Selector, FormSelector, BoardEdge } from './types.js';
 import type { GameConfig } from './gameConfig.js';
 // Type-only - see types.ts's own note on why this isn't a real circular runtime import.
-import type { ClegProgram } from './cleg.js';
+import type { ClegProgram } from './clegBase.js';
 import { assert, BoardArgType, boardArgNumber, boardArgList, Embedding } from './types.js';
 import { convexHullEdges } from './geometry.js';
 import { findTriangles, findQuads, zeroAdj, mergeBoards } from './topology.js';

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { BoardState } from '../shared/boardState.ts';
 import { rectangularBoard } from '../shared/boardConfig.ts';
 import { FinishedGame, GameConfig } from '../shared/gameConfig.ts';
-import { parseCleg } from '../shared/cleg.ts';
+import { parseCleg } from '../shared/clegParser.ts';
 
 // numPlayers=2 (not 1): BoardState.gameOver() treats "<=1 non-resigned players"
 // as an automatic win, so a 1-player game would already be "over" at

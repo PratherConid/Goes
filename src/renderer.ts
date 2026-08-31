@@ -8,7 +8,9 @@ import type {
     BoardConfig,
 } from '@shared/types.js';
 import { PrescribedBoardMap, computeStarPoints } from '@shared/boardConfig.js';
-import { parseCleg, unparseCleg, typecheckClegAsBoard, buildBoardFromCleg, type ClegProgram } from '@shared/cleg.js';
+import { parseCleg, unparseCleg } from '@shared/clegParser.js';
+import { typecheckClegAsBoard, buildBoardFromCleg } from '@shared/clegEval.js';
+import type { ClegProgram } from '@shared/clegBase.js';
 import { ServerConnection, type RequestHandle } from './serverConnection.js';
 import {
     SidePanelContent, SidePanelHierarchy, SidePanelBwFw, renderSidePanelChrome, sidePanelParent, childButtons,
@@ -2397,7 +2399,7 @@ export class Renderer {
     }
 
     // The 'edit-board' popup's Ok button: parses the whole textarea via parseCleg, then requires it
-    // typecheck with an `egr` result via typecheckClegAsBoard (shared/cleg.ts) - a board description
+    // typecheck with an `egr` result via typecheckClegAsBoard (shared/clegEval.ts) - a board description
     // that doesn't actually describe a board is rejected here rather than later, when a game
     // actually starts. On success, adopts the result into newCfg.boardDescr and closes the popup;
     // on failure, keeps the popup open and shows the error above the Ok button instead, leaving

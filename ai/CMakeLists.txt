@@ -58,7 +58,10 @@ endforeach()
 add_library(goes_core STATIC
   src/game/board_config.cpp
   src/game/selector.cpp
-  src/game/cleg.cpp
+  src/game/cleg_base.cpp
+  src/game/cleg_parser.cpp
+  src/game/cleg_check.cpp
+  src/game/cleg_eval.cpp
   src/game/fractal.cpp
   src/game/geometry.cpp
   src/game/topology.cpp
