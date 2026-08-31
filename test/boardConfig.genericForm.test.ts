@@ -76,7 +76,7 @@ test('applyModifier("Form", ...) matches calling genericForm directly', () => {
 });
 
 test('formatFormSelectors round-trips parseFormSelectors', () => {
-    const text = '(tri (conve node (deg gt 1))) (quad)';
+    const text = '(tri (conve tri (deg gt 1))) (quad)';
     assert.equal(formatFormSelectors(parseFormSelectors(text)), text);
     assert.equal(formatFormSelectors(parseFormSelectors('')), '');
 });

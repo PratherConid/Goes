@@ -445,19 +445,19 @@ export type SelectedVals =
  * findQuads() finds - see BoardTriangle/BoardQuad above) - see shared/selector.ts for the full
  * grammar (`(union SEL...)` / `(inter SEL...)` / `(diff SEL SEL)` / `(compl SEL)` /
  * `(more [<num>] SEL)` /
- * `(all)` / `(none)` / `(deg <eq|gt|lt> <num>)` / `(conva <node|edge|tri|quad> SEL)` /
- * `(conve <node|edge|tri|quad> SEL)` / `(rrmn <num> SEL)` / `(rrmp <num> SEL)`) and its own parsing
- * (parseNodeSelector/parseEdgeSelector/parseTriangleSelector/parseQuadSelector) and evaluation
- * (selectNode/selectEdge/selectTriangle/selectQuad) functions. Every Selector carries its own
- * `type` (which of the four kinds it denotes) - assigned by whichever of the four mutually recursive
- * parsers reaches it, not inferred from anything written in the expression itself (see
- * shared/selector.ts's own top comment for why).
+ * `(all <node|edge|tri|quad>)` / `(none <node|edge|tri|quad>)` / `(deg <eq|gt|lt> <num>)` /
+ * `(conva <node|edge|tri|quad> SEL)` / `(conve <node|edge|tri|quad> SEL)` / `(rrmn <num> SEL)` /
+ * `(rrmp <num> SEL)`) and its own parsing (parseNodeSelector/parseEdgeSelector/
+ * parseTriangleSelector/parseQuadSelector) and evaluation (selectNode/selectEdge/selectTriangle/
+ * selectQuad) functions. Every Selector carries its own `type` (which of the four kinds it denotes)
+ * - inferred bottom-up by the one context-free parser (see shared/selector.ts's own top comment for
+ * why), then checked by whichever of the four entry points was actually called.
  */
 export type Selector =
-    // `union`/`inter` take a variadic list of operands (zero or more) rather than a fixed two -
-    // `(union)` (zero operands) is the empty set; `(inter)` is the universal set (every object of
-    // whichever kind this Selector is - the same set `(all)` denotes), matching set-theoretic
-    // identity/absorbing-element convention for a fold over zero items.
+    // `union`/`inter` take a variadic list of operands - one or more, all the same kind (their own
+    // `type`); a zero-operand `(union)`/`(inter)` isn't parseable (nothing to infer `type` from - see
+    // shared/selector.ts's own top comment), though this field-level type doesn't itself forbid a
+    // hand-built Selector with an empty `items`.
     | { op: 'union' | 'inter'; type: SelectorType; items: Selector[] }
     | { op: 'diff'; type: SelectorType; a: Selector; b: Selector }
     | { op: 'compl'; type: SelectorType; a: Selector }

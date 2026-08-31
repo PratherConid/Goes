@@ -2,9 +2,9 @@ modify(
   [
     quadForm(
       4,
-      "(compl (union (conva node (deg eq 5)) (conve node (deg eq 3)) (conva node (deg eq 6))))"
+      "(compl (union (conva quad (deg eq 5)) (conve quad (deg eq 3)) (conva quad (deg eq 6))))"
     ),
-    eis("(conve quad (all))")
+    eis("(conve edge (all quad))")
   ],
   cublatB(4, 4, 4)
 );

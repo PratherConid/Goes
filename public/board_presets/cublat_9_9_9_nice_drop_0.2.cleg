@@ -1,7 +1,7 @@
 modify(
   [
-    nis("(rrmp 0.2 (all))"),
-    eis("(conve quad (conva node (all)))")
+    nis("(rrmp 0.2 (all node))"),
+    eis("(conve edge (conva quad (all node)))")
   ],
   cublatB(9, 9, 9)
 );

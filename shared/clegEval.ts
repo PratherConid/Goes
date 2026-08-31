@@ -333,9 +333,9 @@ BUILTIN_FUNCTIONS['prod'] = {
 };
 
 // One real parse*Selector function per SelectorType - shared/selector.ts itself has no single
-// kind-agnostic parse entry point (see that file's own top comment: parsing is type-directed,
-// since e.g. `(all)` means a different thing depending on which of these is called), so mkSel's
-// own `call` below dispatches through this table on its first (runtime string) argument.
+// kind-agnostic parse entry point (each of the four instead checks the parsed selector's own
+// bottom-up-inferred kind against what it promises to return - see that file's own top comment), so
+// mkSel's own `call` below dispatches through this table on its first (runtime string) argument.
 const SELECTOR_PARSERS: Record<SelectorType, (s: string) => Selector> = {
     node: parseNodeSelector,
     edge: parseEdgeSelector,

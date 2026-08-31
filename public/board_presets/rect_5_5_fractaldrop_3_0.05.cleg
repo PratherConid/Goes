@@ -1,8 +1,8 @@
 modify(
   ([
-    eis("(rrmp 0.05 (all))"),
+    eis("(rrmp 0.05 (all edge))"),
     quadForm(3),
-    eis("(conve quad (conva node (all)))")
+    eis("(conve edge (conva quad (all node)))")
   ] * 3),
   rectB(5, 5)
 );

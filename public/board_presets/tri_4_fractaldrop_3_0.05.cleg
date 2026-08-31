@@ -1,8 +1,8 @@
 modify(
   ([
-    eis("(rrmp 0.05 (all))"),
+    eis("(rrmp 0.05 (all edge))"),
     triangleForm(3),
-    eis("(conve tri (conva node (all)))")
+    eis("(conve edge (conva tri (all node)))")
   ] * 3),
   triB(4)
 );

@@ -146,6 +146,7 @@ const _boardConfigDescriptions = new Map([
     ['twsqCluster4D_4_4_2', 'Copies of twsq boards connected in 4 dimensions'],
     ['goDesk_19_19_5_2_6_2', 'A nice go desk that you can play go on'],
     ['ring_5_12.5', 'Two dimensional circular ring'],
+    ['shell_6_7.5', '3D shell'],
 ]);
 
 
@@ -1726,10 +1727,9 @@ export class Renderer {
         `);
 
         this.commandReferenceSelectorsPanel.innerHTML = table(`
-            ${row('(union SEL...)', 'Set union of zero or more operands (zero is the empty set)')}
-            ${row('(inter SEL...)',
-                'Set intersection of zero or more operands (zero is the universal set - same as (all))')}
-            ${row('(diff SEL SEL)', 'Set difference (left minus right)')}
+            ${row('(union SEL...)', 'Set union of one or more operands, all the same kind')}
+            ${row('(inter SEL...)', 'Set intersection of one or more operands, all the same kind')}
+            ${row('(diff SEL SEL)', 'Set difference (left minus right) - both operands the same kind')}
             ${row('(compl SEL)',
                 'Complement, within all objects of whichever kind SEL selects from (node/edge/triangle/quad)')}
             ${row('(more [&lt;num&gt;] SEL)',
@@ -1737,11 +1737,11 @@ export class Renderer {
                 + 'one-step expansion that many times: one step adds, for nodes, every node one edge away '
                 + 'from the current selection; for edges, every edge sharing a node with a currently '
                 + 'selected edge - either way SEL\'s own result stays included too, and 0 steps is a no-op')}
-            ${row('(all)', 'Every object of whichever kind (node/edge/triangle/quad) this SEL is')}
-            ${row('(none)', 'No objects of that kind')}
+            ${row('(all &lt;node|edge|tri|quad&gt;)', 'Every object of the given kind')}
+            ${row('(none &lt;node|edge|tri|quad&gt;)', 'No objects of the given kind')}
             ${row('(deg &lt;eq|gt|lt&gt; &lt;num&gt;)', 'Nodes only: whose degree is =/&gt;/&lt; num')}
             ${row('(conva &lt;node|edge|tri|quad&gt; SEL)',
-                'Converts SEL (of the given source kind) into whichever kind this SEL itself is: a '
+                'Converts SEL (of whichever kind it itself turns out to be) into the given result kind: a '
                 + '"to" object is selected iff ALL of its associated "from" objects are selected - two '
                 + 'objects are associated iff one\'s own node set is completely contained in the '
                 + 'other\'s (vacuously true for a "to" object with no associated "from" objects at '

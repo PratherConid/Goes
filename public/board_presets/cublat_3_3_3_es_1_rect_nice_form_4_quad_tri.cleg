@@ -2,11 +2,11 @@ modify(
   [
     edgeSplit(1),
     rectify(),
-    eis("(conve quad (all))"),
+    eis("(conve edge (all quad))"),
     form(
       4,
       mkFormSel("tri"),
-      mkFormSel("quad", "(conve node (deg lt 6))")
+      mkFormSel("quad", "(conve quad (deg lt 6))")
     ),
     scale(0.75)
   ],

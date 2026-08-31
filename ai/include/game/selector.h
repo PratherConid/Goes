@@ -8,10 +8,12 @@
 #include <vector>
 
 // Mirrors shared/selector.ts - see that file's own top comment for the full grammar and semantics
-// (conva/conve's association rule, etc.); repeated here only as a compact grammar reference (SEL):
-//   (union SEL...) / (inter SEL...) / (diff SEL SEL) / (compl SEL) / (more [<num>] SEL) / (all) /
-//   (none) / (deg <eq|gt|lt> <num>) / (conva <node|edge|tri|quad> SEL) /
-//   (conve <node|edge|tri|quad> SEL) / (rrmn <num> SEL) / (rrmp <num> SEL)
+// (conva/conve's association rule, bottom-up type inference, etc.); repeated here only as a compact
+// grammar reference (SEL):
+//   (union SEL...) / (inter SEL...) / (diff SEL SEL) / (compl SEL) / (more [<num>] SEL) /
+//   (all <node|edge|tri|quad>) / (none <node|edge|tri|quad>) / (deg <eq|gt|lt> <num>) /
+//   (conva <node|edge|tri|quad> SEL) / (conve <node|edge|tri|quad> SEL) / (rrmn <num> SEL) /
+//   (rrmp <num> SEL)
 
 // Mirrors shared/types.ts's BoardEdge: n1 <= n2 always (see make_board_edge below).
 struct BoardEdge {
@@ -84,16 +86,21 @@ struct Selector {
     SelectorType type = SelectorType::Node;
     std::shared_ptr<Selector> a, b;  // meaningful per op - see each op's own case in select_node/select_edge/etc.
     // meaningful iff op == Union/Inter - the variadic operand list from `(union SEL...)`/
-    // `(inter SEL...)` (a/b above are unused for these two ops). Zero items is the empty set for
-    // Union, the universal set (every object of `type` - same as `(all)`) for Inter. A plain
-    // std::vector<Selector> (not a vector of shared_ptr) is fine here for the same reason `a`/`b`
-    // being shared_ptr is safe: a Selector is built once and never mutated afterward.
+    // `(inter SEL...)`, all sharing this same `type` (a/b above are unused for these two ops). A
+    // plain std::vector<Selector> (not a vector of shared_ptr) is fine here for the same reason
+    // `a`/`b` being shared_ptr is safe: a Selector is built once and never mutated afterward. Text
+    // parsing never produces zero items (its `type` couldn't be inferred bottom-up from none - see
+    // parse_sel_expr), though this field-level type doesn't itself forbid a hand-built Selector with
+    // an empty `items`.
     std::vector<Selector> items;
     DegCmp cmp = DegCmp::Eq;         // meaningful iff op == Deg
     int n = 0;                       // meaningful iff op == Deg
     int count = 0;                   // meaningful iff op == Rrmn
     double frac = 0.0;               // meaningful iff op == Rrmp
-    SelectorType from = SelectorType::Node; // meaningful iff op == Conva/Conve (the leading source-kind token)
+    // meaningful iff op == Conva/Conve - the "from" kind, read off sel.a's own bottom-up-inferred
+    // `type` at parse time (NOT a literal token - `type` above is now what the leading
+    // node/edge/tri/quad token in the grammar names, the "to"/result kind; see parse_conversion).
+    SelectorType from = SelectorType::Node;
     // meaningful iff op == More - the optional step count from `(more [<num>] SEL)`; nullopt means it
     // was omitted (defaults to 1 at evaluation, see select_node/select_edge), kept as nullopt rather
     // than eagerly filled in to 1 so format_selector can round-trip the exact text a Selector was
@@ -141,11 +148,12 @@ std::vector<T> randomly_remove(std::vector<T> items, int remove_count) {
 }
 
 // Parses `s` as a node selector (see this file's own top comment for the grammar) - throws
-// std::runtime_error if `s` doesn't follow the grammar (an operator not valid for nodes is simply
-// not recognized inside a node-selector context). Mirrors shared/selector.ts's parseNodeSelector() -
-// see the .cpp file's own parse_sel_expr, the single function all four parse_*_selector entry
-// points below share (self-recursive on the same SelectorType throughout, including through
-// conva/conve's own operand - see parse_sel_expr's own doc comment).
+// std::runtime_error if `s` doesn't follow the grammar, or parses to a selector of a different kind.
+// Mirrors shared/selector.ts's parseNodeSelector() - see the .cpp file's own parse_sel_expr, the
+// single context-free function all four parse_*_selector entry points below share (each infers its
+// own `type` bottom-up rather than being told what to expect, then parse_top_level checks the
+// result's own `type` against what each of these four promises to return - see parse_sel_expr's own
+// doc comment).
 Selector parse_node_selector(const std::string& s);
 
 // Parses `s` as an edge selector - the edge-selector counterpart of parse_node_selector above.

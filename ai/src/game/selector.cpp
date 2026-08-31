@@ -78,12 +78,11 @@ static double next_nonneg_number(ParseCursor& c, const std::string& context) {
     return n;
 }
 
-static Selector parse_sel_expr(ParseCursor& c, SelectorType type);
+static Selector parse_sel_expr(ParseCursor& c);
 
-// Display name for `type` used in parse_sel_expr's own "unknown X-selector operator"/rejection
-// messages - Tri reads as "triangle" here (unlike e.g. describe_selector_type's "a tri", used
-// instead by the select_*() evaluators' own wrong-kind-selector messages). Mirrors
-// shared/selector.ts's selectorKindName.
+// Display name for `type` used in parse_sel_expr's own rejection messages - Tri reads as "triangle"
+// here (unlike describe_selector_type's "a tri" below, used by parse_top_level's own and each
+// evaluator's own wrong-kind-selector messages). Mirrors shared/selector.ts's selectorKindName.
 static std::string selector_kind_name(SelectorType type) {
     switch (type) {
         case SelectorType::Node: return "node";
@@ -94,81 +93,144 @@ static std::string selector_kind_name(SelectorType type) {
     throw std::runtime_error("selector_kind_name: unknown type");
 }
 
-// Mirrors shared/selector.ts's parseConversion() - same logic, just calling parse_sel_expr(c, from)
-// directly in place of TS's own dispatch (which only needs a from-token -> SelectorType lookup now
-// that there's a single recursive parser, same simplification TS itself made here).
-static Selector parse_conversion(ParseCursor& c, SelectorOp op, SelectorType to_type) {
-    std::string from_tok = c.next();
-    SelectorType from;
-    if (from_tok == "node") from = SelectorType::Node;
-    else if (from_tok == "edge") from = SelectorType::Edge;
-    else if (from_tok == "tri") from = SelectorType::Tri;
-    else if (from_tok == "quad") from = SelectorType::Quad;
-    else throw std::runtime_error(
-        "selector: (" + std::string(op == SelectorOp::Conva ? "conva" : "conve") +
-        " ...) source kind must be 'node', 'edge', 'tri', or 'quad', got '" + from_tok + "'");
-    if ((from == SelectorType::Tri && to_type == SelectorType::Quad) ||
-        (from == SelectorType::Quad && to_type == SelectorType::Tri))
-        throw std::runtime_error("selector: (" + std::string(op == SelectorOp::Conva ? "conva" : "conve") +
-            " ...) has no association defined between 'tri' and 'quad'");
-    Selector a = parse_sel_expr(c, from);
+// "a node"/"an edge"/"a tri"/"a quad" - shared by parse_top_level's own wrong-result-kind message
+// below, and by each evaluator's own wrong-kind error message further down.
+static std::string describe_selector_type(SelectorType type) {
+    switch (type) {
+        case SelectorType::Node: return "a node";
+        case SelectorType::Edge: return "an edge";
+        case SelectorType::Tri:  return "a tri";
+        case SelectorType::Quad: return "a quad";
+    }
+    throw std::runtime_error("describe_selector_type: unknown type");
+}
+
+// The grammar's own op keyword for `op` - shared by parse_top_level's own wrong-result-kind message
+// below (mirrors shared/selector.ts's own `(op '${sel.op}')` suffix, which reads the op straight off
+// the TS string-literal union `op` field; this reconstructs the same text from the enum).
+static std::string selector_op_keyword(SelectorOp op) {
+    switch (op) {
+        case SelectorOp::Union: return "union";
+        case SelectorOp::Inter: return "inter";
+        case SelectorOp::Diff:  return "diff";
+        case SelectorOp::Compl: return "compl";
+        case SelectorOp::More:  return "more";
+        case SelectorOp::All:   return "all";
+        case SelectorOp::None:  return "none";
+        case SelectorOp::Deg:   return "deg";
+        case SelectorOp::Conva: return "conva";
+        case SelectorOp::Conve: return "conve";
+        case SelectorOp::Rrmn:  return "rrmn";
+        case SelectorOp::Rrmp:  return "rrmp";
+        case SelectorOp::Raw:   return "raw";
+    }
+    throw std::runtime_error("selector_op_keyword: unknown op");
+}
+
+// Parses a node/edge/tri/quad kind token, throwing `context`'s own "kind must be..." message (naming
+// `op` in it) if `tok` isn't one. Shared by parse_sel_expr's own all/none case and parse_conversion
+// below - both read a leading kind token with the same accepted set and the same error shape.
+static SelectorType parse_kind_token(const std::string& tok, const std::string& op, const std::string& noun) {
+    if (tok == "node") return SelectorType::Node;
+    if (tok == "edge") return SelectorType::Edge;
+    if (tok == "tri") return SelectorType::Tri;
+    if (tok == "quad") return SelectorType::Quad;
+    throw std::runtime_error(
+        "selector: (" + op + " ...) " + noun + " must be 'node', 'edge', 'tri', or 'quad', got '" + tok + "'");
+}
+
+// Mirrors shared/selector.ts's parseConversion() - the leading node/edge/tri/quad token now names
+// the "to"/result kind (see selector.h's own top comment); the operand is parsed via the ordinary
+// context-free parse_sel_expr(c), and its own bottom-up-inferred `type` is the "from" kind.
+static Selector parse_conversion(ParseCursor& c, SelectorOp op) {
+    std::string op_name = op == SelectorOp::Conva ? "conva" : "conve";
+    SelectorType to_type = parse_kind_token(c.next(), op_name, "result kind");
+    Selector a = parse_sel_expr(c);
     c.expect(")");
-    if (from == to_type) return a; // same-kind conversion is a no-op
+    if ((a.type == SelectorType::Tri && to_type == SelectorType::Quad) ||
+        (a.type == SelectorType::Quad && to_type == SelectorType::Tri))
+        throw std::runtime_error(
+            "selector: (" + op_name + " ...) has no association defined between 'tri' and 'quad'");
+    if (a.type == to_type) return a; // same-kind conversion is a no-op
     Selector sel;
-    sel.op = op; sel.type = to_type; sel.from = from;
+    sel.op = op; sel.type = to_type; sel.from = a.type;
     sel.a = std::make_shared<Selector>(std::move(a));
     return sel;
 }
 
-// Parses a SEL of the given `type` - self-recursive on the SAME `type` throughout (conva/conve, via
-// parse_conversion above, are the only place a parse ever continues into a different type). Every
-// Selector this returns has this same `type`. `deg` (node only) and `more` (node/edge only) reject
-// every other `type` with the same "unknown operator" message parsing an operator this function had
-// no case for at all would produce. Mirrors shared/selector.ts's parseSelExpr().
-static Selector parse_sel_expr(ParseCursor& c, SelectorType type) {
+// Parses one SEL, inferring its own `type` bottom-up rather than being told what to expect (see
+// selector.h's own top comment and shared/selector.ts's own top comment) - context-free, unlike the
+// old parse_sel_expr(c, type). Every case below either propagates an operand's own already-parsed
+// `type` unchanged (union/inter/diff/compl/rrmn/rrmp - diff/union/inter also check their operands
+// agree with each other), reads an explicit leading token because nothing else could supply the kind
+// (all/none's own kind; conva/conve's own "to" kind, via parse_conversion above), or is hardcoded to
+// a single always-valid kind (deg: always Node). deg/more reject a mismatched kind (deg implicitly,
+// by always being Node regardless of context; more explicitly, by checking its own operand's
+// inferred `type` after the fact) - there's no longer a `type` context to check against up front the
+// way the old top-down version did. Mirrors shared/selector.ts's parseSelExpr().
+static Selector parse_sel_expr(ParseCursor& c) {
     c.expect("(");
     std::string op = c.next();
     if (op == "union" || op == "inter") {
         Selector sel;
         sel.op = op == "union" ? SelectorOp::Union : SelectorOp::Inter;
-        sel.type = type;
-        while (c.peek() != ")") sel.items.push_back(parse_sel_expr(c, type));
+        while (c.peek() != ")") sel.items.push_back(parse_sel_expr(c));
         c.expect(")");
+        if (sel.items.empty())
+            throw std::runtime_error(
+                "selector: (" + op + " ...) needs at least one operand - its own kind can't be "
+                "inferred bottom-up from zero operands; use (all <kind>)/(none <kind>) directly "
+                "for the identity case");
+        sel.type = sel.items[0].type;
+        for (size_t i = 1; i < sel.items.size(); i++)
+            if (sel.items[i].type != sel.type)
+                throw std::runtime_error(
+                    "selector: (" + op + " ...) operands must all be the same kind - operand 1 is " +
+                    selector_kind_name(sel.type) + ", operand " + std::to_string(i + 1) + " is " +
+                    selector_kind_name(sel.items[i].type));
         return sel;
     }
     if (op == "diff") {
         Selector sel;
         sel.op = SelectorOp::Diff;
-        sel.type = type;
-        sel.a = std::make_shared<Selector>(parse_sel_expr(c, type));
-        sel.b = std::make_shared<Selector>(parse_sel_expr(c, type));
+        sel.a = std::make_shared<Selector>(parse_sel_expr(c));
+        sel.b = std::make_shared<Selector>(parse_sel_expr(c));
         c.expect(")");
+        if (sel.a->type != sel.b->type)
+            throw std::runtime_error(
+                "selector: (diff ...) operands must be the same kind - got " +
+                selector_kind_name(sel.a->type) + " and " + selector_kind_name(sel.b->type));
+        sel.type = sel.a->type;
         return sel;
     }
     if (op == "compl") {
         Selector sel;
         sel.op = SelectorOp::Compl;
-        sel.type = type;
-        sel.a = std::make_shared<Selector>(parse_sel_expr(c, type));
+        sel.a = std::make_shared<Selector>(parse_sel_expr(c));
         c.expect(")");
+        sel.type = sel.a->type;
         return sel;
     }
     if (op == "more") {
-        if (type != SelectorType::Node && type != SelectorType::Edge)
-            throw std::runtime_error("selector: unknown " + selector_kind_name(type) + "-selector operator 'more'");
         Selector sel;
         sel.op = SelectorOp::More;
-        sel.type = type;
         if (c.peek() != "(") sel.steps = next_nonneg_int(c, "(more ...) step count");
-        sel.a = std::make_shared<Selector>(parse_sel_expr(c, type));
+        sel.a = std::make_shared<Selector>(parse_sel_expr(c));
         c.expect(")");
+        if (sel.a->type != SelectorType::Node && sel.a->type != SelectorType::Edge)
+            throw std::runtime_error(
+                "selector: (more ...) requires a node or edge selector, got a " +
+                selector_kind_name(sel.a->type) + " selector");
+        sel.type = sel.a->type;
         return sel;
     }
-    if (op == "all") { c.expect(")"); return Selector{SelectorOp::All, type}; }
-    if (op == "none") { c.expect(")"); return Selector{SelectorOp::None, type}; }
+    if (op == "all" || op == "none") {
+        SelectorOp sop = op == "all" ? SelectorOp::All : SelectorOp::None;
+        SelectorType kind = parse_kind_token(c.next(), op, "kind");
+        c.expect(")");
+        return Selector{sop, kind};
+    }
     if (op == "deg") {
-        if (type != SelectorType::Node)
-            throw std::runtime_error("selector: unknown " + selector_kind_name(type) + "-selector operator 'deg'");
         std::string cmp_tok = c.next();
         DegCmp cmp;
         if (cmp_tok == "eq") cmp = DegCmp::Eq;
@@ -179,40 +241,48 @@ static Selector parse_sel_expr(ParseCursor& c, SelectorType type) {
         int n = next_nonneg_int(c, "(deg ...) argument");
         c.expect(")");
         Selector sel;
-        sel.op = SelectorOp::Deg; sel.type = type; sel.cmp = cmp; sel.n = n;
+        sel.op = SelectorOp::Deg; sel.type = SelectorType::Node; sel.cmp = cmp; sel.n = n;
         return sel;
     }
     if (op == "conva" || op == "conve")
-        return parse_conversion(c, op == "conva" ? SelectorOp::Conva : SelectorOp::Conve, type);
+        return parse_conversion(c, op == "conva" ? SelectorOp::Conva : SelectorOp::Conve);
     if (op == "rrmn") {
         int count = next_nonneg_int(c, "(rrmn ...) count");
         Selector sel;
-        sel.op = SelectorOp::Rrmn; sel.type = type; sel.count = count;
-        sel.a = std::make_shared<Selector>(parse_sel_expr(c, type));
+        sel.op = SelectorOp::Rrmn; sel.count = count;
+        sel.a = std::make_shared<Selector>(parse_sel_expr(c));
         c.expect(")");
+        sel.type = sel.a->type;
         return sel;
     }
     if (op == "rrmp") {
         double frac = next_nonneg_number(c, "(rrmp ...) portion");
         Selector sel;
-        sel.op = SelectorOp::Rrmp; sel.type = type; sel.frac = frac;
-        sel.a = std::make_shared<Selector>(parse_sel_expr(c, type));
+        sel.op = SelectorOp::Rrmp; sel.frac = frac;
+        sel.a = std::make_shared<Selector>(parse_sel_expr(c));
         c.expect(")");
+        sel.type = sel.a->type;
         return sel;
     }
-    throw std::runtime_error("selector: unknown " + selector_kind_name(type) + "-selector operator '" + op + "'");
+    throw std::runtime_error("selector: unknown selector operator '" + op + "'");
 }
 
 // Shared by parse_node_selector/parse_edge_selector/parse_triangle_selector/parse_quad_selector:
-// tokenizes s, runs parse_sel_expr(c, type) over the whole thing, and rejects any leftover trailing
-// input. Mirrors shared/selector.ts's parseTopLevel().
-static Selector parse_top_level(const std::string& s, SelectorType type) {
+// tokenizes s, runs the context-free parse_sel_expr over the whole thing, rejects any leftover
+// trailing input, and checks the result's own bottom-up-inferred `type` against `want` (the mirror
+// image of the old top-down scheme, where `want` was threaded in as parsing context and this check
+// was unreachable). Mirrors shared/selector.ts's parseTopLevel().
+static Selector parse_top_level(const std::string& s, SelectorType want) {
     auto tokens = tokenize(s);
     if (tokens.empty()) throw std::runtime_error("selector: empty input");
     ParseCursor c(std::move(tokens));
-    Selector sel = parse_sel_expr(c, type);
+    Selector sel = parse_sel_expr(c);
     if (!c.at_end())
         throw std::runtime_error("selector: unexpected trailing input starting at '" + c.peek() + "'");
+    if (sel.type != want)
+        throw std::runtime_error(
+            "selector: expected " + describe_selector_type(want) + " selector, got " +
+            describe_selector_type(sel.type) + " selector (op '" + selector_op_keyword(sel.op) + "')");
     return sel;
 }
 
@@ -233,6 +303,19 @@ static std::string format_double(double d) {
     return oss.str();
 }
 
+// The literal grammar token for `type` ("node"/"edge"/"tri"/"quad") - used by format_selector's own
+// All/None/Conva/Conve cases below (the inverse of parse_kind_token above); unlike
+// selector_kind_name's long form ("triangle" for Tri), this is what actually appears in the SEL text.
+static std::string selector_kind_token(SelectorType type) {
+    switch (type) {
+        case SelectorType::Node: return "node";
+        case SelectorType::Edge: return "edge";
+        case SelectorType::Tri:  return "tri";
+        case SelectorType::Quad: return "quad";
+    }
+    throw std::runtime_error("selector_kind_token: unknown type");
+}
+
 // Mirrors shared/selector.ts's formatSelector() - the inverse of parsing.
 std::string format_selector(const Selector& sel) {
     switch (sel.op) {
@@ -251,17 +334,18 @@ std::string format_selector(const Selector& sel) {
             return sel.steps.has_value()
                 ? "(more " + std::to_string(*sel.steps) + " " + format_selector(*sel.a) + ")"
                 : "(more " + format_selector(*sel.a) + ")";
-        case SelectorOp::All:   return "(all)";
-        case SelectorOp::None:  return "(none)";
+        case SelectorOp::All:   return "(all " + selector_kind_token(sel.type) + ")";
+        case SelectorOp::None:  return "(none " + selector_kind_token(sel.type) + ")";
         case SelectorOp::Deg: {
             std::string cmp = sel.cmp == DegCmp::Eq ? "eq" : sel.cmp == DegCmp::Gt ? "gt" : "lt";
             return "(deg " + cmp + " " + std::to_string(sel.n) + ")";
         }
         case SelectorOp::Conva: case SelectorOp::Conve: {
             std::string name = sel.op == SelectorOp::Conva ? "conva" : "conve";
-            std::string from = sel.from == SelectorType::Node ? "node" : sel.from == SelectorType::Edge ? "edge"
-                : sel.from == SelectorType::Tri ? "tri" : "quad";
-            return "(" + name + " " + from + " " + format_selector(*sel.a) + ")";
+            // sel.type is the "to"/result kind - see selector.h's own top comment on why that's what
+            // the explicit token now names (sel.from, the "to" kind's mirror, is read off sel.a's own
+            // type instead, so it doesn't need spelling out here).
+            return "(" + name + " " + selector_kind_token(sel.type) + " " + format_selector(*sel.a) + ")";
         }
         case SelectorOp::Rrmn: return "(rrmn " + std::to_string(sel.count) + " " + format_selector(*sel.a) + ")";
         case SelectorOp::Rrmp: return "(rrmp " + format_double(sel.frac) + " " + format_selector(*sel.a) + ")";
@@ -291,17 +375,6 @@ bool Selector::operator==(const Selector& other) const {
 }
 
 // ── evaluation ───────────────────────────────────────────────────────────────
-
-// "a node"/"an edge"/"a tri"/"a quad" - shared by each evaluator's own wrong-kind error message below.
-static std::string describe_selector_type(SelectorType type) {
-    switch (type) {
-        case SelectorType::Node: return "a node";
-        case SelectorType::Edge: return "an edge";
-        case SelectorType::Tri:  return "a tri";
-        case SelectorType::Quad: return "a quad";
-    }
-    throw std::runtime_error("describe_selector_type: unknown type");
-}
 
 static int degree(const std::vector<std::vector<int>>& adj, int i) {
     int d = 0;

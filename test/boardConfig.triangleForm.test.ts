@@ -117,7 +117,7 @@ test('applyModifier("TriangleForm", ...) matches calling triangleForm directly',
 });
 
 test('an optional trailing triangle selector restricts triform to only the triangles it selects', () => {
-    const sel = parseTriangleSelector('(conve node (deg eq 3))');
+    const sel = parseTriangleSelector('(conve tri (deg eq 3))');
     const bc = triangularBoard(2);
     const direct = triangleForm(bc, 3, sel);
     assert.deepEqual(applyModifier(bc, { kind: 'TriangleForm', w: 3, sel }), direct);
@@ -139,7 +139,7 @@ test('sel restricts triangleForm to only the selected triangles - an unselected 
     const emb = new Embedding(2, adj.map((_, i): [number, number] => [i, 0]));
     const bc: BoardConfig = { N: 6, adj, emb };
     // Selects only the triangle containing the degree-3 node (0) - triangle {0,1,2}, not {2,3,4}.
-    const sel = parseTriangleSelector('(conve node (deg eq 3))');
+    const sel = parseTriangleSelector('(conve tri (deg eq 3))');
     const result = triangleForm(bc, 3, sel);
     // All 6 original nodes survive (triangle {2,3,4} is untouched) plus triangularBoard(3)'s own 6
     // face nodes for the one selected triangle, minus 3 corners glued back to nodes 0/1/2 = 9.
@@ -151,6 +151,6 @@ test('sel restricts triangleForm to only the selected triangles - an unselected 
     // triangularBoard(3) for the one subdivided triangle (its 3 corners are nodes 0,1,2 themselves).
     assert.equal(edgeCount(result.adj), 4 + edgeCount(triangularBoard(3).adj));
     // Selecting nothing (an empty selector) is a total no-op - no triangle qualifies.
-    const none = triangleForm(bc, 3, parseTriangleSelector('(none)'));
+    const none = triangleForm(bc, 3, parseTriangleSelector('(none tri)'));
     assert.deepEqual(none.adj, bc.adj);
 });
