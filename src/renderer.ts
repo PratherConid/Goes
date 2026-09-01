@@ -149,6 +149,9 @@ const _boardConfigDescriptions = new Map([
     ['shell_6_7.5', '3D shell'],
     ['roundTable_9.5_5_3_2', 'A round table with four legs'],
     ['snubsqtri_4_4_4', 'Snub square tiling with triangular gaps filled in'],
+    ['truncated_24_cell', 'Truncated regular 24-cell'],
+    ['truncated_centralized_rect_6_6',
+        '6×6 rectangular board with a hub node added to each unit square, truncated, then scaled up'],
 ]);
 
 
@@ -1681,9 +1684,13 @@ export class Renderer {
             ${row('rectify()',
                 'Rectify: place a node at each edge midpoint, connected via the convex-hull vertex figure '
                 + 'around each original node')}
+            ${row('truncate()',
+                'Truncate: place two nodes per edge, one near each endpoint, connected to each other and '
+                + '(via the convex-hull vertex figure) to the other near-points around their own original '
+                + 'node - the near-point fraction is chosen per-node so the gap left at the shrunk edge '
+                + "matches the scale of that node's own new vertex polygon")}
             ${row('edgeSplit(splitN)',
-                'EdgeSplit: split every edge into splitN sub-edges '
-                + '(e.g. modify([edgeSplit(2), rectify()], ...) gives an effect similar to truncation)')}
+                'EdgeSplit: split every edge into splitN sub-edges')}
             ${row('mergeClose(dist)',
                 'MergeClose: merge every pair of nodes closer than dist into one node')}
             ${row('triangleForm(w, sel?)',
@@ -2364,7 +2371,11 @@ export class Renderer {
             okBtn.className = 'panel-child-btn';
             okBtn.textContent = 'Ok';
             okBtn.addEventListener('click', () => this._applyBoardEdit());
-            btnRow.appendChild(okBtn);
+            const cancelBtn = document.createElement('button');
+            cancelBtn.className = 'panel-child-btn';
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.addEventListener('click', () => this._dismissPopup());
+            btnRow.append(okBtn, cancelBtn);
             box.appendChild(btnRow);
             this.popupOverlay.appendChild(box);
             return;

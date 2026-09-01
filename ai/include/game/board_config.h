@@ -39,6 +39,16 @@ BoardConfig edge_split(const BoardConfig& bc, int split_n);
 // bc.emb_dim == 0 - there are no real coordinates to compute edge directions from.
 BoardConfig rectify(const BoardConfig& bc);
 
+// Mirrors shared/boardConfig.ts's truncate()'s connectivity (two new nodes per original edge, one
+// near each endpoint, connected to each other and, via rectify's own convex-hull-of-directions ring
+// construction, to the other near-points around their own shared original vertex) but not its
+// per-vertex-fraction position formula, which is irrational in general and degenerate at a
+// degree-1 vertex - no exact-integer analog. Instead, every near-point sits at a fixed 1/3 (near
+// its own endpoint) or 2/3 (near the far endpoint) of the way along its edge, on a 3x-scaled board
+// (see the .cpp file's own comment for why this comes out exact-integer with no division). Throws
+// if bc.emb_dim == 0, same reasoning as rectify() above.
+BoardConfig truncate(const BoardConfig& bc);
+
 // Merges every pair of nodes whose Euclidean distance (in the natural embedding dimension) is
 // strictly less than dist into a single node, via quotient_board. Closeness is transitive under
 // quotient_board's union-find, so a chain of nodes each within dist of the next all collapse into
@@ -228,7 +238,7 @@ std::string format_board_arg_entry(const BoardArgEntry& e);
 // call, or a real `for` loop, instead) - so unlike every other variant here, nothing constructs a
 // Prod- or Repeat-kind BoardModifier value anymore.
 enum class ModifierKind {
-    Rectify, EdgeSplit, MergeClose, TriangleForm, QuadForm, Form,
+    Rectify, Truncate, EdgeSplit, MergeClose, TriangleForm, QuadForm, Form,
     TriCentralize, QuadCentralize, Centralize,
     GlobalCentralize, QuadOctarize, Scale, NodeInducedSubgraph, EdgeInducedSubgraph
 };
@@ -359,6 +369,22 @@ BoardConfig octahedron_board();
 // 1, every other coordinate 0; connectivity (every vertex adjacent to every other except its own
 // antipode) is unaffected. n=3 is the regular octahedron (see octahedron_board() above).
 BoardConfig orthoplex_board(int n);
+
+// Mirrors shared/boardConfig.ts's reg24CellBoard(): the D4 root system (24 vertices, every point
+// with exactly two of 4 coordinates equal to +-1, the rest 0), adjacent iff their raw dot product
+// is 1. Exact-integer, like orthoplex_board above - see the .cpp file's own comment for the +1
+// shift its stored embed[] coordinates need (BoardConfig::embed is unsigned-only).
+BoardConfig reg_24_cell_board();
+
+// Mirrors shared/boardConfig.ts's reg120CellBoard()'s vertex-family generation and
+// distance-threshold adjacency rule, but always produces an emb_dim = 0 board (empty embed[] per
+// node) - golden-ratio coordinates have no exact-integer analog, same reasoning as
+// dodecahedron_board/icosahedron_board below. See the .cpp file's own comment.
+BoardConfig reg_120_cell_board();
+
+// Mirrors shared/boardConfig.ts's reg600CellBoard() - same emb_dim = 0 approach and reasoning as
+// reg_120_cell_board() above. See the .cpp file's own comment.
+BoardConfig reg_600_cell_board();
 
 // A uniform n-gonal antiprism: 2n vertices - a "top" n-gon (indices 0..n-1) and a "bottom" n-gon
 // (indices n..2n-1, rotated by half a step), joined by 2n "slant" edges (top k to bottom k and
@@ -498,7 +524,8 @@ BoardConfig glue_twisted_square_board(int w, int h, int g);
 BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("line" | "rect" | "rectd" |
-// "cublat" | "hcub" | "tri" | "sier" | "simplex" | "regpoly" | "tetra" | "octa" | "ortho" | "ap" | "dodeca" |
+// "cublat" | "hcub" | "tri" | "sier" | "simplex" | "regpoly" | "tetra" | "octa" | "ortho" |
+// "reg24Cell" | "reg120Cell" | "reg600Cell" | "ap" | "dodeca" |
 // "icosa" | "dodflake" | "icoflake" | "octaflake" | "polyflake" | "cpolyflake" | "cpentflake" |
 // "menger" | "trihex" | "hex" | "hexdel" | "snubsq" | "twsq" | "gtsq" | "star"),
 // reading each of `args` back via board_arg_number()/board_arg_list() as that builder's own

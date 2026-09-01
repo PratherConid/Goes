@@ -157,6 +157,120 @@ export function rectify(bc: BoardConfig): BoardConfig {
 }
 
 /**
+ * Truncates `bc`: two new nodes per original edge (i<j), one near each endpoint, replacing every
+ * original vertex `v` with a small polygon connecting the near-`v` points of `v`'s own incident
+ * edges - the same convex-hull-of-directions ring construction `rectify` above uses for its own
+ * midpoints (see its own doc comment), just applied to the near-`v` points here instead of a single
+ * shared midpoint. The two near-points of an original edge `(i,j)` are themselves connected too,
+ * forming that edge's own (shortened) middle segment.
+ *
+ * Every one of `v`'s own near-points sits at the SAME fraction `t_v` of the way along its own edge
+ * (`t_v <= 0.5`, i.e. always within the "near half" closer to `v`) - `t_v` is chosen so that,
+ * locally at `v`: the minimal (over `v`'s own edges) distance from a near-`v` point to its own
+ * edge's midpoint equals half the minimal (over `v`'s own convex-hull ring edges) distance between
+ * two ring-adjacent near-`v` points. Since every near-`v` point is `v + t_v*(u-v)` for its own edge
+ * `(v,u)`:
+ * - distance to that edge's own midpoint is `(0.5 - t_v) * |u-v|`, minimized over `v`'s edges by
+ *   picking `v`'s own shortest incident edge length (`minL`);
+ * - distance between two ring-adjacent near-`v` points on edges `(v,u1)`/`(v,u2)` is
+ *   `t_v * |(u1-v)-(u2-v)|` (`t_v` factors out identically, since it's the same for every edge at
+ *   `v`), minimized over `v`'s own ring edges (`minD`, a fixed geometric quantity independent of
+ *   `t_v`).
+ *
+ * Setting `(0.5-t_v)*minL = 0.5*t_v*minD` and solving gives `t_v = minL / (2*minL + minD)`. A
+ * vertex with no ring edges (degree < 2) has no such constraint to solve - `t_v` there defaults to
+ * `0.5`, i.e. its near-point(s) sit at the edge midpoint, same as `rectify` would place them.
+ *
+ * Finally, the whole board is scaled by `1 / (1 - 2*maxPortion)`, `maxPortion` being the largest
+ * `t_v` over every vertex with a real (non-fallback) value, i.e. degree >= 2 - a degree-0 or
+ * degree-1 vertex's own unused `0.5` fallback is excluded, or a single pendant edge anywhere in
+ * the board would force `maxPortion` to exactly `0.5` and the scale factor to a division by zero.
+ * The shrunk middle segment of an edge `(i,j)` has length `|i-j| * (1 - t_i - t_j)`, so
+ * `1 - 2*maxPortion` is a lower bound on that factor for every edge between two degree->=2
+ * vertices (since `t_i, t_j <= maxPortion` there); scaling by its reciprocal keeps every such
+ * shrunk segment at least as long as the original edge it came from.
+ */
+export function truncate(bc: BoardConfig): BoardConfig {
+    const N = bc.N;
+    const embDim = bc.emb.embDim;
+    const pos = bc.emb.pos;
+
+    // Edges incident to each original node v, as {u, vec, len} triples - vec is u's position minus
+    // v's (so always points away from v along that edge), len its length.
+    const incident: { u: number; vec: number[]; len: number }[][] = Array.from({ length: N }, () => []);
+    const edges: [number, number][] = [];
+    for (let i = 0; i < N; i++)
+        for (let j = i + 1; j < N; j++) {
+            if (!bc.adj[i][j]) continue;
+            edges.push([i, j]);
+            const vecJ = pos[j].map((v, k) => v - pos[i][k]);
+            const len = Math.sqrt(vecJ.reduce((s, x) => s + x * x, 0));
+            incident[i].push({ u: j, vec: vecJ, len });
+            incident[j].push({ u: i, vec: vecJ.map(x => -x), len });
+        }
+
+    // Per-node fraction t[v] (see this function's own doc comment for the derivation) and its own
+    // convex-hull ring pairs (indices into incident[v], same convention as rectify's own `mids`).
+    const t: number[] = new Array(N).fill(0.5);
+    const ringPairsOf: [number, number][][] = Array.from({ length: N }, () => []);
+    for (let v = 0; v < N; v++) {
+        const own = incident[v];
+        if (own.length < 2) continue;
+        const dirs = own.map(e => e.vec.map(x => x / e.len));
+        const ringPairs = convexHullEdges(dirs);
+        ringPairsOf[v] = ringPairs;
+        if (ringPairs.length === 0) continue;
+        const minL = Math.min(...own.map(e => e.len));
+        const minD = Math.min(...ringPairs.map(([a, b]) =>
+            Math.sqrt(own[a].vec.reduce((s, x, k) => s + (x - own[b].vec[k]) ** 2, 0))));
+        t[v] = minL / (2 * minL + minD);
+    }
+
+    // Two new nodes per original edge (i<j): nearI (near i, at fraction t[i]) and nearJ (near j).
+    const nearIdx = new Map<string, [number, number]>(); // "i,j" (i<j) -> [nearI idx, nearJ idx]
+    const posOut: number[][] = [];
+    for (const [i, j] of edges) {
+        const nearI = pos[i].map((v, k) => v + t[i] * (pos[j][k] - v));
+        const nearJ = pos[j].map((v, k) => v + t[j] * (pos[i][k] - v));
+        nearIdx.set(`${i},${j}`, [posOut.length, posOut.length + 1]);
+        posOut.push(nearI, nearJ);
+    }
+
+    const adj = zeroAdj(posOut.length);
+    // Shrunk original edges: connect the two near-points of each original edge.
+    for (const [i, j] of edges) {
+        const [idxI, idxJ] = nearIdx.get(`${i},${j}`)!;
+        adj[idxI][idxJ] = 1;
+        adj[idxJ][idxI] = 1;
+    }
+    // Vertex rings: connect hull-adjacent near-v points around each original vertex.
+    for (let v = 0; v < N; v++) {
+        const own = incident[v];
+        const nearAt = own.map(e => {
+            const key = v < e.u ? `${v},${e.u}` : `${e.u},${v}`;
+            const [idxI, idxJ] = nearIdx.get(key)!;
+            return v < e.u ? idxI : idxJ;
+        });
+        for (const [a, b] of ringPairsOf[v]) {
+            adj[nearAt[a]][nearAt[b]] = 1;
+            adj[nearAt[b]][nearAt[a]] = 1;
+        }
+    }
+
+    // Scale so every shrunk edge segment ends up at least as long as its original edge (see this
+    // function's own doc comment) - maxPortion only considers vertices with a real (non-fallback)
+    // t[v], i.e. degree >= 2; a degree-0 or degree-1 vertex's own unused 0.5 fallback must not
+    // count, or a single pendant edge anywhere in the board would force maxPortion to exactly 0.5
+    // and blow the scale factor up to a division by zero.
+    let maxPortion = -Infinity;
+    for (let v = 0; v < N; v++) if (incident[v].length >= 2) maxPortion = Math.max(maxPortion, t[v]);
+    const scale = 1 / (1 - 2 * maxPortion);
+    const posScaled = posOut.map(p => p.map(x => x * scale));
+
+    return make(new Embedding(embDim, posScaled), adj);
+}
+
+/**
  * Merges every pair of nodes whose Euclidean distance (in the natural embedding dimension) is
  * strictly less than `dist` into a single node, via quotientBoard. Closeness is transitive under
  * quotientBoard's union-find, so a chain of nodes each within `dist` of the next all collapse into
@@ -1100,6 +1214,191 @@ export function reg24CellBoard(): BoardConfig {
 }
 
 /**
+ * The 120-cell (hecatonicosachoron): the regular 4-dimensional polytope with 600 vertices, 1200
+ * unit-length edges, 720 pentagonal faces and 120 dodecahedral cells - dual to the 600-cell. Raw
+ * (pre-scale) vertex coordinates, all at distance `sqrt(8)` from the origin, come from 7 families
+ * (`phi` = the golden ratio; `1/phi = phi-1`, `1/phi^2 = 2-phi`, `phi^2 = phi+1`) - the first 4 are
+ * every signed arrangement of a 4-value multiset (duplicate-magnitude entries collapse a full
+ * permutation set down to fewer distinct position-arrangements), the last 3 only the *even* signed
+ * permutations (half of every arrangement, selected by permutation parity on distinct positions,
+ * since all 4 values in those 3 families are themselves distinct):
+ * - `(0, 0, 2, 2)` - 24 signed arrangements
+ * - `(phi, phi, phi, 1/phi^2)` - 64
+ * - `(1, 1, 1, sqrt(5))` - 64
+ * - `(1/phi, 1/phi, 1/phi, phi^2)` - 64
+ * - even permutations of `(0, 1/phi, phi, sqrt(5))` - 96
+ * - even permutations of `(0, 1/phi^2, 1, phi^2)` - 96
+ * - even permutations of `(1/phi, 1, phi, 2)` - 192
+ *
+ * (24+64+64+64+96+96+192 = 600, matching the known vertex count.) Two vertices are adjacent iff
+ * their raw squared distance is `(3 - sqrt(5))^2` - verified numerically (not just asserted) as the
+ * correct edge threshold: it's the minimum nonzero pairwise distance among these 600 points, and
+ * cutting there gives exactly 1200 edges with every vertex at degree 4, matching the 120-cell's
+ * known edge count and vertex figure. Final positions are scaled by `edgeScale = 1/(3-sqrt(5))` so
+ * edges come out exactly unit length.
+ */
+export function reg120CellBoard(): BoardConfig {
+    const PHI = (1 + Math.sqrt(5)) / 2;
+    const PHI2 = PHI * PHI;
+    const IPHI = 1 / PHI;
+    const IPHI2 = 1 / (PHI * PHI);
+    const SQRT5 = Math.sqrt(5);
+    const edgeScale = 1 / (3 - Math.sqrt(5));
+
+    const permsOf = (arr: number[]): number[][] => {
+        if (arr.length <= 1) return [arr.slice()];
+        const out: number[][] = [];
+        for (let i = 0; i < arr.length; i++) {
+            const rest = arr.slice(0, i).concat(arr.slice(i + 1));
+            for (const p of permsOf(rest)) out.push([arr[i], ...p]);
+        }
+        return out;
+    };
+    const evenPermsOf = (arr: number[]): number[][] => {
+        // Permute an index array (rather than arr's own values directly) so parity is well-defined
+        // even when arr has repeated magnitudes - not needed by the 3 families this is actually
+        // called with (all 4 values distinct there), but keeps the helper correct in general.
+        const idxPerms = permsOf(arr.map((_, i) => i));
+        return idxPerms
+            .filter(p => {
+                let inversions = 0;
+                for (let i = 0; i < p.length; i++)
+                    for (let j = i + 1; j < p.length; j++)
+                        if (p[i] > p[j]) inversions++;
+                return inversions % 2 === 0;
+            })
+            .map(p => p.map(i => arr[i]));
+    };
+    const signVariants = (v: number[]): number[][] => {
+        const nonzero: number[] = [];
+        v.forEach((x, i) => { if (x !== 0) nonzero.push(i); });
+        const k = nonzero.length;
+        const out: number[][] = [];
+        for (let mask = 0; mask < (1 << k); mask++) {
+            const w = v.slice();
+            for (let b = 0; b < k; b++) if (mask & (1 << b)) w[nonzero[b]] = -w[nonzero[b]];
+            out.push(w);
+        }
+        return out;
+    };
+
+    const raw: number[][] = [];
+    const seen = new Set<string>();
+    const addPerms = (perms: number[][]) => {
+        for (const p of perms)
+            for (const s of signVariants(p)) {
+                const key = s.map(x => x.toFixed(2)).join(',');
+                if (!seen.has(key)) { seen.add(key); raw.push(s); }
+            }
+    };
+    addPerms(permsOf([0, 0, 2, 2]));
+    addPerms(permsOf([PHI, PHI, PHI, IPHI2]));
+    addPerms(permsOf([1, 1, 1, SQRT5]));
+    addPerms(permsOf([IPHI, IPHI, IPHI, PHI2]));
+    addPerms(evenPermsOf([0, IPHI, PHI, SQRT5]));
+    addPerms(evenPermsOf([0, IPHI2, 1, PHI2]));
+    addPerms(evenPermsOf([IPHI, 1, PHI, 2]));
+
+    const N = raw.length;
+    const pos = raw.map(v => v.map(x => x * edgeScale));
+
+    const adj = zeroAdj(N);
+    const edgeDist2 = (3 - Math.sqrt(5)) ** 2;
+    const EPS = 1e-6;
+    for (let a = 0; a < N; a++)
+        for (let b = a + 1; b < N; b++) {
+            const d2 = raw[a].reduce((s, x, k) => s + (x - raw[b][k]) ** 2, 0);
+            if (Math.abs(d2 - edgeDist2) < EPS) { adj[a][b] = 1; adj[b][a] = 1; }
+        }
+
+    return make(new Embedding(4, pos), adj);
+}
+
+/**
+ * The 600-cell: the regular 4-dimensional polytope with 120 vertices, 720 unit-length edges, 1200
+ * triangular faces and 600 tetrahedral cells - dual to the 120-cell. Raw (pre-scale) vertex
+ * coordinates, all at distance 2 from the origin, come from 3 families (`phi` = the golden ratio,
+ * `1/phi = phi-1`):
+ * - `(0, 0, 0, 2)` - 8 signed arrangements (the first 8+16=24 vertices, combined with the next
+ *   family, form an inscribed `reg24CellBoard()`)
+ * - `(1, 1, 1, 1)` - 16 signed arrangements
+ * - even permutations of `(phi, 1, 1/phi, 0)` - 96 (these form an inscribed "snub 24-cell")
+ *
+ * (8+16+96 = 120, matching the known vertex count.) Two vertices are adjacent iff their raw squared
+ * distance is `(2/phi)^2` - verified numerically (not just asserted) as the correct edge threshold:
+ * it's the minimum nonzero pairwise distance among these 120 points, and cutting there gives
+ * exactly 720 edges with every vertex at degree 12 (a regular icosahedron's own vertex count,
+ * matching the 600-cell's icosahedral vertex figure). Final positions are scaled by
+ * `edgeScale = phi/2` so edges come out exactly unit length.
+ */
+export function reg600CellBoard(): BoardConfig {
+    const PHI = (1 + Math.sqrt(5)) / 2;
+    const IPHI = 1 / PHI;
+    const edgeScale = PHI / 2;
+
+    const permsOf = (arr: number[]): number[][] => {
+        if (arr.length <= 1) return [arr.slice()];
+        const out: number[][] = [];
+        for (let i = 0; i < arr.length; i++) {
+            const rest = arr.slice(0, i).concat(arr.slice(i + 1));
+            for (const p of permsOf(rest)) out.push([arr[i], ...p]);
+        }
+        return out;
+    };
+    const evenPermsOf = (arr: number[]): number[][] => {
+        const idxPerms = permsOf(arr.map((_, i) => i));
+        return idxPerms
+            .filter(p => {
+                let inversions = 0;
+                for (let i = 0; i < p.length; i++)
+                    for (let j = i + 1; j < p.length; j++)
+                        if (p[i] > p[j]) inversions++;
+                return inversions % 2 === 0;
+            })
+            .map(p => p.map(i => arr[i]));
+    };
+    const signVariants = (v: number[]): number[][] => {
+        const nonzero: number[] = [];
+        v.forEach((x, i) => { if (x !== 0) nonzero.push(i); });
+        const k = nonzero.length;
+        const out: number[][] = [];
+        for (let mask = 0; mask < (1 << k); mask++) {
+            const w = v.slice();
+            for (let b = 0; b < k; b++) if (mask & (1 << b)) w[nonzero[b]] = -w[nonzero[b]];
+            out.push(w);
+        }
+        return out;
+    };
+
+    const raw: number[][] = [];
+    const seen = new Set<string>();
+    const addPerms = (perms: number[][]) => {
+        for (const p of perms)
+            for (const s of signVariants(p)) {
+                const key = s.map(x => x.toFixed(2)).join(',');
+                if (!seen.has(key)) { seen.add(key); raw.push(s); }
+            }
+    };
+    addPerms(permsOf([0, 0, 0, 2]));
+    addPerms(permsOf([1, 1, 1, 1]));
+    addPerms(evenPermsOf([PHI, 1, IPHI, 0]));
+
+    const N = raw.length;
+    const pos = raw.map(v => v.map(x => x * edgeScale));
+
+    const adj = zeroAdj(N);
+    const edgeDist2 = (2 / PHI) ** 2;
+    const EPS = 1e-6;
+    for (let a = 0; a < N; a++)
+        for (let b = a + 1; b < N; b++) {
+            const d2 = raw[a].reduce((s, x, k) => s + (x - raw[b][k]) ** 2, 0);
+            if (Math.abs(d2 - edgeDist2) < EPS) { adj[a][b] = 1; adj[b][a] = 1; }
+        }
+
+    return make(new Embedding(4, pos), adj);
+}
+
+/**
  * A uniform n-gonal antiprism: 2n vertices - a "top" n-gon (`k = 0..n-1`) at height `+h`, angle
  * `2*pi*k/n`, and a "bottom" n-gon at height `-h`, angle `2*pi*k/n + pi/n` (rotated by half a step
  * relative to the top) - joined by 2n unit-length "slant" edges (top vertex `k` to bottom vertices
@@ -1587,6 +1886,8 @@ export enum PrescribedBoard {
     simplexBoard,
     orthoplexBoard,
     reg24CellBoard,
+    reg120CellBoard,
+    reg600CellBoard,
     dodecahedronFlake,
     icosahedronFlake,
     octahedronFlake,
@@ -1658,6 +1959,12 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [BoardArgType[], string
     [PrescribedBoard.reg24CellBoard]:
         [nums(0), "reg24CellB", "()",
             "Regular 24-cell (24 vertices, 96 triangular faces, unit-length edges)"],
+    [PrescribedBoard.reg120CellBoard]:
+        [nums(0), "reg120CellB", "()",
+            "Regular 120-cell (600 vertices, 720 pentagonal faces, unit-length edges)"],
+    [PrescribedBoard.reg600CellBoard]:
+        [nums(0), "reg600CellB", "()",
+            "Regular 600-cell (120 vertices, 1200 triangular faces, unit-length edges)"],
     [PrescribedBoard.dodecahedronFlake]:
         [nums(1), "dodflakeB", "(n)", "Dodecahedron flake fractal of order n (n=1 is the plain dodecahedron)"],
     [PrescribedBoard.icosahedronFlake]:
@@ -1711,6 +2018,8 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: BoardArgEntry
     [PrescribedBoard.simplexBoard]:             (...a) => simplexBoard(num(a[0]), num(a[1]), num(a[2])),
     [PrescribedBoard.orthoplexBoard]:           (...a) => orthoplexBoard(num(a[0])),
     [PrescribedBoard.reg24CellBoard]:           () => reg24CellBoard(),
+    [PrescribedBoard.reg120CellBoard]:          () => reg120CellBoard(),
+    [PrescribedBoard.reg600CellBoard]:          () => reg600CellBoard(),
     [PrescribedBoard.dodecahedronFlake]:        (...a) => dodecahedronFlake(num(a[0])),
     [PrescribedBoard.icosahedronFlake]:         (...a) => icosahedronFlake(num(a[0])),
     [PrescribedBoard.octahedronFlake]:          (...a) => octahedronFlake(num(a[0])),
@@ -1724,6 +2033,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: BoardArgEntry
 export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardConfig {
     switch (modifier.kind) {
         case 'Rectify': return rectify(bc);
+        case 'Truncate': return truncate(bc);
         case 'EdgeSplit': return edgeSplit(bc, modifier.splitN);
         case 'MergeClose': return mergeClose(bc, modifier.dist);
         case 'TriangleForm': return triangleForm(bc, modifier.w, modifier.sel);

@@ -489,6 +489,7 @@ export type Selector =
  */
 export type BoardModifier =
     | { kind: 'Rectify' }
+    | { kind: 'Truncate' }
     | { kind: 'EdgeSplit'; splitN: number }
     | { kind: 'MergeClose'; dist: number }
     | { kind: 'TriangleForm'; w: number; sel?: Selector }

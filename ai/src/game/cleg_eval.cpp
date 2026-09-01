@@ -154,6 +154,9 @@ static const std::vector<PrescribedEntry>& prescribed_boards() {
         {"sier", {BoardArgKind::Number, BoardArgKind::Number}},
         {"simplex", {BoardArgKind::Number, BoardArgKind::Number, BoardArgKind::Number}},
         {"ortho", {BoardArgKind::Number}},
+        {"reg24Cell", {}},
+        {"reg120Cell", {}},
+        {"reg600Cell", {}},
         {"dodflake", {BoardArgKind::Number}},
         {"icoflake", {BoardArgKind::Number}},
         {"octaflake", {BoardArgKind::Number}},
@@ -564,6 +567,9 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
 
         m["rectify"] = BuiltinFunction{
             fixed_signature({}, MOD_TYPE), [](const std::vector<ClegValue>&, UserFuncTable&) { return make_mod(BoardModifier{ModifierKind::Rectify}); },
+        };
+        m["truncate"] = BuiltinFunction{
+            fixed_signature({}, MOD_TYPE), [](const std::vector<ClegValue>&, UserFuncTable&) { return make_mod(BoardModifier{ModifierKind::Truncate}); },
         };
         m["globalCentralize"] = BuiltinFunction{
             fixed_signature({}, MOD_TYPE), [](const std::vector<ClegValue>&, UserFuncTable&) { return make_mod(BoardModifier{ModifierKind::GlobalCentralize}); },

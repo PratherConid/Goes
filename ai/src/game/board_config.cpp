@@ -168,6 +168,91 @@ BoardConfig rectify(const BoardConfig& bc) {
     return make_bc(std::move(adj), emb_dim, std::move(pos));
 }
 
+// Mirrors shared/boardConfig.ts's truncate()'s connectivity (two new nodes per original edge, one
+// near each endpoint, connected to each other and, via the same convex-hull-of-directions ring
+// construction rectify() above uses, to the other near-points around their own shared original
+// vertex) but not its position formula: the TS side solves for a per-vertex fraction t_v that
+// balances the shrunk-edge gap against the vertex-ring scale (irrational in general, no
+// exact-integer analog, and degenerate at a degree-1 vertex). Here every near-point instead sits at
+// a fixed 1/3 (near its own endpoint) or 2/3 (near the far endpoint) of the way along its edge,
+// which comes out exact-integer after scaling the whole board by 3 first: the "1/3 point" of edge
+// (i,j), on the tripled scale, is 3*embed[i] + (embed[j]-embed[i]) = 2*embed[i]+embed[j] (no
+// division needed, same trick edge_split/rectify use for their own exact splits); the "2/3 point"
+// is symmetrically embed[i]+2*embed[j].
+BoardConfig truncate(const BoardConfig& bc) {
+    // Same rationale as rectify's own real-embedding check above - the vertex-ring connectivity
+    // needs real edge directions.
+    if (bc.emb_dim == 0)
+        throw std::runtime_error(
+            "truncate: requires a real (non-zero) embedding, got emb_dim=0 - this board has no "
+            "coordinates to compute edge directions from");
+    int N = bc.N;
+    unsigned emb_dim = bc.emb_dim;
+
+    // Two new nodes per original edge (i<j): near_i (2*embed[i]+embed[j]) and near_j
+    // (embed[i]+2*embed[j]) - see this function's own doc comment above.
+    std::map<std::pair<int,int>, std::pair<int,int>> near_idx; // (i,j) -> (near_i idx, near_j idx)
+    std::vector<std::vector<unsigned>> pos;
+    for (int i = 0; i < N; i++)
+        for (int j = i + 1; j < N; j++) {
+            if (!bc.adj[i][j]) continue;
+            std::vector<unsigned> near_i(emb_dim), near_j(emb_dim);
+            for (unsigned k = 0; k < emb_dim; k++) {
+                near_i[k] = 2 * bc.embed[i][k] + bc.embed[j][k];
+                near_j[k] = bc.embed[i][k] + 2 * bc.embed[j][k];
+            }
+            int idx_i = static_cast<int>(pos.size()); pos.push_back(std::move(near_i));
+            int idx_j = static_cast<int>(pos.size()); pos.push_back(std::move(near_j));
+            near_idx[{i, j}] = { idx_i, idx_j };
+        }
+
+    // Edges incident to each original node, as [other endpoint] lists.
+    std::vector<std::vector<int>> incident(N);
+    for (auto& [ij, idx] : near_idx) {
+        (void)idx;
+        incident[ij.first].push_back(ij.second);
+        incident[ij.second].push_back(ij.first);
+    }
+
+    auto adj = zero_adj(static_cast<int>(pos.size()));
+    // Shrunk original edges: connect the two near-points of each original edge.
+    for (auto& [ij, near] : near_idx) {
+        (void)ij;
+        adj[near.first][near.second] = 1;
+        adj[near.second][near.first] = 1;
+    }
+    // Vertex rings: connect hull-adjacent near-v points around each original vertex, same
+    // direction/convex-hull technique as rectify() above.
+    for (int v = 0; v < N; v++) {
+        auto& us = incident[v];
+        if (us.size() < 2) continue;
+        std::vector<std::vector<double>> dirs;
+        std::vector<int> near_at(us.size());
+        for (size_t idx = 0; idx < us.size(); idx++) {
+            int u = us[idx];
+            auto key = v < u ? std::make_pair(v, u) : std::make_pair(u, v);
+            auto& near = near_idx[key];
+            near_at[idx] = (v < u) ? near.first : near.second;
+
+            std::vector<double> d(emb_dim);
+            double len_sq = 0;
+            for (unsigned k = 0; k < emb_dim; k++) {
+                d[k] = static_cast<double>(bc.embed[u][k]) - static_cast<double>(bc.embed[v][k]);
+                len_sq += d[k] * d[k];
+            }
+            double len = std::sqrt(len_sq);
+            for (unsigned k = 0; k < emb_dim; k++) d[k] /= len;
+            dirs.push_back(std::move(d));
+        }
+        for (auto& [a, b] : convex_hull_edges(dirs)) {
+            adj[near_at[a]][near_at[b]] = 1;
+            adj[near_at[b]][near_at[a]] = 1;
+        }
+    }
+
+    return make_bc(std::move(adj), emb_dim, std::move(pos));
+}
+
 BoardConfig merge_close(const BoardConfig& bc, double dist) {
     assert(dist > 0 && "dist must be positive");
     // A real (always-active) check, not assert() - merge_close needs real coordinates to compute a
@@ -496,6 +581,7 @@ BoardConfig edge_induced_subgraph(const BoardConfig& bc, const std::vector<Board
 BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier) {
     switch (modifier.kind) {
         case ModifierKind::Rectify:    return rectify(bc);
+        case ModifierKind::Truncate:   return truncate(bc);
         case ModifierKind::EdgeSplit:  return edge_split(bc, modifier.split_n);
         case ModifierKind::MergeClose: return merge_close(bc, modifier.dist);
         case ModifierKind::TriangleForm: return triangle_form(bc, modifier.split_n, modifier.form_sel);
@@ -834,6 +920,172 @@ BoardConfig orthoplex_board(int n) {
         for (int j = 0; j < N; j++)
             if (i != j && j != antipode(i)) adj[i][j] = 1;
     return make_bc(std::move(adj), static_cast<unsigned>(n), std::move(pos));
+}
+
+// Mirrors shared/boardConfig.ts's reg24CellBoard(): the D4 root system (every point with exactly
+// two of 4 coordinates equal to +-1, the rest 0) - 24 vertices, adjacent iff their raw (pre-shift)
+// dot product is 1. embed[] coordinates must be non-negative here, so raw values in {-1,0,1} are
+// shifted by +1 to {0,1,2} for the stored positions (the same shift orthoplex_board above uses for
+// its own +-scale values) - adjacency is decided on the un-shifted raw values, since shifting would
+// change every dot product.
+BoardConfig reg_24_cell_board() {
+    std::vector<std::vector<int>> raw;
+    for (int i = 0; i < 4; i++)
+        for (int j = i + 1; j < 4; j++)
+            for (int si : {1, -1})
+                for (int sj : {1, -1}) {
+                    std::vector<int> v(4, 0);
+                    v[i] = si;
+                    v[j] = sj;
+                    raw.push_back(v);
+                }
+
+    int N = static_cast<int>(raw.size());
+    std::vector<std::vector<unsigned>> pos(N, std::vector<unsigned>(4));
+    for (int a = 0; a < N; a++)
+        for (int k = 0; k < 4; k++) pos[a][k] = static_cast<unsigned>(raw[a][k] + 1);
+
+    auto adj = zero_adj(N);
+    for (int a = 0; a < N; a++)
+        for (int b = a + 1; b < N; b++) {
+            int dot = 0;
+            for (int k = 0; k < 4; k++) dot += raw[a][k] * raw[b][k];
+            if (dot == 1) { adj[a][b] = 1; adj[b][a] = 1; }
+        }
+
+    return make_bc(std::move(adj), 4u, std::move(pos));
+}
+
+// -- shared vertex-family-generation helpers for reg_120_cell_board()/reg_600_cell_board() below,
+// mirroring shared/boardConfig.ts's own permsOf/evenPermsOf/signVariants local closures. --
+
+static std::vector<std::vector<double>> perms_of(const std::vector<double>& arr) {
+    if (arr.size() <= 1) return { arr };
+    std::vector<std::vector<double>> out;
+    for (size_t i = 0; i < arr.size(); i++) {
+        std::vector<double> rest;
+        for (size_t k = 0; k < arr.size(); k++) if (k != i) rest.push_back(arr[k]);
+        for (auto& p : perms_of(rest)) {
+            std::vector<double> full{ arr[i] };
+            full.insert(full.end(), p.begin(), p.end());
+            out.push_back(std::move(full));
+        }
+    }
+    return out;
+}
+
+// Permutes an index array (rather than arr's own values directly) so parity is well-defined even
+// when arr has repeated magnitudes - not needed by the 3 families this is actually called with
+// (all 4 values distinct there), but keeps the helper correct in general, same as the TS side's own
+// evenPermsOf().
+static std::vector<std::vector<double>> even_perms_of(const std::vector<double>& arr) {
+    std::vector<double> idx(arr.size());
+    std::iota(idx.begin(), idx.end(), 0.0);
+    std::vector<std::vector<double>> out;
+    for (auto& p : perms_of(idx)) {
+        int inversions = 0;
+        for (size_t i = 0; i < p.size(); i++)
+            for (size_t j = i + 1; j < p.size(); j++)
+                if (p[i] > p[j]) inversions++;
+        if (inversions % 2 != 0) continue;
+        std::vector<double> v(p.size());
+        for (size_t i = 0; i < p.size(); i++) v[i] = arr[static_cast<size_t>(p[i])];
+        out.push_back(std::move(v));
+    }
+    return out;
+}
+
+static std::vector<std::vector<double>> sign_variants(const std::vector<double>& v) {
+    std::vector<size_t> nonzero;
+    for (size_t i = 0; i < v.size(); i++) if (v[i] != 0.0) nonzero.push_back(i);
+    size_t k = nonzero.size();
+    std::vector<std::vector<double>> out;
+    for (unsigned mask = 0; mask < (1u << k); mask++) {
+        std::vector<double> w = v;
+        for (size_t b = 0; b < k; b++) if (mask & (1u << b)) w[nonzero[b]] = -w[nonzero[b]];
+        out.push_back(std::move(w));
+    }
+    return out;
+}
+
+static void add_perms(const std::vector<std::vector<double>>& perms,
+                       std::vector<std::vector<double>>& raw, std::set<std::string>& seen) {
+    for (auto& p : perms)
+        for (auto& s : sign_variants(p)) {
+            std::string key;
+            // Round to 2 decimal places before keying - the smallest nonzero gap between any two
+            // distinct family values here is ~0.38, so 2 decimals (matching
+            // shared/boardConfig.ts's own toFixed(2)) is far more than enough margin against
+            // floating-point noise without needing anywhere near llround's own overflow headroom.
+            for (double x : s) key += std::to_string(std::llround(x * 1e2)) + ",";
+            if (seen.insert(key).second) raw.push_back(s);
+        }
+}
+
+// Mirrors shared/boardConfig.ts's reg120CellBoard() exactly for vertex-family generation and the
+// distance-threshold adjacency rule (see its own doc comment for the derivation, and the numerical
+// verification that (3-sqrt(5))^2 is the correct edge-distance threshold). Coordinates here use
+// `double` only as an intermediate - golden-ratio values have no exact-integer analog, unlike
+// reg_24_cell_board() above - and are discarded before returning: this always produces an
+// emb_dim = 0 board, same reasoning as dodecahedron_board/icosahedron_board (see board_config.h).
+BoardConfig reg_120_cell_board() {
+    const double PHI = (1.0 + std::sqrt(5.0)) / 2.0;
+    const double PHI2 = PHI * PHI;
+    const double IPHI = 1.0 / PHI;
+    const double IPHI2 = 1.0 / (PHI * PHI);
+    const double SQRT5 = std::sqrt(5.0);
+
+    std::vector<std::vector<double>> raw;
+    std::set<std::string> seen;
+    add_perms(perms_of({0, 0, 2, 2}), raw, seen);
+    add_perms(perms_of({PHI, PHI, PHI, IPHI2}), raw, seen);
+    add_perms(perms_of({1, 1, 1, SQRT5}), raw, seen);
+    add_perms(perms_of({IPHI, IPHI, IPHI, PHI2}), raw, seen);
+    add_perms(even_perms_of({0, IPHI, PHI, SQRT5}), raw, seen);
+    add_perms(even_perms_of({0, IPHI2, 1, PHI2}), raw, seen);
+    add_perms(even_perms_of({IPHI, 1, PHI, 2}), raw, seen);
+
+    int N = static_cast<int>(raw.size());
+    double edge_dist2 = (3.0 - std::sqrt(5.0)) * (3.0 - std::sqrt(5.0));
+    const double EPS = 1e-6;
+    auto adj = zero_adj(N);
+    for (int a = 0; a < N; a++)
+        for (int b = a + 1; b < N; b++) {
+            double d2 = 0;
+            for (int k = 0; k < 4; k++) { double diff = raw[a][k] - raw[b][k]; d2 += diff * diff; }
+            if (std::abs(d2 - edge_dist2) < EPS) { adj[a][b] = 1; adj[b][a] = 1; }
+        }
+
+    std::vector<std::vector<unsigned>> embed(N); // emb_dim=0
+    return make_bc(std::move(adj), 0u, std::move(embed));
+}
+
+// Mirrors shared/boardConfig.ts's reg600CellBoard() - same double-only-intermediate,
+// distance-threshold-adjacency, emb_dim=0 approach as reg_120_cell_board() above (see its own doc
+// comment; the two share this file's perms_of/even_perms_of/sign_variants/add_perms helpers).
+BoardConfig reg_600_cell_board() {
+    const double PHI = (1.0 + std::sqrt(5.0)) / 2.0;
+    const double IPHI = 1.0 / PHI;
+
+    std::vector<std::vector<double>> raw;
+    std::set<std::string> seen;
+    add_perms(perms_of({0, 0, 0, 2}), raw, seen);
+    add_perms(perms_of({1, 1, 1, 1}), raw, seen);
+    add_perms(even_perms_of({PHI, 1, IPHI, 0}), raw, seen);
+
+    int N = static_cast<int>(raw.size());
+    double edge_dist2 = (2.0 / PHI) * (2.0 / PHI);
+    const double EPS = 1e-6;
+    auto adj = zero_adj(N);
+    for (int a = 0; a < N; a++)
+        for (int b = a + 1; b < N; b++) {
+            double d2 = 0;
+            for (int k = 0; k < 4; k++) { double diff = raw[a][k] - raw[b][k]; d2 += diff * diff; }
+            if (std::abs(d2 - edge_dist2) < EPS) { adj[a][b] = 1; adj[b][a] = 1; }
+        }
+
+    std::vector<std::vector<unsigned>> embed(N); // emb_dim=0
+    return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
 // Mirrors shared/boardConfig.ts's antiprismBoard() connectivity (adjacency only - no
@@ -1281,6 +1533,9 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<BoardA
     if (kind == "tetra") return tetrahedron_board();
     if (kind == "octa") return octahedron_board();
     if (kind == "ortho") return orthoplex_board(num(v[0]));
+    if (kind == "reg24Cell") return reg_24_cell_board();
+    if (kind == "reg120Cell") return reg_120_cell_board();
+    if (kind == "reg600Cell") return reg_600_cell_board();
     if (kind == "ap")    return antiprism_board(num(v[0]));
     if (kind == "dodeca") return dodecahedron_board();
     if (kind == "icosa") return icosahedron_board();

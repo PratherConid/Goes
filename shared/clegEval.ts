@@ -360,14 +360,19 @@ BUILTIN_FUNCTIONS['mkSel'] = {
 
 const MOD_TYPE: ClegType = { kind: 'mod' };
 
-// `rectify`/`globalCentralize`/`quadOctarize`: zero-argument BoardModifier constructors, one per
-// shared/types.ts's own like-named BoardModifier kind - build the value directly (`{ kind: 'X' }`)
-// rather than calling shared/boardConfig.ts's own rectify()/globalCentralize()/quadOctarize()
-// (those APPLY a modifier to a board immediately; these instead build the modifier value itself,
-// to be applied later - see shared/clegBase.ts's own top comment on the `mod` type).
+// `rectify`/`truncate`/`globalCentralize`/`quadOctarize`: zero-argument BoardModifier constructors,
+// one per shared/types.ts's own like-named BoardModifier kind - build the value directly
+// (`{ kind: 'X' }`) rather than calling shared/boardConfig.ts's own
+// rectify()/truncate()/globalCentralize()/quadOctarize() (those APPLY a modifier to a board
+// immediately; these instead build the modifier value itself, to be applied later - see
+// shared/clegBase.ts's own top comment on the `mod` type).
 BUILTIN_FUNCTIONS['rectify'] = {
     checkCall: fixedSignature([], MOD_TYPE),
     call: () => ({ kind: 'mod', value: { kind: 'Rectify' } }),
+};
+BUILTIN_FUNCTIONS['truncate'] = {
+    checkCall: fixedSignature([], MOD_TYPE),
+    call: () => ({ kind: 'mod', value: { kind: 'Truncate' } }),
 };
 BUILTIN_FUNCTIONS['globalCentralize'] = {
     checkCall: fixedSignature([], MOD_TYPE),
