@@ -1,12 +1,14 @@
 import {
-    type BoardEdge, makeBoardEdge, type BoardTriangle, type BoardQuad,
-    type Selector, type SelectorType,
+    type BoardEdge, makeBoardEdge, type BoardSimplex, type BoardQuad,
+    type Selector, type SelectorType, simpType, simpN,
 } from './types.js';
-import { findTriangles, findQuads } from './topology.js';
+import { findSimplices, findQuads } from './topology.js';
 
-// A tiny S-expression language for selecting a subset of a board's nodes, edges, triangles, or
-// quads (a "triangle"/"quad" here is exactly what shared/topology.ts's findTriangles()/
-// findQuads() finds - see BoardTriangle/BoardQuad in shared/types.ts). Grammar (SEL):
+// A tiny S-expression language for selecting a subset of a board's nodes, edges, simplices, or
+// quads (a "simplex"/"quad" here is exactly what shared/topology.ts's findSimplices()/
+// findQuads() finds - see BoardSimplex/BoardQuad in shared/types.ts). A "simp N" selector denotes
+// N+1-node simplices (cliques) - "tri" is accepted everywhere as sugar for "simp 2" (parses to the
+// identical Selector, evaluates identically). Grammar (SEL):
 //
 //   (union SEL...)          -- set union of one or more operands, all the same kind
 //   (inter SEL...)          -- set intersection of one or more operands, all the same kind
@@ -20,35 +22,37 @@ import { findTriangles, findQuads } from './topology.js';
 //                               selector, one step adds every edge sharing a node with a currently
 //                               selected edge - either way, SEL's own result stays included too, and
 //                               0 steps is a no-op
-//   (all <node|edge|tri|quad>)  -- every object of the given kind
-//   (none <node|edge|tri|quad>) -- no objects of that kind
+//   (all <node|edge|simp N|tri|quad>)  -- every object of the given kind ("tri" is sugar for "simp 2")
+//   (none <node|edge|simp N|tri|quad>) -- no objects of that kind
 //   (deg <eq|gt|lt> <num>)  -- node selector only: nodes whose degree is =/>/< a given nonnegative
 //                               integer
-//   (conva <node|edge|tri|quad> SEL) -- converts SEL (of whichever kind SEL itself turns out to be -
-//                               its "from" kind) into the given kind (its "to" kind, named
+//   (conva <node|edge|simp N|tri|quad> SEL) -- converts SEL (of whichever kind SEL itself turns out
+//                               to be - its "from" kind) into the given kind (its "to" kind, named
 //                               explicitly since nothing else determines it): a "to" object is
 //                               selected iff ALL of its associated "from" objects are selected. Two
 //                               objects (of possibly different kinds) are associated iff one's own
 //                               node set is completely contained in the other's - always well-defined
-//                               for two differing kinds, since node/edge/triangle/quad have strictly
-//                               increasing arity (1/2/3/4), so containment can only run from the
-//                               smaller-arity one into the larger. Converting a kind to itself is a
-//                               no-op (SEL is returned as-is); triangle <-> quad has no meaningful
-//                               association and is rejected.
-//   (conve <node|edge|tri|quad> SEL) -- same as conva, but a "to" object is selected iff AT LEAST ONE
-//                               of its associated "from" objects is selected
+//                               for two differing kinds, since node/edge/simp-N/quad have strictly
+//                               increasing-or-unrelated arity (1/2/N+1/4), so containment can only
+//                               run from the smaller-arity one into the larger. Converting a kind to
+//                               itself (including simp M -> simp M) is a no-op (SEL is returned
+//                               as-is); simp <-> quad (of any N, including tri) has no meaningful
+//                               association and is rejected; simp M <-> simp N for M != N is allowed,
+//                               via the same general containment rule.
+//   (conve <node|edge|simp N|tri|quad> SEL) -- same as conva, but a "to" object is selected iff AT
+//                               LEAST ONE of its associated "from" objects is selected
 //   (rrmn <num> SEL)        -- randomly removes exactly num (a nonnegative integer) items from SEL's
 //                               own result, uniformly at random
 //   (rrmp <num> SEL)        -- randomly removes a fixed portion of SEL's own result: num (a
 //                               nonnegative float) times SEL's own result size, rounded down
 //
-// `union`/`inter`/`diff`/`compl`/`all`/`none`/`rrmn`/`rrmp` are polymorphic across all four kinds;
-// `more` is polymorphic across node/edge only (no adjacency notion is defined here for triangles/
+// `union`/`inter`/`diff`/`compl`/`all`/`none`/`rrmn`/`rrmp` are polymorphic across every kind;
+// `more` is polymorphic across node/edge only (no adjacency notion is defined here for simplices/
 // quads); `conva`/`conve` convert between any two kinds, naming the RESULT (the "to") kind via
-// their own leading node/edge/tri/quad token (the "from" kind is instead read off of SEL itself,
-// once SEL has been parsed - see below) - except triangle <-> quad, which is rejected, and a kind
-// converted to itself, which is a no-op (SEL passes through unchanged, not wrapped in a conva/conve
-// node at all).
+// their own leading node/edge/simp-N/tri/quad token (the "from" kind is instead read off of SEL
+// itself, once SEL has been parsed - see below) - except simp <-> quad, which is rejected, and a
+// kind converted to itself, which is a no-op (SEL passes through unchanged, not wrapped in a
+// conva/conve node at all).
 //
 // Every Selector node (one monolithic type, below) carries its own `type` (which kind of set it
 // denotes). Type inference is bottom-up: parseSelExpr(c) takes no expected-kind parameter at all -
@@ -67,9 +71,11 @@ import { findTriangles, findQuads } from './topology.js';
 // parseTriangleSelector()/parseQuadSelector() below parse via the one context-free parseSelExpr(c)
 // and then check the RESULT's own `type` against what each of them promises to return - the mirror
 // image of the old top-down scheme, where that same check was made impossible to fail by construction.
-// selectNode()/selectEdge()/selectTriangle()/selectQuad() (this file's own separate mutually
-// recursive evaluators, one per kind rather than one parameterized function, since each returns a
-// different container type - see their own doc comments) still re-check `sel.type` themselves
+// selectNode()/selectEdge()/selectSimp()/selectQuad() (this file's own separate mutually
+// recursive evaluators, one per kind - selectSimp parameterized over N, the other three fixed -
+// since each returns a different container type - see their own doc comments; selectTriangle() is
+// selectSimp()'s own N=2 special case, kept as a thin sugar wrapper) still re-check `sel.type`
+// themselves
 // rather than trusting it, since a Selector need not always come from parseSelExpr (e.g. a
 // hand-built AST, or one round-tripped through JSON).
 // ── parsing ──────────────────────────────────────────────────────────────────
@@ -127,30 +133,56 @@ function nextNonnegNumber(c: ParseCursor, context: string): number {
     return n;
 }
 
-// Display name for `type` used in parseSelExpr's own rejection messages - 'tri' reads as
-// "triangle" there (unlike describeSelectorType's "a tri" below, used by parseSelectorAsType's own and
-// each evaluator's own wrong-kind-selector messages).
-const selectorKindName: Record<SelectorType, string> = { node: 'node', edge: 'edge', tri: 'triangle', quad: 'quad' };
-
-// "a node"/"an edge"/"a tri"/"a quad" - shared by parseSelectorAsType's own wrong-result-kind message
-// below, and by each evaluator's own wrong-kind error message further down.
-function describeSelectorType(type: SelectorType): string {
-    return `${type === 'edge' ? 'an' : 'a'} ${type}`;
+// Display name for `type` used in parseSelExpr's own rejection messages and describeSelectorType
+// below - 'simpN' reads as "simp N" (N=2 still reads as "triangle", since that's the name every
+// existing triangle-specific error message already uses and callers still recognize).
+function selectorKindName(type: SelectorType): string {
+    if (type === 'node' || type === 'edge' || type === 'quad') return type;
+    const n = simpN(type)!;
+    return n === 2 ? 'triangle' : `simp ${n}`;
 }
 
-// Reads conva/conve's own leading node/edge/tri/quad token (now the "to"/result kind - see this
-// file's own top comment) and parses its operand via the ordinary context-free parseSelExpr(c); the
-// operand's own bottom-up-inferred `type` is the "from" kind. Throws if the (from, toTok) pair is
-// the one with no defined association (triangle <-> quad); returns the parsed operand directly,
+// "a node"/"an edge"/"a simp 3"/"a quad" - shared by parseSelectorAsType's own wrong-result-kind
+// message below, and by each evaluator's own wrong-kind error message further down.
+function describeSelectorType(type: SelectorType): string {
+    const name = selectorKindName(type);
+    return `${type === 'edge' ? 'an' : 'a'} ${name}`;
+}
+
+// Reads a node/edge/quad/tri/"simp N" kind token (the shape (all ...)/(none ...)/conva/conve's own
+// leading token all share) - 'tri' is sugar for simpType(2); 'simp' consumes one more token, an
+// integer >= 2, and builds simpType(n). `context` names the production in the thrown error.
+function parseSelectorTypeToken(c: ParseCursor, context: string): SelectorType {
+    const tok = c.next();
+    if (tok === 'node' || tok === 'edge' || tok === 'quad') return tok;
+    if (tok === 'tri') return simpType(2);
+    if (tok === 'simp') {
+        const nTok = c.next();
+        const n = Number(nTok);
+        if (!Number.isInteger(n) || n < 2)
+            throw new Error(`selector: ${context} 'simp' arity must be an integer >= 2, got '${nTok}'`);
+        return simpType(n);
+    }
+    throw new Error(`selector: ${context} kind must be 'node', 'edge', 'simp <n>', 'tri', or 'quad', got '${tok}'`);
+}
+
+// True iff `type` is some simp N (of any N) - the general stand-in every place that used to check
+// `=== 'tri'` specifically now needs, since a bare 'tri' string no longer exists internally.
+function isSimpType(type: SelectorType): boolean {
+    return simpN(type) !== null;
+}
+
+// Reads conva/conve's own leading kind token (now the "to"/result kind - see this file's own top
+// comment) and parses its operand via the ordinary context-free parseSelExpr(c); the operand's own
+// bottom-up-inferred `type` is the "from" kind. Throws if the (from, toTok) pair is the one with no
+// defined association (simp <-> quad, of any simp arity); returns the parsed operand directly,
 // unwrapped, for a same-kind conversion (a no-op).
 function parseConversion(c: ParseCursor, op: 'conva' | 'conve'): Selector {
-    const toTok = c.next();
-    if (toTok !== 'node' && toTok !== 'edge' && toTok !== 'tri' && toTok !== 'quad')
-        throw new Error(`selector: (${op} ...) result kind must be 'node', 'edge', 'tri', or 'quad', got '${toTok}'`);
+    const toTok = parseSelectorTypeToken(c, `(${op} ...) result`);
     const a = parseSelExpr(c);
     c.expect(')');
-    if ((a.type === 'tri' && toTok === 'quad') || (a.type === 'quad' && toTok === 'tri'))
-        throw new Error(`selector: (${op} ...) has no association defined between 'tri' and 'quad'`);
+    if ((isSimpType(a.type) && toTok === 'quad') || (a.type === 'quad' && isSimpType(toTok)))
+        throw new Error(`selector: (${op} ...) has no association defined between 'simp' and 'quad'`);
     return a.type === toTok ? a : { op, type: toTok, from: a.type, a };
 }
 
@@ -181,7 +213,7 @@ function parseSelExpr(c: ParseCursor): Selector {
                 if (items[i].type !== type)
                     throw new Error(
                         `selector: (${op} ...) operands must all be the same kind - operand 1 is ` +
-                        `${selectorKindName[type]}, operand ${i + 1} is ${selectorKindName[items[i].type]}`);
+                        `${selectorKindName(type)}, operand ${i + 1} is ${selectorKindName(items[i].type)}`);
             return { op, type, items };
         }
         case 'diff': {
@@ -191,7 +223,7 @@ function parseSelExpr(c: ParseCursor): Selector {
             if (a.type !== b.type)
                 throw new Error(
                     `selector: (diff ...) operands must be the same kind - got ` +
-                    `${selectorKindName[a.type]} and ${selectorKindName[b.type]}`);
+                    `${selectorKindName(a.type)} and ${selectorKindName(b.type)}`);
             return { op: 'diff', type: a.type, a, b };
         }
         case 'compl': {
@@ -204,15 +236,13 @@ function parseSelExpr(c: ParseCursor): Selector {
             const a = parseSelExpr(c);
             c.expect(')');
             if (a.type !== 'node' && a.type !== 'edge')
-                throw new Error(`selector: (more ...) requires a node or edge selector, got a ${selectorKindName[a.type]} selector`);
+                throw new Error(`selector: (more ...) requires a node or edge selector, got a ${selectorKindName(a.type)} selector`);
             return steps === undefined ? { op: 'more', type: a.type, a } : { op: 'more', type: a.type, steps, a };
         }
         case 'all': case 'none': {
-            const kindTok = c.next();
-            if (kindTok !== 'node' && kindTok !== 'edge' && kindTok !== 'tri' && kindTok !== 'quad')
-                throw new Error(`selector: (${op} ...) kind must be 'node', 'edge', 'tri', or 'quad', got '${kindTok}'`);
+            const type = parseSelectorTypeToken(c, `(${op} ...)`);
             c.expect(')');
-            return { op, type: kindTok };
+            return { op, type };
         }
         case 'deg': {
             const cmpTok = c.next();
@@ -278,10 +308,10 @@ export function parseEdgeSelector(s: string): Selector {
     return parseSelectorAsType(s, 'edge');
 }
 
-/** Parses `s` as a triangle selector (see this file's own top comment for the grammar) - throws if
- * `s` doesn't follow the grammar, or parses to a selector of a different kind. */
+/** Parses `s` as a triangle (simp 2) selector (see this file's own top comment for the grammar) -
+ * throws if `s` doesn't follow the grammar, or parses to a selector of a different kind. */
 export function parseTriangleSelector(s: string): Selector {
-    return parseSelectorAsType(s, 'tri');
+    return parseSelectorAsType(s, simpType(2));
 }
 
 /** Parses `s` as a quad selector (see this file's own top comment for the grammar) - throws if `s`
@@ -290,10 +320,26 @@ export function parseQuadSelector(s: string): Selector {
     return parseSelectorAsType(s, 'quad');
 }
 
+/** Parses `s` as a simp `n` selector (see this file's own top comment for the grammar) - throws if
+ * `s` doesn't follow the grammar, or parses to a selector of a different kind/arity. The general,
+ * n-parameterized counterpart of parseTriangleSelector (its own n=2 special case). */
+export function parseSimpSelector(n: number, s: string): Selector {
+    return parseSelectorAsType(s, simpType(n));
+}
+
 /** Formats `sel` back into the S-expression syntax parseNodeSelector()/parseEdgeSelector()/
  * parseTriangleSelector()/parseQuadSelector() accept - the inverse of parsing. Used e.g. to
  * round-trip a BoardModifier's own selector back into command-line text for display (see
  * src/sidePanel.ts's fmtModifiers). */
+// Renders a SelectorType back into its own grammar token(s) - "node"/"edge"/"quad" as-is, or
+// "simp N" (two tokens) for a simp type. Always uses the canonical "simp N" spelling, even for
+// simp 2 - round-tripping doesn't preserve "tri" sugar, only meaning (the same simp 2 Selector
+// results either way).
+function formatSelectorType(type: SelectorType): string {
+    const n = simpN(type);
+    return n === null ? type : `simp ${n}`;
+}
+
 export function formatSelector(sel: Selector): string {
     switch (sel.op) {
         case 'union': case 'inter': {
@@ -308,14 +354,14 @@ export function formatSelector(sel: Selector): string {
             return sel.steps === undefined
                 ? `(more ${formatSelector(sel.a)})` : `(more ${sel.steps} ${formatSelector(sel.a)})`;
         case 'all': case 'none':
-            return `(${sel.op} ${sel.type})`;
+            return `(${sel.op} ${formatSelectorType(sel.type)})`;
         case 'deg':
             return `(deg ${sel.cmp} ${sel.n})`;
         case 'conva': case 'conve':
             // sel.type is the "to"/result kind - see this file's own top comment on why that's what
             // the explicit token now names (sel.from, the "to" kind's mirror, is read off sel.a's
             // own type instead, so it doesn't need spelling out here).
-            return `(${sel.op} ${sel.type} ${formatSelector(sel.a)})`;
+            return `(${sel.op} ${formatSelectorType(sel.type)} ${formatSelector(sel.a)})`;
         case 'rrmn':
             return `(rrmn ${sel.count} ${formatSelector(sel.a)})`;
         case 'rrmp':
@@ -345,17 +391,18 @@ function dedupeByKey<T>(items: T[], key: (item: T) => string | number): T[] {
     return [...byKey.values()];
 }
 
-// BoardEdge/BoardTriangle/BoardQuad aren't valid Set/Map keys themselves (two structurally-equal
+// BoardEdge/BoardSimplex/BoardQuad aren't valid Set/Map keys themselves (two structurally-equal
 // values are different objects), so union/inter/diff/compl below key them by these canonical string
 // ids whenever they need set-like membership tests - each type's own canonical-construction
-// invariant (BoardEdge/BoardTriangle: n1 < n2 < ...; BoardQuad: the lexicographically-least of its
-// own cycle's 8 rotation/reflection relabelings - see makeBoardQuad, shared/types.ts) already makes
-// this unique per object, regardless of which vertex/direction it was found from.
+// invariant (BoardEdge: n1 <= n2; BoardSimplex: nodes ascending; BoardQuad: the
+// lexicographically-least of its own cycle's 8 rotation/reflection relabelings - see makeBoardQuad,
+// shared/types.ts) already makes this unique per object, regardless of which vertex/direction it
+// was found from.
 function edgeKey(e: BoardEdge): string {
     return `${e.n1},${e.n2}`;
 }
-function triKey(t: BoardTriangle): string {
-    return `${t.n1},${t.n2},${t.n3}`;
+function simpKey(t: BoardSimplex): string {
+    return t.nodes.join(',');
 }
 function quadKey(s: BoardQuad): string {
     return `${s.n1},${s.n2},${s.n3},${s.n4}`;
@@ -381,7 +428,7 @@ export function randomlyRemove<T>(items: T[], removeCount: number): T[] {
 
 // True iff `a`'s own members are completely contained in `b`'s, or vice versa - the general
 // "association" test conva/conve rely on (see this file's own top comment). Every object kind here
-// has a fixed arity (node 1, edge 2, triangle 3, quad 4) and every object's own members are
+// has a fixed arity (node 1, edge 2, simp N N+1, quad 4) and every object's own members are
 // distinct node indices, so containment can only ever run from the smaller-arity list into the
 // larger one; this checks whichever direction applies rather than assuming a fixed order.
 function isAssociated(a: number[], b: number[]): boolean {
@@ -412,7 +459,7 @@ function convertObjects<F, T>(
 
 /**
  * Evaluates a node Selector against a board's adjacency matrix, returning the set of selected node
- * indices. Mutually recursive with selectEdge()/selectTriangle()/selectQuad() via the conva/conve
+ * indices. Mutually recursive with selectEdge()/selectSimp()/selectQuad() via the conva/conve
  * operators. `pos` isn't used by any selector in the current grammar, but is threaded through
  * (matching the other three evaluators' own signatures) for future position-based selectors.
  */
@@ -490,10 +537,10 @@ export function selectNode(adj: number[][], pos: number[][], sel: Selector): Set
                 const selectedKeys = new Set<string | number>(selectEdge(adj, pos, sel.a).map(edgeKey));
                 return new Set(convertObjects(toNodes, n => [n], allFrom, e => [e.n1, e.n2], edgeKey, selectedKeys, mode));
             }
-            if (sel.from === 'tri') {
-                const allFrom = selectTriangle(adj, pos, { op: 'all', type: 'tri' });
-                const selectedKeys = new Set<string | number>(selectTriangle(adj, pos, sel.a).map(triKey));
-                return new Set(convertObjects(toNodes, n => [n], allFrom, t => [t.n1, t.n2, t.n3], triKey, selectedKeys, mode));
+            if (isSimpType(sel.from)) {
+                const allFrom = selectSimp(adj, pos, { op: 'all', type: sel.from });
+                const selectedKeys = new Set<string | number>(selectSimp(adj, pos, sel.a).map(simpKey));
+                return new Set(convertObjects(toNodes, n => [n], allFrom, t => t.nodes, simpKey, selectedKeys, mode));
             }
             const allFrom = selectQuad(adj, pos, { op: 'all', type: 'quad' });
             const selectedKeys = new Set<string | number>(selectQuad(adj, pos, sel.a).map(quadKey));
@@ -521,7 +568,7 @@ export function selectNode(adj: number[][], pos: number[][], sel: Selector): Set
 
 /**
  * Evaluates an edge Selector against a board's adjacency matrix, returning the list of selected
- * edges as BoardEdge values (deduplicated). Mutually recursive with selectNode()/selectTriangle()/
+ * edges as BoardEdge values (deduplicated). Mutually recursive with selectNode()/selectSimp()/
  * selectQuad() via the conva/conve operators.
  */
 export function selectEdge(adj: number[][], pos: number[][], sel: Selector): BoardEdge[] {
@@ -597,10 +644,10 @@ export function selectEdge(adj: number[][], pos: number[][], sel: Selector): Boa
                 const allNodes = Array.from({ length: N }, (_, i) => i);
                 return convertObjects(allEdges, e => [e.n1, e.n2], allNodes, n => [n], n => n, selectedKeys, mode);
             }
-            if (sel.from === 'tri') {
-                const allFrom = selectTriangle(adj, pos, { op: 'all', type: 'tri' });
-                const selectedKeys = new Set<string | number>(selectTriangle(adj, pos, sel.a).map(triKey));
-                return convertObjects(allEdges, e => [e.n1, e.n2], allFrom, t => [t.n1, t.n2, t.n3], triKey, selectedKeys, mode);
+            if (isSimpType(sel.from)) {
+                const allFrom = selectSimp(adj, pos, { op: 'all', type: sel.from });
+                const selectedKeys = new Set<string | number>(selectSimp(adj, pos, sel.a).map(simpKey));
+                return convertObjects(allEdges, e => [e.n1, e.n2], allFrom, t => t.nodes, simpKey, selectedKeys, mode);
             }
             const allFrom = selectQuad(adj, pos, { op: 'all', type: 'quad' });
             const selectedKeys = new Set<string | number>(selectQuad(adj, pos, sel.a).map(quadKey));
@@ -624,74 +671,94 @@ export function selectEdge(adj: number[][], pos: number[][], sel: Selector): Boa
 }
 
 /**
- * Evaluates a triangle Selector against a board's adjacency matrix, returning the list of selected
- * triangles as BoardTriangle values (deduplicated) - the triangle counterpart of selectEdge above.
- * `(all)` is every triangle shared/topology.ts's findTriangles() finds. Mutually recursive with
- * selectNode()/selectEdge() via the conva/conve operators.
+ * Evaluates a simp Selector (of any arity N - `sel.type` is some `simp N`) against a board's
+ * adjacency matrix, returning the list of selected N-simplices as BoardSimplex values
+ * (deduplicated) - the simplex counterpart of selectEdge/selectQuad above. `(all)` is every
+ * N-simplex shared/topology.ts's findSimplices() finds. Mutually recursive with selectNode()/
+ * selectEdge()/selectQuad() (and itself, for a simp M <-> simp N conversion) via the conva/conve
+ * operators.
  */
-export function selectTriangle(adj: number[][], pos: number[][], sel: Selector): BoardTriangle[] {
-    if (sel.type !== 'tri')
-        throw new Error(`selectTriangle: expected a triangle selector, got ${describeSelectorType(sel.type)} selector (op '${sel.op}')`);
+export function selectSimp(adj: number[][], pos: number[][], sel: Selector): BoardSimplex[] {
+    const n = simpN(sel.type);
+    if (n === null)
+        throw new Error(`selectSimp: expected a simp selector, got ${describeSelectorType(sel.type)} selector (op '${sel.op}')`);
     switch (sel.op) {
         case 'union':
-            return dedupeByKey(sel.items.flatMap(item => selectTriangle(adj, pos, item)), triKey);
+            return dedupeByKey(sel.items.flatMap(item => selectSimp(adj, pos, item)), simpKey);
         case 'inter': {
-            if (sel.items.length === 0) return selectTriangle(adj, pos, { op: 'all', type: 'tri' });
-            let acc = selectTriangle(adj, pos, sel.items[0]);
+            if (sel.items.length === 0) return selectSimp(adj, pos, { op: 'all', type: sel.type });
+            let acc = selectSimp(adj, pos, sel.items[0]);
             for (let i = 1; i < sel.items.length; i++) {
-                const nextKeys = new Set(selectTriangle(adj, pos, sel.items[i]).map(triKey));
-                acc = acc.filter(t => nextKeys.has(triKey(t)));
+                const nextKeys = new Set(selectSimp(adj, pos, sel.items[i]).map(simpKey));
+                acc = acc.filter(t => nextKeys.has(simpKey(t)));
             }
             return acc;
         }
         case 'diff': {
-            const a = selectTriangle(adj, pos, sel.a);
-            const bKeys = new Set(selectTriangle(adj, pos, sel.b).map(triKey));
-            return a.filter(t => !bKeys.has(triKey(t)));
+            const a = selectSimp(adj, pos, sel.a);
+            const bKeys = new Set(selectSimp(adj, pos, sel.b).map(simpKey));
+            return a.filter(t => !bKeys.has(simpKey(t)));
         }
         case 'compl': {
-            const aKeys = new Set(selectTriangle(adj, pos, sel.a).map(triKey));
-            return findTriangles(adj).filter(t => !aKeys.has(triKey(t)));
+            const aKeys = new Set(selectSimp(adj, pos, sel.a).map(simpKey));
+            return findSimplices(adj, n).filter(t => !aKeys.has(simpKey(t)));
         }
         case 'all':
-            return findTriangles(adj);
+            return findSimplices(adj, n);
         case 'none':
             return [];
         case 'conva': case 'conve': {
             if (sel.from === 'quad')
-                throw new Error(`selectTriangle: no association is defined between 'tri' and 'quad'`);
+                throw new Error(`selectSimp: no association is defined between 'simp' and 'quad'`);
             const mode = sel.op === 'conva' ? 'all' : 'some';
-            if (sel.from === 'tri') return selectTriangle(adj, pos, sel.a); // same-kind: no-op (defensive)
-            const allTri = selectTriangle(adj, pos, { op: 'all', type: 'tri' });
+            if (sel.from === sel.type) return selectSimp(adj, pos, sel.a); // same-kind: no-op (defensive)
+            const allTo = selectSimp(adj, pos, { op: 'all', type: sel.type });
             if (sel.from === 'node') {
                 const selectedKeys = new Set<string | number>(selectNode(adj, pos, sel.a));
                 const allNodes = Array.from({ length: adj.length }, (_, i) => i);
-                return convertObjects(allTri, t => [t.n1, t.n2, t.n3], allNodes, n => [n], n => n, selectedKeys, mode);
+                return convertObjects(allTo, t => t.nodes, allNodes, n2 => [n2], n2 => n2, selectedKeys, mode);
             }
-            const allFrom = selectEdge(adj, pos, { op: 'all', type: 'edge' });
-            const selectedKeys = new Set<string | number>(selectEdge(adj, pos, sel.a).map(edgeKey));
-            return convertObjects(allTri, t => [t.n1, t.n2, t.n3], allFrom, e => [e.n1, e.n2], edgeKey, selectedKeys, mode);
+            if (sel.from === 'edge') {
+                const allFrom = selectEdge(adj, pos, { op: 'all', type: 'edge' });
+                const selectedKeys = new Set<string | number>(selectEdge(adj, pos, sel.a).map(edgeKey));
+                return convertObjects(allTo, t => t.nodes, allFrom, e => [e.n1, e.n2], edgeKey, selectedKeys, mode);
+            }
+            // sel.from is some other simp M (M != n, checked above) - the new simp <-> simp
+            // conversion, via the same general containment rule as every other pair.
+            const allFrom = selectSimp(adj, pos, { op: 'all', type: sel.from });
+            const selectedKeys = new Set<string | number>(selectSimp(adj, pos, sel.a).map(simpKey));
+            return convertObjects(allTo, t => t.nodes, allFrom, f => f.nodes, simpKey, selectedKeys, mode);
         }
         case 'rrmn': {
-            const base = selectTriangle(adj, pos, sel.a);
+            const base = selectSimp(adj, pos, sel.a);
             return randomlyRemove(base, sel.count);
         }
         case 'rrmp': {
-            const base = selectTriangle(adj, pos, sel.a);
+            const base = selectSimp(adj, pos, sel.a);
             return randomlyRemove(base, Math.floor(sel.frac * base.length));
         }
         case 'raw':
-            if (sel.items.kind !== 'tri')
-                throw new Error(`selectTriangle: 'raw' selector's own items must be tri-kind, got '${sel.items.kind}'`);
+            if (sel.items.kind !== 'simp')
+                throw new Error(`selectSimp: 'raw' selector's own items must be simp-kind, got '${sel.items.kind}'`);
             return [...sel.items.value];
         default:
-            throw new Error(`selectTriangle: unexpected triangle-selector op '${(sel as Selector).op}'`);
+            throw new Error(`selectSimp: unexpected simp-selector op '${(sel as Selector).op}'`);
     }
+}
+
+/** Parses `s` as a triangle (simp 2) selector and evaluates it - selectSimp()'s own N=2 special
+ * case, kept as a thin sugar wrapper (see this file's own top comment) for callers that only ever
+ * deal in triangles (shared/boardConfig.ts's triangleForm/triCentralize). Throws if `sel` isn't
+ * specifically simp 2 (not just any simp N). */
+export function selectTriangle(adj: number[][], pos: number[][], sel: Selector): BoardSimplex[] {
+    if (sel.type !== simpType(2))
+        throw new Error(`selectTriangle: expected a triangle selector, got ${describeSelectorType(sel.type)} selector (op '${sel.op}')`);
+    return selectSimp(adj, pos, sel);
 }
 
 /**
  * Evaluates a quad Selector against a board's adjacency matrix, returning the list of selected
- * quads as BoardQuad values (deduplicated) - the quad counterpart of selectTriangle above.
+ * quads as BoardQuad values (deduplicated) - the quad counterpart of selectSimp above.
  * `(all)` is every quad shared/topology.ts's findQuads() finds. Mutually recursive with
  * selectNode()/selectEdge() via the conva/conve operators.
  */
@@ -724,8 +791,8 @@ export function selectQuad(adj: number[][], pos: number[][], sel: Selector): Boa
         case 'none':
             return [];
         case 'conva': case 'conve': {
-            if (sel.from === 'tri')
-                throw new Error(`selectQuad: no association is defined between 'tri' and 'quad'`);
+            if (isSimpType(sel.from))
+                throw new Error(`selectQuad: no association is defined between 'simp' and 'quad'`);
             const mode = sel.op === 'conva' ? 'all' : 'some';
             if (sel.from === 'quad') return selectQuad(adj, pos, sel.a); // same-kind: no-op (defensive)
             const allQuad = selectQuad(adj, pos, { op: 'all', type: 'quad' });

@@ -22,31 +22,32 @@ export function makeBoardEdge(a: number, b: number): BoardEdge {
     return a <= b ? { n1: a, n2: b } : { n1: b, n2: a };
 }
 
-/** One triangle {n1, n2, n3} of a board's adjacency graph, always normalized so n1 < n2 < n3 - see
- * makeBoardTriangle - so the same triangle has a unique representation regardless of which vertex
- * was found first (matches shared/topology.ts's findTriangles() own [u, v, w] convention). */
-export interface BoardTriangle {
-    n1: number;
-    n2: number;
-    n3: number;
+/** One (n+1)-node simplex (n+1 pairwise-adjacent vertices - a clique) of a board's adjacency
+ * graph, `nodes` always sorted ascending - see makeBoardSimplex - so the same simplex has a
+ * unique representation regardless of which vertex was found first (matches
+ * shared/topology.ts's findSimplices() own increasing-order convention). A simplex's full
+ * symmetry group (every permutation of its n+1 members is some relabeling of it) means a plain
+ * ascending sort loses no information - unlike BoardQuad below, whose cycle structure a sort
+ * would destroy. */
+export interface BoardSimplex {
+    nodes: number[];
 }
 
-/** Builds a BoardTriangle from three node indices in any order, normalizing n1 < n2 < n3. */
-export function makeBoardTriangle(a: number, b: number, c: number): BoardTriangle {
-    const [n1, n2, n3] = [a, b, c].sort((x, y) => x - y);
-    return { n1, n2, n3 };
+/** Builds a BoardSimplex from n+1 node indices in any order, normalizing to ascending order. */
+export function makeBoardSimplex(nodes: number[]): BoardSimplex {
+    return { nodes: [...nodes].sort((a, b) => a - b) };
 }
 
 /** One quad (induced 4-cycle - 4 distinct vertices forming a cycle with no diagonal edges) {n1, n2,
  * n3, n4} of a board's adjacency graph, n1-n2-n3-n4-n1 always a genuine cycle (n1-n2, n2-n3, n3-n4,
  * n4-n1 are the 4 real graph edges; n1-n3/n2-n4 are the 2 absent diagonals) - see makeBoardQuad.
- * Unlike BoardTriangle (whose 3 members can always be sorted ascending with no loss, since a
- * triangle's 3-cycle has full S3 symmetry - every permutation of 3 distinct elements is some
- * rotation/reflection of it), a quad's cycle structure is real information a plain ascending sort
- * would destroy (turning a diagonal into an apparent edge). So a BoardQuad is instead normalized to
- * whichever of its own cycle's 8 rotation/reflection-equivalent relabelings (see makeBoardQuad) is
- * lexicographically smallest - still giving every quad a unique representation regardless of which
- * vertex/direction it was found from (the same guarantee BoardTriangle/BoardEdge have), while
+ * Unlike BoardSimplex above (whose members can always be sorted ascending with no loss, since a
+ * simplex's own full symmetry group means every permutation of its members is some relabeling of
+ * it), a quad's cycle structure is real information a plain ascending sort would destroy (turning
+ * a diagonal into an apparent edge). So a BoardQuad is instead normalized to whichever of its own
+ * cycle's 8 rotation/reflection-equivalent relabelings (see makeBoardQuad) is lexicographically
+ * smallest - still giving every quad a unique representation regardless of which vertex/direction
+ * it was found from (the same guarantee BoardSimplex/BoardEdge have), while
  * keeping n1-n2-n3-n4-n1 a genuine cycle (unlike shared/topology.ts's findQuads(), whose own
  * [a, b, c, d] is *a* valid cycle order, but not necessarily this canonical one). */
 export interface BoardQuad {
@@ -420,38 +421,51 @@ export function cloneBoardArgEntry(e: BoardArgEntry): BoardArgEntry {
     return e.kind === BoardArgType.Number ? { ...e } : { ...e, values: [...e.values] };
 }
 
-/** The four kinds of object a Selector can denote - see shared/selector.ts's own top comment for the
- * full grammar this drives. */
-export type SelectorType = 'node' | 'edge' | 'tri' | 'quad';
+/** The kinds of object a Selector can denote: `node`, `edge`, `quad` (a fixed arity each), and
+ * `` `simp${n}` `` for any integer n >= 2 (a complete (n+1)-node subgraph - `simp2` is what used
+ * to be called `tri`, still accepted as sugar in selector/type-annotation text - see
+ * shared/selector.ts's own top comment for the full grammar this drives). Use simpType(n)/simpN(t)
+ * below to build/read the simp case rather than string-templating '`simp${n}`' by hand. */
+export type SelectorType = 'node' | 'edge' | 'quad' | `simp${number}`;
+
+/** Builds the SelectorType for a simp selector of the given arity (n+1 nodes). */
+export function simpType(n: number): SelectorType {
+    return `simp${n}` as SelectorType;
+}
+
+/** Extracts n from a simp SelectorType (simpType's own inverse), or null for node/edge/quad. */
+export function simpN(t: SelectorType): number | null {
+    return t.startsWith('simp') ? Number(t.slice(4)) : null;
+}
 
 /**
  * The literal, already-materialized payload of a `raw` Selector (see below) - one branch per
  * SelectorType, holding exactly what that kind's own shared/selector.ts evaluator (selectNode/
- * selectEdge/selectTriangle/selectQuad) itself returns: a real `Set<number>` for nodes (numbers
- * have genuine equality, so a JS Set works as an actual set), plain arrays for edge/tri/quad
+ * selectEdge/selectSimp/selectQuad) itself returns: a real `Set<number>` for nodes (numbers
+ * have genuine equality, so a JS Set works as an actual set), plain arrays for edge/simp/quad
  * (which don't - see ClegValue's own 'set' variant in shared/clegBase.ts for why every other edge/
- * tri/quad collection in this codebase is a plain array, never a JS Set, deduplicated by a real key
+ * simp/quad collection in this codebase is a plain array, never a JS Set, deduplicated by a real key
  * function rather than reference equality).
  */
 export type SelectedVals =
     | { kind: 'node'; value: Set<number> }
     | { kind: 'edge'; value: BoardEdge[] }
-    | { kind: 'tri'; value: BoardTriangle[] }
+    | { kind: 'simp'; n: number; value: BoardSimplex[] }
     | { kind: 'quad'; value: BoardQuad[] };
 
 /**
- * A tiny S-expression language for selecting a subset of a board's nodes, edges, triangles, or
- * quads (a "triangle"/"quad" here is exactly what shared/topology.ts's findTriangles()/
- * findQuads() finds - see BoardTriangle/BoardQuad above) - see shared/selector.ts for the full
+ * A tiny S-expression language for selecting a subset of a board's nodes, edges, simplices, or
+ * quads (a "simplex"/"quad" here is exactly what shared/topology.ts's findSimplices()/
+ * findQuads() finds - see BoardSimplex/BoardQuad above) - see shared/selector.ts for the full
  * grammar (`(union SEL...)` / `(inter SEL...)` / `(diff SEL SEL)` / `(compl SEL)` /
  * `(more [<num>] SEL)` /
- * `(all <node|edge|tri|quad>)` / `(none <node|edge|tri|quad>)` / `(deg <eq|gt|lt> <num>)` /
- * `(conva <node|edge|tri|quad> SEL)` / `(conve <node|edge|tri|quad> SEL)` / `(rrmn <num> SEL)` /
- * `(rrmp <num> SEL)`) and its own parsing (parseNodeSelector/parseEdgeSelector/
- * parseTriangleSelector/parseQuadSelector) and evaluation (selectNode/selectEdge/selectTriangle/
- * selectQuad) functions. Every Selector carries its own `type` (which of the four kinds it denotes)
- * - inferred bottom-up by the one context-free parser (see shared/selector.ts's own top comment for
- * why), then checked by whichever of the four entry points was actually called.
+ * `(all <node|edge|simp N|quad>)` / `(none <node|edge|simp N|quad>)` / `(deg <eq|gt|lt> <num>)` /
+ * `(conva <node|edge|simp N|quad> SEL)` / `(conve <node|edge|simp N|quad> SEL)` /
+ * `(rrmn <num> SEL)` / `(rrmp <num> SEL)`) and its own parsing (parseNodeSelector/
+ * parseEdgeSelector/parseTriangleSelector/parseQuadSelector) and evaluation (selectNode/
+ * selectEdge/selectSimp/selectQuad) functions. Every Selector carries its own `type` (which kind
+ * it denotes) - inferred bottom-up by the one context-free parser (see shared/selector.ts's own
+ * top comment for why), then checked by whichever entry point was actually called.
  */
 export type Selector =
     // `union`/`inter` take a variadic list of operands - one or more, all the same kind (their own
@@ -497,6 +511,9 @@ export type BoardModifier =
     // sels: one Selector per face to look for - each must be tri- or quad-typed, checked at runtime
     // by shared/boardConfig.ts's own genericForm, which this wraps - see its own doc comment.
     | { kind: 'Form'; w: number; sels: Selector[] }
+    // n: the simplex arity centralized (n+1 corners per hub) - sel, if given, must itself already
+    // be a simp `n` selector (checked at runtime by shared/boardConfig.ts's own simpCentralize).
+    | { kind: 'SimpCentralize'; n: number; sel?: Selector }
     | { kind: 'TriCentralize'; sel?: Selector }
     | { kind: 'QuadCentralize'; sel?: Selector }
     // sels: same convention as Form's own field above, but for shared/boardConfig.ts's

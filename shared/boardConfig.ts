@@ -2,10 +2,10 @@ import type { BoardArgEntry, BoardConfig, BoardModifier, Selector, BoardEdge } f
 import type { GameConfig } from './gameConfig.js';
 // Type-only - see types.ts's own note on why this isn't a real circular runtime import.
 import type { ClegProgram } from './clegBase.js';
-import { assert, BoardArgType, boardArgNumber, boardArgList, Embedding } from './types.js';
+import { assert, BoardArgType, boardArgNumber, boardArgList, Embedding, simpType, simpN } from './types.js';
 import { convexHullEdges } from './geometry.js';
 import { findQuads, zeroAdj, mergeBoards } from './topology.js';
-import { selectNode, selectEdge, selectTriangle, selectQuad } from './selector.js';
+import { selectNode, selectEdge, selectTriangle, selectSimp, selectQuad } from './selector.js';
 // The FractalDescr/nodeEdgeMergeFlakeRec recursive core, and each "flake" shape's own static
 // *FractalDescr() builder, live in fractal.ts (see git history) - the actual BoardConfig-returning
 // functions built on them (dodecahedronBoard/dodecahedronFlake/etc., below) stay here alongside
@@ -341,18 +341,18 @@ export function edgeInducedSubgraph(bc: BoardConfig, edges: BoardEdge[]): BoardC
 }
 
 /**
- * Replaces every selected triangle and/or quad (see topology.ts's findTriangles/findQuads) in
- * `bc` with its own w-sided lattice - a `triangularBoard(w)`-shaped lattice for a triangle, a
+ * Replaces every selected triangle and/or quad (see topology.ts's findSimplices(adj, 2)/findQuads)
+ * in `bc` with its own w-sided lattice - a `triangularBoard(w)`-shaped lattice for a triangle, a
  * `w`-by-`w` grid for a quad - gluing new corners back to the original vertices and gluing every
  * original edge's own new boundary points together across every lattice that consumes that edge as
  * one of its own sides, regardless of whether that lattice came from a triangle- or quad-typed
  * selector - this is what makes a mixed `sels` list meaningful: a triangle and a quad sharing an
  * edge still glue seamlessly, since gluing is driven by shared ORIGINAL edges, not by matching
  * kinds. Each element of `sels` is itself a Selector naming which faces to look for AND restricting
- * which ones of that kind qualify in one go (its own bottom-up-inferred `type` already says tri or
- * quad) - pass `(all tri)`/`(all quad)` for "every one found, no restriction". Every element must be
- * tri- or quad-typed, checked at runtime (a `type` of 'node'/'edge' throws) since nothing else
- * constrains it structurally. An unselected/not-looked-for triangle or quad is left untouched, as if
+ * which ones of that kind qualify in one go (its own bottom-up-inferred `type` already says simp 2
+ * or quad) - pass `(all tri)`/`(all quad)` for "every one found, no restriction". Every element must
+ * be a triangle (simp 2) or quad selector, checked at runtime (any other `type` throws) since
+ * nothing else constrains it structurally. An unselected/not-looked-for triangle or quad is left untouched, as if
  * it didn't exist. `w` is shared by every selector in `sels`, since two lattices sharing an edge can only glue
  * node-for-node if their own boundary sequences are the same length. triangleForm/quadForm below are
  * the single-kind special cases, each just calling this with one `(all tri)`/`(all quad)`-or-`sel`
@@ -389,12 +389,12 @@ export function genericForm(bc: BoardConfig, w: number, sels: Selector[]): Board
     let nextIdx = N;
 
     for (const sel of sels) {
-        if (sel.type === 'tri') {
+        if (sel.type === simpType(2)) {
             const triangles = selectTriangle(bc.adj, bc.emb.pos, sel);
             const nFace = w * (w + 1) / 2;
             const localIdx = (i: number, j: number) => i * (i + 1) / 2 + j;
             const dirs: [number, number][] = [[1, 0], [1, 1], [0, 1], [-1, 0], [-1, -1], [0, -1]];
-            for (const { n1: A, n2: B, n3: C } of triangles) {
+            for (const { nodes: [A, B, C] } of triangles) {
                 const offset = nextIdx;
                 nextIdx += nFace;
                 const globalIdx = (i: number, j: number) => offset + localIdx(i, j);
@@ -458,7 +458,7 @@ export function genericForm(bc: BoardConfig, w: number, sels: Selector[]): Board
                 addSide(D, A, k => globalIdx(w - 1 - k, 0));
             }
         } else {
-            throw new Error(`genericForm: each selector in sels must be a triangle or quad selector, got a ${sel.type} selector`);
+            throw new Error(`genericForm: each selector in sels must be a triangle (simp 2) or quad selector, got a '${sel.type}' selector`);
         }
     }
 
@@ -492,14 +492,14 @@ export function genericForm(bc: BoardConfig, w: number, sels: Selector[]): Board
 
 /**
  * Replaces every triangle (3 mutually-adjacent, distinct vertices - see topology.ts's
- * findTriangles) in `bc` with a `triangularBoard(w)`-shaped lattice - the single-kind special case
- * of genericForm (see its own doc comment). `sel`, if given, restricts this to only the triangles it
- * selects (evaluated against `bc`'s own adj/pos) - every other triangle is left untouched, as if it
- * didn't exist (its own sides stay plain edges, even where they'd otherwise have been consumed
- * by/glued to a selected triangle's new subdivided boundary).
+ * findSimplices(adj, 2)) in `bc` with a `triangularBoard(w)`-shaped lattice - the single-kind
+ * special case of genericForm (see its own doc comment). `sel`, if given, restricts this to only
+ * the triangles it selects (evaluated against `bc`'s own adj/pos) - every other triangle is left
+ * untouched, as if it didn't exist (its own sides stay plain edges, even where they'd otherwise
+ * have been consumed by/glued to a selected triangle's new subdivided boundary).
  */
 export function triangleForm(bc: BoardConfig, w: number, sel?: Selector): BoardConfig {
-    return genericForm(bc, w, [sel ?? { op: 'all', type: 'tri' }]);
+    return genericForm(bc, w, [sel ?? { op: 'all', type: simpType(2) }]);
 }
 
 /**
@@ -515,17 +515,18 @@ export function quadForm(bc: BoardConfig, w: number, sel?: Selector): BoardConfi
 }
 
 /**
- * Adds one new node ("centralizes") for every selected triangle and/or quad in `bc` (see
- * topology.ts's findTriangles/findQuads), at that face's own barycenter (the component-wise average
+ * Adds one new node ("centralizes") for every selected n-simplex and/or quad in `bc` (see
+ * topology.ts's findSimplices/findQuads), at that face's own barycenter (the component-wise average
  * of its own corner positions) - unlike genericForm, this doesn't subdivide/glue anything, it just
  * adds one hub per selected face, connected to all of that face's own original corner nodes; every
  * other node/edge (including the face's own original ones) is left completely untouched. Each
  * element of `sels` is itself a Selector naming which faces to look for AND restricting which ones
- * of that kind qualify in one go (its own bottom-up-inferred `type` already says tri or quad) - pass
- * `(all tri)`/`(all quad)` for "every one found, no restriction". Every element must be tri- or
- * quad-typed, checked at runtime (a `type` of 'node'/'edge' throws) since nothing else constrains it
- * structurally. triCentralize/quadCentralize below are the single-kind special cases, each just
- * calling this with one `(all tri)`/`(all quad)`-or-`sel` selector.
+ * of that kind qualify in one go (its own bottom-up-inferred `type` already says simp N or quad) -
+ * pass `(all simp N)`/`(all quad)` for "every one found, no restriction". Every element must be a
+ * simp- or quad-typed selector, checked at runtime (a `type` of 'node'/'edge' throws) since nothing
+ * else constrains it structurally - a mixed `sels` list may freely combine different simp arities
+ * and quad, each processed independently. simpCentralize/triCentralize/quadCentralize below are the
+ * single-kind special cases, each just calling this with one selector.
  */
 export function genericCentralize(bc: BoardConfig, sels: Selector[]): BoardConfig {
     const N = bc.N;
@@ -536,15 +537,7 @@ export function genericCentralize(bc: BoardConfig, sels: Selector[]): BoardConfi
     let nextIdx = N;
 
     for (const sel of sels) {
-        if (sel.type === 'tri') {
-            const triangles = selectTriangle(bc.adj, bc.emb.pos, sel);
-            for (const { n1: A, n2: B, n3: C } of triangles) {
-                const hub = nextIdx++;
-                extraPos[hub - N] = bc.emb.pos[A].map((_, k) =>
-                    (bc.emb.pos[A][k] + bc.emb.pos[B][k] + bc.emb.pos[C][k]) / 3);
-                extraEdges.push([hub, A], [hub, B], [hub, C]);
-            }
-        } else if (sel.type === 'quad') {
+        if (sel.type === 'quad') {
             const quads = selectQuad(bc.adj, bc.emb.pos, sel);
             for (const { n1: A, n2: B, n3: C, n4: D } of quads) {
                 const hub = nextIdx++;
@@ -552,8 +545,16 @@ export function genericCentralize(bc: BoardConfig, sels: Selector[]): BoardConfi
                     (bc.emb.pos[A][k] + bc.emb.pos[B][k] + bc.emb.pos[C][k] + bc.emb.pos[D][k]) / 4);
                 extraEdges.push([hub, A], [hub, B], [hub, C], [hub, D]);
             }
+        } else if (simpN(sel.type) !== null) {
+            const simplices = selectSimp(bc.adj, bc.emb.pos, sel);
+            for (const { nodes } of simplices) {
+                const hub = nextIdx++;
+                extraPos[hub - N] = bc.emb.pos[nodes[0]].map((_, k) =>
+                    nodes.reduce((s, v) => s + bc.emb.pos[v][k], 0) / nodes.length);
+                extraEdges.push(...nodes.map((v): [number, number] => [hub, v]));
+            }
         } else {
-            throw new Error(`genericCentralize: each selector in sels must be a triangle or quad selector, got a ${sel.type} selector`);
+            throw new Error(`genericCentralize: each selector in sels must be a simplex (e.g. triangle/simp 2) or quad selector, got a '${sel.type}' selector`);
         }
     }
 
@@ -578,13 +579,25 @@ export function genericCentralize(bc: BoardConfig, sels: Selector[]): BoardConfi
 }
 
 /**
+ * Adds one new node ("centralizes") for every n-simplex in `bc`, connected to all n+1 of its own
+ * corners - the single-arity special case of genericCentralize (see its own doc comment), just with
+ * `n` given directly instead of folded into `sel`'s own type. `sel`, if given, restricts this to
+ * only the n-simplices it selects (evaluated against `bc`'s own adj/pos, and must itself already be
+ * a simp `n` selector) - every other n-simplex is left untouched, as if it didn't exist.
+ */
+export function simpCentralize(bc: BoardConfig, n: number, sel?: Selector): BoardConfig {
+    assert(Number.isInteger(n) && n >= 2, `simpCentralize: n must be an integer >= 2, got ${n}`);
+    return genericCentralize(bc, [sel ?? { op: 'all', type: simpType(n) }]);
+}
+
+/**
  * Adds one new node ("centralizes") for every triangle in `bc`, connected to all 3 of its own
- * corners - the single-kind special case of genericCentralize (see its own doc comment). `sel`, if
- * given, restricts this to only the triangles it selects (evaluated against `bc`'s own adj/pos) -
- * every other triangle is left untouched, as if it didn't exist.
+ * corners - simpCentralize's own n=2 special case. `sel`, if given, restricts this to only the
+ * triangles it selects (evaluated against `bc`'s own adj/pos) - every other triangle is left
+ * untouched, as if it didn't exist.
  */
 export function triCentralize(bc: BoardConfig, sel?: Selector): BoardConfig {
-    return genericCentralize(bc, [sel ?? { op: 'all', type: 'tri' }]);
+    return simpCentralize(bc, 2, sel);
 }
 
 /**
@@ -1129,8 +1142,8 @@ export function simplexBoard(meshdim: number, dim: number, w: number): BoardConf
 /**
  * A regular tetrahedron: 4 vertices, all mutually adjacent (K4), 6 unit-length edges. A
  * side-length-w subdivision of its 4 triangular faces is no longer built in here directly - apply
- * the `triangleForm(w)` modifier afterward instead (findTriangles finds exactly its 4 faces on this
- * board, since every 3-subset of K4's vertices is a triangle).
+ * the `triangleForm(w)` modifier afterward instead (findSimplices(adj, 2) finds exactly its 4
+ * faces on this board, since every 3-subset of K4's vertices is a triangle).
  */
 export function tetrahedronBoard(): BoardConfig {
     return simplexBoard(3, 3, 2);
@@ -1140,7 +1153,7 @@ export function tetrahedronBoard(): BoardConfig {
  * A regular octahedron: the `n=3` case of `orthoplexBoard()` (see its own doc comment for the
  * general construction) - 6 vertices, 12 unit-length edges, 8 triangular faces. A side-length-w
  * subdivision of its 8 triangular faces can be applied via the `triangleForm(w)` modifier
- * afterward (findTriangles finds exactly its 8 faces).
+ * afterward (findSimplices(adj, 2) finds exactly its 8 faces).
  */
 export function octahedronBoard(): BoardConfig {
     return orthoplexBoard(3);
@@ -1791,7 +1804,7 @@ export function twistedSquareBoard(w: number, h: number, g: number): BoardConfig
  * square tiling. Each pair of adjacent squares is connected two ways: their nearest corners are
  * glued into a single shared node, and their next-nearest corners are joined by one new edge - that
  * new edge, together with each square's own two boundary edges reaching its own glued/joined
- * corners, closes into a genuine 3-node triangular gap face (see topology.ts's findTriangles) the
+ * corners, closes into a genuine 3-node triangular gap face (see topology.ts's findSimplices(adj, 2)) the
  * same way each square's own 4 corners already form a genuine quad face (findQuads).
  */
 export function snubSquareBoard(w: number, h: number): BoardConfig {
@@ -2039,6 +2052,7 @@ export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardCo
         case 'TriangleForm': return triangleForm(bc, modifier.w, modifier.sel);
         case 'QuadForm': return quadForm(bc, modifier.w, modifier.sel);
         case 'Form': return genericForm(bc, modifier.w, modifier.sels);
+        case 'SimpCentralize': return simpCentralize(bc, modifier.n, modifier.sel);
         case 'TriCentralize': return triCentralize(bc, modifier.sel);
         case 'QuadCentralize': return quadCentralize(bc, modifier.sel);
         case 'Centralize': return genericCentralize(bc, modifier.sels);

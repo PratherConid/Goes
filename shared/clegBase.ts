@@ -124,16 +124,19 @@
  *
  * ## Types
  *
- * Three basic types mirror shared/types.ts's own board primitives: `edge`, `tri`, and `quad`
- * (wrapping a BoardEdge/BoardTriangle/BoardQuad respectively), built via the `mkEdge(n1, n2)`,
- * `mkTri(n1, n2, n3)`, `mkQuad(n1, n2, n3, n4)` builtins. `mkTri`/`mkQuad` canonicalize their
- * arguments the same way shared/types.ts's own makeBoardTriangle/makeBoardQuad do (`mkQuad`'s
- * arguments must already be in cycle order, exactly like makeBoardQuad's own) - there is no way yet
- * to read `n1`/`n2`/etc. back out of one of these values (no field access of any kind exists), so
- * for now they're only useful as opaque values to pass to a selector/modifier builtin.
+ * Three basic types mirror shared/types.ts's own board primitives: `edge`, `simp` (a clique of any
+ * arity - unlike `edge`/`quad`, carries NO arity at the type level, see its own doc comment below
+ * for why; `tri` is accepted everywhere as an older spelling of the exact same type), and `quad`
+ * (wrapping a BoardEdge/BoardSimplex/BoardQuad respectively), built via the `mkEdge(n1, n2)`,
+ * `mkSimp(n1, ..., nK)` (K >= 3, any arity - `mkTri(n1, n2, n3)` is kept as fixed-3-argument sugar
+ * for it), `mkQuad(n1, n2, n3, n4)` builtins. `mkSimp`/`mkTri`/`mkQuad` canonicalize their arguments
+ * the same way shared/types.ts's own makeBoardSimplex/makeBoardQuad do (`mkQuad`'s arguments must
+ * already be in cycle order, exactly like makeBoardQuad's own) - there is no way yet to read the
+ * node indices back out of one of these values (no field access of any kind exists), so for now
+ * they're only useful as opaque values to pass to a selector/modifier builtin.
  *
  * A type constructor, `{}` (set), pairs with `[]` (array) - `number{}` is a set of numbers. Unlike
- * `[]`, `{}` may only directly follow one of `number`/`string`/`bool`/`edge`/`tri`/`quad` (see
+ * `[]`, `{}` may only directly follow one of `number`/`string`/`bool`/`edge`/`simp`/`quad` (see
  * SET_ELEM_KINDS) - sets of `egr`, sets of sets, and sets of arrays are all rejected, the first two
  * as a parse error (the grammar has no production for them) and the third (e.g. a set literal mixing
  * in an array-typed element) at typecheck time. An array of sets (`number{}[]`) is fine - only a
@@ -144,30 +147,31 @@
  * `X` is either a `string`, parsed exactly as shared/selector.ts's own grammar/semantics define (see
  * that file's own top comment) via its one context-free parseSelector - whichever kind the text
  * itself turns out to be, bottom-up, is `sel`'s own kind, so unlike the old design `mkSel` no longer
- * needs to be told separately what kind to parse X as - or a `set` of number/edge/tri/quad, wrapped
+ * needs to be told separately what kind to parse X as - or a `set` of number/edge/simp/quad, wrapped
  * directly into a `raw` Selector with no parsing at all, its own kind read off the set's own element
  * type (see resolveAnyKindSelectorArg in shared/clegEval.ts, also used by `msBase` for the same
  * kind-from-the-value-itself resolution). `sel` itself carries no kind at the type level - the kind a
  * given `mkSel(X)` call actually produces depends on X's own runtime value, not something the type
  * checker can see ahead of a call - so two `sel`-typed locals can hold selectors of two different
  * actual kinds; ClegValue's own 'sel' variant carries the real kind (`selType`) once a value actually
- * exists. There is no selector literal syntax and (like `edge`/`tri`/`quad`) no way to read a `sel`
+ * exists. There is no selector literal syntax and (like `edge`/`simp`/`quad`) no way to read a `sel`
  * value's contents back out - it's passed straight through to whichever consuming builtin's own
  * selector-shaped argument resolves it (`nis`/`eis`/`triangleForm`/`quadForm`/`form` - see
  * resolveSelectorArg in shared/clegEval.ts, their one shared "sel, string, or set against one fixed
  * wantKind" resolution). `form`'s own arguments are plain `sel` values too - its own argument-kind
- * check just confirms each is tri- or quad-typed at runtime, the same check shared/boardConfig.ts's
- * genericForm itself makes - see its own doc comment.
+ * check just confirms each is triangle(simp 2)- or quad-typed at runtime, the same check
+ * shared/boardConfig.ts's genericForm itself makes - see its own doc comment.
  *
  * One more basic type rounds out the board-modifier builtins: `mod` wraps a real shared/types.ts
  * BoardModifier - one flat type covering every kind (`Rectify`, `EdgeSplit`, `TriangleForm`, `Form`,
  * ...), built by whichever of the modifier-constructor builtins below matches. Opaque the same way
- * `sel`/`edge`/`tri`/`quad` are - no literal syntax, no way to read fields back out.
+ * `sel`/`edge`/`simp`/`quad` are - no literal syntax, no way to read fields back out.
  *
  * ## Builtins
  *
  * Besides the per-prescribed-board functions and `prod` (shared/boardConfig.ts's own product() - the
- * graph/tensor product of two `egr`s, fixed-signature like `mkEdge`/`mkTri`/`mkQuad` above), there's
+ * graph/tensor product of two `egr`s, fixed-signature like `mkEdge`/`mkTri`/`mkQuad` above; `mkSimp`
+ * is the one variadic exception, its own arity read off the argument count rather than fixed), there's
  * also a small set of generic built-ins whose result type depends on their actual argument types
  * rather than one fixed signature (BUILTIN_FUNCTIONS in shared/clegEval.ts covers both kinds under one
  * interface):
@@ -191,13 +195,16 @@
  * shared/clegEval.ts, also used by `form`/`centralize`'s own variadic selector arguments and by
  * `msBase`).
  *
- * `selectNode`/`selectEdge`/`selectTriangle`/`selectQuad` (X, bc) similarly each accept a `sel`,
- * `string`, or `set`, but evaluate it immediately against a real board `bc` (an `egr`) and return the
- * exact set of nodes/edges/triangles/quads selected - `number{}`/`edge{}`/`tri{}`/`quad{}`
- * respectively - rather than building something to apply later. One builtin per kind rather than a
- * single overloaded name, since a `sel` value's own actual kind is only known at evaluation time,
- * never from its ClegType alone - there would be no way for checkCall to know which of the four set
- * types a single `select(X, bc)` should statically return.
+ * `selectNode`/`selectEdge`/`selectTriangle`/`selectQuad`/`selectSimp` (X, bc) similarly each accept
+ * a `sel`, `string`, or `set`, but evaluate it immediately against a real board `bc` (an `egr`) and
+ * return the exact set of nodes/edges/triangles/quads/simplices selected -
+ * `number{}`/`edge{}`/`simp{}`/`quad{}`/`simp{}` respectively - rather than building something to
+ * apply later. `selectSimp` accepts a selector of ANY simp arity (unlike the fixed-`n=2`
+ * `selectTriangle`) and always returns the same erased `simp{}` type regardless of which arity `X`
+ * turns out to select - this only works because `simp` is itself erased (see its own ClegType doc
+ * comment); a hypothetical `selectSimp(n, X, bc)` with `n` as a plain argument (rather than baked
+ * into `X` itself) could NOT do this, since a `simp`-of-exactly-`n` return type would need
+ * `checkCall` to see `n`'s runtime value, which it never can.
  *
  * ## Program structure
  *
@@ -216,7 +223,8 @@
  * ## Grammar
  *
  *   TYPE       := (BASETYPE ('{' '}')? | FUNCTYPE | '(' FUNCTYPE ')') ('[' ']')*
- *   BASETYPE   := 'egr' | 'number' | 'string' | 'bool' | 'edge' | 'tri' | 'quad'
+ *   BASETYPE   := 'egr' | 'number' | 'string' | 'bool' | 'edge' | 'simp' | 'tri' | 'quad'
+ *               | 'sel' | 'mod' | 'msel'
  *   FUNCTYPE   := '(' (TYPE (',' TYPE)*)? ')' '->' TYPE
  *   PROGRAM    := (FUNCDECL | TOPSTMT)*
  *   TOPSTMT    := VARDECL | ASSIGNSTMT | EXPRSTMT
@@ -263,7 +271,7 @@
  */
 
 import {
-    type BoardConfig, type BoardEdge, type BoardTriangle, type BoardQuad,
+    type BoardConfig, type BoardEdge, type BoardSimplex, type BoardQuad,
     type Selector, type SelectorType, type BoardModifier,
 } from './types.js';
 
@@ -280,13 +288,30 @@ export type ClegType =
     | { kind: 'string' }
     | { kind: 'bool' }
     | { kind: 'edge' }
-    | { kind: 'tri' }
+    /** A value built from node indices that are all pairwise-adjacent when evaluated against a real
+     * board (a "clique") - `tri` is the same type, just an older/shorter spelling (both mean this).
+     * Unlike `array`/`set` (parameterized by `elem`) or the old fixed-arity `tri`/`quad` this
+     * generalizes, `simp` carries NO arity at the type level - `mkTri(...)`/`mkSimp(...)` values of
+     * any arity all share this one type, the same deliberately kind-erased design `sel` already
+     * uses (see its own doc comment just below): a value's own actual arity is only ever known once
+     * it exists (`BoardSimplex.nodes.length`, see shared/types.ts), not from its static type alone.
+     * This is what lets `selectSimp` (unlike the fixed-`n=2` `selectTriangle`) return a single
+     * `simp{}` regardless of which arity `X` selects - see shared/clegEval.ts's own doc comment on
+     * why a `selectSimp(n, X, egr)` general BUILTIN with a `simp`-of-exactly-`n` return type isn't
+     * possible (`checkCall` can't see a runtime argument value), and this erasure is what sidesteps
+     * that limitation entirely, at the cost of two sibling `simp` values no longer being statically
+     * distinguishable by arity - a `{mkTri(...), mkSimp(...four nodes...)}` set literal, or passing
+     * a wrong-arity set where a specific arity is expected (e.g. triangleForm's own sel), now only
+     * fails at evaluation time (see resolveSelectorArg/resolveAnyKindSelectorArg's own runtime arity
+     * checks, shared/clegEval.ts) rather than at typecheck time. */
+    | { kind: 'simp' }
     | { kind: 'quad' }
-    /** One flat type for a selector of any of the four SelectorType kinds (node/edge/tri/quad) -
-     * unlike 'array'/'set', not parameterized by that kind, since which kind a given `sel` value
-     * actually holds is decided at runtime (mkSel(X)'s own X - see BUILTIN_FUNCTIONS['mkSel']), not
-     * something the type checker can know ahead of a call. ClegValue's own 'sel' variant carries the
-     * actual kind (`selType`) at runtime instead. */
+    /** One flat type for a selector of any SelectorType kind (node/edge/simp N/quad) - unlike
+     * 'array'/'set' (parameterized by `elem`), not parameterized by that kind, for the same
+     * kind-erasure reason `simp` above now is - which kind a given `sel` value actually holds is
+     * decided at runtime (mkSel(X)'s own X - see BUILTIN_FUNCTIONS['mkSel']), not something the
+     * type checker can know ahead of a call. ClegValue's own 'sel' variant carries the actual kind
+     * (`selType`) at runtime instead. */
     | { kind: 'sel' }
     /** Wraps a real shared/types.ts BoardModifier - built via one of the modifier-constructor
      * builtins below (`rectify`, `edgeSplit`, `triangleForm`, `form`, ...). One flat type covering
@@ -315,7 +340,7 @@ export type ClegType =
  * `[]` inside a `{}`) are all excluded. Doubles as the parser's own check for what may precede a
  * `{}` type suffix (parseType) and the type-checker's check on a SetLit's inferred element type
  * (checkExpr) - one canonical list for both. */
-export const SET_ELEM_KINDS = new Set(['number', 'string', 'bool', 'edge', 'tri', 'quad']);
+export const SET_ELEM_KINDS = new Set(['number', 'string', 'bool', 'edge', 'simp', 'quad']);
 
 export function typeEquals(a: ClegType, b: ClegType): boolean {
     if (a.kind !== b.kind) return false;
@@ -359,11 +384,14 @@ export type ClegValue =
     | { kind: 'string'; value: string }
     | { kind: 'bool'; value: boolean }
     | { kind: 'edge'; value: BoardEdge }
-    | { kind: 'tri'; value: BoardTriangle }
+    /** Unlike `edge`/`quad`, there's no separate arity field alongside `value` - the simp ClegType
+     * is deliberately erased (see its own doc comment), so a simp value's own arity is only ever
+     * read off `value.nodes.length - 1` directly, wherever it's actually needed. */
+    | { kind: 'simp'; value: BoardSimplex }
     | { kind: 'quad'; value: BoardQuad }
-    /** `selType` records which of the four SelectorType kinds `value` actually is (see ClegType's
-     * own 'sel' doc comment) - always set from whichever parse*Selector function built `value`, so
-     * it's never out of sync with `value.type`. */
+    /** `selType` records which SelectorType kind `value` actually is (see ClegType's own 'sel' doc
+     * comment) - always set from whichever parse*Selector function built `value`, so it's never out
+     * of sync with `value.type`. */
     | { kind: 'sel'; selType: SelectorType; value: Selector }
     | { kind: 'mod'; value: BoardModifier }
     | { kind: 'msel'; value: MultiSelector }
@@ -371,7 +399,7 @@ export type ClegValue =
     /** A set's `value` is always deduplicated by clegSetKey (see makeClegSet) - unlike 'array',
      * where `value` may hold anything an ArrayLit/array-typed value can, `value` here never holds
      * two elements with the same key. Represented as a plain array (not a JS Set/Map) since
-     * edge/tri/quad don't have reference equality, so every set operation already needs its own
+     * edge/simp/quad don't have reference equality, so every set operation already needs its own
      * clegSetKey-based comparison regardless of the backing container - see setUnion/etc. below. */
     | { kind: 'set'; elem: ClegType; value: ClegValue[] }
     /** A function-pointer value - a reference to one of `program`'s own top-level functions, held by
@@ -408,8 +436,8 @@ export function clegValueType(v: ClegValue): ClegType {
 // rather than in clegEval.ts itself, purely so ClegValue doesn't need a back-reference into a file
 // that itself depends on this one. `base`'s own `sel` may syntactically be any Selector - msBase
 // itself doesn't check its SelectorType at all, only multiProd's own evaluation does, once it
-// actually needs to restrict a specific board (see restrictBoardBySelector) - so a tri/quad selector
-// parses/builds fine as an msBase argument and only fails later, when actually evaluated. `all` is
+// actually needs to restrict a specific board (see restrictBoardBySelector) - so a simp/quad
+// selector parses/builds fine as an msBase argument and only fails later, when actually evaluated. `all` is
 // every original index, unrestricted - the same universal set `msInter(nil(msel))` already denotes
 // (the usual absorbing-element identity for an empty intersection fold), just spelled directly
 // rather than via that idiom.
@@ -583,7 +611,7 @@ const repeatStringOverload: BinaryOverload = {
 };
 
 /** A canonical string key for a set element - two ClegValues of a SET_ELEM_KINDS type represent
- * the same set member iff their keys are equal, since edge/tri/quad (unlike number/string/bool)
+ * the same set member iff their keys are equal, since edge/simp/quad (unlike number/string/bool)
  * have no reference equality of their own, so every set operation (makeClegSet/setUnion/
  * setIntersect/setDiff) goes through this rather than `===`/JS Set/Map identity. */
 export function clegSetKey(v: ClegValue): string {
@@ -592,7 +620,11 @@ export function clegSetKey(v: ClegValue): string {
         case 'string': return `s:${JSON.stringify(v.value)}`;
         case 'bool': return `b:${v.value}`;
         case 'edge': return `e:${v.value.n1},${v.value.n2}`;
-        case 'tri': return `t:${v.value.n1},${v.value.n2},${v.value.n3}`;
+        // A plain comma-join of node.length-many indices is already an unambiguous, collision-free
+        // key across every arity (no delimiter can appear inside a decimal node index), so - unlike
+        // when this carried the now-erased simp ClegType's own n - there's no need to prefix a
+        // separate arity tag; two simp values collide here iff they're the exact same node list.
+        case 'simp': return `s:${v.value.nodes.join(',')}`;
         case 'quad': return `q:${v.value.n1},${v.value.n2},${v.value.n3},${v.value.n4}`;
         default:
             // Unreachable in a program that has passed typecheckCleg - SET_ELEM_KINDS already

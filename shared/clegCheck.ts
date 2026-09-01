@@ -252,7 +252,7 @@ function checkExpr(expr: Expr, env: TypeEnv, funcs: FuncTable): ClegType {
             if (!SET_ELEM_KINDS.has(elemTypes[0].kind))
                 throw new Error(
                     `cleg: '${typeToString(elemTypes[0])}' is not a supported set element type - only ` +
-                    `number/string/bool/edge/tri/quad may be set elements`);
+                    `number/string/bool/edge/simp/quad may be set elements`);
             return { kind: 'set', elem: elemTypes[0] };
         }
         case 'CallExpr': {

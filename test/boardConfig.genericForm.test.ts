@@ -1,13 +1,13 @@
 // Regression tests for genericForm and the "form" board modifier: the generalization of
-// triangleForm/quadForm to an arbitrary list of selectors (each a tri- or quad-typed Selector,
-// checked at runtime - see genericForm's own doc comment), gluing shared ORIGINAL edges across
-// every selected face regardless of kind.
+// triangleForm/quadForm to an arbitrary list of selectors (each a triangle(simp 2)- or quad-typed
+// Selector, checked at runtime - see genericForm's own doc comment), gluing shared ORIGINAL edges
+// across every selected face regardless of kind.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     genericForm, triangleForm, quadForm, triangularBoard, rectangularBoard, applyModifier,
 } from '../shared/boardConfig.ts';
-import { Embedding, type BoardConfig } from '../shared/types.ts';
+import { Embedding, simpType, type BoardConfig } from '../shared/types.ts';
 import { parseTriangleSelector, parseQuadSelector } from '../shared/selector.ts';
 
 function edgeCount(adj: number[][]): number {
@@ -34,7 +34,7 @@ function assertConnected(adj: number[][]) {
 
 test('genericForm with a single (all tri) selector is identical to triangleForm', () => {
     const bc = triangularBoard(2);
-    assert.deepEqual(genericForm(bc, 3, [{ op: 'all', type: 'tri' }]), triangleForm(bc, 3));
+    assert.deepEqual(genericForm(bc, 3, [{ op: 'all', type: simpType(2) }]), triangleForm(bc, 3));
 });
 
 test('genericForm with a single (all quad) selector is identical to quadForm', () => {
@@ -46,7 +46,7 @@ test('genericForm rejects a node/edge selector in sels at runtime', () => {
     const bc = triangularBoard(2);
     assert.throws(
         () => genericForm(bc, 3, [{ op: 'all', type: 'node' }]),
-        /must be a triangle or quad selector, got a node selector/);
+        /must be a triangle \(simp 2\) or quad selector, got a 'node' selector/);
 });
 
 test('a triangle and a quad sharing an edge glue seamlessly across kinds', () => {
@@ -79,6 +79,6 @@ test('an empty sels list is a total no-op', () => {
 
 test('applyModifier("Form", ...) matches calling genericForm directly', () => {
     const bc = triangularBoard(2);
-    const sels = [{ op: 'all' as const, type: 'tri' as const }];
+    const sels = [{ op: 'all' as const, type: simpType(2) }];
     assert.deepEqual(applyModifier(bc, { kind: 'Form', w: 3, sels }), genericForm(bc, 3, sels));
 });

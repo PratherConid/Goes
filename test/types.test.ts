@@ -1,15 +1,20 @@
-// Regression tests for shared/types.ts's makeBoardTriangle/makeBoardQuad - the canonical
-// constructors BoardTriangle/BoardQuad values are built through.
+// Regression tests for shared/types.ts's makeBoardSimplex/makeBoardQuad - the canonical
+// constructors BoardSimplex/BoardQuad values are built through.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeBoardTriangle, makeBoardQuad } from '../shared/types.ts';
+import { makeBoardSimplex, makeBoardQuad } from '../shared/types.ts';
 
-test('makeBoardTriangle normalizes any permutation of the same 3 nodes to n1 < n2 < n3', () => {
-    const expected = { n1: 2, n2: 5, n3: 9 };
-    assert.deepEqual(makeBoardTriangle(2, 5, 9), expected);
-    assert.deepEqual(makeBoardTriangle(9, 5, 2), expected);
-    assert.deepEqual(makeBoardTriangle(5, 9, 2), expected);
-    assert.deepEqual(makeBoardTriangle(9, 2, 5), expected);
+test('makeBoardSimplex normalizes any permutation of the same nodes to ascending order', () => {
+    const expected = { nodes: [2, 5, 9] };
+    assert.deepEqual(makeBoardSimplex([2, 5, 9]), expected);
+    assert.deepEqual(makeBoardSimplex([9, 5, 2]), expected);
+    assert.deepEqual(makeBoardSimplex([5, 9, 2]), expected);
+    assert.deepEqual(makeBoardSimplex([9, 2, 5]), expected);
+});
+
+test('makeBoardSimplex works for any arity, not just 3 nodes', () => {
+    assert.deepEqual(makeBoardSimplex([7, 3]), { nodes: [3, 7] });
+    assert.deepEqual(makeBoardSimplex([4, 1, 8, 2]), { nodes: [1, 2, 4, 8] });
 });
 
 // Given a cycle a-b-c-d-a, all 8 of its rotation/reflection-equivalent relabelings (4 rotations x 2

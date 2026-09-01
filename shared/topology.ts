@@ -2,7 +2,7 @@
  * Graph-topology utilities operating on plain N×N adjacency matrices (the same representation as
  * `BoardConfig.adj`), independent of any board-specific geometry.
  */
-import { type BoardTriangle, makeBoardTriangle, type BoardQuad, makeBoardQuad } from './types.js';
+import { assert, type BoardSimplex, makeBoardSimplex, type BoardQuad, makeBoardQuad } from './types.js';
 
 /** An all-zero N×N adjacency matrix - the usual starting point before filling in edges. */
 export function zeroAdj(N: number): number[][] {
@@ -13,7 +13,7 @@ export function zeroAdj(N: number): number[][] {
 export type AdjacencyList = Set<number>[];
 
 /** Converts an N×N adjacency matrix into an adjacency list, each node's neighbors stored as a
- * `Set` (not an array) so membership checks - the hot path for both findTriangles/findQuads
+ * `Set` (not an array) so membership checks - the hot path for both findSimplices/findQuads
  * below - are O(1) instead of O(degree). */
 export function toAdjacencyList(adj: number[][]): AdjacencyList {
     const N = adj.length;
@@ -25,28 +25,35 @@ export function toAdjacencyList(adj: number[][]): AdjacencyList {
 }
 
 /**
- * Finds every triangle (3 distinct, pairwise-adjacent vertices) in `adj`, each reported exactly
- * once as a BoardTriangle (already `n1 < n2 < n3` by construction - see makeBoardTriangle - since
- * this always discovers a triangle's own 3 vertices in increasing order to begin with, so
- * canonicalizing it costs nothing extra). Converts to an adjacency list first (see
- * toAdjacencyList), then for each vertex `u` only looks at neighbors `v > u`, and for each such `v`
- * only looks at neighbors `w > v` of `v`, checking whether `w` is also a neighbor of `u` via an O(1)
- * set lookup - fixing this increasing order is what guarantees each triangle is found exactly once
- * (via its unique u < v < w labeling), with no separate deduplication pass needed.
+ * Finds every n-simplex - n+1 distinct, pairwise-adjacent vertices (a clique) - in `adj`, each
+ * reported exactly once as a BoardSimplex (already ascending by construction - see
+ * makeBoardSimplex - since this always discovers a simplex's own members in increasing order to
+ * begin with, so canonicalizing it costs nothing extra). `n = 2` is the classic "triangle" case
+ * (3 mutually-adjacent vertices).
+ *
+ * Converts to an adjacency list first (see toAdjacencyList), then does an increasing-order DFS to
+ * depth n+1: at each level, `candidates` is the current chain's own common-neighbor set (already
+ * filtered to be > the chain's own last member), so extending the chain by picking `v` from
+ * `candidates` and re-filtering `candidates` itself down to `{x in candidates : x > v, adjList[v]
+ * has x}` for the next level is exactly "every vertex adjacent to the WHOLE chain so far, in
+ * increasing order" - fixing this increasing order (same trick findTriangles used to use directly
+ * for n=2) is what guarantees each simplex is found exactly once, with no separate deduplication
+ * pass needed.
  */
-export function findTriangles(adj: number[][]): BoardTriangle[] {
+export function findSimplices(adj: number[][], n: number): BoardSimplex[] {
+    assert(Number.isInteger(n) && n >= 1, `findSimplices: n must be a positive integer, got ${n}`);
     const N = adj.length;
     const adjList = toAdjacencyList(adj);
-    const triangles: BoardTriangle[] = [];
-    for (let u = 0; u < N; u++)
-        for (const v of adjList[u]) {
-            if (v <= u) continue;
-            for (const w of adjList[v]) {
-                if (w <= v) continue;
-                if (adjList[u].has(w)) triangles.push(makeBoardTriangle(u, v, w));
-            }
+    const simplices: BoardSimplex[] = [];
+    const rec = (current: number[], candidates: number[]) => {
+        if (current.length === n + 1) { simplices.push(makeBoardSimplex(current)); return; }
+        for (const v of candidates) {
+            const nextCandidates = candidates.filter(x => x > v && adjList[v].has(x));
+            rec([...current, v], nextCandidates);
         }
-    return triangles;
+    };
+    rec([], Array.from({ length: N }, (_, i) => i));
+    return simplices;
 }
 
 /**
@@ -55,7 +62,7 @@ export function findTriangles(adj: number[][]): BoardTriangle[] {
  * merely 4 vertices of a denser subgraph that happens to contain one) - each reported exactly once
  * as a BoardQuad, canonicalized via makeBoardQuad (see its own doc comment, shared/types.ts) from
  * the `p-r-q-s-p` cycle order this function itself discovers it in - that canonicalization is a
- * genuine relabeling (not necessarily `p, r, q, s` verbatim), unlike findTriangles' own free ride,
+ * genuine relabeling (not necessarily `p, r, q, s` verbatim), unlike findSimplices' own free ride,
  * since a quad's own discovery order isn't already the lexicographically-least one in general.
  *
  * Converts to an adjacency list first (see toAdjacencyList), then for every non-adjacent pair

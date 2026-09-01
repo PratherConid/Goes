@@ -1715,6 +1715,12 @@ export class Renderer {
                 + 'a side, regardless of whether that lattice came from a triangle or a quad selector '
                 + '(unlike calling triangleForm/quadForm separately, a triangle and a quad sharing an '
                 + 'edge still glue seamlessly here)')}
+            ${row('simpCentralize(n, sel?)',
+                'SimpCentralize: add one new node for every n-simplex (n+1 mutually-adjacent nodes) '
+                + '- or, if a simp n selector sel is given, only the ones it selects - at that '
+                + "simplex's own barycenter, connected to all n+1 of its corners; every original "
+                + "node/edge (including the selected simplex's own) is left untouched. "
+                + 'triCentralize below is its own n=2 special case')}
             ${row('triCentralize(sel?)',
                 'TriCentralize: add one new node for every triangle (3 mutually-adjacent nodes) - or, '
                 + 'if a triangle selector sel is given, only the ones it selects - at that '
@@ -1752,23 +1758,26 @@ export class Renderer {
             ${row('(inter SEL...)', 'Set intersection of one or more operands, all the same kind')}
             ${row('(diff SEL SEL)', 'Set difference (left minus right) - both operands the same kind')}
             ${row('(compl SEL)',
-                'Complement, within all objects of whichever kind SEL selects from (node/edge/triangle/quad)')}
+                'Complement, within all objects of whichever kind SEL selects from (node/edge/simp N/quad)')}
             ${row('(more [&lt;num&gt;] SEL)',
                 'Nodes/edges only: expands SEL outward by num steps (default 1 if omitted), repeating the '
                 + 'one-step expansion that many times: one step adds, for nodes, every node one edge away '
                 + 'from the current selection; for edges, every edge sharing a node with a currently '
                 + 'selected edge - either way SEL\'s own result stays included too, and 0 steps is a no-op')}
-            ${row('(all &lt;node|edge|tri|quad&gt;)', 'Every object of the given kind')}
-            ${row('(none &lt;node|edge|tri|quad&gt;)', 'No objects of the given kind')}
+            ${row('(all &lt;node|edge|simp N|tri|quad&gt;)',
+                'Every object of the given kind - "simp N" is every complete (N+1)-node subgraph '
+                + '(clique); "tri" is sugar for "simp 2"')}
+            ${row('(none &lt;node|edge|simp N|tri|quad&gt;)', 'No objects of the given kind')}
             ${row('(deg &lt;eq|gt|lt&gt; &lt;num&gt;)', 'Nodes only: whose degree is =/&gt;/&lt; num')}
-            ${row('(conva &lt;node|edge|tri|quad&gt; SEL)',
+            ${row('(conva &lt;node|edge|simp N|tri|quad&gt; SEL)',
                 'Converts SEL (of whichever kind it itself turns out to be) into the given result kind: a '
                 + '"to" object is selected iff ALL of its associated "from" objects are selected - two '
                 + 'objects are associated iff one\'s own node set is completely contained in the '
                 + 'other\'s (vacuously true for a "to" object with no associated "from" objects at '
-                + 'all). Converting a kind to itself is a no-op; triangle &lt;-&gt; quad has no '
-                + 'defined association and is rejected')}
-            ${row('(conve &lt;node|edge|tri|quad&gt; SEL)',
+                + 'all). Converting a kind to itself is a no-op (this includes simp M -&gt; simp M); '
+                + 'simp &lt;-&gt; quad (of any arity, including tri) has no defined association and is '
+                + 'rejected, but simp M &lt;-&gt; simp N for M != N is allowed')}
+            ${row('(conve &lt;node|edge|simp N|tri|quad&gt; SEL)',
                 'Same as conva, but a "to" object is selected iff AT LEAST ONE of its associated '
                 + '"from" objects is selected (vacuously false if it has none)')}
             ${row('(rrmn &lt;num&gt; SEL)',
@@ -1786,18 +1795,22 @@ export class Renderer {
             ${row('randRmN(set, num)',
                 'Randomly (uniformly) removes exactly num (a nonnegative integer) elements from a set '
                 + 'of any element type - same semantics as the (rrmn ...) selector operator (see '
-                + 'Selectors), but usable on any set, not just node/edge/tri/quad selections')}
+                + 'Selectors), but usable on any set, not just node/edge/simp/quad selections')}
             ${row('randRmP(set, num)',
                 'Randomly removes a portion of a set: num (a nonnegative fraction) times the set\'s own '
                 + 'size, rounded down - same semantics as the (rrmp ...) selector operator')}
             ${row('mkEdge(a, b)', 'Builds an edge value between node indices a and b')}
-            ${row('mkTri(a, b, c)', 'Builds a triangle value from three node indices')}
+            ${row('mkTri(a, b, c)', 'Builds a triangle (simp) value from three node indices - sugar for mkSimp(a, b, c)')}
+            ${row('mkSimp(a, b, c, ...)',
+                'Builds a simp value (a complete-subgraph clique) from 3 or more node indices - its '
+                + 'arity is however many indices are given, minus 1, but (like every simp value) '
+                + "isn't tracked in its own type (type simp), just its actual node list")}
             ${row('mkQuad(a, b, c, d)',
                 'Builds a quad value from four node indices, which must already be in cycle order')}
             ${row('prod(egr, egr)', 'The graph (tensor) product of two boards')}
             ${row('mkSel(X)',
                 'Builds a selector value (type sel) from X - a string (parsed as a selector, kind '
-                + 'inferred from the text itself - see Selectors) or a set of number/edge/tri/quad '
+                + 'inferred from the text itself - see Selectors) or a set of number/edge/simp/quad '
                 + '(kind read off the set\'s own element type). For "every object of kind K" pass the '
                 + 'string "(all K)"')}
             ${row('selectNode(X, egr)',
@@ -1805,7 +1818,11 @@ export class Renderer {
                 + 'the exact set of nodes it selects (a number{}) - unlike nis, this runs immediately '
                 + 'against a board instead of building a mod to apply later')}
             ${row('selectEdge(X, egr)', 'Same as selectNode, but for an edge selector, returning an edge{}')}
-            ${row('selectTriangle(X, egr)', 'Same as selectNode, but for a triangle selector, returning a tri{}')}
+            ${row('selectTriangle(X, egr)', 'Same as selectNode, but for a triangle (simp 2) selector, returning a simp{}')}
+            ${row('selectSimp(X, egr)',
+                'Same as selectTriangle, but for a simp selector of any arity, not just 2 - X\'s own '
+                + 'text/value decides which; returns a simp{} either way, since (unlike '
+                + 'selectTriangle) the arity was never fixed at the type level to begin with')}
             ${row('selectQuad(X, egr)', 'Same as selectNode, but for a quad selector, returning a quad{}')}
             ${row('multiProd([egr...], msel)',
                 'The N-ary Cartesian product of the given boards, restricted to the subgraph the '

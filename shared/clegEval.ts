@@ -19,8 +19,8 @@
 
 import {
     BoardArgType, numArg, csvArg, parseBoardArgToken,
-    makeBoardEdge, makeBoardTriangle, makeBoardQuad, Embedding,
-    type BoardArgEntry, type BoardConfig, type BoardEdge, type BoardTriangle, type BoardQuad,
+    makeBoardEdge, makeBoardSimplex, makeBoardQuad, Embedding, simpType, simpN,
+    type BoardArgEntry, type BoardConfig, type BoardEdge, type BoardSimplex, type BoardQuad,
     type Selector, type SelectorType, type SelectedVals, type BoardModifier,
 } from './types.js';
 import {
@@ -29,7 +29,7 @@ import {
 } from './boardConfig.js';
 import {
     randomlyRemove, parseSelector, parseNodeSelector, parseEdgeSelector, parseTriangleSelector,
-    parseQuadSelector, selectNode, selectEdge, selectTriangle, selectQuad,
+    parseQuadSelector, parseSimpSelector, selectNode, selectEdge, selectTriangle, selectSimp, selectQuad,
 } from './selector.js';
 import { zeroAdj } from './topology.js';
 import {
@@ -150,7 +150,7 @@ BUILTIN_FUNCTIONS['len'] = {
 // `has(x, e)`: whether `x` (a `T[]` or `T{}`) contains `e` (a `T`), as a `bool` - like `len`, its
 // result depends on the actual argument types (here, argument 2's own required type, taken from
 // argument 1's element type), hence the hand-written checkCall/call pair. `T` is restricted to
-// SET_ELEM_KINDS (number/string/bool/edge/tri/quad) for BOTH `T[]` and `T{}` - even though an
+// SET_ELEM_KINDS (number/string/bool/edge/simp/quad) for BOTH `T[]` and `T{}` - even though an
 // array's own element type is normally unrestricted, nothing outside SET_ELEM_KINDS has a defined
 // equality in this language (e.g. `egr`: "no natural equality/hashing for a whole board", see
 // shared/clegBase.ts's own top comment on SET_ELEM_KINDS), so `has` can't be given a well-defined
@@ -165,7 +165,7 @@ function hasCheckCall(callee: string, argTypes: ClegType[]): ClegType {
     if (!SET_ELEM_KINDS.has(elem.kind))
         throw new Error(
             `cleg: '${callee}' argument 1: element type ${typeToString(elem)} has no defined equality - only ` +
-            `number/string/bool/edge/tri/quad elements are supported`);
+            `number/string/bool/edge/simp/quad elements are supported`);
     if (!typeEquals(argTypes[1], elem))
         throw new Error(
             `cleg: '${callee}' argument 2: expected ${typeToString(elem)} (the element type of argument 1), got ` +
@@ -226,31 +226,34 @@ BUILTIN_FUNCTIONS['randRmP'] = {
 };
 
 // The ClegType 'kind' a set of SelectorType `k` is made of - 'node' selections are plain numbers
-// (node indices), the other three match their own SelectorType name exactly. Shared by
+// (node indices), 'edge'/'quad' match their own SelectorType name exactly, and any 'simp N'
+// selection is made of 'simp'-kind elements (simp's own ClegType is erased - see its own doc
+// comment - so this alone can't distinguish which N; resolveSelectorArg below checks that
+// separately, against the actual VALUES, once it also knows the wanted N). Shared by
 // resolveSelectorArg below (which needs to validate a `set`-typed selector argument against an
 // already-known wantKind) and Selector's own 'raw' variant (shared/types.ts), which this builds.
-const SELECTOR_SET_ELEM_KIND: Record<SelectorType, ClegType['kind']> = {
-    node: 'number', edge: 'edge', tri: 'tri', quad: 'quad',
-};
+function selectorSetElemKind(k: SelectorType): ClegType['kind'] {
+    if (k === 'node') return 'number';
+    if (k === 'edge' || k === 'quad') return k;
+    return 'simp';
+}
 
 // Unwraps a `set` ClegValue's own elements into the matching SelectedVals branch - `kind` must
 // already be known to match the set's own elem type (checked by resolveSelectorArg's caller before
 // this runs). 'node' collects into a real Set<number> (numbers have genuine equality); the other
-// three stay plain arrays, matching SelectedVals' own doc comment on why.
+// kinds stay plain arrays, matching SelectedVals' own doc comment on why.
 function setValueToSelectedVals(kind: SelectorType, values: ClegValue[]): SelectedVals {
-    switch (kind) {
-        case 'node': return { kind: 'node', value: new Set(values.map(v => (v as { value: number }).value)) };
-        case 'edge': return { kind: 'edge', value: values.map(v => (v as { value: BoardEdge }).value) };
-        case 'tri': return { kind: 'tri', value: values.map(v => (v as { value: BoardTriangle }).value) };
-        case 'quad': return { kind: 'quad', value: values.map(v => (v as { value: BoardQuad }).value) };
-    }
+    if (kind === 'node') return { kind: 'node', value: new Set(values.map(v => (v as { value: number }).value)) };
+    if (kind === 'edge') return { kind: 'edge', value: values.map(v => (v as { value: BoardEdge }).value) };
+    if (kind === 'quad') return { kind: 'quad', value: values.map(v => (v as { value: BoardQuad }).value) };
+    return { kind: 'simp', n: simpN(kind)!, value: values.map(v => (v as { value: BoardSimplex }).value) };
 }
 
 // Resolves a nis/eis/triangleForm/quadForm-style "selector-like" argument into a real Selector -
 // a `sel` value (its actual kind checked against `wantKind` at runtime, since 'sel' carries no kind
 // at the type level - see ClegType's own 'sel' doc comment), a `string` (parsed via `parseFn`,
 // following shared/selector.ts's own grammar exactly), or a `set` (of the ClegType matching
-// `wantKind` - see SELECTOR_SET_ELEM_KIND - wrapped directly into a `raw` Selector, no parsing
+// `wantKind` - see selectorSetElemKind - wrapped directly into a `raw` Selector, no parsing
 // involved). Shared by every builtin that accepts this shape, so the "string, sel, or set - kind-
 // checked" logic exists in exactly one place.
 function resolveSelectorArg(
@@ -258,9 +261,20 @@ function resolveSelectorArg(
 ): Selector {
     if (arg.kind === 'string') return parseFn(arg.value);
     if (arg.kind === 'set') {
-        if (arg.elem.kind !== SELECTOR_SET_ELEM_KIND[wantKind])
+        if (arg.elem.kind !== selectorSetElemKind(wantKind))
             throw new Error(
                 `cleg: '${callee}' expects a ${wantKind} selector, got a set of ${typeToString(arg.elem)}`);
+        // simp's own ClegType is erased (no arity - see its own doc comment), so unlike edge/quad,
+        // matching elem.kind alone doesn't guarantee every element is actually simp `wantN` - each
+        // element's own real arity (BoardSimplex.nodes.length - 1) is checked directly instead.
+        const wantN = simpN(wantKind);
+        if (wantN !== null)
+            for (const v of arg.value) {
+                const actualN = (v as { value: BoardSimplex }).value.nodes.length - 1;
+                if (actualN !== wantN)
+                    throw new Error(
+                        `cleg: '${callee}' expects a set of simp ${wantN} elements, got one of arity ${actualN}`);
+            }
         return { op: 'raw', type: wantKind, items: setValueToSelectedVals(wantKind, arg.value) };
     }
     const sel = arg as { kind: 'sel'; selType: SelectorType; value: Selector };
@@ -274,6 +288,9 @@ const NUMBER_TYPE: ClegType = { kind: 'number' };
 // ClegType to pass as checkStmt's own `returnType` param while checking a TopStmt (never actually
 // read there, since a TopStmt is never a ReturnStmt).
 export const EGR_TYPE: ClegType = { kind: 'egr' };
+// The one ClegType for a simp value of any arity - see its own doc comment (shared/clegBase.ts) on
+// why it carries no `n`. Shared by mkTri/mkSimp/selectTriangle/selectSimp below.
+const SIMP_TYPE: ClegType = { kind: 'simp' };
 
 // `abs(x)`/`sqrt(x)`: fixed-signature `number -> number`, built with fixedSignature(...) like
 // mkEdge/mkTri/mkQuad below. `sqrt` throws at evaluation time for a negative `x` (not statically
@@ -292,11 +309,12 @@ BUILTIN_FUNCTIONS['sqrt'] = {
     },
 };
 
-// `mkEdge`/`mkTri`/`mkQuad`: build an edge/tri/quad from node indices, canonicalized exactly as
-// shared/types.ts's own makeBoardEdge/makeBoardTriangle/makeBoardQuad do (mkQuad's arguments must
+// `mkEdge`/`mkTri`/`mkQuad`: build an edge/simp/quad from node indices, canonicalized exactly as
+// shared/types.ts's own makeBoardEdge/makeBoardSimplex/makeBoardQuad do (mkQuad's arguments must
 // already be in cycle order, same requirement as makeBoardQuad's own - see its doc comment). All
-// three are fixed-signature (number, ..., number) -> edge/tri/quad, so they're built with
-// fixedSignature(...) like the board constructors above rather than needing a hand-written checkCall.
+// three are fixed-signature (number, ..., number) -> edge/simp/quad, so they're built with
+// fixedSignature(...) like the board constructors above rather than needing a hand-written
+// checkCall - mkTri is kept as fixed-3-argument sugar for mkSimp (below).
 BUILTIN_FUNCTIONS['mkEdge'] = {
     checkCall: fixedSignature([NUMBER_TYPE, NUMBER_TYPE], { kind: 'edge' }),
     call: ([a, b]) => ({
@@ -305,12 +323,34 @@ BUILTIN_FUNCTIONS['mkEdge'] = {
     }),
 };
 BUILTIN_FUNCTIONS['mkTri'] = {
-    checkCall: fixedSignature([NUMBER_TYPE, NUMBER_TYPE, NUMBER_TYPE], { kind: 'tri' }),
+    checkCall: fixedSignature([NUMBER_TYPE, NUMBER_TYPE, NUMBER_TYPE], SIMP_TYPE),
     call: ([a, b, c]) => ({
-        kind: 'tri',
-        value: makeBoardTriangle(
-            (a as { value: number }).value, (b as { value: number }).value, (c as { value: number }).value),
+        kind: 'simp',
+        value: makeBoardSimplex(
+            [(a as { value: number }).value, (b as { value: number }).value, (c as { value: number }).value]),
     }),
+};
+// `mkSimp(n1, ..., nK)`: builds a simp (K-1)-simplex from K >= 3 node indices - the general
+// counterpart of mkTri above. Its own arity is only ever known at the VALUE level
+// (BoardSimplex.nodes.length) - the return ClegType is always the same erased SIMP_TYPE regardless
+// of K, which is exactly what lets this accept any K >= 3 with one hand-written checkCall rather
+// than needing a family of fixed-arity builtins (see shared/clegBase.ts's own top comment on why
+// simp's ClegType is erased).
+function mkSimpCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length < 3)
+        throw new Error(`cleg: '${callee}' expects at least 3 arguments (a simplex needs >= 2 arity, i.e. >= 3 nodes), got ${argTypes.length}`);
+    argTypes.forEach((t, i) => {
+        if (t.kind !== 'number')
+            throw new Error(`cleg: '${callee}' argument ${i + 1} must be a number, got ${typeToString(t)}`);
+    });
+    return SIMP_TYPE;
+}
+BUILTIN_FUNCTIONS['mkSimp'] = {
+    checkCall: mkSimpCheckCall,
+    call: (args) => {
+        const nodes = args.map(a => (a as { value: number }).value);
+        return { kind: 'simp', value: makeBoardSimplex(nodes) };
+    },
 };
 BUILTIN_FUNCTIONS['mkQuad'] = {
     checkCall: fixedSignature([NUMBER_TYPE, NUMBER_TYPE, NUMBER_TYPE, NUMBER_TYPE], { kind: 'quad' }),
@@ -334,7 +374,7 @@ BUILTIN_FUNCTIONS['prod'] = {
 
 // `mkSel(X)`: builds a selector from X - a `string` (parsed via selector.ts's own context-free
 // parseSelector, whichever kind it turns out to be bottom-up - see that file's own top comment) or a
-// `set` (of number/edge/tri/quad, wrapped into a `raw` Selector, its own kind read off the set's own
+// `set` (of number/edge/simp/quad, wrapped into a `raw` Selector, its own kind read off the set's own
 // element type), resolved via resolveAnyKindSelectorArg below exactly like msBase's own selector
 // argument - there's no separate `kind` argument anymore, since a Selector already self-describes its
 // own kind, so reading it off X directly replaces the old design where mkSel had to be told which
@@ -427,21 +467,26 @@ BUILTIN_FUNCTIONS['eis'] = {
 };
 
 const EDGE_TYPE: ClegType = { kind: 'edge' };
-const TRI_TYPE: ClegType = { kind: 'tri' };
 const QUAD_TYPE: ClegType = { kind: 'quad' };
 
-// `selectNode(X, bc)`/`selectEdge(X, bc)`/`selectTriangle(X, bc)`/`selectQuad(X, bc)`: evaluates a
-// selector (`X`, a `sel`, `string`, or `set` - resolved via resolveSelectorArg above, same convention as
-// nis/eis/triangleForm/quadForm) against a real board `bc`, returning the exact set of
-// nodes/edges/triangles/quads it selects (shared/selector.ts's own selectNode/selectEdge/
-// selectTriangle/selectQuad do the actual work) - unlike nis/eis (which build a
-// NodeInducedSubgraph/EdgeInducedSubgraph BoardModifier to apply LATER via modify(...)), this
-// evaluates the selector immediately against a real board and hands back the result as an ordinary
-// cleg set, so a program can inspect/combine/count (len) it directly. One builtin per selector kind,
-// rather than a single overloaded name, because `sel`'s own ClegType carries no kind at the type
-// level (see shared/clegBase.ts's own top comment) - checkCall only ever sees argument TYPES, never
-// their runtime values, so there's no way for one `select(X, bc)` to know ahead of time which of
-// number{}/edge{}/tri{}/quad{} it should return.
+// `selectNode(X, bc)`/`selectEdge(X, bc)`/`selectTriangle(X, bc)`/`selectQuad(X, bc)`/
+// `selectSimp(X, bc)`: evaluates a selector (`X`, a `sel`, `string`, or `set` - resolved via
+// resolveSelectorArg/resolveAnyKindSelectorArg above, same convention as nis/eis/triangleForm/
+// quadForm) against a real board `bc`, returning the exact set of nodes/edges/triangles/quads/
+// simplices it selects (shared/selector.ts's own selectNode/selectEdge/selectTriangle/selectQuad/
+// selectSimp do the actual work) - unlike nis/eis (which build a NodeInducedSubgraph/
+// EdgeInducedSubgraph BoardModifier to apply LATER via modify(...)), this evaluates the selector
+// immediately against a real board and hands back the result as an ordinary cleg set, so a program
+// can inspect/combine/count (len) it directly. `selectNode`/`selectEdge`/`selectTriangle`/
+// `selectQuad` are one builtin per FIXED kind (rather than a single overloaded name) because `sel`'s
+// own ClegType carries no kind at the type level (see shared/clegBase.ts's own top comment) -
+// checkCall only ever sees argument TYPES, never runtime values, so there's no way for one
+// `select(X, bc)` to know ahead of time which of number{}/edge{}/simp{}/quad{} it should return.
+// `selectSimp` sidesteps this differently: it accepts ANY simp arity (X's own Selector.type, read
+// off the actual text/value, decides which), and can do this specifically because simp's own
+// ClegType is erased (no `n` - see its own doc comment) - the return type is always the same
+// `simp{}` regardless of which arity X turns out to select, so there's no "which of several
+// possible types" ambiguity for checkCall to resolve in the first place.
 function selectSetCheckCall(elemType: ClegType): BuiltinFunction['checkCall'] {
     return (callee, argTypes) => {
         if (argTypes.length !== 2)
@@ -472,12 +517,27 @@ BUILTIN_FUNCTIONS['selectEdge'] = {
     },
 };
 BUILTIN_FUNCTIONS['selectTriangle'] = {
-    checkCall: selectSetCheckCall(TRI_TYPE),
+    checkCall: selectSetCheckCall(SIMP_TYPE),
     call: ([arg, egrVal]) => {
-        const sel = resolveSelectorArg('selectTriangle', arg, 'tri', parseTriangleSelector);
+        const sel = resolveSelectorArg('selectTriangle', arg, simpType(2), parseTriangleSelector);
         const bc = (egrVal as { value: BoardConfig }).value;
-        const tris = selectTriangle(bc.adj, bc.emb.pos, sel).map((t): ClegValue => ({ kind: 'tri', value: t }));
-        return makeClegSet(TRI_TYPE, tris);
+        const tris = selectTriangle(bc.adj, bc.emb.pos, sel).map((t): ClegValue => ({ kind: 'simp', value: t }));
+        return makeClegSet(SIMP_TYPE, tris);
+    },
+};
+// `selectSimp(X, bc)`: the general, any-arity counterpart of selectTriangle above - X is resolved
+// via resolveAnyKindSelectorArg (like mkSel/form/centralize), whichever arity its own text/value
+// turns out to be, then checked (at evaluation time, not statically - see this section's own top
+// comment) to actually be SOME simp N and not e.g. a node/edge/quad selector.
+BUILTIN_FUNCTIONS['selectSimp'] = {
+    checkCall: selectSetCheckCall(SIMP_TYPE),
+    call: ([arg, egrVal]) => {
+        const sel = resolveAnyKindSelectorArg('selectSimp', arg);
+        if (simpN(sel.type) === null)
+            throw new Error(`cleg: 'selectSimp' expects a simp selector, got a '${sel.type}' selector`);
+        const bc = (egrVal as { value: BoardConfig }).value;
+        const simps = selectSimp(bc.adj, bc.emb.pos, sel).map((t): ClegValue => ({ kind: 'simp', value: t }));
+        return makeClegSet(SIMP_TYPE, simps);
     },
 };
 BUILTIN_FUNCTIONS['selectQuad'] = {
@@ -509,7 +569,7 @@ BUILTIN_FUNCTIONS['triangleForm'] = {
     call: (args) => {
         const w = (args[0] as { value: number }).value;
         if (args.length === 1) return { kind: 'mod', value: { kind: 'TriangleForm', w } };
-        const sel = resolveSelectorArg('triangleForm', args[1], 'tri', parseTriangleSelector);
+        const sel = resolveSelectorArg('triangleForm', args[1], simpType(2), parseTriangleSelector);
         return { kind: 'mod', value: { kind: 'TriangleForm', w, sel } };
     },
 };
@@ -527,7 +587,7 @@ BUILTIN_FUNCTIONS['quadForm'] = {
 // or more selector arguments, each a `sel` (typically built via `mkSel(...)`), a bare `string`
 // (parsed via selector.ts's own context-free parseSelector - kind inferred bottom-up from the text
 // itself, exactly like mkSel's own string case, so `mkSel` is no longer needed just to wrap one), or
-// a `set` of number/edge/tri/quad (kind read off the set's own element type) - resolved via
+// a `set` of number/edge/simp/quad (kind read off the set's own element type) - resolved via
 // resolveAnyKindSelectorArg below, the same resolution mkSel/msBase already use. Mirrors genericForm's
 // own (bc, w, sels) signature (genericForm itself accepts an empty `sels` as a no-op; `form` requires
 // at least one, below, since a cleg call with none would be a pointless no-op board program). None of
@@ -553,11 +613,38 @@ BUILTIN_FUNCTIONS['form'] = {
     },
 };
 
+// `simpCentralize(n[, selArg])`: builds a SimpCentralize BoardModifier - `n` (the simplex arity)
+// followed by an optional `selArg` (a `sel`, `string`, or `set`, resolved via resolveSelectorArg
+// against simp `n`) restricting which n-simplices get centralized, mirroring SimpCentralize's own
+// `n: number, sel?: Selector` fields exactly - triCentralize below is its own fixed-n=2 special
+// case. `n`'s own validity (integer >= 2) is only checked at evaluation time (simpCentralize's own
+// assert, shared/boardConfig.ts) - checkCall only ever sees `n`'s TYPE (number), never its runtime
+// value, so it can't validate the value itself (same reason mkSimp above can't either).
+function simpCentralizeCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length !== 1 && argTypes.length !== 2)
+        throw new Error(`cleg: '${callee}' expects 1 or 2 argument(s), got ${argTypes.length}`);
+    if (argTypes[0].kind !== 'number')
+        throw new Error(`cleg: '${callee}' argument 1: expected number, got ${typeToString(argTypes[0])}`);
+    if (argTypes.length === 2 && argTypes[1].kind !== 'sel' && argTypes[1].kind !== 'string' && argTypes[1].kind !== 'set')
+        throw new Error(`cleg: '${callee}' argument 2: expected sel, string, or set, got ${typeToString(argTypes[1])}`);
+    return MOD_TYPE;
+}
+BUILTIN_FUNCTIONS['simpCentralize'] = {
+    checkCall: simpCentralizeCheckCall,
+    call: (args) => {
+        const n = (args[0] as { value: number }).value;
+        if (args.length === 1) return { kind: 'mod', value: { kind: 'SimpCentralize', n } };
+        const sel = resolveSelectorArg('simpCentralize', args[1], simpType(n), (s) => parseSimpSelector(n, s));
+        return { kind: 'mod', value: { kind: 'SimpCentralize', n, sel } };
+    },
+};
+
 // `triCentralize([selArg])`/`quadCentralize([selArg])`: builds a TriCentralize/QuadCentralize
 // BoardModifier - `selArg` (a `sel`, `string`, or `set`, resolved via resolveSelectorArg) restricts
 // which triangles/quads get centralized, mirroring TriCentralize/QuadCentralize's own optional
 // `sel?: Selector` field exactly - omitted, every one found gets centralized. Variable-arity (0 or 1
-// args) rather than fixedSignature(...), to mirror that optionality exactly.
+// args) rather than fixedSignature(...), to mirror that optionality exactly. triCentralize itself
+// is just simpCentralize(2, ...) with its own fixed-shape builtin, kept for backward compatibility.
 function centralizeModCheckCall(callee: string, argTypes: ClegType[]): ClegType {
     if (argTypes.length !== 0 && argTypes.length !== 1)
         throw new Error(`cleg: '${callee}' expects 0 or 1 argument(s), got ${argTypes.length}`);
@@ -569,7 +656,7 @@ BUILTIN_FUNCTIONS['triCentralize'] = {
     checkCall: centralizeModCheckCall,
     call: (args) => {
         if (args.length === 0) return { kind: 'mod', value: { kind: 'TriCentralize' } };
-        const sel = resolveSelectorArg('triCentralize', args[0], 'tri', parseTriangleSelector);
+        const sel = resolveSelectorArg('triCentralize', args[0], simpType(2), parseTriangleSelector);
         return { kind: 'mod', value: { kind: 'TriCentralize', sel } };
     },
 };
@@ -625,28 +712,52 @@ BUILTIN_FUNCTIONS['modify'] = {
 
 const MSEL_TYPE: ClegType = { kind: 'msel' };
 
-// Inverse of SELECTOR_SET_ELEM_KIND above (ClegType elem kind -> SelectorType) - used only by
-// resolveAnyKindSelectorArg below, which (unlike resolveSelectorArg) has no fixed wantKind of its
-// own to check a set's element type against, so it has to recover a SelectorType FROM the set's own
-// element kind instead.
-const SELECTOR_TYPE_BY_SET_ELEM_KIND: Partial<Record<ClegType['kind'], SelectorType>> = {
-    number: 'node', edge: 'edge', tri: 'tri', quad: 'quad',
-};
+// Inverse of selectorSetElemKind above, for the three ClegType kinds it CAN determine purely from
+// the type - used only by resolveAnyKindSelectorArg below, which (unlike resolveSelectorArg) has no
+// fixed wantKind of its own to check a set's element type against, so it has to recover a
+// SelectorType FROM the set's own element type instead. A 'simp'-kind element is handled separately
+// there (see its own comment) - simp's own ClegType is erased (no arity - see its own doc comment),
+// so unlike node/edge/quad, `kind === 'simp'` alone can't determine which SelectorType (simp2 vs
+// simp3 vs ...) it corresponds to; only the set's own actual VALUES can.
+function selectorTypeBySetElem(elem: ClegType): SelectorType | null {
+    if (elem.kind === 'number') return 'node';
+    if (elem.kind === 'edge' || elem.kind === 'quad') return elem.kind;
+    return null;
+}
 
 // Resolves a selector argument whose own kind isn't fixed ahead of the call (mkSel/form/msBase) into
 // a real Selector - a `sel` value (used directly, whatever SelectorType it is), a `string` (parsed via
 // selector.ts's own context-free parseSelector, whichever kind the text itself turns out to be -
 // unlike resolveSelectorArg's own string case, which parses against one fixed wantKind), or a `set`
-// (of number/edge/tri/quad, wrapped into a `raw` Selector the same way resolveSelectorArg's own
-// `set` case does, its own kind read off the set's own element type).
+// (of number/edge/simp/quad, wrapped into a `raw` Selector the same way resolveSelectorArg's own
+// `set` case does). For a set of simp values specifically, the arity can't be read off the set's own
+// (erased) elem type - it's read off the first VALUE's own actual arity instead, and every other
+// value is checked to share it (a set genuinely mixing arities has no single SelectorType to report
+// as, so it's rejected here rather than silently picking one).
 function resolveAnyKindSelectorArg(callee: string, arg: ClegValue): Selector {
     if (arg.kind === 'sel') return arg.value;
     if (arg.kind === 'string') return parseSelector((arg as { value: string }).value);
     if (arg.kind === 'set') {
-        const wantKind = SELECTOR_TYPE_BY_SET_ELEM_KIND[arg.elem.kind];
+        if (arg.elem.kind === 'simp') {
+            if (arg.value.length === 0)
+                throw new Error(
+                    `cleg: '${callee}': an empty simp{} set's own arity can't be determined - pass a ` +
+                    `non-empty set, a string, or a sel value instead`);
+            const n = (arg.value[0] as { value: BoardSimplex }).value.nodes.length - 1;
+            for (const v of arg.value) {
+                const actualN = (v as { value: BoardSimplex }).value.nodes.length - 1;
+                if (actualN !== n)
+                    throw new Error(
+                        `cleg: '${callee}': a simp{} set must have uniform arity - got both simp ${n} ` +
+                        `and simp ${actualN}`);
+            }
+            const wantKind = simpType(n);
+            return { op: 'raw', type: wantKind, items: setValueToSelectedVals(wantKind, arg.value) };
+        }
+        const wantKind = selectorTypeBySetElem(arg.elem);
         if (!wantKind)
             throw new Error(
-                `cleg: '${callee}': a selector set must be a set of number/edge/tri/quad, got a set of ${typeToString(arg.elem)}`);
+                `cleg: '${callee}': a selector set must be a set of number/edge/simp/quad, got a set of ${typeToString(arg.elem)}`);
         return { op: 'raw', type: wantKind, items: setValueToSelectedVals(wantKind, arg.value) };
     }
     throw new Error(`cleg: '${callee}': expected sel, string, or set, got ${typeToString(clegValueType(arg))}`);

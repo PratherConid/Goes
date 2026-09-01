@@ -6,9 +6,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    parseNodeSelector, parseEdgeSelector, parseTriangleSelector, parseQuadSelector,
-    selectNode, selectEdge, selectTriangle, selectQuad, formatSelector,
+    parseNodeSelector, parseEdgeSelector, parseTriangleSelector, parseQuadSelector, parseSelector,
+    selectNode, selectEdge, selectTriangle, selectQuad, selectSimp, formatSelector,
 } from '../shared/selector.ts';
+import { simpType } from '../shared/types.ts';
 
 // 0-1-2-3: node 0/3 have degree 1, node 1/2 have degree 2. Edges (0,1), (1,2), (2,3). No
 // triangles/quads.
@@ -35,7 +36,7 @@ test('parse*Selector reject a result of the wrong kind (deg is always node, what
     // deg only ever produces a node-kind selector - parsing it as an edge/triangle/quad selector now
     // fails the post-hoc result-kind check, not because 'deg' itself was unrecognized.
     assert.throws(() => parseEdgeSelector('(deg eq 1)'), /expected an edge selector, got a node selector/);
-    assert.throws(() => parseTriangleSelector('(deg eq 1)'), /expected a tri selector, got a node selector/);
+    assert.throws(() => parseTriangleSelector('(deg eq 1)'), /expected a triangle selector, got a node selector/);
     assert.throws(() => parseQuadSelector('(deg eq 1)'), /expected a quad selector, got a node selector/);
     // e2n/n2e/fromna/fromne/tona/tone no longer exist (replaced by conva/conve) - unrecognized
     // wherever they appear.
@@ -45,11 +46,12 @@ test('parse*Selector reject a result of the wrong kind (deg is always node, what
     assert.throws(() => parseNodeSelector('(tona edge (all node))'), /unknown selector operator 'tona'/);
 });
 
-test('conva/conve require a valid node|edge|tri|quad result token, and reject triangle <-> quad', () => {
-    assert.throws(() => parseNodeSelector('(conva (all node))'), /result kind must be 'node', 'edge', 'tri', or 'quad'/);
-    assert.throws(() => parseNodeSelector('(conva nope (all node))'), /result kind must be 'node', 'edge', 'tri', or 'quad'/);
-    assert.throws(() => parseTriangleSelector('(conva tri (all quad))'), /no association defined between 'tri' and 'quad'/);
-    assert.throws(() => parseQuadSelector('(conve quad (all tri))'), /no association defined between 'tri' and 'quad'/);
+test('conva/conve require a valid node|edge|simp N|tri|quad result token, and reject simp <-> quad', () => {
+    assert.throws(() => parseNodeSelector('(conva (all node))'), /result kind must be 'node', 'edge', 'simp <n>', 'tri', or 'quad'/);
+    assert.throws(() => parseNodeSelector('(conva nope (all node))'), /result kind must be 'node', 'edge', 'simp <n>', 'tri', or 'quad'/);
+    assert.throws(() => parseTriangleSelector('(conva tri (all quad))'), /no association defined between 'simp' and 'quad'/);
+    assert.throws(() => parseQuadSelector('(conve quad (all tri))'), /no association defined between 'simp' and 'quad'/);
+    assert.throws(() => parseQuadSelector('(conve quad (all simp 3))'), /no association defined between 'simp' and 'quad'/);
     // conva/conve's own operand is parsed context-free, same as anywhere else - (deg ...) always
     // produces a node selector, so declaring conva's own result kind 'edge' is fine (that's the
     // whole point of conva/conve), but the operand itself is unaffected by that declaration.
@@ -66,13 +68,13 @@ test('converting a kind to itself is a no-op - conva/conve don\'t even appear in
     assert.deepEqual(parseEdgeSelector('(conva edge (all edge))'), edgeSel);
 });
 
-test('conva/conve reject tri<->quad at evaluation time too (defensive, for a hand-built Selector)', () => {
+test('conva/conve reject simp<->quad at evaluation time too (defensive, for a hand-built Selector)', () => {
     const handBuilt = {
-        op: 'conva' as const, type: 'quad' as const, from: 'tri' as const,
-        a: { op: 'all' as const, type: 'tri' as const },
+        op: 'conva' as const, type: 'quad' as const, from: simpType(2),
+        a: { op: 'all' as const, type: simpType(2) },
     };
     assert.throws(
-        () => selectQuad(adj, pos, handBuilt), /no association is defined between 'tri' and 'quad'/);
+        () => selectQuad(adj, pos, handBuilt), /no association is defined between 'simp' and 'quad'/);
 });
 
 test('all/none select every object of the given kind, and reject a missing/invalid kind token', () => {
@@ -88,8 +90,8 @@ test('all/none select every object of the given kind, and reject a missing/inval
 
     // (all)/(none) now require exactly one kind token - a missing or unrecognized one is a grammar
     // error; a bare (all)/(none) (the old, context-inferred syntax) no longer parses.
-    assert.throws(() => parseNodeSelector('(all)'), /kind must be 'node', 'edge', 'tri', or 'quad', got '\)'/);
-    assert.throws(() => parseNodeSelector('(all nope)'), /kind must be 'node', 'edge', 'tri', or 'quad'/);
+    assert.throws(() => parseNodeSelector('(all)'), /kind must be 'node', 'edge', 'simp <n>', 'tri', or 'quad', got '\)'/);
+    assert.throws(() => parseNodeSelector('(all nope)'), /kind must be 'node', 'edge', 'simp <n>', 'tri', or 'quad'/);
     assert.throws(() => parseNodeSelector('(all node edge)'), /expected '\)', got 'edge'/);
 });
 
@@ -306,7 +308,7 @@ test('union/inter/diff combine edge selectors as plain (deduplicated) set operat
 
 // A "bowtie" graph: triangle 0-1-2 and triangle 2-3-4 sharing node 2, plus a pendant node 5 hanging
 // off node 0. Degrees: 0:3 (1,2,5), 1:2, 2:4 (0,1,3,4), 3:2, 4:2, 5:1 (belongs to no triangle).
-// Triangles (see findTriangles's own u<v<w convention): [0,1,2] and [2,3,4]. No quads.
+// Triangles (see findSimplices's own increasing-order convention): [0,1,2] and [2,3,4]. No quads.
 const bowtieAdj = [
     [0, 1, 1, 0, 0, 1],
     [1, 0, 1, 0, 0, 0],
@@ -320,7 +322,7 @@ const bowtiePos = bowtieAdj.map((_, i) => [i]);
 test('selectTriangle finds every triangle via (all tri), and none in a triangle-free graph', () => {
     assert.deepEqual(
         selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(all tri)')),
-        [{ n1: 0, n2: 1, n3: 2 }, { n1: 2, n2: 3, n3: 4 }]);
+        [{ nodes: [0, 1, 2] }, { nodes: [2, 3, 4] }]);
     assert.deepEqual(selectTriangle(adj, pos, parseTriangleSelector('(all tri)')), []);
 });
 
@@ -330,34 +332,34 @@ test('union/inter/diff/compl combine triangle selectors as plain (deduplicated) 
     const first = '(conve tri (deg eq 3))';
     const second = 'diff (all tri) ' + first; // the other triangle, [2,3,4]
     assert.deepEqual(
-        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(first)), [{ n1: 0, n2: 1, n3: 2 }]);
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(first)), [{ nodes: [0, 1, 2] }]);
     assert.deepEqual(
-        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(${second})`)), [{ n1: 2, n2: 3, n3: 4 }]);
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(${second})`)), [{ nodes: [2, 3, 4] }]);
     assert.deepEqual(
         selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(union ${first} (${second}))`)),
-        [{ n1: 0, n2: 1, n3: 2 }, { n1: 2, n2: 3, n3: 4 }]);
+        [{ nodes: [0, 1, 2] }, { nodes: [2, 3, 4] }]);
     assert.deepEqual(
         selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(inter ${first} (${second}))`)), []);
     assert.deepEqual(
-        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(compl ${first})`)), [{ n1: 2, n2: 3, n3: 4 }]);
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(compl ${first})`)), [{ nodes: [2, 3, 4] }]);
     // union/inter are variadic for triangles/quads too, same as node/edge above.
     assert.deepEqual(
         selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(union ${first} (${second}) ${first})`)),
-        [{ n1: 0, n2: 1, n3: 2 }, { n1: 2, n2: 3, n3: 4 }]);
+        [{ nodes: [0, 1, 2] }, { nodes: [2, 3, 4] }]);
 });
 
 test('conva/conve convert a node selector into a triangle selector', () => {
     // (deg eq 3) selects only node 0, which belongs to triangle [0,1,2] alone.
     assert.deepEqual(
         selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(conve tri (deg eq 3))')),
-        [{ n1: 0, n2: 1, n3: 2 }]);
+        [{ nodes: [0, 1, 2] }]);
     // conva needs ALL 3 nodes of a triangle selected - a single node is never enough.
     assert.deepEqual(selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(conva tri (deg eq 3))')), []);
     // All 5 non-pendant nodes selected -> conva now selects both triangles (all of each one's own
     // 3 nodes are in {0,1,2,3,4}).
     assert.deepEqual(
         selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(conva tri (deg gt 1))')),
-        [{ n1: 0, n2: 1, n3: 2 }, { n1: 2, n2: 3, n3: 4 }]);
+        [{ nodes: [0, 1, 2] }, { nodes: [2, 3, 4] }]);
 });
 
 test('conva/conve convert an edge selector into a triangle selector (a new cross-type conversion)', () => {
@@ -370,7 +372,7 @@ test('conva/conve convert an edge selector into a triangle selector (a new cross
     assert.deepEqual(selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(conva tri ${someEdges})`)), []);
     assert.deepEqual(
         selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(conve tri ${someEdges})`)),
-        [{ n1: 0, n2: 1, n3: 2 }]);
+        [{ nodes: [0, 1, 2] }]);
 });
 
 test('conva/conve convert a triangle selector back into a node selector, including the vacuous ' +
@@ -476,7 +478,7 @@ test('rrmn/rrmp also work over triangle/quad selectors', () => {
     const keptTri = selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(rrmn 1 (all tri))'));
     assert.equal(keptTri.length, 1);
     const allTri = selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(all tri)'));
-    for (const t of keptTri) assert.ok(allTri.some(a => a.n1 === t.n1 && a.n2 === t.n2 && a.n3 === t.n3));
+    for (const t of keptTri) assert.ok(allTri.some(a => a.nodes.join(',') === t.nodes.join(',')));
 
     const keptQuad = selectQuad(quadAdj, quadPos, parseQuadSelector('(rrmp 1 (all quad))'));
     assert.equal(keptQuad.length, 0);
@@ -489,4 +491,67 @@ test('selectNode/selectEdge/selectTriangle/selectQuad throw when given a selecto
     assert.throws(() => selectEdge(adj, pos, nodeSel), /expected an edge selector, got a node selector/);
     assert.throws(() => selectTriangle(adj, pos, nodeSel), /expected a triangle selector, got a node selector/);
     assert.throws(() => selectQuad(adj, pos, nodeSel), /expected a quad selector, got a node selector/);
+});
+
+// K4 on {0,1,2,3} (every pair adjacent - the graph's only simp-3 object, [0,1,2,3]) plus a pendant
+// node 4 attached only to node 0 (degree 1, belongs to no simp-2 or simp-3 object). The K4's own
+// 4 simp-2 (triangle) sub-faces are every 3-subset of {0,1,2,3}: [0,1,2], [0,1,3], [0,2,3], [1,2,3].
+const k4Adj = [
+    [0, 1, 1, 1, 1],
+    [1, 0, 1, 1, 0],
+    [1, 1, 0, 1, 0],
+    [1, 1, 1, 0, 0],
+    [1, 0, 0, 0, 0],
+];
+const k4Pos = k4Adj.map((_, i) => [i]);
+
+test('(all tri) and (all simp 2) parse to the identical Selector and evaluate identically', () => {
+    // The whole point of "tri" being sugar for "simp 2" - same AST, not just the same result.
+    assert.deepEqual(parseTriangleSelector('(all tri)'), parseTriangleSelector('(all simp 2)'));
+    assert.deepEqual(
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(all tri)')),
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(all simp 2)')));
+});
+
+test('selectSimp finds every simp N (N > 2) via (all simp N), generalizing beyond triangles', () => {
+    const sel3 = parseSelector('(all simp 3)');
+    assert.deepEqual(selectSimp(k4Adj, k4Pos, sel3), [{ nodes: [0, 1, 2, 3] }]);
+    // No 4-cliques at all in the triangle-free path graph, or in the bowtie (whose only cliques are
+    // its own two triangles).
+    assert.deepEqual(selectSimp(adj, pos, sel3), []);
+    assert.deepEqual(selectSimp(bowtieAdj, bowtiePos, sel3), []);
+    // simp 2 on the K4 finds all 4 triangular sub-faces.
+    const sel2 = parseSelector('(all simp 2)');
+    assert.deepEqual(
+        selectSimp(k4Adj, k4Pos, sel2),
+        [{ nodes: [0, 1, 2] }, { nodes: [0, 1, 3] }, { nodes: [0, 2, 3] }, { nodes: [1, 2, 3] }]);
+});
+
+test('conva/conve convert simp M <-> simp N (M != N) via the same general containment rule', () => {
+    // conve(simp 3, all simp 2): a simp-3 object is selected iff AT LEAST ONE of its simp-2
+    // sub-faces is selected - all 4 triangles are selected (all simp 2), so the one simp-3 [0,1,2,3]
+    // qualifies.
+    const conveSel = parseSelector('(conve simp 3 (all simp 2))');
+    assert.deepEqual(selectSimp(k4Adj, k4Pos, conveSel), [{ nodes: [0, 1, 2, 3] }]);
+    // conva(simp 2, all simp 3): a simp-2 (triangle) is selected iff ALL of its associated simp-3
+    // objects are selected - every triangle here is contained in the one simp-3 [0,1,2,3], which is
+    // itself selected (all simp 3), so all 4 triangles qualify.
+    const convaSel = parseSelector('(conva simp 2 (all simp 3))');
+    assert.deepEqual(
+        selectSimp(k4Adj, k4Pos, convaSel),
+        [{ nodes: [0, 1, 2] }, { nodes: [0, 1, 3] }, { nodes: [0, 2, 3] }, { nodes: [1, 2, 3] }]);
+    // Restricting to just ONE selected triangle ([0,1,2]): conva(simp 3, ...) needs ALL of the
+    // simp-3's own sub-faces selected, so the one simp-3 [0,1,2,3] (which has 4 sub-faces, only one
+    // selected) is excluded; conve(simp 3, ...) only needs AT LEAST ONE, so it's still included.
+    const justOneTriangle = { op: 'raw' as const, type: simpType(2), items: { kind: 'simp' as const, n: 2, value: [{ nodes: [0, 1, 2] }] } };
+    assert.deepEqual(selectSimp(k4Adj, k4Pos, { op: 'conva' as const, type: simpType(3), from: simpType(2), a: justOneTriangle }), []);
+    assert.deepEqual(
+        selectSimp(k4Adj, k4Pos, { op: 'conve' as const, type: simpType(3), from: simpType(2), a: justOneTriangle }),
+        [{ nodes: [0, 1, 2, 3] }]);
+});
+
+test('conva/conve reject simp <-> quad for any simp arity, not just simp 2', () => {
+    assert.throws(
+        () => parseQuadSelector('(conva quad (all simp 4))'),
+        /no association defined between 'simp' and 'quad'/);
 });
