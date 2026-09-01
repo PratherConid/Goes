@@ -1233,6 +1233,12 @@ export function tetrahedronBoard(): BoardConfig {
  * up bonded to exactly the 4 up-tetrahedra hubs it's a corner of - true diamond cubic's own uniform
  * tetrahedral coordination; every hub has degree exactly 4 by construction. Boundary points simply
  * belong to fewer up-tetrahedra (never more), so they end up with fewer bonds, never more than 4.
+ *
+ * Every hub-to-corner bond is the board's own actual edge (see above - no original lattice edge
+ * survives), so those - not the tiny unit tetrahedra's own edges - are what get scaled to unit
+ * length: a hub sits at its own up-tetrahedron's centroid, at distance sqrt(3/8) from each corner
+ * for a unit-edge-length tetrahedron (which every up-tetrahedron already is, before scaling, being
+ * exactly one lattice unit cell), so every position is scaled by the inverse, sqrt(8/3), at the end.
  */
 export function diamondCubicBoard(w: number): BoardConfig {
     assert(Number.isInteger(w) && w >= 1, `w must be a positive integer, got ${w}`);
@@ -1272,7 +1278,10 @@ export function diamondCubicBoard(w: number): BoardConfig {
         adj[a][b] = 1;
         adj[b][a] = 1;
     }
-    return make(new Embedding(3, pos), adj);
+    // Scales every position so the board's own actual edges (hub-to-corner bonds) end up unit
+    // length - see this function's own doc comment for the sqrt(8/3) derivation.
+    const scale = Math.sqrt(8 / 3);
+    return make(new Embedding(3, pos.map(p => p.map(x => x * scale))), adj);
 }
 
 /**

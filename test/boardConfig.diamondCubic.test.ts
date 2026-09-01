@@ -68,6 +68,19 @@ test('every hub has degree exactly 4', () => {
     for (let i = origN; i < bc.N; i++) assert.equal(deg[i], 4, `hub ${i} has degree ${deg[i]}`);
 });
 
+test('every edge (hub-to-corner bond) has unit length - not the underlying unit tetrahedra\'s own ' +
+    'edges, which are shorter before the board-wide sqrt(8/3) scale-up', () => {
+    for (const w of [2, 5, 9]) {
+        const bc = diamondCubicBoard(w);
+        for (let i = 0; i < bc.N; i++)
+            for (let j = i + 1; j < bc.N; j++) {
+                if (!bc.adj[i][j]) continue;
+                const d2 = bc.emb.pos[i].reduce((s, x, k) => s + (x - bc.emb.pos[j][k]) ** 2, 0);
+                assert.ok(Math.abs(Math.sqrt(d2) - 1) < 1e-9, `w=${w}: edge [${i},${j}] has length ${Math.sqrt(d2)}`);
+            }
+    }
+});
+
 test('the board is connected', () => {
     const bc = diamondCubicBoard(9);
     const seen = new Set<number>([0]);
