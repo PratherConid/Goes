@@ -1,1 +1,1 @@
-modify([form(4, "(all quad)", "(all tri)")], snubsqB(4, 4));
+modify([form(4, [mkFormSel("quadForm"), mkFormSel("triForm")])], snubsqB(4, 4));

@@ -666,6 +666,7 @@ export class Renderer {
     private commandReferenceBoardModifiersPanel:    HTMLDivElement;
     private commandReferenceSelectorsPanel:         HTMLDivElement;
     private commandReferenceLocalReplaceSelectorsPanel: HTMLDivElement;
+    private commandReferenceFormSelectorsPanel:     HTMLDivElement;
     private commandReferenceBuiltinFunctionsPanel:  HTMLDivElement;
     private historyPanel:  HTMLDivElement;
     private panelDockBtn: HTMLButtonElement;
@@ -750,6 +751,8 @@ export class Renderer {
             document.getElementById('cmdref-selectors-panel') as HTMLDivElement;
         this.commandReferenceLocalReplaceSelectorsPanel =
             document.getElementById('cmdref-local-replace-selectors-panel') as HTMLDivElement;
+        this.commandReferenceFormSelectorsPanel =
+            document.getElementById('cmdref-form-selectors-panel') as HTMLDivElement;
         this.commandReferenceBuiltinFunctionsPanel =
             document.getElementById('cmdref-builtin-functions-panel') as HTMLDivElement;
         this.historyPanel  = document.getElementById('history-panel')   as HTMLDivElement;
@@ -860,6 +863,7 @@ export class Renderer {
             commandReferenceBoardModifiersPanel:    this.commandReferenceBoardModifiersPanel,
             commandReferenceSelectorsPanel:         this.commandReferenceSelectorsPanel,
             commandReferenceLocalReplaceSelectorsPanel: this.commandReferenceLocalReplaceSelectorsPanel,
+            commandReferenceFormSelectorsPanel:     this.commandReferenceFormSelectorsPanel,
             commandReferenceBuiltinFunctionsPanel:  this.commandReferenceBuiltinFunctionsPanel,
             currentGameSetupPanel: this.currentGameSetupPanel,
             newGamePanel:          this.newGamePanel,
@@ -1631,26 +1635,31 @@ export class Renderer {
                 + 'selector sel is given, only the ones it selects - with a w-by-w grid, gluing new '
                 + 'corners to the old vertices and gluing shared quad edges together (w=1 collapses '
                 + "each quad to a point; w=2 is a no-op); an unselected quad is left untouched, as if it weren't there at all")}
-            ${row('form(w, [mkSel(SEL)…])',
-                'Form: generalizes triangleForm/quadForm to one or more selectors at once (each a '
-                + 'triangle or quad selector - typically built via mkSel("(all tri)"/"(all quad)"/...), '
-                + 'see Builtin Functions), all sharing this one w - replaces every triangle/quad any of '
-                + 'them names with its own side-length-w lattice, gluing new corners to the old '
-                + 'vertices and gluing every '
-                + 'original edge\'s new boundary points together across every lattice that has it as '
-                + 'a side, regardless of whether that lattice came from a triangle or a quad selector '
-                + '(unlike calling triangleForm/quadForm separately, a triangle and a quad sharing an '
-                + 'edge still glue seamlessly here)')}
+            ${row('form(w, [FormSel…])',
+                'Form: generalizes triangleForm/quadForm (see their own entries above) to one or more '
+                + 'FormSel values (each built by mkFormSel - see Form Selectors) at once, all sharing '
+                + 'this one w - unlike calling triangleForm/quadForm separately, a triangle and a quad '
+                + 'sharing an edge still glue seamlessly here')}
             ${row('localReplace([LRS…])',
                 'LocalReplace: replaces every face named by the given LRS values (each built by '
-                + 'triCentralize/quadCentralize/simpCentralize/quadOctarize/triCentering/'
-                + 'quadCentering/simpCentering - see Local Replacement Selectors) with that '
-                + "value's own local shape - a hub node connected to all of a triangle/n-simplex/"
-                + "quad's own corners (triCentralize/simpCentralize/quadCentralize), an octahedron's "
-                + 'two apex nodes (quadOctarize), or the same hub-and-spoke shape with the face\'s own '
-                + 'original edges dropped instead of kept (triCentering/simpCentering/quadCentering) - '
-                + 'independently per LRS value, the same way form generalizes triangleForm/quadForm '
-                + "(but without form's own w or edge-gluing)")}
+                + 'mkLRS - see Local Replacement Selectors for what each shape does) with that '
+                + 'shape\'s own local piece - independently per LRS value, the same way form '
+                + "generalizes triangleForm/quadForm (but without form's own w or edge-gluing). "
+                + 'quadCentralize/quadCentering/quadOctarize/simpCentralize/simpCentering/'
+                + 'triCentralize/triCentering below are one-step shortcuts building this same kind of '
+                + "mod directly for their own single shape, without needing localReplace/mkLRS at all")}
+            ${row('quadCentralize(sel?)',
+                'One-step shortcut for localReplace([mkLRS("quadCentralize", sel)])')}
+            ${row('quadCentering(sel?)',
+                'One-step shortcut for localReplace([mkLRS("quadCentering", sel)])')}
+            ${row('quadOctarize(sel?)',
+                'One-step shortcut for localReplace([mkLRS("quadOctarize", sel)])')}
+            ${row('simpCentralize(n, sel?)',
+                'One-step shortcut for localReplace([mkLRS("simpCentralize", sel)]), sel\'s own arity fixed to n')}
+            ${row('simpCentering(n, sel?)',
+                'One-step shortcut for localReplace([mkLRS("simpCentering", sel)]), sel\'s own arity fixed to n')}
+            ${row('triCentralize(sel?)', 'One-step shortcut for simpCentralize(2, sel)')}
+            ${row('triCentering(sel?)', 'One-step shortcut for simpCentering(2, sel)')}
             ${row('globalCentralize()',
                 'GlobalCentralize: add one new node at the barycenter of every existing node, connected '
                 + 'to all of them')}
@@ -1700,35 +1709,33 @@ export class Renderer {
         `);
 
         this.commandReferenceLocalReplaceSelectorsPanel.innerHTML = table(`
-            ${row('triCentralize(sel?)',
-                'Builds an lrs value (type lrs) naming every triangle (3 mutually-adjacent nodes) - or, '
-                + 'if a triangle selector sel is given, only the ones it selects - to be replaced with '
-                + "a hub node connected to all 3 of that triangle's own corners; pass it to "
-                + 'localReplace (see Board Modifiers) to actually build the mod')}
-            ${row('quadCentralize(sel?)',
-                'Same as triCentralize, but for quads (4-cycles with no diagonal edges) - the new hub '
-                + 'connects to all 4 corners')}
-            ${row('simpCentralize(n, sel?)',
-                'Same as triCentralize, but for n-simplices (n+1 mutually-adjacent nodes) of any arity '
-                + '- or, if a simp n selector sel is given, only the ones it selects; the new hub '
-                + 'connects to all n+1 corners. triCentralize above is its own n=2 special case')}
-            ${row('quadOctarize(sel?)',
-                'Builds an lrs value naming every quad (4-cycle with no diagonal edges) - or, if a '
-                + 'quad selector sel is given, only the ones it selects - to be replaced with an '
-                + 'octahedron: two new apex nodes, one on each side along a new embedding dimension, '
-                + "each connected to that quad's 4 corners")}
-            ${row('quadCentering(sel?)',
+            ${row('"quadCentralize"',
+                'Every quad (or, if sel is given, only the ones it selects) gets a new hub node '
+                + "connected to all 4 of its own corners, its own 4-cycle edges kept")}
+            ${row('"quadCentering"',
                 'Same as quadCentralize, but the quad\'s own 4 original edges are DROPPED rather than '
                 + "kept - its corners end up connected only through the new hub, not to each other "
                 + 'directly')}
-            ${row('simpCentering(n, sel?)',
+            ${row('"quadOctarize"',
+                'Every quad (or, if sel is given, only the ones it selects) is replaced with an '
+                + 'octahedron: two new apex nodes, one on each side along a new embedding dimension, '
+                + "each connected to that quad's own 4 corners")}
+            ${row('"simpCentralize"',
+                'Every n-simplex (n+1 mutually-adjacent nodes) sel selects gets a new hub node '
+                + 'connected to all n+1 of its own corners, its own original edges kept - sel is '
+                + "required here (unlike every other type string): its own arity (via a simp N "
+                + "selector) is what tells this which n to use, there being no separate n argument")}
+            ${row('"simpCentering"',
                 'Same as simpCentralize, but the simplex\'s own original edges are DROPPED rather than '
                 + "kept - its corners end up connected only through the new hub, not to each other "
                 + 'directly')}
-            ${row('triCentering(sel?)',
-                'Same as triCentralize, but the triangle\'s own 3 original edges are DROPPED rather '
-                + "than kept - its corners end up connected only through the new hub, not to each "
-                + 'other directly. simpCentering above is its own n=2 special case')}
+        `);
+
+        this.commandReferenceFormSelectorsPanel.innerHTML = table(`
+            ${row('"triForm"',
+                'Every triangle (simp 2) - or, if sel is given, only the ones it selects')}
+            ${row('"quadForm"',
+                'Every quad - or, if sel is given, only the ones it selects')}
         `);
 
         this.commandReferenceBuiltinFunctionsPanel.innerHTML = table(`
@@ -1757,6 +1764,14 @@ export class Renderer {
                 + 'inferred from the text itself - see Selectors) or a set of number/edge/simp/quad '
                 + '(kind read off the set\'s own element type). For "every object of kind K" pass the '
                 + 'string "(all K)"')}
+            ${row('mkLRS(typeStr, sel?)',
+                'Builds an lrs value naming which local shape to replace a face with - see Local '
+                + 'Replacement Selectors for the type strings typeStr accepts. Pass the result to '
+                + 'localReplace (see Board Modifiers) to build the actual mod')}
+            ${row('mkFormSel(typeStr, sel?)',
+                'Builds a formsel value naming which lattice kind to build over a face - see Form '
+                + 'Selectors for the type strings typeStr accepts. Pass the result to form (see Board '
+                + 'Modifiers) to build the actual mod')}
             ${row('selectNode(X, egr)',
                 'Evaluates a node selector X (a sel, string, or set) against a real board, returning '
                 + 'the exact set of nodes it selects (a number{}) - unlike nis, this runs immediately '

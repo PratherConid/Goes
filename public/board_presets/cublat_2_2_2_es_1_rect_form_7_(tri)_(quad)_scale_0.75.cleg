@@ -2,7 +2,7 @@ modify(
   [
     edgeSplit(1),
     rectify(),
-    form(7, mkSel("(all tri)"), mkSel("(all quad)")),
+    form(7, [mkFormSel("triForm"), mkFormSel("quadForm")]),
     scale(0.75)
   ],
   cublatB(2, 2, 2)

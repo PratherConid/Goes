@@ -31,6 +31,7 @@ export enum SidePanelContent {
     CommandReferenceBoardModifiers    = 'commandReferenceBoardModifiers',
     CommandReferenceSelectors         = 'commandReferenceSelectors',
     CommandReferenceLocalReplaceSelectors = 'commandReferenceLocalReplaceSelectors',
+    CommandReferenceFormSelectors     = 'commandReferenceFormSelectors',
     CommandReferenceBuiltinFunctions  = 'commandReferenceBuiltinFunctions',
     CurrentGameSetup    = 'currentGameSetup',
     NewGame             = 'newGame',
@@ -90,12 +91,13 @@ export const SidePanelHierarchy: Record<SidePanelContent, [SidePanelContent | nu
     [SidePanelContent.ClegReference]: [SidePanelContent.Home, [
         SidePanelContent.CommandReferenceBoardTypes, SidePanelContent.CommandReferenceBoardModifiers,
         SidePanelContent.CommandReferenceSelectors, SidePanelContent.CommandReferenceLocalReplaceSelectors,
-        SidePanelContent.CommandReferenceBuiltinFunctions,
+        SidePanelContent.CommandReferenceFormSelectors, SidePanelContent.CommandReferenceBuiltinFunctions,
     ]],
     [SidePanelContent.CommandReferenceBoardTypes]:        [SidePanelContent.ClegReference, []],
     [SidePanelContent.CommandReferenceBoardModifiers]:    [SidePanelContent.ClegReference, []],
     [SidePanelContent.CommandReferenceSelectors]:         [SidePanelContent.ClegReference, []],
     [SidePanelContent.CommandReferenceLocalReplaceSelectors]: [SidePanelContent.ClegReference, []],
+    [SidePanelContent.CommandReferenceFormSelectors]:     [SidePanelContent.ClegReference, []],
     [SidePanelContent.CommandReferenceBuiltinFunctions]:  [SidePanelContent.ClegReference, []],
     [SidePanelContent.CurrentGameSetup]: [SidePanelContent.Home, [SidePanelContent.History]],
     // GamePresetSelection/BoardPresetSelection's nav buttons are likewise rendered by
@@ -142,6 +144,7 @@ export const SidePanelTitle: Record<SidePanelContent, string> = {
     [SidePanelContent.CommandReferenceBoardModifiers]:    'Board Modifiers',
     [SidePanelContent.CommandReferenceSelectors]:         'Selectors',
     [SidePanelContent.CommandReferenceLocalReplaceSelectors]: 'Local Replacement Selectors',
+    [SidePanelContent.CommandReferenceFormSelectors]:     'Form Selectors',
     [SidePanelContent.CommandReferenceBuiltinFunctions]:  'Builtin Functions',
     [SidePanelContent.CurrentGameSetup]: 'Current Game Info',
     [SidePanelContent.NewGame]:          'New Game',
@@ -211,6 +214,7 @@ export interface SidePanelElements {
     commandReferenceBoardModifiersPanel:    HTMLDivElement;
     commandReferenceSelectorsPanel:         HTMLDivElement;
     commandReferenceLocalReplaceSelectorsPanel: HTMLDivElement;
+    commandReferenceFormSelectorsPanel:     HTMLDivElement;
     commandReferenceBuiltinFunctionsPanel:  HTMLDivElement;
     currentGameSetupPanel: HTMLDivElement;
     newGamePanel:          HTMLDivElement;
@@ -263,6 +267,8 @@ export function renderSidePanelChrome(current: SidePanelContent, els: SidePanelE
         current === SidePanelContent.CommandReferenceSelectors ? 'block' : 'none';
     els.commandReferenceLocalReplaceSelectorsPanel.style.display =
         current === SidePanelContent.CommandReferenceLocalReplaceSelectors ? 'block' : 'none';
+    els.commandReferenceFormSelectorsPanel.style.display =
+        current === SidePanelContent.CommandReferenceFormSelectors ? 'block' : 'none';
     els.commandReferenceBuiltinFunctionsPanel.style.display =
         current === SidePanelContent.CommandReferenceBuiltinFunctions ? 'block' : 'none';
     els.currentGameSetupPanel.style.display    = current === SidePanelContent.CurrentGameSetup    ? 'block' : 'none';

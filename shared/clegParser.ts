@@ -121,7 +121,7 @@ class TokenCursor {
 }
 
 const TYPE_KEYWORDS = new Set([
-    'egr', 'number', 'string', 'bool', 'edge', 'simp', 'tri', 'quad', 'sel', 'mod', 'lrs', 'msel',
+    'egr', 'number', 'string', 'bool', 'edge', 'simp', 'tri', 'quad', 'sel', 'mod', 'formsel', 'lrs', 'msel',
 ]);
 
 function parseType(c: TokenCursor): ClegType {
@@ -131,13 +131,13 @@ function parseType(c: TokenCursor): ClegType {
     } else {
         const base = c.expectIdent();
         if (!TYPE_KEYWORDS.has(base))
-            throw new Error(`cleg: expected a type (egr/number/string/bool/edge/simp/quad/sel/mod/lrs), got '${base}'`);
+            throw new Error(`cleg: expected a type (egr/number/string/bool/edge/simp/quad/sel/mod/formsel/lrs), got '${base}'`);
         // 'tri' is just an older spelling of 'simp' (both erased, no arity - see
         // shared/clegBase.ts's own top comment on ClegType's 'simp' variant), so both map to the
         // same kind here.
         type = {
             kind: (base === 'tri' ? 'simp' : base) as
-                'egr' | 'number' | 'string' | 'bool' | 'edge' | 'simp' | 'quad' | 'sel' | 'mod' | 'lrs' | 'msel',
+                'egr' | 'number' | 'string' | 'bool' | 'edge' | 'simp' | 'quad' | 'sel' | 'mod' | 'formsel' | 'lrs' | 'msel',
         };
         if (c.isPunct('{')) {
             if (!SET_ELEM_KINDS.has(type.kind))

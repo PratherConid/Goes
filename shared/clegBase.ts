@@ -156,25 +156,31 @@
  * actual kinds; ClegValue's own 'sel' variant carries the real kind (`selType`) once a value actually
  * exists. There is no selector literal syntax and (like `edge`/`simp`/`quad`) no way to read a `sel`
  * value's contents back out - it's passed straight through to whichever consuming builtin's own
- * selector-shaped argument resolves it (`nis`/`eis`/`triangleForm`/`quadForm`/`form` - see
- * resolveSelectorArg in shared/clegEval.ts, their one shared "sel, string, or set against one fixed
- * wantKind" resolution). `form`'s own arguments are plain `sel` values too - its own argument-kind
- * check just confirms each is triangle(simp 2)- or quad-typed at runtime, the same check
- * shared/boardConfig.ts's genericForm itself makes - see its own doc comment.
+ * selector-shaped argument resolves it (`nis`/`eis`/`triangleForm`/`quadForm`/`quadCentralize`/
+ * `quadCentering`/`quadOctarize`/`simpCentralize`/`simpCentering`/`triCentralize`/`triCentering`/
+ * `mkFormSel`/`mkLRS` - see resolveSelectorArg/resolveAnyKindSelectorArg in shared/clegEval.ts).
  *
  * One more basic type rounds out the board-modifier builtins: `mod` wraps a real shared/types.ts
  * BoardModifier - one flat type covering every kind (`Rectify`, `EdgeSplit`, `TriangleForm`, `Form`,
  * ...), built by whichever of the modifier-constructor builtins below matches. Opaque the same way
  * `sel`/`edge`/`simp`/`quad` are - no literal syntax, no way to read fields back out.
  *
+ * `formsel` wraps a real shared/types.ts FormSelector - a selected face paired with which KIND
+ * genericForm should build a lattice for (see that type's own doc comment). Built by
+ * `mkFormSel(typeStr, selArg?)` below - `typeStr` names the branch directly (one of the 2
+ * FormSelector `kind` tags themselves, lowercase-first - "triForm"/"quadForm") - and consumed only
+ * by `form(w, formsel[])`, the one builtin that turns an array of `formsel` values (plus `w`) into
+ * the actual `Form`-kind `mod`. Opaque the same way `sel`/`mod`/`msel` are.
+ *
  * `lrs` wraps a real shared/types.ts LocalReplaceSelector - a selected face paired with which local
  * shape to replace it with (see that type's own doc comment for why a bare `sel` can't say this on
  * its own: a `quad` selection alone no longer determines a unique replacement, since QuadCentralize's
- * pyramid and QuadOctarize's octahedron both consume one). Built by `triCentralize`/`quadCentralize`/
- * `simpCentralize`/`quadOctarize`/`triCentering`/`quadCentering`/`simpCentering` below (one
- * `lrs`-building constructor per LocalReplaceSelector branch, plus the two n=2 thin wrappers) and
- * consumed only by `localReplace(lrs[])`, the one builtin that actually turns an array of `lrs`
- * values into a `mod`. Opaque the same way `sel`/`mod`/`msel` are.
+ * pyramid and QuadOctarize's octahedron both consume one). Built by `mkLRS(typeStr, selArg?)` below -
+ * `typeStr` names the branch directly (one of the 5 LocalReplaceSelector `kind` tags themselves,
+ * lowercase-first, `simp`'s own arity omitted since it's read off `selArg` at evaluation time instead
+ * - see mkLRS's own doc comment, shared/clegEval.ts) - and consumed only by `localReplace(lrs[])`,
+ * the one builtin that actually turns an array of `lrs` values into a `mod`. Opaque the same way
+ * `sel`/`mod`/`msel` are.
  *
  * ## Builtins
  *
@@ -196,17 +202,26 @@
  * `localReplace`, `globalCentralize`, `scale` - each of which BUILDS a `mod` value (see "Types" above)
  * rather than applying it to a board immediately; `modify(mods, bc)` is the one builtin that actually
  * applies a whole `mod[]` list, in order, to a board (shared/boardConfig.ts's own applyModifiers()).
- * `triCentralize`/`quadCentralize`/`simpCentralize`/`quadOctarize`/`quadCentering`/`simpCentering`
- * are one level down from that: each builds an `lrs` (see "Types" above), not a `mod` directly -
- * `localReplace(...)` is what turns one or more of those into the actual `LocalReplace`-kind `mod`.
- * `quadCentering`/`simpCentering` build the same hub-and-spoke shape as `quadCentralize`/
- * `simpCentralize`, except the selected face's own original edges are dropped rather than kept (see
- * LocalReplaceSelector's own doc comment, shared/types.ts). `nis`/`eis`/`triangleForm`/`quadForm`/
- * `triCentralize`/`quadCentralize`/`simpCentralize`/`quadOctarize`/`quadCentering`/`simpCentering`
- * each accept an optional `sel`, a `string`, or a `set` of the matching element type, resolved via
- * their one shared resolveSelectorArg against one fixed wantKind; `mkSel` accepts a `string` or `set`
- * too (not a `sel` - see `sel`'s own doc comment above), but has no fixed wantKind of its own to
- * resolve against, so it goes through resolveAnyKindSelectorArg instead (also shared/clegEval.ts,
+ * `mkFormSel(typeStr, selArg?)`/`mkLRS(typeStr, selArg?)` are one level down from that: each builds a
+ * `formsel`/`lrs` (see "Types" above), not a `mod` directly - `form(w, formsel[])`/
+ * `localReplace(lrs[])` are what turn one or more of those into the actual `Form`-/
+ * `LocalReplace`-kind `mod`. `quadCentralize`/`quadCentering`/`quadOctarize`/`simpCentralize`/
+ * `simpCentering`/`triCentralize`/`triCentering` are convenience shortcuts sitting alongside
+ * `mkLRS`, not above it - each is exactly `localReplace([mkLRS("...", selArg)])` for its own single
+ * fixed shape, building the `LocalReplace`-kind `mod` directly (skipping the `lrs`/`localReplace`
+ * step entirely) the same way `triangleForm`/`quadForm` build their own `mod` directly rather than
+ * requiring a separate combinator step (`form`, unlike `localReplace`, has no single-shape shortcuts
+ * of its own beyond `triangleForm`/`quadForm` themselves, which already covered that case before
+ * `formsel`/`mkFormSel` existed). `quadCentering`/`simpCentering`/`triCentering` build the same
+ * hub-and-spoke shape as `quadCentralize`/`simpCentralize`/`triCentralize`, except the selected
+ * face's own original edges are dropped rather than kept (see LocalReplaceSelector's own doc
+ * comment, shared/types.ts). `nis`/`eis`/`triangleForm`/`quadForm`/`quadCentralize`/`quadCentering`/
+ * `quadOctarize`/`triCentralize`/`triCentering` each accept an optional `sel`, a `string`, or a `set`
+ * of the matching element type, resolved via their one shared resolveSelectorArg against one fixed
+ * wantKind (`simpCentralize`/`simpCentering` too, but against simp `n` specifically, `n` given as
+ * their own first argument); `mkSel`/`mkFormSel`/`mkLRS`'s own `selArg` accept a `string` or `set`
+ * too (not a `sel` - see `sel`'s own doc comment above), but (unlike those) have no fixed wantKind of
+ * their own to resolve against, so they go through resolveAnyKindSelectorArg instead (also shared/clegEval.ts,
  * also used by `form`'s own variadic selector arguments and by `msBase`).
  *
  * `selectNode`/`selectEdge`/`selectTriangle`/`selectQuad`/`selectSimp` (X, bc) similarly each accept
@@ -238,7 +253,7 @@
  *
  *   TYPE       := (BASETYPE ('{' '}')? | FUNCTYPE | '(' FUNCTYPE ')') ('[' ']')*
  *   BASETYPE   := 'egr' | 'number' | 'string' | 'bool' | 'edge' | 'simp' | 'tri' | 'quad'
- *               | 'sel' | 'mod' | 'msel' | 'lrs'
+ *               | 'sel' | 'mod' | 'formsel' | 'lrs' | 'msel'
  *   FUNCTYPE   := '(' (TYPE (',' TYPE)*)? ')' '->' TYPE
  *   PROGRAM    := (FUNCDECL | TOPSTMT)*
  *   TOPSTMT    := VARDECL | ASSIGNSTMT | EXPRSTMT
@@ -286,7 +301,7 @@
 
 import {
     type BoardConfig, type BoardEdge, type BoardSimplex, type BoardQuad,
-    type Selector, type SelectorType, type BoardModifier, type LocalReplaceSelector,
+    type Selector, type SelectorType, type BoardModifier, type FormSelector, type LocalReplaceSelector,
 } from './types.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -332,11 +347,15 @@ export type ClegType =
      * every BoardModifier kind, the same way `sel`/`egr` are each one flat type regardless of which
      * SelectorType/PrescribedBoard they actually hold. */
     | { kind: 'mod' }
-    /** Wraps a real shared/types.ts LocalReplaceSelector - built via `triCentralize`/`quadCentralize`/
-     * `simpCentralize`/`quadOctarize` below (one constructor per LocalReplaceSelector branch), and
-     * consumed only by `localReplace(...)`, which turns one or more into the actual `mod`. One flat
-     * type covering every LocalReplaceSelector kind, the same way `mod` covers every BoardModifier
-     * kind. */
+    /** Wraps a real shared/types.ts FormSelector - built via `mkFormSel(typeStr, selArg?)` below, and
+     * consumed only by `form(w, formsel[])`, which turns one or more into the actual `Form`-kind
+     * `mod`. One flat type covering both FormSelector kinds, the same way `mod` covers every
+     * BoardModifier kind. */
+    | { kind: 'formsel' }
+    /** Wraps a real shared/types.ts LocalReplaceSelector - built via `mkLRS(typeStr, selArg?)`
+     * below, and consumed only by `localReplace(lrs[])`, which turns one or more into the actual
+     * `LocalReplace`-kind `mod`. One flat type covering every LocalReplaceSelector kind, the same
+     * way `mod` covers every BoardModifier kind. */
     | { kind: 'lrs' }
     /** Wraps a MultiSelector (defined below, near ClegValue's own 'msel' variant) - a cleg-internal-
      * only concept, unlike sel/mod (neither of which is exposed via shared/types.ts either, but each
@@ -414,6 +433,7 @@ export type ClegValue =
      * of sync with `value.type`. */
     | { kind: 'sel'; selType: SelectorType; value: Selector }
     | { kind: 'mod'; value: BoardModifier }
+    | { kind: 'formsel'; value: FormSelector }
     | { kind: 'lrs'; value: LocalReplaceSelector }
     | { kind: 'msel'; value: MultiSelector }
     | { kind: 'array'; elem: ClegType; value: ClegValue[] }

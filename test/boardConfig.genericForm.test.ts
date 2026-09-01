@@ -1,13 +1,13 @@
 // Regression tests for genericForm and the "form" board modifier: the generalization of
-// triangleForm/quadForm to an arbitrary list of selectors (each a triangle(simp 2)- or quad-typed
-// Selector, checked at runtime - see genericForm's own doc comment), gluing shared ORIGINAL edges
-// across every selected face regardless of kind.
+// triangleForm/quadForm to an arbitrary list of FormSelectors (each a TriForm- or QuadForm-kind
+// selected face - see genericForm's own doc comment and FormSelector's own, shared/types.ts), gluing
+// shared ORIGINAL edges across every selected face regardless of kind.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     genericForm, triangleForm, quadForm, triangularBoard, rectangularBoard, applyModifier,
 } from '../shared/boardConfig.ts';
-import { Embedding, simpType, type BoardConfig } from '../shared/types.ts';
+import { Embedding, type BoardConfig, type FormSelector } from '../shared/types.ts';
 import { parseTriangleSelector, parseQuadSelector } from '../shared/selector.ts';
 
 function edgeCount(adj: number[][]): number {
@@ -32,21 +32,14 @@ function assertConnected(adj: number[][]) {
     assert.equal(seen.size, N, 'graph should stay fully connected');
 }
 
-test('genericForm with a single (all tri) selector is identical to triangleForm', () => {
+test('genericForm with a single TriForm selector is identical to triangleForm', () => {
     const bc = triangularBoard(2);
-    assert.deepEqual(genericForm(bc, 3, [{ op: 'all', type: simpType(2) }]), triangleForm(bc, 3));
+    assert.deepEqual(genericForm(bc, 3, [{ kind: 'TriForm' }]), triangleForm(bc, 3));
 });
 
-test('genericForm with a single (all quad) selector is identical to quadForm', () => {
+test('genericForm with a single QuadForm selector is identical to quadForm', () => {
     const bc = rectangularBoard(2, 2);
-    assert.deepEqual(genericForm(bc, 3, [{ op: 'all', type: 'quad' }]), quadForm(bc, 3));
-});
-
-test('genericForm rejects a node/edge selector in sels at runtime', () => {
-    const bc = triangularBoard(2);
-    assert.throws(
-        () => genericForm(bc, 3, [{ op: 'all', type: 'node' }]),
-        /must be a triangle \(simp 2\) or quad selector, got a 'node' selector/);
+    assert.deepEqual(genericForm(bc, 3, [{ kind: 'QuadForm' }]), quadForm(bc, 3));
 });
 
 test('a triangle and a quad sharing an edge glue seamlessly across kinds', () => {
@@ -59,9 +52,12 @@ test('a triangle and a quad sharing an edge glue seamlessly across kinds', () =>
     const emb = new Embedding(2, adj.map((_, i): [number, number] => [i, 0]));
     const bc: BoardConfig = { N, adj, emb };
 
-    const triOnly = genericForm(bc, 3, [parseTriangleSelector('(all tri)')]);
-    const quadOnly = genericForm(bc, 3, [parseQuadSelector('(all quad)')]);
-    const both = genericForm(bc, 3, [parseTriangleSelector('(all tri)'), parseQuadSelector('(all quad)')]);
+    const triOnly = genericForm(bc, 3, [{ kind: 'TriForm', sel: parseTriangleSelector('(all tri)') }]);
+    const quadOnly = genericForm(bc, 3, [{ kind: 'QuadForm', sel: parseQuadSelector('(all quad)') }]);
+    const both = genericForm(bc, 3, [
+        { kind: 'TriForm', sel: parseTriangleSelector('(all tri)') },
+        { kind: 'QuadForm', sel: parseQuadSelector('(all quad)') },
+    ]);
     assertSymmetricNoSelfLoops(both.adj);
     assertConnected(both.adj);
     // If the shared edge (1,2) weren't glued across kinds, `both` would just be the disjoint union
@@ -79,6 +75,6 @@ test('an empty sels list is a total no-op', () => {
 
 test('applyModifier("Form", ...) matches calling genericForm directly', () => {
     const bc = triangularBoard(2);
-    const sels = [{ op: 'all' as const, type: simpType(2) }];
+    const sels: FormSelector[] = [{ kind: 'TriForm' }];
     assert.deepEqual(applyModifier(bc, { kind: 'Form', w: 3, sels }), genericForm(bc, 3, sels));
 });

@@ -1,4 +1,4 @@
 modify(
-  [localReplace([quadCentralize()]), truncate(), scale(1.414)],
+  [quadCentralize(), truncate(), scale(1.414)],
   rectB(6, 6)
 );

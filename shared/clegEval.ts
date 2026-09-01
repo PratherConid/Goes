@@ -21,7 +21,8 @@ import {
     BoardArgType, numArg, csvArg, parseBoardArgToken,
     makeBoardEdge, makeBoardSimplex, makeBoardQuad, Embedding, simpType, simpN,
     type BoardArgEntry, type BoardConfig, type BoardEdge, type BoardSimplex, type BoardQuad,
-    type Selector, type SelectorType, type SelectedVals, type BoardModifier, type LocalReplaceSelector,
+    type Selector, type SelectorType, type SelectedVals, type BoardModifier,
+    type FormSelector, type LocalReplaceSelector,
 } from './types.js';
 import {
     PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, product, applyModifiers,
@@ -578,159 +579,141 @@ BUILTIN_FUNCTIONS['quadForm'] = {
     },
 };
 
-// `form(w, ...sels)`: builds a Form BoardModifier - `w` (the shared lattice width) followed by one
-// or more selector arguments, each a `sel` (typically built via `mkSel(...)`), a bare `string`
-// (parsed via selector.ts's own context-free parseSelector - kind inferred bottom-up from the text
-// itself, exactly like mkSel's own string case, so `mkSel` is no longer needed just to wrap one), or
-// a `set` of number/edge/simp/quad (kind read off the set's own element type) - resolved via
-// resolveAnyKindSelectorArg below, the same resolution mkSel/msBase already use. Mirrors genericForm's
-// own (bc, w, sels) signature (genericForm itself accepts an empty `sels` as a no-op; `form` requires
-// at least one, below, since a cleg call with none would be a pointless no-op board program). None of
-// `sel`/`string`/`set` carries a tri-or-quad kind at the type level, so a non-tri/quad argument
-// type-checks here but is rejected at runtime by genericForm itself - the same check any hand-built
-// Selector needs, not something `form` repeats.
-function formCheckCall(callee: string, argTypes: ClegType[]): ClegType {
-    if (argTypes.length < 2)
-        throw new Error(`cleg: '${callee}' expects at least 2 argument(s) (w, and >= 1 sel), got ${argTypes.length}`);
-    if (argTypes[0].kind !== 'number')
-        throw new Error(`cleg: '${callee}' argument 1: expected number, got ${typeToString(argTypes[0])}`);
-    for (let i = 1; i < argTypes.length; i++)
-        if (argTypes[i].kind !== 'sel' && argTypes[i].kind !== 'string' && argTypes[i].kind !== 'set')
-            throw new Error(`cleg: '${callee}' argument ${i + 1}: expected sel, string, or set, got ${typeToString(argTypes[i])}`);
-    return MOD_TYPE;
+const FORMSEL_TYPE: ClegType = { kind: 'formsel' };
+
+// The 2 real FormSelector branches, as their own cleg-facing type strings - lowercase-first, same
+// convention LRS_TYPE_STRINGS below uses.
+type FormSelTypeString = 'triForm' | 'quadForm';
+const FORMSEL_TYPE_STRINGS: readonly FormSelTypeString[] = ['triForm', 'quadForm'];
+function isFormSelTypeString(s: string): s is FormSelTypeString {
+    return (FORMSEL_TYPE_STRINGS as readonly string[]).includes(s);
 }
-BUILTIN_FUNCTIONS['form'] = {
-    checkCall: formCheckCall,
+const FORMSEL_KIND_OF: Record<FormSelTypeString, FormSelector['kind']> = {
+    triForm: 'TriForm',
+    quadForm: 'QuadForm',
+};
+
+// `mkFormSel(typeStr, selArg?)`: builds a `formsel` value (a FormSelector - see shared/types.ts's own
+// doc comment) of the branch named by `typeStr` ("triForm" or "quadForm") - `selArg` (a `sel`,
+// `string`, or `set`, resolved via resolveAnyKindSelectorArg since the wanted kind depends on
+// `typeStr`'s own runtime value, not something checkCall can see ahead of time) restricts which
+// faces it names; omitted, every one found is named. `typeStr`'s own validity, and whether `selArg`
+// actually matches the kind `typeStr` implies (simp 2 for "triForm", quad for "quadForm"), are only
+// checked at evaluation time - checkCall only ever sees `typeStr`'s TYPE (string), never its runtime
+// value (same reason mkLRS's own `typeStr` above can't be validated statically either).
+function mkFormSelCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length !== 1 && argTypes.length !== 2)
+        throw new Error(`cleg: '${callee}' expects 1 or 2 argument(s), got ${argTypes.length}`);
+    if (argTypes[0].kind !== 'string')
+        throw new Error(`cleg: '${callee}' argument 1: expected string, got ${typeToString(argTypes[0])}`);
+    if (argTypes.length === 2 && argTypes[1].kind !== 'sel' && argTypes[1].kind !== 'string' && argTypes[1].kind !== 'set')
+        throw new Error(`cleg: '${callee}' argument 2: expected sel, string, or set, got ${typeToString(argTypes[1])}`);
+    return FORMSEL_TYPE;
+}
+BUILTIN_FUNCTIONS['mkFormSel'] = {
+    checkCall: mkFormSelCheckCall,
     call: (args) => {
-        const w = (args[0] as { value: number }).value;
-        const sels = args.slice(1).map(a => resolveAnyKindSelectorArg('form', a));
+        const typeStr = (args[0] as { value: string }).value;
+        if (!isFormSelTypeString(typeStr))
+            throw new Error(`cleg: 'mkFormSel' argument 1: unknown form selector type '${typeStr}' - expected one of ${FORMSEL_TYPE_STRINGS.join('/')}`);
+        const sel = args.length === 2 ? resolveAnyKindSelectorArg('mkFormSel', args[1]) : undefined;
+        const wantType = typeStr === 'triForm' ? simpType(2) : 'quad';
+        if (sel && sel.type !== wantType)
+            throw new Error(`cleg: 'mkFormSel' expects a ${typeStr === 'triForm' ? 'triangle (simp 2)' : 'quad'} selector for '${typeStr}', got a '${sel.type}' selector`);
+        return { kind: 'formsel', value: { kind: FORMSEL_KIND_OF[typeStr], sel } };
+    },
+};
+
+// `form(w, formsel[])`: builds a Form BoardModifier - `w` (the shared lattice width) plus an array of
+// `formsel` values (each built by mkFormSel above), mirroring genericForm's own (bc, w, sels)
+// signature (genericForm itself accepts an empty `sels` as a no-op). A plain `formsel[]` array
+// parameter (fixedSignature(...), same as `localReplace`'s own `lrs[]`) rather than variadic raw
+// selector arguments - every `formsel` argument here already shares the exact same type, so (unlike
+// the old design, back when a bare `sel`/`string`/`set` argument's own tri-or-quad kind could only be
+// checked at evaluation time) there's no longer any reason for `form` to accept anything BUT an
+// array of already-kind-tagged values.
+BUILTIN_FUNCTIONS['form'] = {
+    checkCall: fixedSignature([NUMBER_TYPE, { kind: 'array', elem: FORMSEL_TYPE }], MOD_TYPE),
+    call: ([wVal, selsVal]) => {
+        const w = (wVal as { value: number }).value;
+        const sels = (selsVal as { value: ClegValue[] }).value.map(v => (v as { value: FormSelector }).value);
         return { kind: 'mod', value: { kind: 'Form', w, sels } };
     },
 };
 
 const LRS_TYPE: ClegType = { kind: 'lrs' };
 
-// `quadCentralize([selArg])`/`quadOctarize([selArg])`: each builds an `lrs` value (a
-// LocalReplaceSelector - see shared/types.ts's own doc comment and shared/clegBase.ts's own top
-// comment on why this is a separate step from building the actual `mod`) of the like-named branch -
-// `selArg` (a `sel`, `string`, or `set`, resolved via resolveSelectorArg against the matching
-// SelectorType) restricts which quads it names; omitted, every one found is named. Variable-arity (0
-// or 1 args) rather than fixedSignature(...), to mirror that optionality exactly. triCentralize below
-// (a thin wrapper over simpCentralize, not a LocalReplaceSelector branch of its own - see that type's
-// own doc comment, shared/types.ts) shares this same 0-or-1-arg shape.
-function localReplaceSelCheckCall(callee: string, argTypes: ClegType[]): ClegType {
-    if (argTypes.length !== 0 && argTypes.length !== 1)
-        throw new Error(`cleg: '${callee}' expects 0 or 1 argument(s), got ${argTypes.length}`);
-    if (argTypes.length === 1 && argTypes[0].kind !== 'sel' && argTypes[0].kind !== 'string' && argTypes[0].kind !== 'set')
-        throw new Error(`cleg: '${callee}' argument 1: expected sel, string, or set, got ${typeToString(argTypes[0])}`);
-    return LRS_TYPE;
+// The 5 real LocalReplaceSelector branches, as their own cleg-facing type strings - lowercase-first,
+// matching cleg's own general "identifiers/keywords start lowercase" convention (unlike the internal
+// LocalReplaceSelector['kind'] tags themselves, which stay PascalCase like every other BoardModifier
+// kind - see LRS_KIND_OF below for the mapping between the two). `simpCentralize`/`simpCentering`
+// deliberately carry no arity of their own here (unlike LocalReplaceSelector's own `n` field) - see
+// mkLRS's own doc comment for why.
+type LRSTypeString = 'quadCentralize' | 'quadCentering' | 'quadOctarize' | 'simpCentralize' | 'simpCentering';
+const LRS_TYPE_STRINGS: readonly LRSTypeString[] =
+    ['quadCentralize', 'quadCentering', 'quadOctarize', 'simpCentralize', 'simpCentering'];
+function isLRSTypeString(s: string): s is LRSTypeString {
+    return (LRS_TYPE_STRINGS as readonly string[]).includes(s);
 }
-BUILTIN_FUNCTIONS['quadCentralize'] = {
-    checkCall: localReplaceSelCheckCall,
-    call: (args) => {
-        if (args.length === 0) return { kind: 'lrs', value: { kind: 'QuadCentralize' } };
-        const sel = resolveSelectorArg('quadCentralize', args[0], 'quad', parseQuadSelector);
-        return { kind: 'lrs', value: { kind: 'QuadCentralize', sel } };
-    },
+// Maps each cleg-facing LRS type string to its own LocalReplaceSelector['kind'] tag - split into a
+// Quad-family and a Simp-family map (rather than one Record<LRSTypeString, ...>) purely so mkLRS's
+// own call() below, once it's branched on which family typeStr is, gets back a properly narrowed
+// LocalReplaceSelector['kind'] subset instead of the full 5-kind union.
+const QUAD_LRS_KIND_OF: Record<'quadCentralize' | 'quadCentering' | 'quadOctarize', 'QuadCentralize' | 'QuadCentering' | 'QuadOctarize'> = {
+    quadCentralize: 'QuadCentralize',
+    quadCentering: 'QuadCentering',
+    quadOctarize: 'QuadOctarize',
 };
-BUILTIN_FUNCTIONS['quadOctarize'] = {
-    checkCall: localReplaceSelCheckCall,
-    call: (args) => {
-        if (args.length === 0) return { kind: 'lrs', value: { kind: 'QuadOctarize' } };
-        const sel = resolveSelectorArg('quadOctarize', args[0], 'quad', parseQuadSelector);
-        return { kind: 'lrs', value: { kind: 'QuadOctarize', sel } };
-    },
+const SIMP_LRS_KIND_OF: Record<'simpCentralize' | 'simpCentering', 'SimpCentralize' | 'SimpCentering'> = {
+    simpCentralize: 'SimpCentralize',
+    simpCentering: 'SimpCentering',
 };
 
-// `quadCentering([selArg])`: same shape as quadCentralize above, but builds a QuadCentering branch -
-// the quad's own 4-cycle edges are dropped rather than kept once genericLocalReplace actually applies
-// it (see LocalReplaceSelector's own doc comment, shared/types.ts).
-BUILTIN_FUNCTIONS['quadCentering'] = {
-    checkCall: localReplaceSelCheckCall,
-    call: (args) => {
-        if (args.length === 0) return { kind: 'lrs', value: { kind: 'QuadCentering' } };
-        const sel = resolveSelectorArg('quadCentering', args[0], 'quad', parseQuadSelector);
-        return { kind: 'lrs', value: { kind: 'QuadCentering', sel } };
-    },
-};
-
-// `simpCentralize(n[, selArg])`: builds an `lrs` value of the SimpCentralize branch - `n` (the
-// simplex arity) followed by an optional `selArg` (resolved via resolveSelectorArg against simp `n`)
-// restricting which n-simplices it names, mirroring SimpCentralize's own `n: number, sel?: Selector`
-// fields exactly - triCentralize below is its own fixed-n=2 thin wrapper, not a separate branch (see
-// LocalReplaceSelector's own doc comment, shared/types.ts). `n`'s own validity (integer >= 2) is only
-// checked at evaluation time (genericLocalReplace's own assert, shared/boardConfig.ts) - checkCall
-// only ever sees `n`'s TYPE (number), never its runtime value, so it can't validate the value itself
-// (same reason mkSimp above can't either).
-function simpCentralizeCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+// `mkLRS(typeStr, selArg?)`: builds an `lrs` value (a LocalReplaceSelector - see shared/types.ts's
+// own doc comment and shared/clegBase.ts's own top comment on why this is a separate step from
+// building the actual `mod`) of the branch named by `typeStr` (one of LRS_TYPE_STRINGS above) -
+// `selArg` (a `sel`, `string`, or `set`, resolved via resolveAnyKindSelectorArg since the wanted kind
+// depends on `typeStr`'s own runtime value, not something checkCall can see ahead of time) restricts
+// which faces it names; omitted, every one found is named - EXCEPT for `simpCentralize`/
+// `simpCentering`, whose own simplex arity (LocalReplaceSelector's own `n` field) is read off
+// `selArg`'s own resolved kind (`simpN(sel.type)`) rather than a separate numeric argument, so
+// `selArg` is only truly optional for the three Quad-family types - omitting it for a Simp-family
+// `typeStr` throws at evaluation time (there's nothing left to infer `n` from). `typeStr`'s own
+// validity is likewise only checked at evaluation time - checkCall only ever sees its TYPE (string),
+// never its runtime value (same reason mkSimp/simpCentralize's own `n` above can't be validated
+// statically either).
+function mkLRSCheckCall(callee: string, argTypes: ClegType[]): ClegType {
     if (argTypes.length !== 1 && argTypes.length !== 2)
         throw new Error(`cleg: '${callee}' expects 1 or 2 argument(s), got ${argTypes.length}`);
-    if (argTypes[0].kind !== 'number')
-        throw new Error(`cleg: '${callee}' argument 1: expected number, got ${typeToString(argTypes[0])}`);
+    if (argTypes[0].kind !== 'string')
+        throw new Error(`cleg: '${callee}' argument 1: expected string, got ${typeToString(argTypes[0])}`);
     if (argTypes.length === 2 && argTypes[1].kind !== 'sel' && argTypes[1].kind !== 'string' && argTypes[1].kind !== 'set')
         throw new Error(`cleg: '${callee}' argument 2: expected sel, string, or set, got ${typeToString(argTypes[1])}`);
     return LRS_TYPE;
 }
-BUILTIN_FUNCTIONS['simpCentralize'] = {
-    checkCall: simpCentralizeCheckCall,
+BUILTIN_FUNCTIONS['mkLRS'] = {
+    checkCall: mkLRSCheckCall,
     call: (args) => {
-        const n = (args[0] as { value: number }).value;
-        if (args.length === 1) return { kind: 'lrs', value: { kind: 'SimpCentralize', n } };
-        const sel = resolveSelectorArg('simpCentralize', args[1], simpType(n), (s) => parseSimpSelector(n, s));
-        return { kind: 'lrs', value: { kind: 'SimpCentralize', n, sel } };
-    },
-};
-
-// `simpCentering(n[, selArg])`: same shape as simpCentralize above, but builds a SimpCentering branch
-// - the simplex's own C(n+1,2) clique edges are dropped rather than kept once genericLocalReplace
-// actually applies it (see LocalReplaceSelector's own doc comment, shared/types.ts).
-function simpCenteringCheckCall(callee: string, argTypes: ClegType[]): ClegType {
-    if (argTypes.length !== 1 && argTypes.length !== 2)
-        throw new Error(`cleg: '${callee}' expects 1 or 2 argument(s), got ${argTypes.length}`);
-    if (argTypes[0].kind !== 'number')
-        throw new Error(`cleg: '${callee}' argument 1: expected number, got ${typeToString(argTypes[0])}`);
-    if (argTypes.length === 2 && argTypes[1].kind !== 'sel' && argTypes[1].kind !== 'string' && argTypes[1].kind !== 'set')
-        throw new Error(`cleg: '${callee}' argument 2: expected sel, string, or set, got ${typeToString(argTypes[1])}`);
-    return LRS_TYPE;
-}
-BUILTIN_FUNCTIONS['simpCentering'] = {
-    checkCall: simpCenteringCheckCall,
-    call: (args) => {
-        const n = (args[0] as { value: number }).value;
-        if (args.length === 1) return { kind: 'lrs', value: { kind: 'SimpCentering', n } };
-        const sel = resolveSelectorArg('simpCentering', args[1], simpType(n), (s) => parseSimpSelector(n, s));
-        return { kind: 'lrs', value: { kind: 'SimpCentering', n, sel } };
-    },
-};
-
-// `triCentralize([selArg])`: simpCentralize's own fixed-n=2 special case - a thin wrapper building
-// the exact same SimpCentralize-branch `lrs` value simpCentralize(2, selArg) would, kept as its own
-// named builtin for backward compatibility (mirrors shared/boardConfig.ts's own triCentralize thin
-// wrapper over simpCentralize).
-BUILTIN_FUNCTIONS['triCentralize'] = {
-    checkCall: localReplaceSelCheckCall,
-    call: (args) => {
-        if (args.length === 0) return { kind: 'lrs', value: { kind: 'SimpCentralize', n: 2 } };
-        const sel = resolveSelectorArg('triCentralize', args[0], simpType(2), parseTriangleSelector);
-        return { kind: 'lrs', value: { kind: 'SimpCentralize', n: 2, sel } };
-    },
-};
-
-// `triCentering([selArg])`: simpCentering's own fixed-n=2 special case - a thin wrapper building the
-// exact same SimpCentering-branch `lrs` value simpCentering(2, selArg) would, the same way
-// triCentralize is simpCentralize's (mirrors shared/boardConfig.ts's own triCentering thin wrapper).
-BUILTIN_FUNCTIONS['triCentering'] = {
-    checkCall: localReplaceSelCheckCall,
-    call: (args) => {
-        if (args.length === 0) return { kind: 'lrs', value: { kind: 'SimpCentering', n: 2 } };
-        const sel = resolveSelectorArg('triCentering', args[0], simpType(2), parseTriangleSelector);
-        return { kind: 'lrs', value: { kind: 'SimpCentering', n: 2, sel } };
+        const typeStr = (args[0] as { value: string }).value;
+        if (!isLRSTypeString(typeStr))
+            throw new Error(`cleg: 'mkLRS' argument 1: unknown lrs type '${typeStr}' - expected one of ${LRS_TYPE_STRINGS.join('/')}`);
+        const sel = args.length === 2 ? resolveAnyKindSelectorArg('mkLRS', args[1]) : undefined;
+        if (typeStr === 'simpCentralize' || typeStr === 'simpCentering') {
+            if (!sel)
+                throw new Error(`cleg: 'mkLRS' requires argument 2 for '${typeStr}', to infer its own simplex arity from`);
+            const n = simpN(sel.type);
+            if (n === null)
+                throw new Error(`cleg: 'mkLRS' expects a simp selector for '${typeStr}', got a '${sel.type}' selector`);
+            return { kind: 'lrs', value: { kind: SIMP_LRS_KIND_OF[typeStr], n, sel } };
+        }
+        if (sel && sel.type !== 'quad')
+            throw new Error(`cleg: 'mkLRS' expects a quad selector for '${typeStr}', got a '${sel.type}' selector`);
+        return { kind: 'lrs', value: { kind: QUAD_LRS_KIND_OF[typeStr], sel } };
     },
 };
 
 // `localReplace(lrs[])`: builds a LocalReplace BoardModifier from an array of `lrs` values (each
-// built by triCentralize/quadCentralize/simpCentralize/quadOctarize/quadCentering/simpCentering/
-// triCentering above) - the one builtin that turns a list of `lrs` into the actual `mod`, mirroring
+// built by mkLRS above) - the one builtin that turns a list of `lrs` into the actual `mod`, mirroring
 // shared/boardConfig.ts's own genericLocalReplace(bc, selectors) signature. Unlike `form`/the old
 // `centralize` (variadic, since each of THEIR own selector arguments can be a genuinely different
 // type - sel/string/set - which a single array literal can't hold), every `lrs` argument here already
@@ -743,6 +726,85 @@ BUILTIN_FUNCTIONS['localReplace'] = {
         const selectors = (lrsVal as { value: ClegValue[] }).value.map(v => (v as { value: LocalReplaceSelector }).value);
         return { kind: 'mod', value: { kind: 'LocalReplace', selectors } };
     },
+};
+
+// `quadCentralize([selArg])`/`quadCentering([selArg])`/`quadOctarize([selArg])`/
+// `simpCentralize(n[, selArg])`/`simpCentering(n[, selArg])`/`triCentralize([selArg])`/
+// `triCentering([selArg])`: one-step shortcuts, each building a LocalReplace `mod` directly for its
+// own single fixed shape - exactly `localReplace([mkLRS("...", selArg)])` (or, for the Simp-family
+// two, `localReplace([mkLRS("...", selArg-carrying-arity-n)])`), skipping the `lrs`/`localReplace`
+// step entirely, the same "just build the mod, no separate combinator step" convenience
+// `triangleForm`/`quadForm` already have over genericForm/`form`. `quadCentering`/`simpCentering`/
+// `triCentering` build the same hub-and-spoke shape as `quadCentralize`/`simpCentralize`/
+// `triCentralize`, except the selected face's own original edges are dropped rather than kept (see
+// LocalReplaceSelector's own doc comment, shared/types.ts). `triCentralize`/`triCentering` are
+// `simpCentralize`/`simpCentering`'s own fixed-n=2 special cases, kept as their own named builtins
+// for backward compatibility.
+function localReplaceModCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length !== 0 && argTypes.length !== 1)
+        throw new Error(`cleg: '${callee}' expects 0 or 1 argument(s), got ${argTypes.length}`);
+    if (argTypes.length === 1 && argTypes[0].kind !== 'sel' && argTypes[0].kind !== 'string' && argTypes[0].kind !== 'set')
+        throw new Error(`cleg: '${callee}' argument 1: expected sel, string, or set, got ${typeToString(argTypes[0])}`);
+    return MOD_TYPE;
+}
+function oneShapeMod(kind: 'QuadCentralize' | 'QuadCentering' | 'QuadOctarize', sel?: Selector): ClegValue {
+    return { kind: 'mod', value: { kind: 'LocalReplace', selectors: [{ kind, sel }] } };
+}
+BUILTIN_FUNCTIONS['quadCentralize'] = {
+    checkCall: localReplaceModCheckCall,
+    call: (args) => oneShapeMod('QuadCentralize',
+        args.length === 1 ? resolveSelectorArg('quadCentralize', args[0], 'quad', parseQuadSelector) : undefined),
+};
+BUILTIN_FUNCTIONS['quadCentering'] = {
+    checkCall: localReplaceModCheckCall,
+    call: (args) => oneShapeMod('QuadCentering',
+        args.length === 1 ? resolveSelectorArg('quadCentering', args[0], 'quad', parseQuadSelector) : undefined),
+};
+BUILTIN_FUNCTIONS['quadOctarize'] = {
+    checkCall: localReplaceModCheckCall,
+    call: (args) => oneShapeMod('QuadOctarize',
+        args.length === 1 ? resolveSelectorArg('quadOctarize', args[0], 'quad', parseQuadSelector) : undefined),
+};
+
+function simpCentralizeModCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length !== 1 && argTypes.length !== 2)
+        throw new Error(`cleg: '${callee}' expects 1 or 2 argument(s), got ${argTypes.length}`);
+    if (argTypes[0].kind !== 'number')
+        throw new Error(`cleg: '${callee}' argument 1: expected number, got ${typeToString(argTypes[0])}`);
+    if (argTypes.length === 2 && argTypes[1].kind !== 'sel' && argTypes[1].kind !== 'string' && argTypes[1].kind !== 'set')
+        throw new Error(`cleg: '${callee}' argument 2: expected sel, string, or set, got ${typeToString(argTypes[1])}`);
+    return MOD_TYPE;
+}
+function oneShapeSimpMod(kind: 'SimpCentralize' | 'SimpCentering', n: number, sel?: Selector): ClegValue {
+    return { kind: 'mod', value: { kind: 'LocalReplace', selectors: [{ kind, n, sel }] } };
+}
+BUILTIN_FUNCTIONS['simpCentralize'] = {
+    checkCall: simpCentralizeModCheckCall,
+    call: (args) => {
+        const n = (args[0] as { value: number }).value;
+        const sel = args.length === 2
+            ? resolveSelectorArg('simpCentralize', args[1], simpType(n), (s) => parseSimpSelector(n, s)) : undefined;
+        return oneShapeSimpMod('SimpCentralize', n, sel);
+    },
+};
+BUILTIN_FUNCTIONS['simpCentering'] = {
+    checkCall: simpCentralizeModCheckCall,
+    call: (args) => {
+        const n = (args[0] as { value: number }).value;
+        const sel = args.length === 2
+            ? resolveSelectorArg('simpCentering', args[1], simpType(n), (s) => parseSimpSelector(n, s)) : undefined;
+        return oneShapeSimpMod('SimpCentering', n, sel);
+    },
+};
+BUILTIN_FUNCTIONS['triCentralize'] = {
+    checkCall: localReplaceModCheckCall,
+    call: (args) => oneShapeSimpMod('SimpCentralize', 2,
+        args.length === 1 ? resolveSelectorArg('triCentralize', args[0], simpType(2), parseTriangleSelector) : undefined),
+};
+BUILTIN_FUNCTIONS['triCentering'] = {
+    checkCall: localReplaceModCheckCall,
+    call: (args) => oneShapeSimpMod('SimpCentering', 2,
+        args.length === 1 ? resolveSelectorArg('triCentering', args[0], simpType(2), parseTriangleSelector) : undefined),
 };
 
 // `modify(mods, bc)`: applies every modifier in `mods`, in order, to `bc` - shared/boardConfig.ts's

@@ -493,6 +493,20 @@ export type Selector =
     | { op: 'raw'; type: SelectorType; items: SelectedVals };
 
 /**
+ * One selected face plus which kind genericForm should build a lattice for - see
+ * shared/boardConfig.ts's genericForm() for the actual construction. A `tri`/`quad` selection is
+ * already unambiguous on its own for genericForm's own purposes (unlike LocalReplaceSelector's own
+ * situation just below, where a bare `quad` selection can't tell QuadCentralize/QuadCentering/
+ * QuadOctarize apart), but FormSelector still tags the kind explicitly, for the same API shape
+ * LocalReplaceSelector below already has. `sel`, on either branch, defaults the same way
+ * triangleForm/quadForm's own `sel?: Selector` parameter already documents (omitted = every object
+ * of the matching kind).
+ */
+export type FormSelector =
+    | { kind: 'TriForm'; sel?: Selector }
+    | { kind: 'QuadForm'; sel?: Selector };
+
+/**
  * One selected face plus which LOCAL shape to replace it with - see shared/boardConfig.ts's
  * genericLocalReplace() for the actual construction. This exists (rather than a bare Selector, which
  * suffices for genericForm's own `sels`) because a `quad` selection alone no longer determines a
@@ -532,9 +546,9 @@ export type BoardModifier =
     | { kind: 'MergeClose'; dist: number }
     | { kind: 'TriangleForm'; w: number; sel?: Selector }
     | { kind: 'QuadForm'; w: number; sel?: Selector }
-    // sels: one Selector per face to look for - each must be tri- or quad-typed, checked at runtime
-    // by shared/boardConfig.ts's own genericForm, which this wraps - see its own doc comment.
-    | { kind: 'Form'; w: number; sels: Selector[] }
+    // sels: one FormSelector per face-and-kind to look for - see genericForm's own doc comment
+    // (shared/boardConfig.ts), which this wraps.
+    | { kind: 'Form'; w: number; sels: FormSelector[] }
     // selectors: one LocalReplaceSelector per face-and-shape to replace - see genericLocalReplace's
     // own doc comment (shared/boardConfig.ts). Folds what used to be five separate kinds here
     // (SimpCentralize/TriCentralize/QuadCentralize/Centralize/QuadOctarize) into one.

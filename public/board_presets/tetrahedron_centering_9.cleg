@@ -1,4 +1,4 @@
 modify(
-  [localReplace([simpCentering(3)]), scale(1.6)],
+  [simpCentering(3), scale(1.6)],
   simplexB(3, 3, 9)
 );
