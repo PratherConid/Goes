@@ -288,6 +288,8 @@ function drawItem(g: SVGElement, defs: SVGDefsElement, item: DrawItem): void {
 // nodes illegal for every offered stone are marked with COLOR_ILLEGAL.
 // territoryOwner: if non-null, each node with territoryOwner[i] > 0 is marked with a small
 // square (side = cell/4, grey-lined with stroke-width = side/6) colored by that stone type.
+// showNodes: if true, every node (regardless of board shape, unlike the rect-only star points
+// below) gets the same small dot a star point does.
 // dim: if true, grid lines, stones, and the territory overlay are all wrapped in a
 // single 50%-opacity <g> (used while a stone-selection popup is up, since the board
 // isn't clickable in that state) - the caller draws the (always full-opacity) popup
@@ -301,6 +303,7 @@ function drawBoardFull(
     boardW: number, boardH: number,
     legalMoves: (Set<number> | null)[][] | null,
     territoryOwner: number[] | null = null,
+    showNodes = false,
     dim = false,
     viewport: Viewport = defaultViewport(view.emb.embDim),
     nextGradientId: () => number,
@@ -371,6 +374,21 @@ function drawBoardFull(
             kind: 'starPoint', depth: z,
             args: [screenX(x * scale), screenY(y * scale), cell * 0.09 * scale, alphaOf(z)],
         });
+    }
+
+    // per-node markers ("snode" command, Renderer.showNodes) - a small dot at every node,
+    // regardless of board shape (unlike the rect-only star points above) - reuses the exact same
+    // 'starPoint' draw shape, since that's already exactly this: a small COLOR_GRID-filled circle.
+    if (showNodes) {
+        for (let i = 0; i < N; i++) {
+            const [x, y, z] = pos[i];
+            const scale = scaleOf(z);
+            if (scale === null) continue;
+            items.push({
+                kind: 'starPoint', depth: z,
+                args: [screenX(x * scale), screenY(y * scale), cell * 0.09 * scale, alphaOf(z)],
+            });
+        }
     }
 
     // stones / illegal markers - depth offset by +0.1*radius (see DrawItem's own doc comment).
@@ -524,6 +542,7 @@ export class Renderer {
     autoForced = false;
     showTerritory = false;
     showIllegalMoves = false;
+    showNodes = false;
     // True while a click on a multi-stone turn is waiting for the player to
     // pick which offered stone to place (see _onBoardClick/_renderMainBoard).
     selectingStone = false;
@@ -1369,6 +1388,7 @@ export class Renderer {
                       this._active.config, size, size,
                       this.showIllegalMoves ? v.history[this._active.displayPlyNum].legalMoves.captures : null,
                       this.showTerritory ? v.history[this._active.displayPlyNum].score.territoryOwner : null,
+                      this.showNodes,
                       this.selectingStone, this._active.viewport, () => this.nextGradientId++);
         if (this.selectingStone) {
             const popup = document.createElementNS(SVG_NS, 'g');
@@ -1498,7 +1518,7 @@ export class Renderer {
                 svg.appendChild(bg);
                 drawBoardFull(
                     svg, v, this._active.bs.adj, he.board, this._active.config, size, size, null,
-                    null, false, this._active.viewport, () => this.nextGradientId++,
+                    null, false, false, this._active.viewport, () => this.nextGradientId++,
                 );
             });
         }
@@ -1529,6 +1549,7 @@ export class Renderer {
             ${row('stt',         'Toggle territory display in the main board area')}
             ${row('simv',        'Toggle illegal move markers on the main board')}
             ${row('tlv',         'Toggle lock view: lock/unlock camera rotation on the main board')}
+            ${row('snode',       'Toggle node markers: draw a small dot at every node on the main board')}
             ${row('rsv',
                 'Reset view: reset the main board camera to its default orientation and focus (0 0 0)')}
             ${row('focus &lt;x&gt; &lt;y&gt; &lt;z&gt;',
@@ -3221,6 +3242,7 @@ export class Renderer {
         else if (cmd === 'stt')  this.showTerritory = !this.showTerritory;
         else if (cmd === 'simv') this.showIllegalMoves = !this.showIllegalMoves;
         else if (cmd === 'tlv')  this._active.rotationLocked = !this._active.rotationLocked;
+        else if (cmd === 'snode') this.showNodes = !this.showNodes;
         else if (cmd === 'rsv') {
             this._active.viewport.quat = QUAT_IDENTITY;
             this._active.viewport.focus = [0, 0, 0];
