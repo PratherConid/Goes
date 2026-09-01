@@ -149,6 +149,7 @@ const _boardConfigDescriptions = new Map([
     ['shell_6_7.5', '3D shell'],
     ['roundTable_9.5_5_3_2', 'A round table with four legs'],
     ['snubsqtri_4_4_4', 'Snub square tiling with triangular gaps filled in'],
+    ['trunc_trunc_cublat_3_3_3', '3×3×3 cubical board, truncated twice'],
     ['truncated_24_cell', 'Truncated regular 24-cell'],
     ['truncated_centralized_rect_6_6',
         '6×6 rectangular board with a hub node added to each unit square, truncated, then scaled up'],

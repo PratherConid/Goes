@@ -79,6 +79,7 @@ const BOARD_PRESET_GOLDEN: Record<string, { N: number; edges: number }> = {
     'snubsqtri_4_4_4.cleg': { N: 286, edges: 645 },
     'star_5_es_6_prod_line_5.cleg': { N: 155, edges: 274 },
     'tri_4_fractaldrop_3_0.05.cleg': { N: 275, edges: 689 },
+    'trunc_trunc_cublat_3_3_3.cleg': { N: 420, edges: 810 },
     'truncated_24_cell.cleg': { N: 192, edges: 384 },
     'truncated_centralized_rect_6_6.cleg': { N: 320, edges: 480 },
     'twsqCluster4D_4_4_2.cleg': { N: 960, edges: 1408 },
