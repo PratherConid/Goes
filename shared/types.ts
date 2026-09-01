@@ -504,7 +504,11 @@ export type Selector =
  */
 export type FormSelector =
     | { kind: 'TriForm'; sel?: Selector }
-    | { kind: 'QuadForm'; sel?: Selector };
+    | { kind: 'QuadForm'; sel?: Selector }
+    // QuadDiagForm: like QuadForm, but genericForm builds a diagonally-oriented square lattice for
+    // each selected quad instead of a plain w-by-w grid - see genericForm's own doc comment
+    // (shared/boardConfig.ts) for the actual node/edge construction.
+    | { kind: 'QuadDiagForm'; sel?: Selector };
 
 /**
  * One selected face plus which LOCAL shape to replace it with - see shared/boardConfig.ts's
@@ -546,6 +550,7 @@ export type BoardModifier =
     | { kind: 'MergeClose'; dist: number }
     | { kind: 'TriangleForm'; w: number; sel?: Selector }
     | { kind: 'QuadForm'; w: number; sel?: Selector }
+    | { kind: 'QuadDiagForm'; w: number; sel?: Selector }
     // sels: one FormSelector per face-and-kind to look for - see genericForm's own doc comment
     // (shared/boardConfig.ts), which this wraps.
     | { kind: 'Form'; w: number; sels: FormSelector[] }

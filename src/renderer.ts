@@ -1635,6 +1635,11 @@ export class Renderer {
                 + 'selector sel is given, only the ones it selects - with a w-by-w grid, gluing new '
                 + 'corners to the old vertices and gluing shared quad edges together (w=1 collapses '
                 + "each quad to a point; w=2 is a no-op); an unselected quad is left untouched, as if it weren't there at all")}
+            ${row('quadDiagForm(w, sel?)',
+                'QuadDiagForm: same as quadForm, but each replaced quad becomes a diagonally-oriented '
+                + 'square lattice of side w (w*w + (w-1)*(w-1) nodes: a w-by-w corner grid plus a '
+                + '(w-1)-by-(w-1) center grid, each center connected only to its own 4 diagonal '
+                + 'corners) instead of a plain w-by-w grid')}
             ${row('form(w, [FormSel…])',
                 'Form: generalizes triangleForm/quadForm (see their own entries above) to one or more '
                 + 'FormSel values (each built by mkFormSel - see Form Selectors) at once, all sharing '
@@ -1736,6 +1741,9 @@ export class Renderer {
                 'Every triangle (simp 2) - or, if sel is given, only the ones it selects')}
             ${row('"quadForm"',
                 'Every quad - or, if sel is given, only the ones it selects')}
+            ${row('"quadDiagForm"',
+                'Every quad - or, if sel is given, only the ones it selects - built as a '
+                + 'diagonally-oriented square lattice rather than a plain grid')}
         `);
 
         this.commandReferenceBuiltinFunctionsPanel.innerHTML = table(`

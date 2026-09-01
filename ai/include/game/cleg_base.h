@@ -37,7 +37,7 @@
 // ── Types ────────────────────────────────────────────────────────────────────
 
 enum class CTKind {
-    Egr, Number, String, Bool, Edge, Simp, Quad, Sel, Mod, Lrs, Msel, Array, Set, Func
+    Egr, Number, String, Bool, Edge, Simp, Quad, Sel, Mod, Formsel, Lrs, Msel, Array, Set, Func
 };
 
 // Mirrors shared/clegBase.ts's ClegType - `elem` meaningful iff kind == Array/Set; `params`/
@@ -84,6 +84,7 @@ struct ClegValue {
     SelectorType sel_type = SelectorType{SelectorKind::Node}; // Sel only
     Selector sel_v;
     BoardModifier mod_v{ModifierKind::Rectify};
+    FormSelector form_sel_v; // Formsel only
     LocalReplaceSelector lrs_v; // Lrs only
     MultiSelector msel_v;
     std::vector<ClegValue> arr_v;                    // Array or Set (Set: deduplicated by cleg_set_key)
@@ -120,6 +121,7 @@ inline ClegValue make_egr(BoardConfig bc) {
     ClegValue v; v.kind = CTKind::Egr; v.egr_v = std::make_shared<BoardConfig>(std::move(bc)); return v;
 }
 inline ClegValue make_mod(BoardModifier m) { ClegValue v; v.kind = CTKind::Mod; v.mod_v = std::move(m); return v; }
+inline ClegValue make_form_sel_v(FormSelector s) { ClegValue v; v.kind = CTKind::Formsel; v.form_sel_v = std::move(s); return v; }
 inline ClegValue make_lrs_v(LocalReplaceSelector s) { ClegValue v; v.kind = CTKind::Lrs; v.lrs_v = std::move(s); return v; }
 inline ClegValue make_msel(MultiSelector m) { ClegValue v; v.kind = CTKind::Msel; v.msel_v = std::move(m); return v; }
 

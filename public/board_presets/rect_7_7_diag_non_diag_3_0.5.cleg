@@ -1,0 +1,16 @@
+egr diagNonDiagRectB(number w, number h, number g, number p) {
+  egr b = rectB(w, h);
+  quad{} s1 = selectQuad((("(rrmp " + p) + " (all quad))"), b);
+  quad{} s2 = (selectQuad("(all quad)", b) - s1);
+  return modify(
+    [
+      form(
+        g,
+        [mkFormSel("quadDiagForm", s1), mkFormSel("quadForm", s2)]
+      ),
+      scale(sqrt(2))
+    ],
+    b
+  );
+}
+diagNonDiagRectB(7, 7, 3, 0.5);

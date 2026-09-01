@@ -342,18 +342,23 @@ export function edgeInducedSubgraph(bc: BoardConfig, edges: BoardEdge[]): BoardC
 
 /**
  * Replaces every selected triangle and/or quad (see topology.ts's findSimplices(adj, 2)/findQuads)
- * in `bc` with its own w-sided lattice - a `triangularBoard(w)`-shaped lattice for a triangle, a
- * `w`-by-`w` grid for a quad - gluing new corners back to the original vertices and gluing every
- * original edge's own new boundary points together across every lattice that consumes that edge as
- * one of its own sides, regardless of whether that lattice came from a TriForm- or QuadForm-kind
- * FormSelector - this is what makes a mixed `sels` list meaningful: a triangle and a quad sharing an
- * edge still glue seamlessly, since gluing is driven by shared ORIGINAL edges, not by matching
- * kinds. Each element of `sels` is a FormSelector (see its own doc comment, shared/types.ts) naming
- * both which kind to look for AND (via its own optional `sel`) restricting which ones of that kind
- * qualify - `sel` omitted means "every one found, no restriction". `w` is shared by every element of
- * `sels`, since two lattices sharing an edge can only glue node-for-node if their own boundary
- * sequences are the same length. triangleForm/quadForm below are the single-kind special cases, each
- * just calling this with one FormSelector.
+ * in `bc` with its own w-sided lattice - a `triangularBoard(w)`-shaped lattice for a triangle
+ * (TriForm), a `w`-by-`w` grid for a quad (QuadForm), or, also for a quad, a diagonally-oriented
+ * square lattice (QuadDiagForm: a `w`-by-`w` "primary" grid plus a `(w-1)`-by-`(w-1)` "center" grid
+ * - one center per primary unit cell, connected only to that cell's own 4 primary corners, so every
+ * edge runs diagonally and no primary-primary or center-center edge exists; `w*w + (w-1)*(w-1)`
+ * nodes total) - gluing new corners back to the original vertices and gluing every original edge's
+ * own new boundary points together across every lattice that consumes that edge as one of its own
+ * sides, regardless of which FormSelector kind that lattice came from - this is what makes a mixed
+ * `sels` list meaningful: any two of these sharing an edge still glue seamlessly, since gluing is
+ * driven by shared ORIGINAL edges, not by matching kinds (QuadDiagForm's own boundary, like
+ * QuadForm's, is exactly its `w` primary corner nodes along each side - its center nodes are always
+ * strictly interior, never on a side). Each element of `sels` is a FormSelector (see its own doc
+ * comment, shared/types.ts) naming both which kind to look for AND (via its own optional `sel`)
+ * restricting which ones of that kind qualify - `sel` omitted means "every one found, no
+ * restriction". `w` is shared by every element of `sels`, since two lattices sharing an edge can
+ * only glue node-for-node if their own boundary sequences are the same length. triangleForm/
+ * quadForm below are the single-kind special cases, each just calling this with one FormSelector.
  */
 export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): BoardConfig {
     assert(w >= 1, `w must be at least 1, got ${w}`);
@@ -416,7 +421,7 @@ export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): B
                 addSide(A, C, k => globalIdx(k, k));
                 addSide(B, C, k => globalIdx(w - 1, k));
             }
-        } else {
+        } else if (fsel.kind === 'QuadForm') {
             const sel = fsel.sel ?? { op: 'all' as const, type: 'quad' as const };
             const quads = selectQuad(bc.adj, bc.emb.pos, sel);
             const nFace = w * w;
@@ -455,6 +460,56 @@ export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): B
                 addSide(B, C, k => globalIdx(k, w - 1));
                 addSide(C, D, k => globalIdx(w - 1, w - 1 - k));
                 addSide(D, A, k => globalIdx(w - 1 - k, 0));
+            }
+        } else {
+            const sel = fsel.sel ?? { op: 'all' as const, type: 'quad' as const };
+            const quads = selectQuad(bc.adj, bc.emb.pos, sel);
+            const nPrimary = w * w;
+            const primaryIdx = (i: number, j: number) => i * w + j;
+            const centerIdx = (i: number, j: number) => nPrimary + i * (w - 1) + j;
+            const nFace = nPrimary + (w - 1) * (w - 1);
+            const denom = (w - 1) * (w - 1);
+            for (const { n1: A, n2: B, n3: C, n4: D } of quads) {
+                const offset = nextIdx;
+                nextIdx += nFace;
+                const globalPrimary = (i: number, j: number) => offset + primaryIdx(i, j);
+                const globalCenter = (i: number, j: number) => offset + centerIdx(i, j);
+                const cornerA = scaledPos[A], cornerB = scaledPos[B], cornerC = scaledPos[C], cornerD = scaledPos[D];
+                // Same bilinear interpolant QuadForm's own branch above uses, just also sampled at
+                // each cell's own (i+0.5, j+0.5) center below - a bilinear function's average over a
+                // unit cell's 4 corners equals its own value at that cell's center, so this gives the
+                // same position a plain average of the 4 surrounding primary points would.
+                const bilinear = (i: number, j: number) => {
+                    const wA = (w - 1 - i) * (w - 1 - j), wB = (w - 1 - i) * j;
+                    const wC = i * j, wD = i * (w - 1 - j);
+                    return w === 1
+                        ? cornerA.map((_, k) => (cornerA[k] + cornerB[k] + cornerC[k] + cornerD[k]) / 4)
+                        : cornerA.map((_, k) =>
+                            (wA * cornerA[k] + wB * cornerB[k] + wC * cornerC[k] + wD * cornerD[k]) / denom);
+                };
+                for (let i = 0; i < w; i++)
+                    for (let j = 0; j < w; j++)
+                        extraPos[globalPrimary(i, j) - N] = bilinear(i, j);
+                for (let i = 0; i < w - 1; i++)
+                    for (let j = 0; j < w - 1; j++)
+                        extraPos[globalCenter(i, j) - N] = bilinear(i + 0.5, j + 0.5);
+                // Every edge is primary-to-center (diagonal) - no primary-primary or center-center
+                // edge exists, unlike QuadForm's own axis-aligned grid above.
+                for (let i = 0; i < w - 1; i++)
+                    for (let j = 0; j < w - 1; j++) {
+                        extraEdges.push([globalCenter(i, j), globalPrimary(i, j)]);
+                        extraEdges.push([globalCenter(i, j), globalPrimary(i + 1, j)]);
+                        extraEdges.push([globalCenter(i, j), globalPrimary(i, j + 1)]);
+                        extraEdges.push([globalCenter(i, j), globalPrimary(i + 1, j + 1)]);
+                    }
+                cornerQuot.push(
+                    [A, globalPrimary(0, 0)], [B, globalPrimary(0, w - 1)],
+                    [C, globalPrimary(w - 1, w - 1)], [D, globalPrimary(w - 1, 0)],
+                );
+                addSide(A, B, k => globalPrimary(0, k));
+                addSide(B, C, k => globalPrimary(k, w - 1));
+                addSide(C, D, k => globalPrimary(w - 1, w - 1 - k));
+                addSide(D, A, k => globalPrimary(w - 1 - k, 0));
             }
         }
     }
@@ -509,6 +564,17 @@ export function triangleForm(bc: BoardConfig, w: number, sel?: Selector): BoardC
  */
 export function quadForm(bc: BoardConfig, w: number, sel?: Selector): BoardConfig {
     return genericForm(bc, w, [{ kind: 'QuadForm', sel }]);
+}
+
+/**
+ * Replaces every quad (4 distinct vertices forming a cycle with no diagonal edges - see
+ * topology.ts's findQuads) in `bc` with a diagonally-oriented `w`-by-`w` square lattice - the
+ * single-kind special case of genericForm (see its own doc comment), the same way quadForm is.
+ * `sel`, if given, restricts this to only the quads it selects (evaluated against `bc`'s own
+ * adj/pos) - every other quad is left untouched, as if it didn't exist.
+ */
+export function quadDiagForm(bc: BoardConfig, w: number, sel?: Selector): BoardConfig {
+    return genericForm(bc, w, [{ kind: 'QuadDiagForm', sel }]);
 }
 
 /**
@@ -2189,6 +2255,7 @@ export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardCo
         case 'MergeClose': return mergeClose(bc, modifier.dist);
         case 'TriangleForm': return triangleForm(bc, modifier.w, modifier.sel);
         case 'QuadForm': return quadForm(bc, modifier.w, modifier.sel);
+        case 'QuadDiagForm': return quadDiagForm(bc, modifier.w, modifier.sel);
         case 'Form': return genericForm(bc, modifier.w, modifier.sels);
         case 'LocalReplace': return genericLocalReplace(bc, modifier.selectors);
         case 'GlobalCentralize': return globalCentralize(bc);

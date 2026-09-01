@@ -68,6 +68,7 @@ const BOARD_PRESET_GOLDEN: Record<string, { N: number; edges: number }> = {
     'rect_19_19_nis_(rrmp_0.1_(all))_nis_(conve_quad_(conva_node_(all))).cleg': { N: 315, edges: 537 },
     'rect_3_3.cleg': { N: 9, edges: 12 },
     'rect_5_5_fractaldrop_3_0.05.cleg': { N: 636, edges: 1142 },
+    'rect_7_7_diag_non_diag_3_0.5.cleg': { N: 241, edges: 488 },
     'rect_9_9.cleg': { N: 81, edges: 144 },
     'regpoly_13_prod_regpoly_13.cleg': { N: 169, edges: 338 },
     'regpoly_5_es_5_prod_lin_6.cleg': { N: 150, edges: 275 },

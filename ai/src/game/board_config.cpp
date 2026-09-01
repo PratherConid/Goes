@@ -278,20 +278,7 @@ BoardConfig merge_close(const BoardConfig& bc, double dist) {
     return quotient_board(bc, quot);
 }
 
-// "node"/"edge"/"simp N"/"quad" for generic_form's own wrong-kind error message below - mirrors
-// shared/selector.ts's selectorKindName, kept local here since selector.cpp's own copy is
-// translation-unit-private.
-static std::string selector_type_name(const SelectorType& t) {
-    switch (t.kind) {
-        case SelectorKind::Node: return "node";
-        case SelectorKind::Edge: return "edge";
-        case SelectorKind::Simp: return "simp " + std::to_string(t.n);
-        case SelectorKind::Quad: return "quad";
-    }
-    return "?";
-}
-
-BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<Selector>& sels) {
+BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSelector>& sels) {
     assert(w >= 1 && "w must be at least 1");
     int N = bc.N;
 
@@ -317,8 +304,9 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<Selecto
     std::vector<std::pair<int,int>> extra_edges;
     int next_idx = N;
 
-    for (auto& sel : sels) {
-        if (sel.type == simp_type(2)) {
+    for (auto& fsel : sels) {
+        if (fsel.kind == FormSelKind::TriForm) {
+            auto sel = fsel.sel.value_or(Selector{SelectorOp::All, simp_type(2)});
             auto triangles = select_triangle(bc.adj, bc.embed, sel);
             int n_face = w * (w + 1) / 2;
             auto local_idx = [](int i, int j) { return i * (i + 1) / 2 + j; };
@@ -342,7 +330,8 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<Selecto
                 add_side(A, C, [=](int k) { return global_idx(k, k); });
                 add_side(B, C, [=](int k) { return global_idx(w - 1, k); });
             }
-        } else if (sel.type == SelectorType{SelectorKind::Quad}) {
+        } else if (fsel.kind == FormSelKind::QuadForm) {
+            auto sel = fsel.sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
             auto quads = select_quad(bc.adj, bc.embed, sel);
             int n_face = w * w;
             auto local_idx = [&](int i, int j) { return i * w + j; };
@@ -370,10 +359,39 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<Selecto
                 add_side(C, D, [=](int k) { return global_idx(w - 1, w - 1 - k); });
                 add_side(D, A, [=](int k) { return global_idx(w - 1 - k, 0); });
             }
-        } else {
-            throw std::runtime_error(
-                "generic_form: each selector in sels must be a triangle (simp 2) or quad selector, got a " +
-                selector_type_name(sel.type) + " selector");
+        } else { // FormSelKind::QuadDiagForm
+            auto sel = fsel.sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
+            auto quads = select_quad(bc.adj, bc.embed, sel);
+            int n_primary = w * w;
+            auto primary_idx = [&](int i, int j) { return i * w + j; };
+            auto center_idx = [&](int i, int j) { return n_primary + i * (w - 1) + j; };
+            int n_face = n_primary + (w - 1) * (w - 1);
+            for (auto& [A, B, C, D] : quads) {
+                int offset = next_idx;
+                next_idx += n_face;
+                auto global_primary = [=](int i, int j) { return offset + primary_idx(i, j); };
+                auto global_center = [=](int i, int j) { return offset + center_idx(i, j); };
+                // Every edge is primary-to-center (diagonal) - no primary-primary or center-center
+                // edge exists, unlike QuadForm's own axis-aligned grid above. No position data is
+                // computed here (unlike shared/boardConfig.ts's own bilinear-interpolated node
+                // positions) since generic_form always produces an emb_dim = 0 board - see this
+                // function's own doc comment (board_config.h).
+                for (int i = 0; i < w - 1; i++)
+                    for (int j = 0; j < w - 1; j++) {
+                        extra_edges.push_back({global_center(i, j), global_primary(i, j)});
+                        extra_edges.push_back({global_center(i, j), global_primary(i + 1, j)});
+                        extra_edges.push_back({global_center(i, j), global_primary(i, j + 1)});
+                        extra_edges.push_back({global_center(i, j), global_primary(i + 1, j + 1)});
+                    }
+                quot.push_back({A, global_primary(0, 0)});
+                quot.push_back({B, global_primary(0, w - 1)});
+                quot.push_back({C, global_primary(w - 1, w - 1)});
+                quot.push_back({D, global_primary(w - 1, 0)});
+                add_side(A, B, [=](int k) { return global_primary(0, k); });
+                add_side(B, C, [=](int k) { return global_primary(k, w - 1); });
+                add_side(C, D, [=](int k) { return global_primary(w - 1, w - 1 - k); });
+                add_side(D, A, [=](int k) { return global_primary(w - 1 - k, 0); });
+            }
         }
     }
 
@@ -402,11 +420,15 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<Selecto
 }
 
 BoardConfig triangle_form(const BoardConfig& bc, int w, std::optional<Selector> sel) {
-    return generic_form(bc, w, { sel.value_or(Selector{SelectorOp::All, simp_type(2)}) });
+    return generic_form(bc, w, { FormSelector{FormSelKind::TriForm, sel} });
 }
 
 BoardConfig quad_form(const BoardConfig& bc, int w, std::optional<Selector> sel) {
-    return generic_form(bc, w, { sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}}) });
+    return generic_form(bc, w, { FormSelector{FormSelKind::QuadForm, sel} });
+}
+
+BoardConfig quad_diag_form(const BoardConfig& bc, int w, std::optional<Selector> sel) {
+    return generic_form(bc, w, { FormSelector{FormSelKind::QuadDiagForm, sel} });
 }
 
 // Mirrors shared/boardConfig.ts's genericLocalReplace() - unlike the TS side, every branch here
@@ -615,6 +637,7 @@ BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier)
         case ModifierKind::MergeClose: return merge_close(bc, modifier.dist);
         case ModifierKind::TriangleForm: return triangle_form(bc, modifier.split_n, modifier.form_sel);
         case ModifierKind::QuadForm: return quad_form(bc, modifier.split_n, modifier.form_sel);
+        case ModifierKind::QuadDiagForm: return quad_diag_form(bc, modifier.split_n, modifier.form_sel);
         case ModifierKind::Form: return generic_form(bc, modifier.split_n, modifier.form_sels);
         case ModifierKind::LocalReplace: return generic_local_replace(bc, modifier.selectors);
         case ModifierKind::GlobalCentralize: return global_centralize(bc);

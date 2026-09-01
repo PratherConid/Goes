@@ -54,6 +54,9 @@ static const ClegType EDGE_TYPE{CTKind::Edge, nullptr};
 static const ClegType SIMP_TYPE{CTKind::Simp, nullptr};
 static const ClegType QUAD_TYPE{CTKind::Quad, nullptr};
 static const ClegType MOD_TYPE{CTKind::Mod, nullptr};
+// The one ClegType for a formsel (FormSelector) value of any branch. Mirrors shared/clegEval.ts's
+// FORMSEL_TYPE.
+static const ClegType FORMSEL_TYPE{CTKind::Formsel, nullptr};
 // The one ClegType for an lrs (LocalReplaceSelector) value of any branch. Mirrors shared/clegEval.ts's
 // LRS_TYPE.
 static const ClegType LRS_TYPE{CTKind::Lrs, nullptr};
@@ -785,147 +788,251 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                 return make_mod(bm);
             },
         };
-
-        m["form"] = BuiltinFunction{
-            [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
-                if (arg_types.size() < 2)
-                    throw std::runtime_error(
-                        "cleg: '" + callee + "' expects at least 2 argument(s) (w, and >= 1 sel), got " + std::to_string(arg_types.size()));
-                if (arg_types[0].kind != CTKind::Number)
-                    throw std::runtime_error("cleg: '" + callee + "' argument 1: expected number, got " + type_to_string(arg_types[0]));
-                for (size_t i = 1; i < arg_types.size(); i++)
-                    if (arg_types[i].kind != CTKind::Sel && arg_types[i].kind != CTKind::String && arg_types[i].kind != CTKind::Set)
-                        throw std::runtime_error("cleg: '" + callee + "' argument " + std::to_string(i + 1) + ": expected sel, string, or set, got " + type_to_string(arg_types[i]));
-                return MOD_TYPE;
-            },
+        m["quadDiagForm"] = BuiltinFunction{
+            form_mod_check_call,
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
-                BoardModifier bm{ModifierKind::Form};
+                BoardModifier bm{ModifierKind::QuadDiagForm};
                 bm.split_n = static_cast<int>(args[0].number);
-                for (size_t i = 1; i < args.size(); i++) bm.form_sels.push_back(resolve_any_kind_selector_arg("form", args[i]));
+                if (args.size() == 2) bm.form_sel = resolve_selector_arg("quadDiagForm", args[1], SelectorType{SelectorKind::Quad}, parse_quad_selector);
                 return make_mod(bm);
             },
         };
 
-        // `quadCentralize([selArg])`/`quadOctarize([selArg])`/`quadCentering([selArg])`: each builds
-        // an `lrs` value (a LocalReplaceSelector - see board_config.h's own doc comment and
-        // cleg_base.h's own top comment on why this is a separate step from building the actual
-        // `mod`) of the like-named branch - `selArg` (a `sel`, `string`, or `set`, resolved via
-        // resolve_selector_arg against the matching SelectorType) restricts which quads it names;
-        // omitted, every one found is named. Variable-arity (0 or 1 args) rather than
-        // fixed_signature(...), to mirror that optionality exactly. tri_centralize/tri_centering
-        // below (thin wrappers over simp_centralize/simp_centering, not LocalReplaceSelector branches
-        // of their own) share this same 0-or-1-arg shape. Mirrors shared/clegEval.ts's
-        // localReplaceSelCheckCall.
-        CheckCallFn local_replace_sel_check_call = [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
-            if (arg_types.size() != 0 && arg_types.size() != 1)
-                throw std::runtime_error("cleg: '" + callee + "' expects 0 or 1 argument(s), got " + std::to_string(arg_types.size()));
-            if (arg_types.size() == 1 && arg_types[0].kind != CTKind::Sel && arg_types[0].kind != CTKind::String && arg_types[0].kind != CTKind::Set)
-                throw std::runtime_error("cleg: '" + callee + "' argument 1: expected sel, string, or set, got " + type_to_string(arg_types[0]));
-            return LRS_TYPE;
+        // The 3 real FormSelector branches, as their own cleg-facing type strings - lowercase-first,
+        // same convention lrs_type_strings below uses. Mirrors shared/clegEval.ts's
+        // FORMSEL_TYPE_STRINGS.
+        static const std::vector<std::string> form_sel_type_strings = {"triForm", "quadForm", "quadDiagForm"};
+        auto is_form_sel_type_string = [](const std::string& s) {
+            return std::find(form_sel_type_strings.begin(), form_sel_type_strings.end(), s) != form_sel_type_strings.end();
         };
-        m["quadCentralize"] = BuiltinFunction{
-            local_replace_sel_check_call,
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
-                LocalReplaceSelector lrs{LocalReplaceKind::QuadCentralize};
-                if (args.size() == 1) lrs.sel = resolve_selector_arg("quadCentralize", args[0], SelectorType{SelectorKind::Quad}, parse_quad_selector);
-                return make_lrs_v(lrs);
-            },
+        auto form_sel_kind_of = [](const std::string& s) {
+            if (s == "triForm") return FormSelKind::TriForm;
+            if (s == "quadForm") return FormSelKind::QuadForm;
+            return FormSelKind::QuadDiagForm;
         };
-        m["quadOctarize"] = BuiltinFunction{
-            local_replace_sel_check_call,
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
-                LocalReplaceSelector lrs{LocalReplaceKind::QuadOctarize};
-                if (args.size() == 1) lrs.sel = resolve_selector_arg("quadOctarize", args[0], SelectorType{SelectorKind::Quad}, parse_quad_selector);
-                return make_lrs_v(lrs);
-            },
+
+        // `mkFormSel(typeStr, selArg?)`: builds a `formsel` value (a FormSelector) of the branch
+        // named by `typeStr` ("triForm", "quadForm", or "quadDiagForm") - `selArg` (a `sel`,
+        // `string`, or `set`, resolved via resolve_any_kind_selector_arg since the wanted kind
+        // depends on `typeStr`'s own runtime value) restricts which faces it names; omitted, every
+        // one found is named. Mirrors shared/clegEval.ts's mkFormSelCheckCall/
+        // BUILTIN_FUNCTIONS['mkFormSel'].
+        CheckCallFn mk_form_sel_check_call = [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
+            if (arg_types.size() != 1 && arg_types.size() != 2)
+                throw std::runtime_error("cleg: '" + callee + "' expects 1 or 2 argument(s), got " + std::to_string(arg_types.size()));
+            if (arg_types[0].kind != CTKind::String)
+                throw std::runtime_error("cleg: '" + callee + "' argument 1: expected string, got " + type_to_string(arg_types[0]));
+            if (arg_types.size() == 2 && arg_types[1].kind != CTKind::Sel && arg_types[1].kind != CTKind::String && arg_types[1].kind != CTKind::Set)
+                throw std::runtime_error("cleg: '" + callee + "' argument 2: expected sel, string, or set, got " + type_to_string(arg_types[1]));
+            return FORMSEL_TYPE;
         };
-        m["quadCentering"] = BuiltinFunction{
-            local_replace_sel_check_call,
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
-                LocalReplaceSelector lrs{LocalReplaceKind::QuadCentering};
-                if (args.size() == 1) lrs.sel = resolve_selector_arg("quadCentering", args[0], SelectorType{SelectorKind::Quad}, parse_quad_selector);
-                return make_lrs_v(lrs);
+        m["mkFormSel"] = BuiltinFunction{
+            mk_form_sel_check_call,
+            [is_form_sel_type_string, form_sel_kind_of](const std::vector<ClegValue>& args, UserFuncTable&) {
+                const std::string& type_str = args[0].str;
+                if (!is_form_sel_type_string(type_str))
+                    throw std::runtime_error("cleg: 'mkFormSel' argument 1: unknown form selector type '" + type_str + "'");
+                std::optional<Selector> sel;
+                if (args.size() == 2) sel = resolve_any_kind_selector_arg("mkFormSel", args[1]);
+                SelectorType want_type = type_str == "triForm" ? simp_type(2) : SelectorType{SelectorKind::Quad};
+                if (sel && sel->type != want_type)
+                    throw std::runtime_error(
+                        "cleg: 'mkFormSel' expects a " + std::string(type_str == "triForm" ? "triangle (simp 2)" : "quad") +
+                        " selector for '" + type_str + "', got a '" + selector_type_word(sel->type) + "' selector");
+                return make_form_sel_v(FormSelector{form_sel_kind_of(type_str), sel});
             },
         };
 
-        // `simpCentralize(n[, selArg])`: builds an `lrs` value of the SimpCentralize branch - `n`
-        // (the simplex arity) followed by an optional selArg (resolved against simp `n`) restricting
-        // which n-simplices it names, mirroring SimpCentralize's own `n`/`sel` fields exactly -
-        // tri_centralize below is its own fixed-n=2 thin wrapper, not a separate branch. `n`'s own
-        // validity (integer >= 2) is only checked at evaluation time (generic_local_replace's own
-        // assert, board_config.cpp) - check_call only ever sees `n`'s TYPE, never its runtime value.
-        // Mirrors shared/clegEval.ts's simpCentralizeCheckCall/BUILTIN_FUNCTIONS['simpCentralize'].
-        CheckCallFn simp_centralize_check_call = [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
+        // `form(w, formsel[])`: builds a Form BoardModifier - `w` plus an array of `formsel` values
+        // (each built by mkFormSel above), mirroring board_config.h's own generic_form(bc, w, sels)
+        // signature. A plain `formsel[]` array parameter (fixed_signature(...), same as
+        // `localReplace`'s own `lrs[]`) rather than variadic raw selector arguments. Mirrors
+        // shared/clegEval.ts's BUILTIN_FUNCTIONS['form'].
+        m["form"] = BuiltinFunction{
+            fixed_signature({NUMBER_TYPE, ClegType{CTKind::Array, std::make_shared<ClegType>(FORMSEL_TYPE)}}, MOD_TYPE),
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+                BoardModifier bm{ModifierKind::Form};
+                bm.split_n = static_cast<int>(args[0].number);
+                for (auto& v : args[1].arr_v) bm.form_sels.push_back(v.form_sel_v);
+                return make_mod(bm);
+            },
+        };
+
+        // The 5 real LocalReplaceSelector branches, as their own cleg-facing type strings -
+        // lowercase-first. `simpCentralize`/`simpCentering` carry no arity of their own here (unlike
+        // LocalReplaceSelector's own `n` field) - see mk_lrs's own doc comment for why. Mirrors
+        // shared/clegEval.ts's LRS_TYPE_STRINGS.
+        static const std::vector<std::string> lrs_type_strings =
+            {"quadCentralize", "quadCentering", "quadOctarize", "simpCentralize", "simpCentering"};
+        auto is_lrs_type_string = [](const std::string& s) {
+            return std::find(lrs_type_strings.begin(), lrs_type_strings.end(), s) != lrs_type_strings.end();
+        };
+        auto quad_lrs_kind_of = [](const std::string& s) {
+            if (s == "quadCentralize") return LocalReplaceKind::QuadCentralize;
+            if (s == "quadCentering") return LocalReplaceKind::QuadCentering;
+            return LocalReplaceKind::QuadOctarize;
+        };
+        auto simp_lrs_kind_of = [](const std::string& s) {
+            return s == "simpCentralize" ? LocalReplaceKind::SimpCentralize : LocalReplaceKind::SimpCentering;
+        };
+
+        // `mkLRS(typeStr, selArg?)`: builds an `lrs` value (a LocalReplaceSelector - see
+        // board_config.h's own doc comment and cleg_base.h's own top comment on why this is a
+        // separate step from building the actual `mod`) of the branch named by `typeStr` (one of
+        // lrs_type_strings above) - `selArg` (resolved via resolve_any_kind_selector_arg since the
+        // wanted kind depends on `typeStr`'s own runtime value) restricts which faces it names;
+        // omitted, every one found is named - EXCEPT for `simpCentralize`/`simpCentering`, whose own
+        // simplex arity (LocalReplaceSelector's own `n` field) is read off `selArg`'s own resolved
+        // kind (simp_n(sel->type)) rather than a separate numeric argument, so `selArg` is only truly
+        // optional for the three Quad-family types - omitting it for a Simp-family `typeStr` throws.
+        // Mirrors shared/clegEval.ts's mkLRSCheckCall/BUILTIN_FUNCTIONS['mkLRS'].
+        CheckCallFn mk_lrs_check_call = [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
             if (arg_types.size() != 1 && arg_types.size() != 2)
                 throw std::runtime_error("cleg: '" + callee + "' expects 1 or 2 argument(s), got " + std::to_string(arg_types.size()));
-            if (arg_types[0].kind != CTKind::Number)
-                throw std::runtime_error("cleg: '" + callee + "' argument 1: expected number, got " + type_to_string(arg_types[0]));
+            if (arg_types[0].kind != CTKind::String)
+                throw std::runtime_error("cleg: '" + callee + "' argument 1: expected string, got " + type_to_string(arg_types[0]));
             if (arg_types.size() == 2 && arg_types[1].kind != CTKind::Sel && arg_types[1].kind != CTKind::String && arg_types[1].kind != CTKind::Set)
                 throw std::runtime_error("cleg: '" + callee + "' argument 2: expected sel, string, or set, got " + type_to_string(arg_types[1]));
             return LRS_TYPE;
         };
-        m["simpCentralize"] = BuiltinFunction{
-            simp_centralize_check_call,
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
-                int n = static_cast<int>(args[0].number);
-                LocalReplaceSelector lrs{LocalReplaceKind::SimpCentralize, n};
-                if (args.size() == 2)
-                    lrs.sel = resolve_selector_arg(
-                        "simpCentralize", args[1], simp_type(n), [n](const std::string& s) { return parse_simp_selector(n, s); });
-                return make_lrs_v(lrs);
-            },
-        };
-
-        // `simpCentering(n[, selArg])`: same shape as simpCentralize above, but builds a
-        // SimpCentering branch - the simplex's own C(n+1,2) clique edges are dropped rather than
-        // kept once generic_local_replace actually applies it.
-        m["simpCentering"] = BuiltinFunction{
-            simp_centralize_check_call,
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
-                int n = static_cast<int>(args[0].number);
-                LocalReplaceSelector lrs{LocalReplaceKind::SimpCentering, n};
-                if (args.size() == 2)
-                    lrs.sel = resolve_selector_arg(
-                        "simpCentering", args[1], simp_type(n), [n](const std::string& s) { return parse_simp_selector(n, s); });
-                return make_lrs_v(lrs);
-            },
-        };
-
-        // triCentralize/triCentering are just simpCentralize(2, ...)/simpCentering(2, ...) with their
-        // own fixed-shape builtins, kept for backward compatibility. Mirrors shared/clegEval.ts's own
-        // doc comment.
-        m["triCentralize"] = BuiltinFunction{
-            local_replace_sel_check_call,
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
-                LocalReplaceSelector lrs{LocalReplaceKind::SimpCentralize, 2};
-                if (args.size() == 1) lrs.sel = resolve_selector_arg("triCentralize", args[0], simp_type(2), parse_triangle_selector);
-                return make_lrs_v(lrs);
-            },
-        };
-        m["triCentering"] = BuiltinFunction{
-            local_replace_sel_check_call,
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
-                LocalReplaceSelector lrs{LocalReplaceKind::SimpCentering, 2};
-                if (args.size() == 1) lrs.sel = resolve_selector_arg("triCentering", args[0], simp_type(2), parse_triangle_selector);
-                return make_lrs_v(lrs);
+        m["mkLRS"] = BuiltinFunction{
+            mk_lrs_check_call,
+            [is_lrs_type_string, quad_lrs_kind_of, simp_lrs_kind_of](const std::vector<ClegValue>& args, UserFuncTable&) {
+                const std::string& type_str = args[0].str;
+                if (!is_lrs_type_string(type_str))
+                    throw std::runtime_error("cleg: 'mkLRS' argument 1: unknown lrs type '" + type_str + "'");
+                std::optional<Selector> sel;
+                if (args.size() == 2) sel = resolve_any_kind_selector_arg("mkLRS", args[1]);
+                if (type_str == "simpCentralize" || type_str == "simpCentering") {
+                    if (!sel)
+                        throw std::runtime_error(
+                            "cleg: 'mkLRS' requires argument 2 for '" + type_str + "', to infer its own simplex arity from");
+                    int n = simp_n(sel->type);
+                    if (n < 0)
+                        throw std::runtime_error(
+                            "cleg: 'mkLRS' expects a simp selector for '" + type_str + "', got a '" +
+                            selector_type_word(sel->type) + "' selector");
+                    return make_lrs_v(LocalReplaceSelector{simp_lrs_kind_of(type_str), n, sel});
+                }
+                if (sel && sel->type != SelectorType{SelectorKind::Quad})
+                    throw std::runtime_error(
+                        "cleg: 'mkLRS' expects a quad selector for '" + type_str + "', got a '" +
+                        selector_type_word(sel->type) + "' selector");
+                return make_lrs_v(LocalReplaceSelector{quad_lrs_kind_of(type_str), 0, sel});
             },
         };
 
         // `localReplace(lrs[])`: builds a LocalReplace BoardModifier from an array of `lrs` values
-        // (each built by triCentralize/quadCentralize/simpCentralize/quadOctarize/triCentering/
-        // quadCentering/simpCentering above) - the one builtin that turns a list of `lrs` into the
-        // actual `mod`, mirroring board_config.h's own generic_local_replace(bc, selectors)
-        // signature. Unlike `form`/the old `centralize` (variadic, since each of THEIR own selector
-        // arguments can be a genuinely different type - sel/string/set - which a single array literal
-        // can't hold), every `lrs` argument here already shares the exact same type, so a plain
-        // `lrs[]` array parameter (fixed_signature(...), same as `modify`'s own `mod[]`) is both
-        // simpler and the more directly analogous precedent.
+        // (each built by mkLRS above) - the one builtin that turns a list of `lrs` into the actual
+        // `mod`, mirroring board_config.h's own generic_local_replace(bc, selectors) signature. Every
+        // `lrs` argument here already shares the exact same type, so a plain `lrs[]` array parameter
+        // (fixed_signature(...), same as `modify`'s own `mod[]`) is both simpler and the more directly
+        // analogous precedent than a variadic argument list would be.
         m["localReplace"] = BuiltinFunction{
             fixed_signature({ClegType{CTKind::Array, std::make_shared<ClegType>(LRS_TYPE)}}, MOD_TYPE),
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 BoardModifier bm{ModifierKind::LocalReplace};
                 for (auto& v : args[0].arr_v) bm.selectors.push_back(v.lrs_v);
                 return make_mod(bm);
+            },
+        };
+
+        // `quadCentralize([selArg])`/`quadCentering([selArg])`/`quadOctarize([selArg])`/
+        // `simpCentralize(n[, selArg])`/`simpCentering(n[, selArg])`/`triCentralize([selArg])`/
+        // `triCentering([selArg])`: one-step shortcuts, each building a LocalReplace `mod` directly
+        // for its own single fixed shape - exactly localReplace([mkLRS("...", selArg)]) (or, for the
+        // Simp-family two, with selArg carrying its own arity n), skipping the lrs/localReplace step
+        // entirely, the same "just build the mod, no separate combinator step" convenience
+        // triangle_form/quad_form already have over generic_form/form. tri_centralize/tri_centering
+        // are simp_centralize/simp_centering's own fixed-n=2 special cases, kept as their own named
+        // builtins for backward compatibility. Mirrors shared/clegEval.ts's own doc comment.
+        CheckCallFn local_replace_mod_check_call = [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
+            if (arg_types.size() != 0 && arg_types.size() != 1)
+                throw std::runtime_error("cleg: '" + callee + "' expects 0 or 1 argument(s), got " + std::to_string(arg_types.size()));
+            if (arg_types.size() == 1 && arg_types[0].kind != CTKind::Sel && arg_types[0].kind != CTKind::String && arg_types[0].kind != CTKind::Set)
+                throw std::runtime_error("cleg: '" + callee + "' argument 1: expected sel, string, or set, got " + type_to_string(arg_types[0]));
+            return MOD_TYPE;
+        };
+        auto one_shape_mod = [](LocalReplaceKind kind, std::optional<Selector> sel) -> ClegValue {
+            BoardModifier bm{ModifierKind::LocalReplace};
+            bm.selectors.push_back(LocalReplaceSelector{kind, 0, sel});
+            return make_mod(bm);
+        };
+        m["quadCentralize"] = BuiltinFunction{
+            local_replace_mod_check_call,
+            [one_shape_mod](const std::vector<ClegValue>& args, UserFuncTable&) {
+                std::optional<Selector> sel;
+                if (args.size() == 1) sel = resolve_selector_arg("quadCentralize", args[0], SelectorType{SelectorKind::Quad}, parse_quad_selector);
+                return one_shape_mod(LocalReplaceKind::QuadCentralize, sel);
+            },
+        };
+        m["quadCentering"] = BuiltinFunction{
+            local_replace_mod_check_call,
+            [one_shape_mod](const std::vector<ClegValue>& args, UserFuncTable&) {
+                std::optional<Selector> sel;
+                if (args.size() == 1) sel = resolve_selector_arg("quadCentering", args[0], SelectorType{SelectorKind::Quad}, parse_quad_selector);
+                return one_shape_mod(LocalReplaceKind::QuadCentering, sel);
+            },
+        };
+        m["quadOctarize"] = BuiltinFunction{
+            local_replace_mod_check_call,
+            [one_shape_mod](const std::vector<ClegValue>& args, UserFuncTable&) {
+                std::optional<Selector> sel;
+                if (args.size() == 1) sel = resolve_selector_arg("quadOctarize", args[0], SelectorType{SelectorKind::Quad}, parse_quad_selector);
+                return one_shape_mod(LocalReplaceKind::QuadOctarize, sel);
+            },
+        };
+
+        CheckCallFn simp_centralize_mod_check_call = [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
+            if (arg_types.size() != 1 && arg_types.size() != 2)
+                throw std::runtime_error("cleg: '" + callee + "' expects 1 or 2 argument(s), got " + std::to_string(arg_types.size()));
+            if (arg_types[0].kind != CTKind::Number)
+                throw std::runtime_error("cleg: '" + callee + "' argument 1: expected number, got " + type_to_string(arg_types[0]));
+            if (arg_types.size() == 2 && arg_types[1].kind != CTKind::Sel && arg_types[1].kind != CTKind::String && arg_types[1].kind != CTKind::Set)
+                throw std::runtime_error("cleg: '" + callee + "' argument 2: expected sel, string, or set, got " + type_to_string(arg_types[1]));
+            return MOD_TYPE;
+        };
+        auto one_shape_simp_mod = [](LocalReplaceKind kind, int n, std::optional<Selector> sel) -> ClegValue {
+            BoardModifier bm{ModifierKind::LocalReplace};
+            bm.selectors.push_back(LocalReplaceSelector{kind, n, sel});
+            return make_mod(bm);
+        };
+        m["simpCentralize"] = BuiltinFunction{
+            simp_centralize_mod_check_call,
+            [one_shape_simp_mod](const std::vector<ClegValue>& args, UserFuncTable&) {
+                int n = static_cast<int>(args[0].number);
+                std::optional<Selector> sel;
+                if (args.size() == 2)
+                    sel = resolve_selector_arg(
+                        "simpCentralize", args[1], simp_type(n), [n](const std::string& s) { return parse_simp_selector(n, s); });
+                return one_shape_simp_mod(LocalReplaceKind::SimpCentralize, n, sel);
+            },
+        };
+        m["simpCentering"] = BuiltinFunction{
+            simp_centralize_mod_check_call,
+            [one_shape_simp_mod](const std::vector<ClegValue>& args, UserFuncTable&) {
+                int n = static_cast<int>(args[0].number);
+                std::optional<Selector> sel;
+                if (args.size() == 2)
+                    sel = resolve_selector_arg(
+                        "simpCentering", args[1], simp_type(n), [n](const std::string& s) { return parse_simp_selector(n, s); });
+                return one_shape_simp_mod(LocalReplaceKind::SimpCentering, n, sel);
+            },
+        };
+        m["triCentralize"] = BuiltinFunction{
+            local_replace_mod_check_call,
+            [one_shape_simp_mod](const std::vector<ClegValue>& args, UserFuncTable&) {
+                std::optional<Selector> sel;
+                if (args.size() == 1) sel = resolve_selector_arg("triCentralize", args[0], simp_type(2), parse_triangle_selector);
+                return one_shape_simp_mod(LocalReplaceKind::SimpCentralize, 2, sel);
+            },
+        };
+        m["triCentering"] = BuiltinFunction{
+            local_replace_mod_check_call,
+            [one_shape_simp_mod](const std::vector<ClegValue>& args, UserFuncTable&) {
+                std::optional<Selector> sel;
+                if (args.size() == 1) sel = resolve_selector_arg("triCentering", args[0], simp_type(2), parse_triangle_selector);
+                return one_shape_simp_mod(LocalReplaceKind::SimpCentering, 2, sel);
             },
         };
 

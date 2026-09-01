@@ -546,11 +546,11 @@ BUILTIN_FUNCTIONS['selectQuad'] = {
     },
 };
 
-// `triangleForm(w, [selArg])`/`quadForm(w, [selArg])`: builds a TriangleForm/QuadForm
-// BoardModifier - `selArg` (a `sel`, `string`, or `set`, resolved via resolveSelectorArg) restricts which
-// triangles/quads get replaced, mirroring TriangleForm/QuadForm's own optional `sel?: Selector`
-// field exactly - omitted, every one found gets replaced. Variable-arity (1 or 2 args) rather than
-// fixedSignature(...), to mirror that optionality exactly.
+// `triangleForm(w, [selArg])`/`quadForm(w, [selArg])`/`quadDiagForm(w, [selArg])`: builds a
+// TriangleForm/QuadForm/QuadDiagForm BoardModifier - `selArg` (a `sel`, `string`, or `set`, resolved
+// via resolveSelectorArg) restricts which triangles/quads get replaced, mirroring each kind's own
+// optional `sel?: Selector` field exactly - omitted, every one found gets replaced. Variable-arity
+// (1 or 2 args) rather than fixedSignature(...), to mirror that optionality exactly.
 function formModCheckCall(callee: string, argTypes: ClegType[]): ClegType {
     if (argTypes.length !== 1 && argTypes.length !== 2)
         throw new Error(`cleg: '${callee}' expects 1 or 2 argument(s), got ${argTypes.length}`);
@@ -578,29 +578,40 @@ BUILTIN_FUNCTIONS['quadForm'] = {
         return { kind: 'mod', value: { kind: 'QuadForm', w, sel } };
     },
 };
+BUILTIN_FUNCTIONS['quadDiagForm'] = {
+    checkCall: formModCheckCall,
+    call: (args) => {
+        const w = (args[0] as { value: number }).value;
+        if (args.length === 1) return { kind: 'mod', value: { kind: 'QuadDiagForm', w } };
+        const sel = resolveSelectorArg('quadDiagForm', args[1], 'quad', parseQuadSelector);
+        return { kind: 'mod', value: { kind: 'QuadDiagForm', w, sel } };
+    },
+};
 
 const FORMSEL_TYPE: ClegType = { kind: 'formsel' };
 
-// The 2 real FormSelector branches, as their own cleg-facing type strings - lowercase-first, same
+// The 3 real FormSelector branches, as their own cleg-facing type strings - lowercase-first, same
 // convention LRS_TYPE_STRINGS below uses.
-type FormSelTypeString = 'triForm' | 'quadForm';
-const FORMSEL_TYPE_STRINGS: readonly FormSelTypeString[] = ['triForm', 'quadForm'];
+type FormSelTypeString = 'triForm' | 'quadForm' | 'quadDiagForm';
+const FORMSEL_TYPE_STRINGS: readonly FormSelTypeString[] = ['triForm', 'quadForm', 'quadDiagForm'];
 function isFormSelTypeString(s: string): s is FormSelTypeString {
     return (FORMSEL_TYPE_STRINGS as readonly string[]).includes(s);
 }
 const FORMSEL_KIND_OF: Record<FormSelTypeString, FormSelector['kind']> = {
     triForm: 'TriForm',
     quadForm: 'QuadForm',
+    quadDiagForm: 'QuadDiagForm',
 };
 
 // `mkFormSel(typeStr, selArg?)`: builds a `formsel` value (a FormSelector - see shared/types.ts's own
-// doc comment) of the branch named by `typeStr` ("triForm" or "quadForm") - `selArg` (a `sel`,
-// `string`, or `set`, resolved via resolveAnyKindSelectorArg since the wanted kind depends on
-// `typeStr`'s own runtime value, not something checkCall can see ahead of time) restricts which
-// faces it names; omitted, every one found is named. `typeStr`'s own validity, and whether `selArg`
-// actually matches the kind `typeStr` implies (simp 2 for "triForm", quad for "quadForm"), are only
-// checked at evaluation time - checkCall only ever sees `typeStr`'s TYPE (string), never its runtime
-// value (same reason mkLRS's own `typeStr` above can't be validated statically either).
+// doc comment) of the branch named by `typeStr` ("triForm", "quadForm", or "quadDiagForm") -
+// `selArg` (a `sel`, `string`, or `set`, resolved via resolveAnyKindSelectorArg since the wanted
+// kind depends on `typeStr`'s own runtime value, not something checkCall can see ahead of time)
+// restricts which faces it names; omitted, every one found is named. `typeStr`'s own validity, and
+// whether `selArg` actually matches the kind `typeStr` implies (simp 2 for "triForm", quad for
+// "quadForm"/"quadDiagForm"), are only checked at evaluation time - checkCall only ever sees
+// `typeStr`'s TYPE (string), never its runtime value (same reason mkLRS's own `typeStr` above can't
+// be validated statically either).
 function mkFormSelCheckCall(callee: string, argTypes: ClegType[]): ClegType {
     if (argTypes.length !== 1 && argTypes.length !== 2)
         throw new Error(`cleg: '${callee}' expects 1 or 2 argument(s), got ${argTypes.length}`);

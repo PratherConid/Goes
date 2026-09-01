@@ -1,13 +1,14 @@
 // Regression tests for genericForm and the "form" board modifier: the generalization of
-// triangleForm/quadForm to an arbitrary list of FormSelectors (each a TriForm- or QuadForm-kind
-// selected face - see genericForm's own doc comment and FormSelector's own, shared/types.ts), gluing
-// shared ORIGINAL edges across every selected face regardless of kind.
+// triangleForm/quadForm/quadDiagForm to an arbitrary list of FormSelectors (each a TriForm-,
+// QuadForm-, or QuadDiagForm-kind selected face - see genericForm's own doc comment and
+// FormSelector's own, shared/types.ts), gluing shared ORIGINAL edges across every selected face
+// regardless of kind.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    genericForm, triangleForm, quadForm, triangularBoard, rectangularBoard, applyModifier,
+    genericForm, triangleForm, quadForm, quadDiagForm, triangularBoard, rectangularBoard, applyModifier,
 } from '../shared/boardConfig.ts';
-import { Embedding, type BoardConfig, type FormSelector } from '../shared/types.ts';
+import { Embedding, type BoardConfig, type FormSelector, type Selector } from '../shared/types.ts';
 import { parseTriangleSelector, parseQuadSelector } from '../shared/selector.ts';
 
 function edgeCount(adj: number[][]): number {
@@ -65,6 +66,61 @@ test('a triangle and a quad sharing an edge glue seamlessly across kinds', () =>
     // than that proves the shared edge's own midpoint (w=3 -> 1 interior boundary point) was merged
     // into a single node instead of being duplicated once per face.
     assert.equal(both.N, triOnly.N + quadOnly.N - N - 1);
+});
+
+test('quadDiagForm has w*w + (w-1)*(w-1) nodes per quad, only diagonal edges', () => {
+    const bc = rectangularBoard(2, 2);
+    for (const w of [1, 2, 3, 4]) {
+        const result = quadDiagForm(bc, w);
+        assert.equal(result.N, w * w + (w - 1) * (w - 1));
+        assertSymmetricNoSelfLoops(result.adj);
+        assertConnected(result.adj);
+        // Every new node beyond bc.N is either a "primary" (w*w of them, degree 4 in the interior,
+        // fewer on the boundary since some primaries are original quad corners with only 1 diagonal
+        // neighbor) or "center" node (degree exactly 4, since a center is never on the boundary) -
+        // edgeCount below should match 4*(w-1)*(w-1) (each center contributes exactly 4 edges, and no
+        // primary-primary or center-center edge exists to double-count).
+        assert.equal(edgeCount(result.adj), 4 * (w - 1) * (w - 1));
+    }
+});
+
+test('quadDiagForm w=1 collapses the quad to a single point', () => {
+    const bc = rectangularBoard(2, 2);
+    const result = quadDiagForm(bc, 1);
+    assert.equal(result.N, 1);
+});
+
+test('applyModifier("QuadDiagForm", ...) matches calling quadDiagForm directly', () => {
+    const bc = rectangularBoard(2, 2);
+    assert.deepEqual(applyModifier(bc, { kind: 'QuadDiagForm', w: 3 }), quadDiagForm(bc, 3));
+});
+
+test('two quadDiagForm quads sharing an edge glue seamlessly', () => {
+    // Two quads (0-1-2-3 and 1-4-5-2) sharing edge (1,2).
+    const N = 6;
+    const adj: number[][] = Array.from({ length: N }, () => new Array(N).fill(0));
+    const edge = (i: number, j: number) => { adj[i][j] = 1; adj[j][i] = 1; };
+    edge(0, 1); edge(1, 2); edge(2, 3); edge(3, 0);
+    edge(1, 4); edge(4, 5); edge(5, 2);
+    const emb = new Embedding(2, adj.map((_, i): [number, number] => [i, 0]));
+    const bc: BoardConfig = { N, adj, emb };
+
+    const quad1: Selector =
+        { op: 'raw', type: 'quad', items: { kind: 'quad', value: [{ n1: 0, n2: 1, n3: 2, n4: 3 }] } };
+    const quad2: Selector =
+        { op: 'raw', type: 'quad', items: { kind: 'quad', value: [{ n1: 1, n2: 4, n3: 5, n4: 2 }] } };
+    for (const w of [2, 3, 4]) {
+        const only1 = genericForm(bc, w, [{ kind: 'QuadDiagForm', sel: quad1 }]);
+        const only2 = genericForm(bc, w, [{ kind: 'QuadDiagForm', sel: quad2 }]);
+        const both = genericForm(bc, w, [{ kind: 'QuadDiagForm', sel: parseQuadSelector('(all quad)') }]);
+        assertSymmetricNoSelfLoops(both.adj);
+        assertConnected(both.adj);
+        // Corner quotienting alone accounts for only1.N + only2.N - N; the shared edge's own w-2
+        // interior boundary points (k=1..w-2 - the endpoints k=0/k=w-1 are corners, already merged)
+        // are what's left to glue - if they weren't, `both` would have one extra node per interior
+        // point instead of sharing it.
+        assert.equal(both.N, only1.N + only2.N - N - Math.max(w - 2, 0));
+    }
 });
 
 test('an empty sels list is a total no-op', () => {
