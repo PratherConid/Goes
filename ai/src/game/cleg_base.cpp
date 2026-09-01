@@ -33,6 +33,7 @@ static std::string ctkind_word(CTKind k) {
         case CTKind::Quad: return "quad";
         case CTKind::Sel: return "sel";
         case CTKind::Mod: return "mod";
+        case CTKind::Lrs: return "lrs";
         case CTKind::Msel: return "msel";
         case CTKind::Array: case CTKind::Set: case CTKind::Func: break; // handled by type_to_string below
     }

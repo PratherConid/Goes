@@ -98,40 +98,80 @@ BoardConfig triangle_form(const BoardConfig& bc, int w, std::optional<Selector> 
 // produces an emb_dim = 0 board. Mirrors shared/boardConfig.ts's quadForm().
 BoardConfig quad_form(const BoardConfig& bc, int w, std::optional<Selector> sel = std::nullopt);
 
-// Adds one new node ("centralizes") for every selected n-simplex/quad any of `sels` names, at that
-// face's own barycenter, connected to all of that face's own original corner nodes - unlike
-// generic_form, this doesn't subdivide/glue anything; every original node/edge (including the
-// selected face's own) is left completely untouched. Each element of `sels` is itself a Selector
-// naming which faces to look for AND restricting which ones of that kind qualify in one go (its own
-// `type` already says simp N or quad) - pass an `(all simp N)`/`(all quad)` selector for "every one
-// found, no restriction". Every element must be simp- or quad-typed, checked at runtime (a `type` of
-// Node/Edge throws) since nothing else constrains it structurally - a mixed `sels` list may freely
-// combine different simp arities and quad, each processed independently. Mirrors
-// shared/boardConfig.ts's genericCentralize(), with the same difference triangle_form/quad_form have
-// from their own TS counterparts: the TS version computes a real (generally non-integer) barycenter
-// position, but this always produces an emb_dim = 0 board instead (same reasoning as
-// triangle_form/quad_form/global_centralize above) - adjacency only, regardless of whether bc itself
-// had a real embedding. simp_centralize/tri_centralize/quad_centralize below are the single-kind
-// special cases, each just calling this with one selector.
-BoardConfig generic_centralize(const BoardConfig& bc, const std::vector<Selector>& sels);
+// One selected face plus which LOCAL shape to replace it with - mirrors shared/types.ts's
+// LocalReplaceSelector (see its own doc comment for why a bare Selector can't say this on its own: a
+// `quad` selection alone no longer determines a unique replacement, since QuadCentralize's own
+// single-hub "pyramid" and QuadOctarize's own two-apex octahedron both consume a quad selector).
+// `n` is meaningful only for SimpCentralize/SimpCentering (the simplex arity); `sel`, on every kind,
+// nullopt means "every object of the matching kind found" (mirrors the TS side's own `sel?: Selector`
+// on every branch).
+enum class LocalReplaceKind { QuadCentralize, SimpCentralize, QuadOctarize, QuadCentering, SimpCentering };
+struct LocalReplaceSelector {
+    LocalReplaceKind kind = LocalReplaceKind::QuadCentralize;
+    int n = 0; // meaningful iff kind == SimpCentralize/SimpCentering
+    std::optional<Selector> sel;
+    bool operator==(const LocalReplaceSelector& other) const {
+        return kind == other.kind && n == other.n && sel == other.sel;
+    }
+};
+
+// Replaces every selected n-simplex and/or quad in bc (see topology.h's find_simplices/find_quads)
+// with its own small local shape: an n-simplex's "pyramid" (one new hub node, connected to all of
+// that face's own corners - SimpCentralize, e.g. a triangle -> tetrahedron), a quad's own pyramid
+// (QuadCentralize), a quad's own octahedron (two new antipodal apex nodes, each connected to all 4
+// corners - QuadOctarize), or a "centering" variant of either hub-and-spoke shape (SimpCentering/
+// QuadCentering - same new hub, but the face's own original edges are dropped rather than kept, so
+// its corners end up connected only through the hub). Unlike generic_form, nothing is subdivided/
+// glued - only that face's own new node(s) and their own edges are added (or, for the Centering
+// kinds, added in place of the face's own original edges). Every selected face's own ORIGINAL edges
+// (a simplex's own C(n+1,2) clique edges, or a quad's own 4-cycle) are excluded from bc.adj's
+// straight copy - for every kind except SimpCentering/QuadCentering, they're then re-added
+// explicitly, alongside whichever new edges its own local shape needs. Mirrors shared/boardConfig.ts's
+// genericLocalReplace(), with the same difference triangle_form/quad_form have from their own TS
+// counterparts: the TS version computes a real (generally non-integer) barycenter position, but this
+// always produces an emb_dim = 0 board instead (same reasoning as triangle_form/quad_form/
+// global_centralize above) - adjacency only, regardless of whether bc itself had a real embedding.
+// simp_centralize/simp_centering/tri_centralize/tri_centering/quad_centralize/quad_centering/
+// quad_octarize below are the single-kind special cases, each just calling this with one selector.
+BoardConfig generic_local_replace(const BoardConfig& bc, const std::vector<LocalReplaceSelector>& selectors);
 
 // Adds one new node ("centralizes") for every n-simplex in bc, connected to all n+1 of its own
-// corners - the single-arity special case of generic_centralize (see its own doc comment), just with
-// `n` given directly instead of folded into `sel`'s own type. `sel`, if given, restricts this to only
-// the n-simplices it selects (and must itself already be a simp n selector) - every other n-simplex
-// is left untouched. Mirrors shared/boardConfig.ts's simpCentralize().
+// corners - the single-arity special case of generic_local_replace (see its own doc comment), just
+// with `n` given directly instead of folded into `sel`'s own type. `sel`, if given, restricts this to
+// only the n-simplices it selects (and must itself already be a simp n selector) - every other
+// n-simplex is left untouched. Mirrors shared/boardConfig.ts's simpCentralize().
 BoardConfig simp_centralize(const BoardConfig& bc, int n, std::optional<Selector> sel = std::nullopt);
+
+// Adds one new node for every n-simplex in bc, connected to all n+1 of its own corners - same as
+// simp_centralize, except the simplex's own C(n+1,2) original edges are DROPPED rather than kept, so
+// its corners end up connected only through the new hub, not to each other directly (SimpCentering,
+// the single-arity special case of generic_local_replace). `sel`, if given, restricts this to only
+// the n-simplices it selects - every other n-simplex is left untouched.
+BoardConfig simp_centering(const BoardConfig& bc, int n, std::optional<Selector> sel = std::nullopt);
 
 // Adds one new node ("centralizes") for every triangle in bc, connected to all 3 of its own corners -
 // simp_centralize's own n=2 special case. `sel` (if given) restricts this to only the triangles it
 // selects, every other triangle left untouched. Mirrors shared/boardConfig.ts's triCentralize().
 BoardConfig tri_centralize(const BoardConfig& bc, std::optional<Selector> sel = std::nullopt);
 
+// Adds one new node for every triangle in bc, connected to all 3 of its own corners - same as
+// tri_centralize, except the triangle's own 3 original edges are DROPPED rather than kept, so its
+// corners end up connected only through the new hub, not to each other directly - simp_centering's
+// own n=2 special case, the same way tri_centralize is simp_centralize's.
+BoardConfig tri_centering(const BoardConfig& bc, std::optional<Selector> sel = std::nullopt);
+
 // Adds one new node ("centralizes") for every quad in bc, connected to all 4 of its own corners - the
-// single-kind special case of generic_centralize (see its own doc comment), the same way
+// single-kind special case of generic_local_replace (see its own doc comment), the same way
 // tri_centralize is. `sel`, if given, restricts this to only the quads it selects, every other quad
 // left untouched. Mirrors shared/boardConfig.ts's quadCentralize().
 BoardConfig quad_centralize(const BoardConfig& bc, std::optional<Selector> sel = std::nullopt);
+
+// Adds one new node for every quad in bc, connected to all 4 of its own corners - same as
+// quad_centralize, except the quad's own 4-cycle original edges are DROPPED rather than kept, so its
+// corners end up connected only through the new hub, not to each other directly (QuadCentering, the
+// single-kind special case of generic_local_replace). `sel`, if given, restricts this to only the
+// quads it selects - every other quad is left untouched.
+BoardConfig quad_centering(const BoardConfig& bc, std::optional<Selector> sel = std::nullopt);
 
 // Adds one new node connected to every existing node of bc, at the barycenter of bc's existing
 // node positions - mirrors shared/boardConfig.ts's globalCentralize() connectivity, but
@@ -142,20 +182,21 @@ BoardConfig quad_centralize(const BoardConfig& bc, std::optional<Selector> sel =
 // adjacency-only here, same reasoning as those two functions' own doc comments.
 BoardConfig global_centralize(const BoardConfig& bc);
 
-// Replaces every quad (4 distinct vertices forming a cycle with no diagonal edges - see
-// topology.h's find_quads, same quads quad_form finds) with an octahedron: two new "apex"
-// nodes, one on each side of the quad, each connected to all 4 of that quad's corners - the
-// quad's own 4-cycle edges (already present, untouched) become the octahedron's equatorial ring,
-// and the two apexes are NOT connected to each other (antipodal, like octahedron_board's own apex
-// pairs - see that function's doc comment for why a plain quad graph plus two such apex nodes is
-// exactly an octahedron's edge set). Mirrors shared/boardConfig.ts's quadOctarize() connectivity,
-// but (like triangle_form/quad_form/global_centralize above) always produces an
-// emb_dim = 0 board regardless of bc's own embedding: the TS side gives each apex a real position
-// on a genuinely new dimension, offset by the (generally irrational, since it's a Euclidean
-// distance) average corner-to-barycenter distance - there is no exact-integer equivalent here, and
-// C++ never renders anyway (see BoardConfig's own fields, board_config.h's top comment), so nothing
-// is lost by dropping to adjacency-only.
-BoardConfig quad_octarize(const BoardConfig& bc);
+// Replaces every selected quad (4 distinct vertices forming a cycle with no diagonal edges - see
+// topology.h's find_quads, same quads quad_form/quad_centralize work with) with an octahedron: two
+// new "apex" nodes, one on each side of the quad, each connected to all 4 of that quad's corners -
+// the quad's own 4-cycle edges become the octahedron's equatorial ring, and the two apexes are NOT
+// connected to each other (antipodal, like octahedron_board's own apex pairs - see that function's
+// doc comment for why a plain quad graph plus two such apex nodes is exactly an octahedron's edge
+// set) - the QuadOctarize single-kind special case of generic_local_replace (see its own doc
+// comment). Mirrors shared/boardConfig.ts's quadOctarize() connectivity, but (like triangle_form/
+// quad_form/global_centralize above) always produces an emb_dim = 0 board regardless of bc's own
+// embedding: the TS side gives each apex a real position on a genuinely new dimension, offset by the
+// (generally irrational, since it's a Euclidean distance) average corner-to-barycenter distance -
+// there is no exact-integer equivalent here, and C++ never renders anyway (see BoardConfig's own
+// fields, board_config.h's top comment), so nothing is lost by dropping to adjacency-only. `sel`, if
+// given, restricts this to only the quads it selects - every other quad is left untouched.
+BoardConfig quad_octarize(const BoardConfig& bc, std::optional<Selector> sel = std::nullopt);
 
 // A no-op: mirrors shared/boardConfig.ts's scaleBoard() in name only. embed[] coordinates here must
 // stay exact integers (see merge_close's own doc comment) and are otherwise unrelated to gameplay -
@@ -246,17 +287,13 @@ std::string format_board_arg_entry(const BoardArgEntry& e);
 // Prod- or Repeat-kind BoardModifier value anymore.
 enum class ModifierKind {
     Rectify, Truncate, EdgeSplit, MergeClose, TriangleForm, QuadForm, Form,
-    SimpCentralize, TriCentralize, QuadCentralize, Centralize,
-    GlobalCentralize, QuadOctarize, Scale, NodeInducedSubgraph, EdgeInducedSubgraph
+    LocalReplace, GlobalCentralize, Scale, NodeInducedSubgraph, EdgeInducedSubgraph
 };
 struct BoardModifier {
     ModifierKind kind;
-    // split_n is reused for TriangleForm/QuadForm/Form's own single int parameter (its w), and for
-    // SimpCentralize's own single int parameter (its n, the simplex arity) - all four are "one plain
-    // int argument" modifiers. TriCentralize/QuadCentralize/Centralize have no such parameter (see
-    // generic_centralize's own doc comment on why - unlike generic_form, nothing needs a shared
-    // lattice width), so none of the three ever reads this field.
-    int split_n = 0;   // meaningful when kind == ModifierKind::EdgeSplit/TriangleForm/QuadForm/Form/SimpCentralize
+    // split_n is reused for TriangleForm/QuadForm/Form's own single int parameter (its w) - all
+    // three are "one plain int argument" modifiers.
+    int split_n = 0;   // meaningful when kind == ModifierKind::EdgeSplit/TriangleForm/QuadForm/Form
     // dist is reused for Scale's own single double parameter (its factor) - both are "one plain
     // double argument" modifiers.
     double dist = 0.0;             // meaningful when kind == ModifierKind::MergeClose / Scale
@@ -264,31 +301,31 @@ struct BoardModifier {
     // game/selector.h. Always present for these two (unlike form_sel below), matching the TS side's
     // own non-optional `sel: Selector` field for those two variants.
     Selector sel;
-    // TriangleForm/QuadForm/SimpCentralize/TriCentralize/QuadCentralize's own optional restricting
-    // selector (nullopt = every triangle/quad/n-simplex found, matching the TS side's
-    // `sel?: Selector`) - see triangle_form/quad_form/simp_centralize/tri_centralize/
-    // quad_centralize's own doc comments (board_config.h). A separate field from `sel` above (rather
-    // than reusing it) since NodeInducedSubgraph/EdgeInducedSubgraph's own `sel` is mandatory, not
-    // optional.
-    std::optional<Selector> form_sel; // meaningful when kind == TriangleForm/QuadForm/SimpCentralize/TriCentralize/QuadCentralize
-    // Form/Centralize's own list of face selectors, one per face to look for - see generic_form's/
-    // generic_centralize's own doc comments above (each must be tri- or quad-typed, checked there at
-    // runtime).
-    std::vector<Selector> form_sels; // meaningful when kind == ModifierKind::Form/Centralize
+    // TriangleForm/QuadForm's own optional restricting selector (nullopt = every triangle/quad
+    // found, matching the TS side's `sel?: Selector`) - see triangle_form/quad_form's own doc
+    // comments (board_config.h). A separate field from `sel` above (rather than reusing it) since
+    // NodeInducedSubgraph/EdgeInducedSubgraph's own `sel` is mandatory, not optional.
+    std::optional<Selector> form_sel; // meaningful when kind == TriangleForm/QuadForm
+    // Form's own list of face selectors, one per face to look for - see generic_form's own doc
+    // comment above (each must be tri- or quad-typed, checked there at runtime).
+    std::vector<Selector> form_sels; // meaningful when kind == ModifierKind::Form
+    // LocalReplace's own list of face-and-shape selectors - see generic_local_replace's own doc
+    // comment above.
+    std::vector<LocalReplaceSelector> selectors; // meaningful when kind == ModifierKind::LocalReplace
 
     // Needed for std::vector<BoardModifier>::operator== (BoardModifier itself is compared inside
     // Selector-bearing structures via this) - C++17 has no defaulted struct equality (that's a
     // C++20 feature), so this is spelled out.
     bool operator==(const BoardModifier& other) const {
         return kind == other.kind && split_n == other.split_n && dist == other.dist &&
-               sel == other.sel && form_sel == other.form_sel && form_sels == other.form_sels;
+               sel == other.sel && form_sel == other.form_sel && form_sels == other.form_sels &&
+               selectors == other.selectors;
     }
 };
 
 // Applies modifier to bc, dispatching to rectify / edge_split / merge_close / triangle_form /
-// quad_form / generic_form / tri_centralize / quad_centralize / generic_centralize /
-// global_centralize / quad_octarize / scale_board / node_induced_subgraph / edge_induced_subgraph.
-// Mirrors shared/boardConfig.ts's applyModifier().
+// quad_form / generic_form / generic_local_replace / global_centralize / scale_board /
+// node_induced_subgraph / edge_induced_subgraph. Mirrors shared/boardConfig.ts's applyModifier().
 BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier);
 
 // Applies every modifier in modifiers, in order, to bc. Mirrors shared/boardConfig.ts's

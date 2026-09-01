@@ -278,9 +278,9 @@ BoardConfig merge_close(const BoardConfig& bc, double dist) {
     return quotient_board(bc, quot);
 }
 
-// "node"/"edge"/"simp N"/"quad" for generic_form's/generic_centralize's own wrong-kind error
-// messages below - mirrors shared/selector.ts's selectorKindName, kept local here since
-// selector.cpp's own copy is translation-unit-private.
+// "node"/"edge"/"simp N"/"quad" for generic_form's own wrong-kind error message below - mirrors
+// shared/selector.ts's selectorKindName, kept local here since selector.cpp's own copy is
+// translation-unit-private.
 static std::string selector_type_name(const SelectorType& t) {
     switch (t.kind) {
         case SelectorKind::Node: return "node";
@@ -409,31 +409,67 @@ BoardConfig quad_form(const BoardConfig& bc, int w, std::optional<Selector> sel)
     return generic_form(bc, w, { sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}}) });
 }
 
-BoardConfig generic_centralize(const BoardConfig& bc, const std::vector<Selector>& sels) {
+// Mirrors shared/boardConfig.ts's genericLocalReplace() - unlike the TS side, every branch here
+// always produces an emb_dim=0 board (see this function's own header doc comment on why), so unlike
+// the TS version there's no barycenter/apex-position computation or "pad every position with one
+// extra dimension for QuadOctarize" bookkeeping at all - only the consumed/extra_edges adjacency
+// logic itself needs porting.
+BoardConfig generic_local_replace(const BoardConfig& bc, const std::vector<LocalReplaceSelector>& selectors) {
     int N = bc.N;
     int next_idx = N;
-    std::vector<std::pair<int, int>> extra_edges;
+    // (i,j) i<j - a selected face's own original edge, excluded from bc.adj's straight copy below
+    // (and re-added explicitly, alongside every new-node edge, as extra_edges - except for the two
+    // Centering kinds, which never re-add it - see this function's own header doc comment).
+    std::set<std::pair<int,int>> consumed;
+    auto mark_consumed = [&](int a, int b) { consumed.insert({std::min(a, b), std::max(a, b)}); };
+    std::vector<std::pair<int,int>> extra_edges;
 
-    for (auto& sel : sels) {
-        if (sel.type == SelectorType{SelectorKind::Quad}) {
+    for (auto& s : selectors) {
+        if (s.kind == LocalReplaceKind::QuadCentralize || s.kind == LocalReplaceKind::QuadOctarize ||
+            s.kind == LocalReplaceKind::QuadCentering) {
+            Selector sel = s.sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
             auto quads = select_quad(bc.adj, bc.embed, sel);
             for (auto& [A, B, C, D] : quads) {
-                int hub = next_idx++;
-                extra_edges.push_back({hub, A});
-                extra_edges.push_back({hub, B});
-                extra_edges.push_back({hub, C});
-                extra_edges.push_back({hub, D});
-            }
-        } else if (simp_n(sel.type) >= 0) {
-            auto simplices = select_simp(bc.adj, bc.embed, sel);
-            for (auto& simplex : simplices) {
-                int hub = next_idx++;
-                for (int v : simplex.nodes) extra_edges.push_back({hub, v});
+                mark_consumed(A, B); mark_consumed(B, C); mark_consumed(C, D); mark_consumed(D, A);
+                if (s.kind != LocalReplaceKind::QuadCentering) {
+                    extra_edges.push_back({A, B});
+                    extra_edges.push_back({B, C});
+                    extra_edges.push_back({C, D});
+                    extra_edges.push_back({D, A});
+                }
+                if (s.kind == LocalReplaceKind::QuadOctarize) {
+                    int top = next_idx++, bottom = next_idx++;
+                    for (int c : {A, B, C, D}) {
+                        extra_edges.push_back({top, c});
+                        extra_edges.push_back({bottom, c});
+                    }
+                } else {
+                    // QuadCentralize or QuadCentering - a single hub either way, differing only in
+                    // whether the quad's own 4-cycle edges survive (see above).
+                    int hub = next_idx++;
+                    extra_edges.push_back({hub, A});
+                    extra_edges.push_back({hub, B});
+                    extra_edges.push_back({hub, C});
+                    extra_edges.push_back({hub, D});
+                }
             }
         } else {
-            throw std::runtime_error(
-                "generic_centralize: each selector in sels must be a simplex (e.g. triangle/simp 2) "
-                "or quad selector, got a " + selector_type_name(sel.type) + " selector");
+            int n = s.n;
+            assert(n >= 2 && "generic_local_replace: n must be at least 2");
+            Selector sel = s.sel.value_or(Selector{SelectorOp::All, simp_type(n)});
+            auto simplices = select_simp(bc.adj, bc.embed, sel);
+            for (auto& simplex : simplices) {
+                auto& nodes = simplex.nodes;
+                for (size_t i = 0; i < nodes.size(); i++)
+                    for (size_t j = i + 1; j < nodes.size(); j++) {
+                        mark_consumed(nodes[i], nodes[j]);
+                        // SimpCentering is the one branch that does NOT re-add the simplex's own
+                        // clique edges - see this function's own header doc comment.
+                        if (s.kind != LocalReplaceKind::SimpCentering) extra_edges.push_back({nodes[i], nodes[j]});
+                    }
+                int hub = next_idx++;
+                for (int v : nodes) extra_edges.push_back({hub, v});
+            }
         }
     }
 
@@ -441,7 +477,7 @@ BoardConfig generic_centralize(const BoardConfig& bc, const std::vector<Selector
     auto adj = zero_adj(total_n);
     for (int i = 0; i < N; i++)
         for (int j = i + 1; j < N; j++) {
-            if (!bc.adj[i][j]) continue;
+            if (!bc.adj[i][j] || consumed.count({i, j})) continue;
             adj[i][j] = 1;
             adj[j][i] = 1;
         }
@@ -456,15 +492,28 @@ BoardConfig generic_centralize(const BoardConfig& bc, const std::vector<Selector
 
 BoardConfig simp_centralize(const BoardConfig& bc, int n, std::optional<Selector> sel) {
     assert(n >= 2 && "simp_centralize: n must be at least 2");
-    return generic_centralize(bc, { sel.value_or(Selector{SelectorOp::All, simp_type(n)}) });
+    return generic_local_replace(bc, { LocalReplaceSelector{LocalReplaceKind::SimpCentralize, n, sel} });
+}
+
+BoardConfig simp_centering(const BoardConfig& bc, int n, std::optional<Selector> sel) {
+    assert(n >= 2 && "simp_centering: n must be at least 2");
+    return generic_local_replace(bc, { LocalReplaceSelector{LocalReplaceKind::SimpCentering, n, sel} });
 }
 
 BoardConfig tri_centralize(const BoardConfig& bc, std::optional<Selector> sel) {
     return simp_centralize(bc, 2, sel);
 }
 
+BoardConfig tri_centering(const BoardConfig& bc, std::optional<Selector> sel) {
+    return simp_centering(bc, 2, sel);
+}
+
 BoardConfig quad_centralize(const BoardConfig& bc, std::optional<Selector> sel) {
-    return generic_centralize(bc, { sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}}) });
+    return generic_local_replace(bc, { LocalReplaceSelector{LocalReplaceKind::QuadCentralize, 0, sel} });
+}
+
+BoardConfig quad_centering(const BoardConfig& bc, std::optional<Selector> sel) {
+    return generic_local_replace(bc, { LocalReplaceSelector{LocalReplaceKind::QuadCentering, 0, sel} });
 }
 
 BoardConfig global_centralize(const BoardConfig& bc) {
@@ -486,32 +535,8 @@ BoardConfig global_centralize(const BoardConfig& bc) {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-BoardConfig quad_octarize(const BoardConfig& bc) {
-    int N = bc.N;
-    auto quads = find_quads(bc.adj);
-
-    int total_n = N + (int)quads.size() * 2;
-    auto adj = zero_adj(total_n);
-    for (int i = 0; i < N; i++)
-        for (int j = i + 1; j < N; j++) {
-            if (!bc.adj[i][j]) continue;
-            adj[i][j] = 1;
-            adj[j][i] = 1;
-        }
-
-    for (int s = 0; s < (int)quads.size(); s++) {
-        int top = N + s * 2, bottom = top + 1;
-        auto& q = quads[s];
-        for (int c : {q.n1, q.n2, q.n3, q.n4}) {
-            adj[c][top] = 1;
-            adj[top][c] = 1;
-            adj[c][bottom] = 1;
-            adj[bottom][c] = 1;
-        }
-    }
-
-    std::vector<std::vector<unsigned>> embed(total_n); // emb_dim=0 - see board_config.h's doc comment
-    return make_bc(std::move(adj), 0u, std::move(embed));
+BoardConfig quad_octarize(const BoardConfig& bc, std::optional<Selector> sel) {
+    return generic_local_replace(bc, { LocalReplaceSelector{LocalReplaceKind::QuadOctarize, 0, sel} });
 }
 
 BoardConfig scale_board(const BoardConfig& bc, double /*factor*/) {
@@ -591,12 +616,8 @@ BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier)
         case ModifierKind::TriangleForm: return triangle_form(bc, modifier.split_n, modifier.form_sel);
         case ModifierKind::QuadForm: return quad_form(bc, modifier.split_n, modifier.form_sel);
         case ModifierKind::Form: return generic_form(bc, modifier.split_n, modifier.form_sels);
-        case ModifierKind::SimpCentralize: return simp_centralize(bc, modifier.split_n, modifier.form_sel);
-        case ModifierKind::TriCentralize: return tri_centralize(bc, modifier.form_sel);
-        case ModifierKind::QuadCentralize: return quad_centralize(bc, modifier.form_sel);
-        case ModifierKind::Centralize: return generic_centralize(bc, modifier.form_sels);
+        case ModifierKind::LocalReplace: return generic_local_replace(bc, modifier.selectors);
         case ModifierKind::GlobalCentralize: return global_centralize(bc);
-        case ModifierKind::QuadOctarize: return quad_octarize(bc);
         case ModifierKind::Scale: return scale_board(bc, modifier.dist);
         case ModifierKind::NodeInducedSubgraph: return node_induced_subgraph(bc, select_node(bc.adj, bc.embed, modifier.sel));
         case ModifierKind::EdgeInducedSubgraph: return edge_induced_subgraph(bc, select_edge(bc.adj, bc.embed, modifier.sel));

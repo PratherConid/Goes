@@ -55,106 +55,27 @@ const _presetDescriptions = new Map([
 ]);
 
 // Filename stems (under public/board_presets/) of the board-only (boardType/boardArgs/
-// boardModifiers) presets loaded at startup into Renderer.boardConfigs - see
-// _loadBoardConfigs() - each paired with a short human-readable description shown in the
-// "Select Board Preset" side panel (see renderGamePresetSelection, sidePanel.ts).
-const _boardConfigDescriptions = new Map([
-    ['rect_3_3',   '3×3 rectangular board'],
-    ['rect_9_9',   '9×9 rectangular board'],
-    ['rect_13_13', '13×13 rectangular board'],
-    ['rect_19_19', '19×19 rectangular board'],
-    ['twsq_7_7_2', '7×7×2 twisted-square board'],
-    ['twsq_3_3_2_es_3_prod_lin_4',
-        '3×3×2 twisted-square board, each edge split into 3, then multiplied by a 4-node line'],
-    ['regpoly_5_es_5_prod_lin_6',
-        '5-sided regular polygon board, each edge split into 5, then multiplied by a 6-node line'],
-    ['cublat_2_2_2_quadform_9', '2×2×2 cubical board with every quad face subdivided into a 9x9 grid'],
-    ['cublat_3_3_3_sel_(deg_gt_3)_quadform_6',
-        '3×3×3 cubical board, keeping only nodes with degree above 3 (drops the 8 corners), each '
-        + 'resulting quad replaced by a side-length-6 square board'],
-    ['cublat_3_3_3_quadform_5_nice_drop_0.1',
-        '3×3×3 cubical board with every quad replaced by a side-length-5 square board, then 10% of '
-        + 'its nodes randomly removed, then any edge not part of an intact unit quad dropped too'],
-    ['cublat_9_9_9_nice_drop_0.2',
-        '9×9×9 cubical board with 20% of its nodes randomly removed, then any edge not part of an '
-        + 'intact unit quad (a natural cube-face square) dropped too'],
-    ['regpoly_13_prod_regpoly_13', 'Product of two 13-sided regular polygon boards'],
-    ['star_5_es_6_prod_line_5',
-        '5-armed star board, each edge split into 6, then multiplied by a 5-node line'],
-    ['regpoly_5_prod_line_2_gcent_triform_7',
-        '5-sided regular polygon board multiplied by a 2-node line (a pentagonal prism), plus a '
-        + 'central hub node, each resulting triangle replaced by a side-length-7 triangular board'],
-    ['regpoly_5_gcent_prod_line_2_quadform_7',
-        '5-sided regular polygon board with a central hub node, multiplied by a 2-node line, each '
-        + 'resulting quad replaced by a side-length-7 square board'],
-    ['dodeca_gcent_triform_6',
-        'Regular dodecahedron with a central hub node, each resulting triangle replaced by a '
-        + 'side-length-6 triangular board'],
-    ['twsq_3_3_4_quadocta',
-        '3×3×4 twisted-square board with every quad replaced by an octahedron along a new dimension'],
-    ['octa_triform_4_quadform_4_triform_4',
-        'Regular octahedron, each triangular face subdivided (side length 4), any resulting quads '
-        + 'subdivided too (side length 4), subdivided into triangles again (side length 4), then '
-        + 'scaled down by 0.33'],
-    ['sier_3_5', 'Order-5 Sierpinski tetrahedron (3-dimensional Sierpinski gasket)'],
-    ['hcub_2_6_6_6_6',
-        '2-skeleton of a 4-dimensional 6×6×6×6 hypercuboid: only the rectangular faces (at least 2 '
-        + 'of the 4 coordinates pinned to an extreme) are meshed, the solid interior is excluded'],
-    ['cpentflake_4',
-        'Order-4 central pentagon flake fractal: a pentagon flake with an opposite-orientation '
-        + 'central copy at every level'],
-    ['cpolyflake_8_3',
-        'Order-3 central regular-polygon flake fractal on an 8-sided polygon (a central copy at '
-        + 'every level)'],
-    ['menger_3_3_0101',
-        'Order-3, 3-dimensional Menger-sponge-family flake fractal with a non-classical indicator '
-        + '(center and edge-mid sub-cubes removed, face-center and corner sub-cubes kept)'],
-    ['menger_4_2_011',
-        'Order-4 Sierpinski carpet (the 2-dimensional case of the Menger-sponge-family flake '
-        + 'fractal, indicator 011)'],
-    ['rect_19_19_nis_(rrmp_0.1_(all))_nis_(conve_quad_(conva_node_(all)))',
-        '19×19 rectangular board with 10% of its nodes randomly removed, then any node no longer '
-        + 'part of at least one intact unit quad (a 2×2 block with all 4 of its own grid edges '
-        + 'still present) dropped too'],
-    ['rect_5_5_fractaldrop_3_0.05',
-        '5×5 rectangular board put through 3 rounds of: randomly drop 5% of its edges, replace each '
-        + 'resulting quad with a side-length-3 square board, then drop any edge not part of an '
-        + 'intact unit quad'],
-    ['tri_4_fractaldrop_3_0.05',
-        'Side-length-4 triangular board put through 3 rounds of: randomly drop 5% of its edges, '
-        + 'replace each resulting triangle with a side-length-3 triangular board, then drop any '
-        + 'edge not part of an intact unit triangle'],
-    ['cublat_2_2_2_es_1_rect_form_7_(tri)_(quad)_scale_0.75',
-        '2×2×2 cubical lattice, rectified (a node at each edge midpoint, connected via the '
-        + "convex-hull figure around each original vertex - a cuboctahedron-like mix of triangular "
-        + 'and quad faces), every one of those triangles and quads replaced by its own '
-        + 'side-length-7 lattice (triangles and quads sharing an edge glue seamlessly), scaled to '
-        + '75% size'],
-    ['cublat_3_3_3_es_1_rect_nice_form_4_quad_tri',
-        '3×3×3 cubical lattice, rectified (a node at each edge midpoint, connected via the '
-        + 'convex-hull figure around each original vertex), reduced to only the edges touching at '
-        + 'least one resulting quad, then every triangle - and every one of those quads with a '
-        + 'degree-under-6 node - replaced by its own side-length-4 lattice (triangles and quads '
-        + 'sharing an edge glue seamlessly), scaled to 75% size'],
-    ['hexpipe_6',
-        '4×4×4 cubical lattice, reduced to only the edges belonging to a quad whose 4 nodes all '
-        + 'have degree above 4 and at least one has degree exactly 5 (the near-surface sheet of '
-        + 'quads just under each face), then every one of those quads with both a degree-3 and a '
-        + 'degree-6 node (evaluated after that reduction) replaced by a side-length-6 square board'],
-    ['cublat_4_4_4_cub_0010_quadform_4', 'quadform 4 applied to 0010 position cubes on 4x4x4 cubical lattice'],
-    ['biTemple_13_13_9_3', 'Temple with both top and bottom'],
-    ['twsqCluster4D_4_4_2', 'Copies of twsq boards connected in 4 dimensions'],
-    ['goDesk_19_19_5_2_6_2', 'A nice go desk that you can play go on'],
-    ['ring_5_12.5', 'Two dimensional circular ring'],
-    ['shell_6_7.5', '3D shell'],
-    ['roundTable_9.5_5_3_2', 'A round table with four legs'],
-    ['snubsqtri_4_4_4', 'Snub square tiling with triangular gaps filled in'],
-    ['trunc_trunc_cublat_3_3_3', '3×3×3 cubical board, truncated twice'],
-    ['truncated_24_cell', 'Truncated regular 24-cell'],
-    ['truncated_centralized_rect_6_6',
-        '6×6 rectangular board with a hub node added to each unit square, truncated, then scaled up'],
-    ['diamond_cubic_9', 'Diamond cubic board'],
-]);
+// boardModifiers) presets loaded at startup into Renderer.boardConfigs - see _loadBoardConfigs().
+// The "Select Board Preset" side panel (renderGamePresetSelection, sidePanel.ts) displays these raw
+// names directly (underscores replaced with spaces), not a separate description - there's no
+// human-readable text shown anywhere for these beyond the name itself.
+const _boardConfigNames = [
+    'rect_3_3', 'rect_9_9', 'rect_13_13', 'rect_19_19', 'twsq_7_7_2',
+    'twsq_3_3_2_es_3_prod_lin_4', 'regpoly_5_es_5_prod_lin_6', 'cublat_2_2_2_quadform_9',
+    'cublat_3_3_3_sel_(deg_gt_3)_quadform_6', 'cublat_3_3_3_quadform_5_nice_drop_0.1',
+    'cublat_9_9_9_nice_drop_0.2', 'regpoly_13_prod_regpoly_13', 'star_5_es_6_prod_line_5',
+    'regpoly_5_prod_line_2_gcent_triform_7', 'regpoly_5_gcent_prod_line_2_quadform_7',
+    'dodeca_gcent_triform_6', 'twsq_3_3_4_quadocta', 'octa_triform_4_quadform_4_triform_4',
+    'sier_3_5', 'hcub_2_6_6_6_6', 'cpentflake_4', 'cpolyflake_8_3', 'menger_3_3_0101',
+    'menger_4_2_011', 'rect_19_19_nis_(rrmp_0.1_(all))_nis_(conve_quad_(conva_node_(all)))',
+    'rect_5_5_fractaldrop_3_0.05', 'tri_4_fractaldrop_3_0.05',
+    'cublat_2_2_2_es_1_rect_form_7_(tri)_(quad)_scale_0.75',
+    'cublat_3_3_3_es_1_rect_nice_form_4_quad_tri', 'hexpipe_6',
+    'cublat_4_4_4_cub_0010_quadform_4', 'biTemple_13_13_9_3', 'twsqCluster4D_4_4_2',
+    'goDesk_19_19_5_2_6_2', 'ring_5_12.5', 'shell_6_7.5', 'roundTable_9.5_5_3_2',
+    'snubsqtri_4_4_4', 'trunc_trunc_cublat_3_3_3', 'truncated_24_cell',
+    'truncated_centralized_rect_6_6', 'tetrahedron_centering_9',
+];
 
 
 const COLOR_GRID    = '#000000';
@@ -1103,7 +1024,7 @@ export class Renderer {
         this.presets = new Map(entries.filter((e): e is readonly [string, GameConfig] => e !== null));
     }
 
-    // Fetches every preset in _boardConfigDescriptions from public/board_presets/ - each *.cleg
+    // Fetches every preset in _boardConfigNames from public/board_presets/ - each *.cleg
     // file holds nothing but plain cleg SOURCE TEXT (readable/editable on disk as-is, unlike the
     // parsed-AST shape GameConfig.boardDescr itself uses), parsed here via parseCleg into the
     // ClegProgram `boardConfigs` actually stores - same "not awaited by init(), each fails
@@ -1111,7 +1032,7 @@ export class Renderer {
     // exactly like a fetch failure, since a board-only preset has none of GameConfig's other
     // required fields anyway.
     private async _loadBoardConfigs(): Promise<void> {
-        const entries = await Promise.all([..._boardConfigDescriptions.keys()].map(async name => {
+        const entries = await Promise.all(_boardConfigNames.map(async name => {
             try {
                 const source = await fetch(`/board_presets/${name}.cleg`).then(r => r.text());
                 return [name, { boardDescr: parseCleg(source) }] as const;
