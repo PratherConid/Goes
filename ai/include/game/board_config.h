@@ -404,6 +404,24 @@ BoardConfig star_board(int n);
 // K4's vertices is a triangle.
 BoardConfig tetrahedron_board();
 
+// A diamond cubic board: the diamond crystal lattice (uniform tetrahedral 4-coordination
+// throughout), overall shaped like a regular tetrahedron of side length w. Built directly from the
+// same barycentric-coordinate lattice simplex_board(3, 3, w) would produce - every (c0, c1, c2, c3),
+// each >= 0, summing to n = w - 1, is one lattice point - by adding one hub per "up" unit
+// tetrahedron: a point p = (c0, c1, c2, c3) summing to n - 1 names one, its own 4 corners being p
+// plus each of the 4 standard basis vectors in turn (each a real lattice point). Each gets one new
+// hub node, connected to all 4 corners. The "down" (reverse-oriented) unit tetrahedra this same
+// lattice also decomposes into get no hub of their own and need no separate handling: every original
+// edge already belongs to SOME up-tetrahedron (for any edge A -> B formed by transferring 1 unit
+// from coordinate i to coordinate j, p = A - e_i is always a valid up-tetrahedron base point
+// containing both), so once every up-tetrahedron's own corners are connected only through their
+// shared hub instead of directly, no original edge survives anywhere - see shared/boardConfig.ts's
+// diamondCubicBoard() for the full derivation this mirrors. Unlike the TS version, this always
+// produces an emb_dim = 0 board (same reasoning as tri_centralize/quad_centralize/quad_octarize/
+// generic_local_replace above - a hub's own position would need real-number barycenter averaging,
+// which BoardConfig::embed here, exact-integer only, can't represent).
+BoardConfig diamond_cubic_board(int w);
+
 // A regular octahedron: the n=3 case of orthoplex_board() below - 6 vertices, 12 edges, 8
 // triangular faces (every vertex degree 4). A side-length-w subdivision of its 8 triangular faces
 // can be applied via triangle_form(w).

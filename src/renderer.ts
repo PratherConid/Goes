@@ -74,7 +74,7 @@ const _boardConfigNames = [
     'cublat_4_4_4_cub_0010_quadform_4', 'biTemple_13_13_9_3', 'twsqCluster4D_4_4_2',
     'goDesk_19_19_5_2_6_2', 'ring_5_12.5', 'shell_6_7.5', 'roundTable_9.5_5_3_2',
     'snubsqtri_4_4_4', 'trunc_trunc_cublat_3_3_3', 'truncated_24_cell',
-    'truncated_centralized_rect_6_6', 'tetrahedron_centering_9',
+    'truncated_centralized_rect_6_6', 'tetrahedron_centering_9', 'diamondCubic_10',
 ];
 
 

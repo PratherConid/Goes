@@ -185,6 +185,7 @@ static const std::vector<PrescribedEntry>& prescribed_boards() {
         {"cpentflake", {BoardArgKind::Number}},
         {"menger", {BoardArgKind::Number, BoardArgKind::Number, BoardArgKind::ZeroOneList}},
         {"ap", {BoardArgKind::Number}},
+        {"diamondCubic", {BoardArgKind::Number}},
     };
     return table;
 }

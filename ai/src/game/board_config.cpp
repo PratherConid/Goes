@@ -923,6 +923,51 @@ BoardConfig tetrahedron_board() {
     return simplex_board(3, 3, 2);
 }
 
+// Mirrors shared/boardConfig.ts's diamondCubicBoard() - see board_config.h's own doc comment for the
+// full derivation (one hub per "up" unit tetrahedron; "down" ones need no separate handling since
+// every original edge already belongs to some up-tetrahedron) and for why this always produces an
+// emb_dim=0 board, unlike the TS version.
+BoardConfig diamond_cubic_board(int w) {
+    assert(w >= 1 && "w must be at least 1");
+    int n = w - 1;
+
+    // Every (c0, c1, c2) with c0 + c1 + c2 <= n names one lattice point (c3 = n - c0 - c1 - c2,
+    // always implied by n rather than tracked separately below) - flat_key/node_idx give O(1) lookup
+    // via a plain bounded-integer index, mirroring shared/boardConfig.ts's own Map-based nodeIdx.
+    int stride = n + 1;
+    auto flat_key = [&](int c0, int c1, int c2) { return (c0 * stride + c1) * stride + c2; };
+    std::vector<int> node_idx(static_cast<size_t>(stride) * stride * stride, -1);
+    int next_idx = 0;
+    for (int c0 = 0; c0 <= n; c0++)
+        for (int c1 = 0; c1 <= n - c0; c1++)
+            for (int c2 = 0; c2 <= n - c0 - c1; c2++)
+                node_idx[flat_key(c0, c1, c2)] = next_idx++;
+    auto node = [&](int c0, int c1, int c2) { return node_idx[flat_key(c0, c1, c2)]; };
+
+    std::vector<std::pair<int,int>> edges;
+
+    // One hub per up-tetrahedron - see this function's own doc comment. No down-tetrahedron loop:
+    // their own edges never survive regardless, so there's nothing left for one to add.
+    for (int c0 = 0; c0 <= n - 1; c0++)
+        for (int c1 = 0; c1 <= n - 1 - c0; c1++)
+            for (int c2 = 0; c2 <= n - 1 - c0 - c1; c2++) {
+                int corner[4] = {
+                    node(c0 + 1, c1, c2), node(c0, c1 + 1, c2), node(c0, c1, c2 + 1), node(c0, c1, c2),
+                };
+                int hub = next_idx++;
+                for (int c : corner) edges.push_back({hub, c});
+            }
+
+    int total_n = next_idx;
+    auto adj = zero_adj(total_n);
+    for (auto& [a, b] : edges) {
+        adj[a][b] = 1;
+        adj[b][a] = 1;
+    }
+    std::vector<std::vector<unsigned>> embed(total_n); // emb_dim=0 - see board_config.h's doc comment
+    return make_bc(std::move(adj), 0u, std::move(embed));
+}
+
 BoardConfig octahedron_board() {
     return orthoplex_board(3);
 }
@@ -1557,6 +1602,7 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<BoardA
     if (kind == "regpoly") return regular_polygon_board(num(v[0]));
     if (kind == "star")  return star_board(num(v[0]));
     if (kind == "tetra") return tetrahedron_board();
+    if (kind == "diamondCubic") return diamond_cubic_board(num(v[0]));
     if (kind == "octa") return octahedron_board();
     if (kind == "ortho") return orthoplex_board(num(v[0]));
     if (kind == "reg24Cell") return reg_24_cell_board();

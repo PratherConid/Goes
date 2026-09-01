@@ -1214,6 +1214,68 @@ export function tetrahedronBoard(): BoardConfig {
 }
 
 /**
+ * A diamond cubic board: the diamond crystal lattice (uniform tetrahedral 4-coordination
+ * throughout), overall shaped like a regular tetrahedron of side length `w`. Built directly (not via
+ * simplexBoard/genericLocalReplace's own general machinery) from the same barycentric-coordinate
+ * lattice those would produce - every (c0, c1, c2, c3), each >= 0, summing to `n = w - 1`, is one
+ * lattice point - by adding one hub per "up" unit tetrahedron: a point p = (c0, c1, c2, c3) summing
+ * to n - 1 (one less than a real lattice point's own sum) names one, its own 4 corners being p plus
+ * each of the 4 standard basis vectors in turn (p+e0, p+e1, p+e2, p+e3 - each a real lattice point).
+ * Each gets one new hub node, connected to all 4 corners.
+ *
+ * The "reverse-oriented" ("down") unit tetrahedra - the other family this same lattice decomposes
+ * into - get no hub of their own and aren't otherwise treated specially; they don't need to be, since
+ * every original edge of the lattice already belongs to SOME up-tetrahedron (for any edge A -> B
+ * formed by transferring 1 unit from coordinate i to coordinate j, p = A - e_i is always a valid
+ * up-tetrahedron base point containing both A and B as 2 of its own 4 corners) - so once every
+ * up-tetrahedron's own corners are connected only through their shared hub instead of directly, NO
+ * original edge survives anywhere, down-tetrahedra's own included. Every interior lattice point ends
+ * up bonded to exactly the 4 up-tetrahedra hubs it's a corner of - true diamond cubic's own uniform
+ * tetrahedral coordination; every hub has degree exactly 4 by construction. Boundary points simply
+ * belong to fewer up-tetrahedra (never more), so they end up with fewer bonds, never more than 4.
+ */
+export function diamondCubicBoard(w: number): BoardConfig {
+    assert(Number.isInteger(w) && w >= 1, `w must be a positive integer, got ${w}`);
+    const n = w - 1;
+    const corners = regularSimplexCoords(3);
+    const latticePos = (c0: number, c1: number, c2: number, c3: number): number[] =>
+        corners[0].map((_, d) => c0 * corners[0][d] + c1 * corners[1][d] + c2 * corners[2][d] + c3 * corners[3][d]);
+
+    // Every (c0, c1, c2) with c0 + c1 + c2 <= n names one lattice point (c3 = n - c0 - c1 - c2,
+    // always implied by n rather than tracked separately below).
+    const nodeIdx = new Map<string, number>();
+    const pos: number[][] = [];
+    for (let c0 = 0; c0 <= n; c0++)
+        for (let c1 = 0; c1 <= n - c0; c1++)
+            for (let c2 = 0; c2 <= n - c0 - c1; c2++) {
+                nodeIdx.set(`${c0},${c1},${c2}`, pos.length);
+                pos.push(latticePos(c0, c1, c2, n - c0 - c1 - c2));
+            }
+    const node = (c0: number, c1: number, c2: number): number => nodeIdx.get(`${c0},${c1},${c2}`)!;
+
+    const edges: [number, number][] = [];
+
+    // One hub per up-tetrahedron - see this function's own doc comment. No down-tetrahedron loop:
+    // their own edges never survive regardless (see above), so there's nothing left for one to add.
+    for (let c0 = 0; c0 <= n - 1; c0++)
+        for (let c1 = 0; c1 <= n - 1 - c0; c1++)
+            for (let c2 = 0; c2 <= n - 1 - c0 - c1; c2++) {
+                const corner = [node(c0 + 1, c1, c2), node(c0, c1 + 1, c2), node(c0, c1, c2 + 1), node(c0, c1, c2)];
+                const hub = pos.length;
+                pos.push(pos[corner[0]].map((_, d) => corner.reduce((s, v) => s + pos[v][d], 0) / 4));
+                for (const c of corner) edges.push([hub, c]);
+            }
+
+    const totalN = pos.length;
+    const adj = zeroAdj(totalN);
+    for (const [a, b] of edges) {
+        adj[a][b] = 1;
+        adj[b][a] = 1;
+    }
+    return make(new Embedding(3, pos), adj);
+}
+
+/**
  * A regular octahedron: the `n=3` case of `orthoplexBoard()` (see its own doc comment for the
  * general construction) - 6 vertices, 12 unit-length edges, 8 triangular faces. A side-length-w
  * subdivision of its 8 triangular faces can be applied via the `triangleForm(w)` modifier
@@ -1972,7 +2034,8 @@ export enum PrescribedBoard {
     centralRegularPolygonFlake,
     centralPentagonFlake,
     mengerSpongeFlake,
-    antiprismBoard
+    antiprismBoard,
+    diamondCubicBoard
 }
 
 // k Number-typed args in a row - shorthand for PrescribedBoardMap's common case below (every board
@@ -2065,6 +2128,10 @@ export const PrescribedBoardMap: Record<PrescribedBoard, [BoardArgType[], string
             + "dim=3 for the classical Menger sponge"],
     [PrescribedBoard.antiprismBoard]:
         [nums(1), "apB", "(n)", "Uniform n-gonal antiprism (2 n-gons + 2n triangles), unit-length edges"],
+    [PrescribedBoard.diamondCubicBoard]:
+        [nums(1), "diamondCubicB", "(w)",
+            "Diamond cubic board (uniform tetrahedral 4-coordination), overall shaped like a "
+            + "side-length-w regular tetrahedron"],
 };
 
 // Shorthand for PrescribedBoardFns below: `num`/`list` pull a positional BoardArgEntry's own
@@ -2105,6 +2172,7 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: BoardArgEntry
     [PrescribedBoard.centralPentagonFlake]:     (...a) => centralPentagonFlake(num(a[0])),
     [PrescribedBoard.mengerSpongeFlake]:        (...a) => mengerSpongeFlake(num(a[0]), num(a[1]), list(a[2])),
     [PrescribedBoard.antiprismBoard]:           (...a) => antiprismBoard(num(a[0])),
+    [PrescribedBoard.diamondCubicBoard]:        (...a) => diamondCubicBoard(num(a[0])),
 };
 
 export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardConfig {
