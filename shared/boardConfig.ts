@@ -1,10 +1,10 @@
-import type { BoardArgEntry, BoardConfig, BoardModifier, Selector, BoardEdge } from './types.js';
+import type { BoardArgEntry, BoardConfig, BoardModifier, LocalReplaceSelector, Selector, BoardEdge } from './types.js';
 import type { GameConfig } from './gameConfig.js';
 // Type-only - see types.ts's own note on why this isn't a real circular runtime import.
 import type { ClegProgram } from './clegBase.js';
-import { assert, BoardArgType, boardArgNumber, boardArgList, Embedding, simpType, simpN } from './types.js';
+import { assert, BoardArgType, boardArgNumber, boardArgList, Embedding, simpType } from './types.js';
 import { convexHullEdges } from './geometry.js';
-import { findQuads, zeroAdj, mergeBoards } from './topology.js';
+import { zeroAdj, mergeBoards } from './topology.js';
 import { selectNode, selectEdge, selectTriangle, selectSimp, selectQuad } from './selector.js';
 // The FractalDescr/nodeEdgeMergeFlakeRec recursive core, and each "flake" shape's own static
 // *FractalDescr() builder, live in fractal.ts (see git history) - the actual BoardConfig-returning
@@ -515,58 +515,124 @@ export function quadForm(bc: BoardConfig, w: number, sel?: Selector): BoardConfi
 }
 
 /**
- * Adds one new node ("centralizes") for every selected n-simplex and/or quad in `bc` (see
- * topology.ts's findSimplices/findQuads), at that face's own barycenter (the component-wise average
- * of its own corner positions) - unlike genericForm, this doesn't subdivide/glue anything, it just
- * adds one hub per selected face, connected to all of that face's own original corner nodes; every
- * other node/edge (including the face's own original ones) is left completely untouched. Each
- * element of `sels` is itself a Selector naming which faces to look for AND restricting which ones
- * of that kind qualify in one go (its own bottom-up-inferred `type` already says simp N or quad) -
- * pass `(all simp N)`/`(all quad)` for "every one found, no restriction". Every element must be a
- * simp- or quad-typed selector, checked at runtime (a `type` of 'node'/'edge' throws) since nothing
- * else constrains it structurally - a mixed `sels` list may freely combine different simp arities
- * and quad, each processed independently. simpCentralize/triCentralize/quadCentralize below are the
- * single-kind special cases, each just calling this with one selector.
+ * Replaces every selected n-simplex and/or quad in `bc` (see topology.ts's findSimplices/findQuads)
+ * with its own small local shape: an n-simplex's "pyramid" (one new hub node, connected to all of
+ * that face's own corners - SimpCentralize, e.g. a triangle -> tetrahedron), a quad's own pyramid
+ * (QuadCentralize), a quad's own octahedron (two new antipodal apex nodes, each connected to all 4
+ * corners - QuadOctarize), or a "centering" variant of either hub-and-spoke shape (SimpCentering/
+ * QuadCentering - same new hub, but the face's own original edges are dropped rather than kept, so
+ * its corners end up connected only through the hub). Unlike genericForm, nothing is subdivided/glued
+ * - only that face's own new node(s) and their own edges are added (or, for the Centering branches,
+ * added in place of the face's own original edges). Each element of `selectors` names both which
+ * faces to look for (via its own `sel`, defaulting the same way each single-kind thin wrapper below
+ * documents its own `sel?` parameter) AND which of these local shapes to build there - this is what
+ * lets a single `quad` selection mean a pyramid (QuadCentralize), an octahedron (QuadOctarize), or a
+ * bare star (QuadCentering), which a bare Selector's own `type` alone could never disambiguate (see
+ * LocalReplaceSelector's own doc comment, shared/types.ts) - there's no separate TriCentralize/
+ * TriCentering branch, since a triangle is just SimpCentralize's/SimpCentering's own n=2 case
+ * (triCentralize below is a thin wrapper over simpCentralize(bc, 2, ...), same as
+ * shared/clegEval.ts's own cleg-level triCentralize builtin).
+ *
+ * Every selected face's own ORIGINAL edges (a simplex's own C(n+1,2) clique edges, or a quad's own
+ * 4-cycle) are excluded from `bc.adj`'s straight copy - for every branch except SimpCentering/
+ * QuadCentering, they're then re-added explicitly, alongside whichever new edges its own local shape
+ * needs: a triangle's shape is a tetrahedron (3 original + 3 hub edges), a quad-pyramid's is 4
+ * original + 4 hub edges, a quad-octahedron's is 4 original (the equatorial ring) + 8 apex edges (12
+ * total, matching a real octahedron). For every one of THOSE branches this nets out to the same edges
+ * as simply keeping the originals and adding the new ones would - expressing it as "the target
+ * shape's own full edge set" (rather than "originals, kept, plus new") is what lets SimpCentering/
+ * QuadCentering fit the exact same framework, just by skipping that one re-add step: their own target
+ * shape is the hub edges ALONE, so the face's own original edges, once excluded from the straight
+ * copy, simply stay gone. Two selectors whose own faces share an original edge each independently
+ * decide whether to re-add it - if any one of them does, it survives (a shared edge consumed by only
+ * Centering-kind selectors, and never re-added by any of them, is genuinely dropped) - harmless
+ * either way, since `adj[][]` is a plain 0/1 matrix (setting an edge twice is a no-op), the same way
+ * genericForm's own edgeToSeqs accumulates across selectors.
+ *
+ * QuadOctarize's own two new apex nodes need one MORE embedding dimension than every other new node
+ * here (see quadOctarize's own doc comment on why) - so if ANY selector is a QuadOctarize, every
+ * node's own position (original and new alike) gets one extra trailing 0 coordinate, keeping one
+ * shared Embedding for the whole result; otherwise the embedding dimension is untouched.
  */
-export function genericCentralize(bc: BoardConfig, sels: Selector[]): BoardConfig {
+export function genericLocalReplace(bc: BoardConfig, selectors: LocalReplaceSelector[]): BoardConfig {
     const N = bc.N;
     const embDim = bc.emb.embDim;
+    const needsExtraDim = selectors.some(s => s.kind === 'QuadOctarize');
+    const outEmbDim = embDim + (needsExtraDim ? 1 : 0);
+    const pad = (p: number[]): number[] => needsExtraDim ? [...p, 0] : p;
+
+    // "i,j" (i<j) - a selected face's own original edge, excluded from bc.adj's straight copy below
+    // (and re-added explicitly, alongside every new-node edge, as extraEdges - see this function's
+    // own doc comment on why).
+    const consumed = new Set<string>();
+    const markConsumed = (a: number, b: number) => consumed.add(a < b ? `${a},${b}` : `${b},${a}`);
 
     const extraPos: number[][] = [];
     const extraEdges: [number, number][] = [];
     let nextIdx = N;
 
-    for (const sel of sels) {
-        if (sel.type === 'quad') {
+    for (const s of selectors) {
+        if (s.kind === 'QuadCentralize' || s.kind === 'QuadOctarize' || s.kind === 'QuadCentering') {
+            const sel = s.sel ?? { op: 'all' as const, type: 'quad' as const };
             const quads = selectQuad(bc.adj, bc.emb.pos, sel);
             for (const { n1: A, n2: B, n3: C, n4: D } of quads) {
-                const hub = nextIdx++;
-                extraPos[hub - N] = bc.emb.pos[A].map((_, k) =>
+                markConsumed(A, B); markConsumed(B, C); markConsumed(C, D); markConsumed(D, A);
+                // QuadCentering is the one branch that does NOT re-add the quad's own 4-cycle edges -
+                // see LocalReplaceSelector's own doc comment (shared/types.ts).
+                if (s.kind !== 'QuadCentering') extraEdges.push([A, B], [B, C], [C, D], [D, A]);
+                const barycenter = bc.emb.pos[A].map((_, k) =>
                     (bc.emb.pos[A][k] + bc.emb.pos[B][k] + bc.emb.pos[C][k] + bc.emb.pos[D][k]) / 4);
-                extraEdges.push([hub, A], [hub, B], [hub, C], [hub, D]);
-            }
-        } else if (simpN(sel.type) !== null) {
-            const simplices = selectSimp(bc.adj, bc.emb.pos, sel);
-            for (const { nodes } of simplices) {
-                const hub = nextIdx++;
-                extraPos[hub - N] = bc.emb.pos[nodes[0]].map((_, k) =>
-                    nodes.reduce((s, v) => s + bc.emb.pos[v][k], 0) / nodes.length);
-                extraEdges.push(...nodes.map((v): [number, number] => [hub, v]));
+                if (s.kind === 'QuadOctarize') {
+                    // Same barycenter/dist derivation this function's own predecessor used to compute
+                    // inline (see this function's own doc comment).
+                    let dist = 0;
+                    for (const idx of [A, B, C, D]) {
+                        const diff = bc.emb.pos[idx].map((v, k) => v - barycenter[k]);
+                        dist += Math.hypot(...diff) / 4;
+                    }
+                    const top = nextIdx++, bottom = nextIdx++;
+                    extraPos[top - N] = [...barycenter, dist];
+                    extraPos[bottom - N] = [...barycenter, -dist];
+                    extraEdges.push([top, A], [top, B], [top, C], [top, D]);
+                    extraEdges.push([bottom, A], [bottom, B], [bottom, C], [bottom, D]);
+                } else {
+                    // QuadCentralize or QuadCentering - a single hub either way, differing only in
+                    // whether the quad's own 4-cycle edges survive (see above).
+                    const hub = nextIdx++;
+                    extraPos[hub - N] = pad(barycenter);
+                    extraEdges.push([hub, A], [hub, B], [hub, C], [hub, D]);
+                }
             }
         } else {
-            throw new Error(`genericCentralize: each selector in sels must be a simplex (e.g. triangle/simp 2) or quad selector, got a '${sel.type}' selector`);
+            const n = s.n;
+            assert(Number.isInteger(n) && n >= 2, `genericLocalReplace: n must be an integer >= 2, got ${n}`);
+            const sel = s.sel ?? { op: 'all' as const, type: simpType(n) };
+            const simplices = selectSimp(bc.adj, bc.emb.pos, sel);
+            for (const { nodes } of simplices) {
+                for (let i = 0; i < nodes.length; i++)
+                    for (let j = i + 1; j < nodes.length; j++) {
+                        markConsumed(nodes[i], nodes[j]);
+                        // SimpCentering is the one branch that does NOT re-add the simplex's own
+                        // clique edges - see LocalReplaceSelector's own doc comment (shared/types.ts).
+                        if (s.kind !== 'SimpCentering') extraEdges.push([nodes[i], nodes[j]]);
+                    }
+                const hub = nextIdx++;
+                extraPos[hub - N] = pad(bc.emb.pos[nodes[0]].map((_, k) =>
+                    nodes.reduce((sum, v) => sum + bc.emb.pos[v][k], 0) / nodes.length));
+                extraEdges.push(...nodes.map((v): [number, number] => [hub, v]));
+            }
         }
     }
 
     const totalN = nextIdx;
     const pos: number[][] = new Array(totalN);
-    for (let i = 0; i < N; i++) pos[i] = bc.emb.pos[i];
+    for (let i = 0; i < N; i++) pos[i] = pad(bc.emb.pos[i]);
     for (let i = N; i < totalN; i++) pos[i] = extraPos[i - N];
 
     const adj = zeroAdj(totalN);
     for (let i = 0; i < N; i++)
         for (let j = i + 1; j < N; j++) {
-            if (!bc.adj[i][j]) continue;
+            if (!bc.adj[i][j] || consumed.has(`${i},${j}`)) continue;
             adj[i][j] = 1;
             adj[j][i] = 1;
         }
@@ -575,19 +641,31 @@ export function genericCentralize(bc: BoardConfig, sels: Selector[]): BoardConfi
         adj[b][a] = 1;
     }
 
-    return make(new Embedding(embDim, pos), adj);
+    return make(new Embedding(outEmbDim, pos), adj);
 }
 
 /**
  * Adds one new node ("centralizes") for every n-simplex in `bc`, connected to all n+1 of its own
- * corners - the single-arity special case of genericCentralize (see its own doc comment), just with
+ * corners - the single-arity special case of genericLocalReplace (see its own doc comment), just with
  * `n` given directly instead of folded into `sel`'s own type. `sel`, if given, restricts this to
  * only the n-simplices it selects (evaluated against `bc`'s own adj/pos, and must itself already be
  * a simp `n` selector) - every other n-simplex is left untouched, as if it didn't exist.
  */
 export function simpCentralize(bc: BoardConfig, n: number, sel?: Selector): BoardConfig {
     assert(Number.isInteger(n) && n >= 2, `simpCentralize: n must be an integer >= 2, got ${n}`);
-    return genericCentralize(bc, [sel ?? { op: 'all', type: simpType(n) }]);
+    return genericLocalReplace(bc, [{ kind: 'SimpCentralize', n, sel }]);
+}
+
+/**
+ * Adds one new node for every n-simplex in `bc`, connected to all n+1 of its own corners - same as
+ * simpCentralize, except the simplex's own C(n+1,2) original edges are DROPPED rather than kept, so
+ * its corners end up connected only through the new hub, not to each other directly (SimpCentering,
+ * the single-arity special case of genericLocalReplace - see its own doc comment). `sel`, if given,
+ * restricts this to only the n-simplices it selects - every other n-simplex is left untouched.
+ */
+export function simpCentering(bc: BoardConfig, n: number, sel?: Selector): BoardConfig {
+    assert(Number.isInteger(n) && n >= 2, `simpCentering: n must be an integer >= 2, got ${n}`);
+    return genericLocalReplace(bc, [{ kind: 'SimpCentering', n, sel }]);
 }
 
 /**
@@ -601,13 +679,34 @@ export function triCentralize(bc: BoardConfig, sel?: Selector): BoardConfig {
 }
 
 /**
+ * Adds one new node for every triangle in `bc`, connected to all 3 of its own corners - same as
+ * triCentralize, except the triangle's own 3 original edges are DROPPED rather than kept, so its
+ * corners end up connected only through the new hub, not to each other directly - simpCentering's own
+ * n=2 special case, the same way triCentralize is simpCentralize's.
+ */
+export function triCentering(bc: BoardConfig, sel?: Selector): BoardConfig {
+    return simpCentering(bc, 2, sel);
+}
+
+/**
  * Adds one new node ("centralizes") for every quad in `bc`, connected to all 4 of its own corners -
- * the single-kind special case of genericCentralize (see its own doc comment), the same way
+ * the single-kind special case of genericLocalReplace (see its own doc comment), the same way
  * triCentralize is. `sel`, if given, restricts this to only the quads it selects (evaluated against
  * `bc`'s own adj/pos) - every other quad is left untouched, as if it didn't exist.
  */
 export function quadCentralize(bc: BoardConfig, sel?: Selector): BoardConfig {
-    return genericCentralize(bc, [sel ?? { op: 'all', type: 'quad' }]);
+    return genericLocalReplace(bc, [{ kind: 'QuadCentralize', sel }]);
+}
+
+/**
+ * Adds one new node for every quad in `bc`, connected to all 4 of its own corners - same as
+ * quadCentralize, except the quad's own 4-cycle original edges are DROPPED rather than kept, so its
+ * corners end up connected only through the new hub, not to each other directly (QuadCentering, the
+ * single-kind special case of genericLocalReplace - see its own doc comment). `sel`, if given,
+ * restricts this to only the quads it selects - every other quad is left untouched.
+ */
+export function quadCentering(bc: BoardConfig, sel?: Selector): BoardConfig {
+    return genericLocalReplace(bc, [{ kind: 'QuadCentering', sel }]);
 }
 
 /**
@@ -640,60 +739,25 @@ export function globalCentralize(bc: BoardConfig): BoardConfig {
 }
 
 /**
- * Adds one new dimension to `bc`'s embedding, then replaces every quad (4-cycle with no diagonal
- * edges - see topology.ts's `findQuads`, same quads `quadForm` finds) with an octahedron: two
- * new "apex" nodes, one on each side of the quad along the new dimension, each connected to all 4
- * of that quad's corners - the quad's own 4-cycle edges (already present, untouched) become the
- * octahedron's equatorial ring, and the two apexes are NOT connected to each other (antipodal, same
- * as `octahedronBoard()`'s own apex pairs - a plain quad graph plus two such apex nodes is exactly
- * an octahedron's edge set, see that function's doc comment).
+ * Replaces every selected quad (4-cycle with no diagonal edges - see topology.ts's `findQuads`, same
+ * quads `quadForm`/`quadCentralize` work with) with an octahedron - the QuadOctarize single-kind
+ * special case of genericLocalReplace (see its own doc comment): two new "apex" nodes per quad, one
+ * on each side along a new embedding dimension (see genericLocalReplace's own doc comment on why this
+ * needs one), each connected to all 4 of that quad's corners - the quad's own 4-cycle edges become
+ * the octahedron's equatorial ring, and the two apexes are NOT connected to each other (antipodal,
+ * same as `octahedronBoard()`'s own apex pairs - a plain quad graph plus two such apex nodes is
+ * exactly an octahedron's edge set, see that function's doc comment).
  *
- * Each apex sits, in the original `embDim` dimensions, at its quad's barycenter (the
- * component-wise average of its 4 corners), and at +-`dist` along the new dimension, where `dist`
- * is the average distance from each of the quad's 4 corners to that same barycenter (the exact
- * circumradius for a geometrically regular quad, since all 4 corners are then equidistant from
- * it - averaging just keeps this well-defined for a quad whose corners aren't quite equidistant
- * from their own barycenter).
+ * Each apex sits, in the original `embDim` dimensions, at its quad's barycenter (the component-wise
+ * average of its 4 corners), and at +-`dist` along the new dimension, where `dist` is the average
+ * distance from each of the quad's 4 corners to that same barycenter (the exact circumradius for a
+ * geometrically regular quad, since all 4 corners are then equidistant from it - averaging just keeps
+ * this well-defined for a quad whose corners aren't quite equidistant from their own barycenter).
+ * `sel`, if given, restricts this to only the quads it selects - every other quad is left untouched,
+ * as if it didn't exist.
  */
-export function quadOctarize(bc: BoardConfig): BoardConfig {
-    const N = bc.N;
-    const embDim = bc.emb.embDim;
-    const newEmbDim = embDim + 1;
-    const quads = findQuads(bc.adj);
-
-    const pos: number[][] = bc.emb.pos.map(p => [...p, 0]);
-    const adj = zeroAdj(N + quads.length * 2);
-    for (let i = 0; i < N; i++)
-        for (let j = i + 1; j < N; j++) {
-            if (!bc.adj[i][j]) continue;
-            adj[i][j] = 1;
-            adj[j][i] = 1;
-        }
-
-    for (let s = 0; s < quads.length; s++) {
-        const q = quads[s];
-        const corners = [q.n1, q.n2, q.n3, q.n4];
-        const barycenter = new Array(embDim).fill(0);
-        for (const idx of corners)
-            for (let k = 0; k < embDim; k++) barycenter[k] += bc.emb.pos[idx][k] / 4;
-        let dist = 0;
-        for (const idx of corners) {
-            const diff = bc.emb.pos[idx].map((v, k) => v - barycenter[k]);
-            dist += Math.hypot(...diff) / 4;
-        }
-
-        const top = N + s * 2, bottom = top + 1;
-        pos[top] = [...barycenter, dist];
-        pos[bottom] = [...barycenter, -dist];
-        for (const idx of corners) {
-            adj[idx][top] = 1;
-            adj[top][idx] = 1;
-            adj[idx][bottom] = 1;
-            adj[bottom][idx] = 1;
-        }
-    }
-
-    return make(new Embedding(newEmbDim, pos), adj);
+export function quadOctarize(bc: BoardConfig, sel?: Selector): BoardConfig {
+    return genericLocalReplace(bc, [{ kind: 'QuadOctarize', sel }]);
 }
 
 /** Multiplies every node's natural-dimension position by `factor` - adjacency/embDim untouched. */
@@ -2052,12 +2116,8 @@ export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardCo
         case 'TriangleForm': return triangleForm(bc, modifier.w, modifier.sel);
         case 'QuadForm': return quadForm(bc, modifier.w, modifier.sel);
         case 'Form': return genericForm(bc, modifier.w, modifier.sels);
-        case 'SimpCentralize': return simpCentralize(bc, modifier.n, modifier.sel);
-        case 'TriCentralize': return triCentralize(bc, modifier.sel);
-        case 'QuadCentralize': return quadCentralize(bc, modifier.sel);
-        case 'Centralize': return genericCentralize(bc, modifier.sels);
+        case 'LocalReplace': return genericLocalReplace(bc, modifier.selectors);
         case 'GlobalCentralize': return globalCentralize(bc);
-        case 'QuadOctarize': return quadOctarize(bc);
         case 'Scale': return scaleBoard(bc, modifier.factor);
         case 'NodeInducedSubgraph': return nodeInducedSubgraph(bc, selectNode(bc.adj, bc.emb.pos, modifier.sel));
         case 'EdgeInducedSubgraph': return edgeInducedSubgraph(bc, selectEdge(bc.adj, bc.emb.pos, modifier.sel));

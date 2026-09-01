@@ -493,6 +493,30 @@ export type Selector =
     | { op: 'raw'; type: SelectorType; items: SelectedVals };
 
 /**
+ * One selected face plus which LOCAL shape to replace it with - see shared/boardConfig.ts's
+ * genericLocalReplace() for the actual construction. This exists (rather than a bare Selector, which
+ * suffices for genericForm's own `sels`) because a `quad` selection alone no longer determines a
+ * unique replacement: QuadCentralize's own single-hub "pyramid" and QuadOctarize's own two-apex
+ * octahedron both consume a quad selector, so the branch itself has to say which one applies. `sel`,
+ * on every branch, defaults the same way each single-kind thin wrapper below already documents its
+ * own `sel?` parameter as defaulting (omitted = every object of the matching kind). No separate
+ * TriCentralize branch - it's SimpCentralize's own n=2 case, same as shared/boardConfig.ts's/
+ * shared/clegEval.ts's own triCentralize thin wrappers over simpCentralize(bc, 2, ...).
+ */
+export type LocalReplaceSelector =
+    | { kind: 'QuadCentralize'; sel?: Selector }
+    // n: the simplex arity centralized (n+1 corners per hub) - sel, if given, must itself already
+    // be a simp `n` selector (checked at runtime by shared/boardConfig.ts's own genericLocalReplace).
+    | { kind: 'SimpCentralize'; n: number; sel?: Selector }
+    | { kind: 'QuadOctarize'; sel?: Selector }
+    // QuadCentering/SimpCentering: same hub-and-spoke construction as QuadCentralize/SimpCentralize
+    // (one new hub node, connected to all of that face's own corners), but the face's own original
+    // edges are NOT added back - only the new hub-to-corner edges survive, so the selected face's own
+    // corners end up connected only through the hub, not to each other directly.
+    | { kind: 'QuadCentering'; sel?: Selector }
+    | { kind: 'SimpCentering'; n: number; sel?: Selector };
+
+/**
  * A BoardConfig-transforming operation - see shared/boardConfig.ts's applyModifier()/
  * applyModifiers() for how these are built and applied. A `mod`-typed cleg value (shared/clegBase.ts)
  * always wraps one of these directly, built by whichever of cleg's own rectify()/edgeSplit()/.../
@@ -511,16 +535,11 @@ export type BoardModifier =
     // sels: one Selector per face to look for - each must be tri- or quad-typed, checked at runtime
     // by shared/boardConfig.ts's own genericForm, which this wraps - see its own doc comment.
     | { kind: 'Form'; w: number; sels: Selector[] }
-    // n: the simplex arity centralized (n+1 corners per hub) - sel, if given, must itself already
-    // be a simp `n` selector (checked at runtime by shared/boardConfig.ts's own simpCentralize).
-    | { kind: 'SimpCentralize'; n: number; sel?: Selector }
-    | { kind: 'TriCentralize'; sel?: Selector }
-    | { kind: 'QuadCentralize'; sel?: Selector }
-    // sels: same convention as Form's own field above, but for shared/boardConfig.ts's
-    // genericCentralize - see its own doc comment.
-    | { kind: 'Centralize'; sels: Selector[] }
+    // selectors: one LocalReplaceSelector per face-and-shape to replace - see genericLocalReplace's
+    // own doc comment (shared/boardConfig.ts). Folds what used to be five separate kinds here
+    // (SimpCentralize/TriCentralize/QuadCentralize/Centralize/QuadOctarize) into one.
+    | { kind: 'LocalReplace'; selectors: LocalReplaceSelector[] }
     | { kind: 'GlobalCentralize' }
-    | { kind: 'QuadOctarize' }
     | { kind: 'Scale'; factor: number }
     | { kind: 'NodeInducedSubgraph'; sel: Selector }
     | { kind: 'EdgeInducedSubgraph'; sel: Selector };

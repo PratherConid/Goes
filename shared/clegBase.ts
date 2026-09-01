@@ -167,6 +167,15 @@
  * ...), built by whichever of the modifier-constructor builtins below matches. Opaque the same way
  * `sel`/`edge`/`simp`/`quad` are - no literal syntax, no way to read fields back out.
  *
+ * `lrs` wraps a real shared/types.ts LocalReplaceSelector - a selected face paired with which local
+ * shape to replace it with (see that type's own doc comment for why a bare `sel` can't say this on
+ * its own: a `quad` selection alone no longer determines a unique replacement, since QuadCentralize's
+ * pyramid and QuadOctarize's octahedron both consume one). Built by `triCentralize`/`quadCentralize`/
+ * `simpCentralize`/`quadOctarize`/`triCentering`/`quadCentering`/`simpCentering` below (one
+ * `lrs`-building constructor per LocalReplaceSelector branch, plus the two n=2 thin wrappers) and
+ * consumed only by `localReplace(lrs[])`, the one builtin that actually turns an array of `lrs`
+ * values into a `mod`. Opaque the same way `sel`/`mod`/`msel` are.
+ *
  * ## Builtins
  *
  * Besides the per-prescribed-board functions and `prod` (shared/boardConfig.ts's own product() - the
@@ -184,16 +193,21 @@
  *
  * Every BoardModifier kind except `Prod`/`Repeat` (handled elsewhere) has its own constructor
  * builtin - `nis`, `eis`, `rectify`, `edgeSplit`, `mergeClose`, `triangleForm`, `quadForm`, `form`,
- * `triCentralize`, `quadCentralize`, `centralize`, `globalCentralize`, `quadOctarize`, `scale` - each
- * of which BUILDS a `mod` value (see "Types" above) rather than applying it to a board immediately;
- * `modify(mods, bc)` is the one builtin that actually applies a whole `mod[]` list, in order, to a
- * board (shared/boardConfig.ts's own applyModifiers()). `nis`/`eis`/`triangleForm`/`quadForm`/
- * `triCentralize`/`quadCentralize` each accept a `sel`, a `string`, or a `set` of the matching element
- * type, resolved via their one shared resolveSelectorArg against one fixed wantKind; `mkSel` accepts
- * a `string` or `set` too (not a `sel` - see `sel`'s own doc comment above), but has no fixed wantKind
- * of its own to resolve against, so it goes through resolveAnyKindSelectorArg instead (also
- * shared/clegEval.ts, also used by `form`/`centralize`'s own variadic selector arguments and by
- * `msBase`).
+ * `localReplace`, `globalCentralize`, `scale` - each of which BUILDS a `mod` value (see "Types" above)
+ * rather than applying it to a board immediately; `modify(mods, bc)` is the one builtin that actually
+ * applies a whole `mod[]` list, in order, to a board (shared/boardConfig.ts's own applyModifiers()).
+ * `triCentralize`/`quadCentralize`/`simpCentralize`/`quadOctarize`/`quadCentering`/`simpCentering`
+ * are one level down from that: each builds an `lrs` (see "Types" above), not a `mod` directly -
+ * `localReplace(...)` is what turns one or more of those into the actual `LocalReplace`-kind `mod`.
+ * `quadCentering`/`simpCentering` build the same hub-and-spoke shape as `quadCentralize`/
+ * `simpCentralize`, except the selected face's own original edges are dropped rather than kept (see
+ * LocalReplaceSelector's own doc comment, shared/types.ts). `nis`/`eis`/`triangleForm`/`quadForm`/
+ * `triCentralize`/`quadCentralize`/`simpCentralize`/`quadOctarize`/`quadCentering`/`simpCentering`
+ * each accept an optional `sel`, a `string`, or a `set` of the matching element type, resolved via
+ * their one shared resolveSelectorArg against one fixed wantKind; `mkSel` accepts a `string` or `set`
+ * too (not a `sel` - see `sel`'s own doc comment above), but has no fixed wantKind of its own to
+ * resolve against, so it goes through resolveAnyKindSelectorArg instead (also shared/clegEval.ts,
+ * also used by `form`'s own variadic selector arguments and by `msBase`).
  *
  * `selectNode`/`selectEdge`/`selectTriangle`/`selectQuad`/`selectSimp` (X, bc) similarly each accept
  * a `sel`, `string`, or `set`, but evaluate it immediately against a real board `bc` (an `egr`) and
@@ -224,7 +238,7 @@
  *
  *   TYPE       := (BASETYPE ('{' '}')? | FUNCTYPE | '(' FUNCTYPE ')') ('[' ']')*
  *   BASETYPE   := 'egr' | 'number' | 'string' | 'bool' | 'edge' | 'simp' | 'tri' | 'quad'
- *               | 'sel' | 'mod' | 'msel'
+ *               | 'sel' | 'mod' | 'msel' | 'lrs'
  *   FUNCTYPE   := '(' (TYPE (',' TYPE)*)? ')' '->' TYPE
  *   PROGRAM    := (FUNCDECL | TOPSTMT)*
  *   TOPSTMT    := VARDECL | ASSIGNSTMT | EXPRSTMT
@@ -272,7 +286,7 @@
 
 import {
     type BoardConfig, type BoardEdge, type BoardSimplex, type BoardQuad,
-    type Selector, type SelectorType, type BoardModifier,
+    type Selector, type SelectorType, type BoardModifier, type LocalReplaceSelector,
 } from './types.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -318,6 +332,12 @@ export type ClegType =
      * every BoardModifier kind, the same way `sel`/`egr` are each one flat type regardless of which
      * SelectorType/PrescribedBoard they actually hold. */
     | { kind: 'mod' }
+    /** Wraps a real shared/types.ts LocalReplaceSelector - built via `triCentralize`/`quadCentralize`/
+     * `simpCentralize`/`quadOctarize` below (one constructor per LocalReplaceSelector branch), and
+     * consumed only by `localReplace(...)`, which turns one or more into the actual `mod`. One flat
+     * type covering every LocalReplaceSelector kind, the same way `mod` covers every BoardModifier
+     * kind. */
+    | { kind: 'lrs' }
     /** Wraps a MultiSelector (defined below, near ClegValue's own 'msel' variant) - a cleg-internal-
      * only concept, unlike sel/mod (neither of which is exposed via shared/types.ts either, but each
      * wraps something a consumer OUTSIDE cleg's own files also builds/uses: a real
@@ -394,6 +414,7 @@ export type ClegValue =
      * of sync with `value.type`. */
     | { kind: 'sel'; selType: SelectorType; value: Selector }
     | { kind: 'mod'; value: BoardModifier }
+    | { kind: 'lrs'; value: LocalReplaceSelector }
     | { kind: 'msel'; value: MultiSelector }
     | { kind: 'array'; elem: ClegType; value: ClegValue[] }
     /** A set's `value` is always deduplicated by clegSetKey (see makeClegSet) - unlike 'array',

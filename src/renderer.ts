@@ -153,6 +153,7 @@ const _boardConfigDescriptions = new Map([
     ['truncated_24_cell', 'Truncated regular 24-cell'],
     ['truncated_centralized_rect_6_6',
         '6×6 rectangular board with a hub node added to each unit square, truncated, then scaled up'],
+    ['diamond_cubic_9', 'Diamond cubic board'],
 ]);
 
 
@@ -743,6 +744,7 @@ export class Renderer {
     private commandReferenceBoardTypesPanel:        HTMLDivElement;
     private commandReferenceBoardModifiersPanel:    HTMLDivElement;
     private commandReferenceSelectorsPanel:         HTMLDivElement;
+    private commandReferenceLocalReplaceSelectorsPanel: HTMLDivElement;
     private commandReferenceBuiltinFunctionsPanel:  HTMLDivElement;
     private historyPanel:  HTMLDivElement;
     private panelDockBtn: HTMLButtonElement;
@@ -825,6 +827,8 @@ export class Renderer {
             document.getElementById('cmdref-board-modifiers-panel') as HTMLDivElement;
         this.commandReferenceSelectorsPanel =
             document.getElementById('cmdref-selectors-panel') as HTMLDivElement;
+        this.commandReferenceLocalReplaceSelectorsPanel =
+            document.getElementById('cmdref-local-replace-selectors-panel') as HTMLDivElement;
         this.commandReferenceBuiltinFunctionsPanel =
             document.getElementById('cmdref-builtin-functions-panel') as HTMLDivElement;
         this.historyPanel  = document.getElementById('history-panel')   as HTMLDivElement;
@@ -934,6 +938,7 @@ export class Renderer {
             commandReferenceBoardTypesPanel:        this.commandReferenceBoardTypesPanel,
             commandReferenceBoardModifiersPanel:    this.commandReferenceBoardModifiersPanel,
             commandReferenceSelectorsPanel:         this.commandReferenceSelectorsPanel,
+            commandReferenceLocalReplaceSelectorsPanel: this.commandReferenceLocalReplaceSelectorsPanel,
             commandReferenceBuiltinFunctionsPanel:  this.commandReferenceBuiltinFunctionsPanel,
             currentGameSetupPanel: this.currentGameSetupPanel,
             newGamePanel:          this.newGamePanel,
@@ -1715,33 +1720,19 @@ export class Renderer {
                 + 'a side, regardless of whether that lattice came from a triangle or a quad selector '
                 + '(unlike calling triangleForm/quadForm separately, a triangle and a quad sharing an '
                 + 'edge still glue seamlessly here)')}
-            ${row('simpCentralize(n, sel?)',
-                'SimpCentralize: add one new node for every n-simplex (n+1 mutually-adjacent nodes) '
-                + '- or, if a simp n selector sel is given, only the ones it selects - at that '
-                + "simplex's own barycenter, connected to all n+1 of its corners; every original "
-                + "node/edge (including the selected simplex's own) is left untouched. "
-                + 'triCentralize below is its own n=2 special case')}
-            ${row('triCentralize(sel?)',
-                'TriCentralize: add one new node for every triangle (3 mutually-adjacent nodes) - or, '
-                + 'if a triangle selector sel is given, only the ones it selects - at that '
-                + "triangle's own barycenter, connected to all 3 of its corners; every original node/"
-                + 'edge (including the selected triangle\'s own) is left untouched')}
-            ${row('quadCentralize(sel?)',
-                'QuadCentralize: same as triCentralize, but for quads (4-cycles with no diagonal '
-                + 'edges) - the new node connects to all 4 corners')}
-            ${row('centralize([SEL…])',
-                'Centralize: generalizes triCentralize/quadCentralize to one or more selectors at '
-                + 'once (each a triangle or quad selector, string or sel - see Builtin Functions) - '
-                + 'adds one new barycenter-connected node per selected face across all of them, the '
-                + 'same way form generalizes triangleForm/quadForm (but without form\'s own w or '
-                + 'edge-gluing - each new node only connects to its own face\'s corners)')}
+            ${row('localReplace([LRS…])',
+                'LocalReplace: replaces every face named by the given LRS values (each built by '
+                + 'triCentralize/quadCentralize/simpCentralize/quadOctarize/triCentering/'
+                + 'quadCentering/simpCentering - see Local Replacement Selectors) with that '
+                + "value's own local shape - a hub node connected to all of a triangle/n-simplex/"
+                + "quad's own corners (triCentralize/simpCentralize/quadCentralize), an octahedron's "
+                + 'two apex nodes (quadOctarize), or the same hub-and-spoke shape with the face\'s own '
+                + 'original edges dropped instead of kept (triCentering/simpCentering/quadCentering) - '
+                + 'independently per LRS value, the same way form generalizes triangleForm/quadForm '
+                + "(but without form's own w or edge-gluing)")}
             ${row('globalCentralize()',
                 'GlobalCentralize: add one new node at the barycenter of every existing node, connected '
                 + 'to all of them')}
-            ${row('quadOctarize()',
-                'QuadOctarize: add a new dimension, then replace every quad (4-cycle with no diagonal '
-                + 'edges) with an octahedron - two new apex nodes, one on each side along the new '
-                + "dimension, each connected to that quad's 4 corners")}
             ${row('scale(num)', 'Scale: multiply every node\'s natural-dimension position by num')}
             ${row('nis(sel)',
                 'NodeInducedSubgraph: keep only the nodes the given node selector sel (a string, see '
@@ -1785,6 +1776,38 @@ export class Renderer {
             ${row('(rrmp &lt;num&gt; SEL)',
                 'Randomly removes a portion of SEL: num (a nonnegative fraction) times SEL\'s own '
                 + 'size, rounded down')}
+        `);
+
+        this.commandReferenceLocalReplaceSelectorsPanel.innerHTML = table(`
+            ${row('triCentralize(sel?)',
+                'Builds an lrs value (type lrs) naming every triangle (3 mutually-adjacent nodes) - or, '
+                + 'if a triangle selector sel is given, only the ones it selects - to be replaced with '
+                + "a hub node connected to all 3 of that triangle's own corners; pass it to "
+                + 'localReplace (see Board Modifiers) to actually build the mod')}
+            ${row('quadCentralize(sel?)',
+                'Same as triCentralize, but for quads (4-cycles with no diagonal edges) - the new hub '
+                + 'connects to all 4 corners')}
+            ${row('simpCentralize(n, sel?)',
+                'Same as triCentralize, but for n-simplices (n+1 mutually-adjacent nodes) of any arity '
+                + '- or, if a simp n selector sel is given, only the ones it selects; the new hub '
+                + 'connects to all n+1 corners. triCentralize above is its own n=2 special case')}
+            ${row('quadOctarize(sel?)',
+                'Builds an lrs value naming every quad (4-cycle with no diagonal edges) - or, if a '
+                + 'quad selector sel is given, only the ones it selects - to be replaced with an '
+                + 'octahedron: two new apex nodes, one on each side along a new embedding dimension, '
+                + "each connected to that quad's 4 corners")}
+            ${row('quadCentering(sel?)',
+                'Same as quadCentralize, but the quad\'s own 4 original edges are DROPPED rather than '
+                + "kept - its corners end up connected only through the new hub, not to each other "
+                + 'directly')}
+            ${row('simpCentering(n, sel?)',
+                'Same as simpCentralize, but the simplex\'s own original edges are DROPPED rather than '
+                + "kept - its corners end up connected only through the new hub, not to each other "
+                + 'directly')}
+            ${row('triCentering(sel?)',
+                'Same as triCentralize, but the triangle\'s own 3 original edges are DROPPED rather '
+                + "than kept - its corners end up connected only through the new hub, not to each "
+                + 'other directly. simpCentering above is its own n=2 special case')}
         `);
 
         this.commandReferenceBuiltinFunctionsPanel.innerHTML = table(`

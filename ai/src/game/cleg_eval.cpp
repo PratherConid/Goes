@@ -4,6 +4,7 @@
 #include "game/topology.h"
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -48,7 +49,9 @@ static const ClegType NUMBER_TYPE{CTKind::Number, nullptr};
 static const ClegType STRING_TYPE{CTKind::String, nullptr};
 const ClegType EGR_TYPE{CTKind::Egr, nullptr};
 static const ClegType EDGE_TYPE{CTKind::Edge, nullptr};
-static const ClegType TRI_TYPE{CTKind::Tri, nullptr};
+// The one ClegType for a simp value of any arity - see cleg_base.h's own doc comment on why it
+// carries no arity. Mirrors shared/clegEval.ts's SIMP_TYPE.
+static const ClegType SIMP_TYPE{CTKind::Simp, nullptr};
 static const ClegType QUAD_TYPE{CTKind::Quad, nullptr};
 static const ClegType MOD_TYPE{CTKind::Mod, nullptr};
 static const ClegType MSEL_TYPE{CTKind::Msel, nullptr};
@@ -57,56 +60,59 @@ static const ClegType MSEL_TYPE{CTKind::Msel, nullptr};
 // checker's SetLit case (game/cleg_check.cpp).
 bool is_set_elem_kind(CTKind k) {
     return k == CTKind::Number || k == CTKind::String || k == CTKind::Bool ||
-           k == CTKind::Edge || k == CTKind::Tri || k == CTKind::Quad;
+           k == CTKind::Edge || k == CTKind::Simp || k == CTKind::Quad;
 }
 
-static std::string selector_type_word(SelectorType t) {
-    switch (t) {
-        case SelectorType::Node: return "node";
-        case SelectorType::Edge: return "edge";
-        case SelectorType::Tri: return "tri";
-        case SelectorType::Quad: return "quad";
+// Mirrors the TS side's own direct-string-interpolation of a SelectorType (a template-literal string
+// there, e.g. 'simp2' - no space) - used everywhere resolve_selector_arg/resolve_any_kind_selector_arg
+// below report a SelectorType in an error message.
+static std::string selector_type_word(const SelectorType& t) {
+    switch (t.kind) {
+        case SelectorKind::Node: return "node";
+        case SelectorKind::Edge: return "edge";
+        case SelectorKind::Simp: return "simp" + std::to_string(t.n);
+        case SelectorKind::Quad: return "quad";
     }
     throw std::runtime_error("cleg: selector_type_word: unexpected SelectorType");
 }
-// Mirrors shared/clegEval.ts's SELECTOR_SET_ELEM_KIND.
-static CTKind selector_set_elem_kind(SelectorType t) {
-    switch (t) {
-        case SelectorType::Node: return CTKind::Number;
-        case SelectorType::Edge: return CTKind::Edge;
-        case SelectorType::Tri: return CTKind::Tri;
-        case SelectorType::Quad: return CTKind::Quad;
-    }
-    throw std::runtime_error("cleg: selector_set_elem_kind: unexpected SelectorType");
+// Mirrors shared/clegEval.ts's selectorSetElemKind().
+static CTKind selector_set_elem_kind(const SelectorType& t) {
+    if (t.kind == SelectorKind::Node) return CTKind::Number;
+    if (t.kind == SelectorKind::Edge) return CTKind::Edge;
+    if (t.kind == SelectorKind::Quad) return CTKind::Quad;
+    return CTKind::Simp;
 }
 
 // Mirrors shared/clegEval.ts's setValueToSelectedVals() - builds a `raw` Selector wrapping `values`
 // (a `set`'s own deduplicated ClegValue vector) directly, populating whichever of Selector's own
-// raw_nodes/raw_edges/raw_tris/raw_quads (game/selector.h) matches want_kind.
-static Selector raw_selector_from_set(SelectorType want_kind, const std::vector<ClegValue>& values) {
+// raw_nodes/raw_edges/raw_simps/raw_quads (game/selector.h) matches want_kind.
+static Selector raw_selector_from_set(const SelectorType& want_kind, const std::vector<ClegValue>& values) {
     Selector sel; sel.op = SelectorOp::Raw; sel.type = want_kind;
-    switch (want_kind) {
-        case SelectorType::Node:
+    switch (want_kind.kind) {
+        case SelectorKind::Node:
             for (auto& v : values) sel.raw_nodes.insert(static_cast<int>(std::llround(v.number)));
             break;
-        case SelectorType::Edge:
+        case SelectorKind::Edge:
             for (auto& v : values) sel.raw_edges.push_back(v.edge_v);
             break;
-        case SelectorType::Tri:
-            for (auto& v : values) sel.raw_tris.push_back(v.tri_v);
+        case SelectorKind::Simp:
+            for (auto& v : values) sel.raw_simps.push_back(v.simp_v);
             break;
-        case SelectorType::Quad:
+        case SelectorKind::Quad:
             for (auto& v : values) sel.raw_quads.push_back(v.quad_v);
             break;
     }
     return sel;
 }
 
-using SelectorParseFn = Selector (*)(const std::string&);
+// std::function (not a plain function pointer) since simp_centralize's own resolve_selector_arg call
+// below needs a closure capturing `n` (parse_simp_selector's own leading arity argument) - mirrors
+// shared/clegEval.ts's own `(s) => parseSimpSelector(n, s)` inline closure.
+using SelectorParseFn = std::function<Selector(const std::string&)>;
 
 // Mirrors shared/clegEval.ts's resolveSelectorArg().
 static Selector resolve_selector_arg(
-    const std::string& callee, const ClegValue& arg, SelectorType want_kind, SelectorParseFn parse_fn)
+    const std::string& callee, const ClegValue& arg, const SelectorType& want_kind, SelectorParseFn parse_fn)
 {
     if (arg.kind == CTKind::String) return parse_fn(arg.str);
     if (arg.kind == CTKind::Set) {
@@ -114,6 +120,17 @@ static Selector resolve_selector_arg(
             throw std::runtime_error(
                 "cleg: '" + callee + "' expects a " + selector_type_word(want_kind) + " selector, got a set of " +
                 type_to_string(arg.elem));
+        // simp's own ClegType is erased (no arity), so unlike edge/quad, matching elem.kind alone
+        // doesn't guarantee every element is actually simp want_kind.n - each element's own real
+        // arity (nodes.size() - 1) is checked directly instead.
+        if (want_kind.kind == SelectorKind::Simp)
+            for (auto& v : arg.arr_v) {
+                int actual_n = static_cast<int>(v.simp_v.nodes.size()) - 1;
+                if (actual_n != want_kind.n)
+                    throw std::runtime_error(
+                        "cleg: '" + callee + "' expects a set of simp " + std::to_string(want_kind.n) +
+                        " elements, got one of arity " + std::to_string(actual_n));
+            }
         return raw_selector_from_set(want_kind, arg.arr_v);
     }
     // arg.kind == CTKind::Sel
@@ -211,34 +228,51 @@ static BoardArgEntry value_to_board_arg_entry(BoardArgKind kind, const ClegValue
 
 // ── multiProd: N-ary Cartesian board product, restricted by a MultiSelector ────
 
-// Inverse of selector_set_elem_kind above - used only by resolve_any_kind_selector_arg below, which
-// (unlike resolve_selector_arg) has no fixed want_kind to check a set's element type against.
-static bool is_selector_set_elem_kind(CTKind k) {
-    return k == CTKind::Number || k == CTKind::Edge || k == CTKind::Tri || k == CTKind::Quad;
-}
-static SelectorType selector_type_from_set_elem_kind(CTKind k) {
-    switch (k) {
-        case CTKind::Number: return SelectorType::Node;
-        case CTKind::Edge: return SelectorType::Edge;
-        case CTKind::Tri: return SelectorType::Tri;
-        case CTKind::Quad: return SelectorType::Quad;
-        default: throw std::runtime_error("cleg: selector_type_from_set_elem_kind: not a selector-set element kind");
-    }
+// Inverse of selector_set_elem_kind above, for the three SelectorType kinds it CAN determine purely
+// from the CTKind - used only by resolve_any_kind_selector_arg below, which (unlike
+// resolve_selector_arg) has no fixed want_kind of its own to check a set's element type against, so
+// it has to recover a SelectorType FROM the set's own element type instead. CTKind::Simp is handled
+// separately there (see its own comment) - simp's own ClegType is erased (no arity), so unlike
+// node/edge/quad, kind == Simp alone can't determine which SelectorType (simp 2 vs simp 3 vs ...) it
+// corresponds to; only the set's own actual VALUES can. Mirrors shared/clegEval.ts's
+// selectorTypeBySetElem() - returns false (TS: null) for anything it can't determine.
+static bool selector_type_by_set_elem(CTKind k, SelectorType& out) {
+    if (k == CTKind::Number) { out = SelectorType{SelectorKind::Node}; return true; }
+    if (k == CTKind::Edge) { out = SelectorType{SelectorKind::Edge}; return true; }
+    if (k == CTKind::Quad) { out = SelectorType{SelectorKind::Quad}; return true; }
+    return false;
 }
 
 // Mirrors shared/clegEval.ts's resolveAnyKindSelectorArg() - a `sel` value (used directly), a
 // `string` (parsed via game/selector.h's own context-free parse_selector, whichever kind the text
-// itself turns out to be), or a `set` (of number/edge/tri/quad, wrapped into a `raw` Selector, its
-// own kind read off the set's own element type).
+// itself turns out to be), or a `set` (of number/edge/simp/quad, wrapped into a `raw` Selector, its
+// own kind read off the set's own element type). For a set of simp values specifically, the arity
+// can't be read off the set's own (erased) elem type - it's read off the first VALUE's own actual
+// arity instead, and every other value is checked to share it.
 static Selector resolve_any_kind_selector_arg(const std::string& callee, const ClegValue& arg) {
     if (arg.kind == CTKind::Sel) return arg.sel_v;
     if (arg.kind == CTKind::String) return parse_selector(arg.str);
     if (arg.kind == CTKind::Set) {
-        if (!is_selector_set_elem_kind(arg.elem.kind))
+        if (arg.elem.kind == CTKind::Simp) {
+            if (arg.arr_v.empty())
+                throw std::runtime_error(
+                    "cleg: '" + callee + "': an empty simp{} set's own arity can't be determined - pass a "
+                    "non-empty set, a string, or a sel value instead");
+            int n = static_cast<int>(arg.arr_v[0].simp_v.nodes.size()) - 1;
+            for (auto& v : arg.arr_v) {
+                int actual_n = static_cast<int>(v.simp_v.nodes.size()) - 1;
+                if (actual_n != n)
+                    throw std::runtime_error(
+                        "cleg: '" + callee + "': a simp{} set must have uniform arity - got both simp " +
+                        std::to_string(n) + " and simp " + std::to_string(actual_n));
+            }
+            return raw_selector_from_set(simp_type(n), arg.arr_v);
+        }
+        SelectorType want_kind;
+        if (!selector_type_by_set_elem(arg.elem.kind, want_kind))
             throw std::runtime_error(
-                "cleg: '" + callee + "': a selector set must be a set of number/edge/tri/quad, got a set of " +
+                "cleg: '" + callee + "': a selector set must be a set of number/edge/simp/quad, got a set of " +
                 type_to_string(arg.elem));
-        SelectorType want_kind = selector_type_from_set_elem_kind(arg.elem.kind);
         return raw_selector_from_set(want_kind, arg.arr_v);
     }
     throw std::runtime_error("cleg: '" + callee + "': expected sel, string, or set, got " + type_to_string(cleg_value_type(arg)));
@@ -275,12 +309,12 @@ static std::vector<int> tuple_of_full_index(const FullProductIndex& fpi, long lo
 // Mirrors shared/clegEval.ts's restrictBoardBySelector().
 struct RestrictResult { BoardConfig bc; std::vector<int> survivors; };
 static RestrictResult restrict_board_by_selector(const BoardConfig& board, const Selector& sel) {
-    if (sel.type == SelectorType::Node) {
+    if (sel.type == SelectorType{SelectorKind::Node}) {
         auto kept = select_node(board.adj, board.embed, sel);
         std::vector<int> survivors(kept.begin(), kept.end()); // std::set already ascending
         return {node_induced_subgraph(board, kept), std::move(survivors)};
     }
-    if (sel.type == SelectorType::Edge) {
+    if (sel.type == SelectorType{SelectorKind::Edge}) {
         auto edges = select_edge(board.adj, board.embed, sel);
         std::set<int> kept;
         for (auto& e : edges) { kept.insert(e.n1); kept.insert(e.n2); }
@@ -529,11 +563,36 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                 return make_edge_v(make_board_edge(static_cast<int>(args[0].number), static_cast<int>(args[1].number)));
             },
         };
+        // mkTri is kept as fixed-3-argument sugar for mkSimp (below). Mirrors shared/clegEval.ts's
+        // own doc comment on both.
         m["mkTri"] = BuiltinFunction{
-            fixed_signature({NUMBER_TYPE, NUMBER_TYPE, NUMBER_TYPE}, TRI_TYPE),
+            fixed_signature({NUMBER_TYPE, NUMBER_TYPE, NUMBER_TYPE}, SIMP_TYPE),
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
-                return make_tri_v(make_board_triangle(
-                    static_cast<int>(args[0].number), static_cast<int>(args[1].number), static_cast<int>(args[2].number)));
+                return make_simp_v(make_board_simplex(
+                    {static_cast<int>(args[0].number), static_cast<int>(args[1].number), static_cast<int>(args[2].number)}));
+            },
+        };
+        // `mkSimp(n1, ..., nK)`: builds a simp (K-1)-simplex from K >= 3 node indices - the general
+        // counterpart of mkTri above; its own arity is only known at the VALUE level
+        // (BoardSimplex.nodes.size()), so the return ClegType is always the same erased SIMP_TYPE
+        // regardless of K. Mirrors shared/clegEval.ts's mkSimpCheckCall/BUILTIN_FUNCTIONS['mkSimp'].
+        m["mkSimp"] = BuiltinFunction{
+            [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
+                if (arg_types.size() < 3)
+                    throw std::runtime_error(
+                        "cleg: '" + callee + "' expects at least 3 arguments (a simplex needs >= 2 arity, "
+                        "i.e. >= 3 nodes), got " + std::to_string(arg_types.size()));
+                for (size_t i = 0; i < arg_types.size(); i++)
+                    if (arg_types[i].kind != CTKind::Number)
+                        throw std::runtime_error(
+                            "cleg: '" + callee + "' argument " + std::to_string(i + 1) + " must be a number, got " +
+                            type_to_string(arg_types[i]));
+                return SIMP_TYPE;
+            },
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+                std::vector<int> nodes;
+                for (auto& a : args) nodes.push_back(static_cast<int>(a.number));
+                return make_simp_v(make_board_simplex(std::move(nodes)));
             },
         };
         m["mkQuad"] = BuiltinFunction{
@@ -610,7 +669,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             induced_subgraph_mod_check_call,
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 BoardModifier bm{ModifierKind::NodeInducedSubgraph};
-                bm.sel = resolve_selector_arg("nis", args[0], SelectorType::Node, parse_node_selector);
+                bm.sel = resolve_selector_arg("nis", args[0], SelectorType{SelectorKind::Node}, parse_node_selector);
                 return make_mod(bm);
             },
         };
@@ -618,7 +677,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             induced_subgraph_mod_check_call,
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 BoardModifier bm{ModifierKind::EdgeInducedSubgraph};
-                bm.sel = resolve_selector_arg("eis", args[0], SelectorType::Edge, parse_edge_selector);
+                bm.sel = resolve_selector_arg("eis", args[0], SelectorType{SelectorKind::Edge}, parse_edge_selector);
                 return make_mod(bm);
             },
         };
@@ -637,7 +696,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         m["selectNode"] = BuiltinFunction{
             select_set_check_call(NUMBER_TYPE),
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
-                Selector sel = resolve_selector_arg("selectNode", args[0], SelectorType::Node, parse_node_selector);
+                Selector sel = resolve_selector_arg("selectNode", args[0], SelectorType{SelectorKind::Node}, parse_node_selector);
                 const BoardConfig& bc = *args[1].egr_v;
                 auto nodes = select_node(bc.adj, bc.embed, sel);
                 std::vector<ClegValue> values;
@@ -648,7 +707,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         m["selectEdge"] = BuiltinFunction{
             select_set_check_call(EDGE_TYPE),
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
-                Selector sel = resolve_selector_arg("selectEdge", args[0], SelectorType::Edge, parse_edge_selector);
+                Selector sel = resolve_selector_arg("selectEdge", args[0], SelectorType{SelectorKind::Edge}, parse_edge_selector);
                 const BoardConfig& bc = *args[1].egr_v;
                 auto edges = select_edge(bc.adj, bc.embed, sel);
                 std::vector<ClegValue> values;
@@ -657,20 +716,39 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
         };
         m["selectTriangle"] = BuiltinFunction{
-            select_set_check_call(TRI_TYPE),
+            select_set_check_call(SIMP_TYPE),
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
-                Selector sel = resolve_selector_arg("selectTriangle", args[0], SelectorType::Tri, parse_triangle_selector);
+                Selector sel = resolve_selector_arg("selectTriangle", args[0], simp_type(2), parse_triangle_selector);
                 const BoardConfig& bc = *args[1].egr_v;
                 auto tris = select_triangle(bc.adj, bc.embed, sel);
                 std::vector<ClegValue> values;
-                for (auto& t : tris) values.push_back(make_tri_v(t));
-                return make_cleg_set(TRI_TYPE, std::move(values));
+                for (auto& t : tris) values.push_back(make_simp_v(t));
+                return make_cleg_set(SIMP_TYPE, std::move(values));
+            },
+        };
+        // `selectSimp(X, bc)`: the general, any-arity counterpart of selectTriangle above - X is
+        // resolved via resolve_any_kind_selector_arg (like mkSel/form/centralize), whichever arity
+        // its own text/value turns out to be, then checked (at evaluation time, not statically) to
+        // actually be SOME simp N and not e.g. a node/edge/quad selector. Mirrors
+        // shared/clegEval.ts's BUILTIN_FUNCTIONS['selectSimp'].
+        m["selectSimp"] = BuiltinFunction{
+            select_set_check_call(SIMP_TYPE),
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+                Selector sel = resolve_any_kind_selector_arg("selectSimp", args[0]);
+                if (simp_n(sel.type) < 0)
+                    throw std::runtime_error(
+                        "cleg: 'selectSimp' expects a simp selector, got a '" + selector_type_word(sel.type) + "' selector");
+                const BoardConfig& bc = *args[1].egr_v;
+                auto simps = select_simp(bc.adj, bc.embed, sel);
+                std::vector<ClegValue> values;
+                for (auto& t : simps) values.push_back(make_simp_v(t));
+                return make_cleg_set(SIMP_TYPE, std::move(values));
             },
         };
         m["selectQuad"] = BuiltinFunction{
             select_set_check_call(QUAD_TYPE),
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
-                Selector sel = resolve_selector_arg("selectQuad", args[0], SelectorType::Quad, parse_quad_selector);
+                Selector sel = resolve_selector_arg("selectQuad", args[0], SelectorType{SelectorKind::Quad}, parse_quad_selector);
                 const BoardConfig& bc = *args[1].egr_v;
                 auto quads = select_quad(bc.adj, bc.embed, sel);
                 std::vector<ClegValue> values;
@@ -693,7 +771,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 BoardModifier bm{ModifierKind::TriangleForm};
                 bm.split_n = static_cast<int>(args[0].number);
-                if (args.size() == 2) bm.form_sel = resolve_selector_arg("triangleForm", args[1], SelectorType::Tri, parse_triangle_selector);
+                if (args.size() == 2) bm.form_sel = resolve_selector_arg("triangleForm", args[1], simp_type(2), parse_triangle_selector);
                 return make_mod(bm);
             },
         };
@@ -702,7 +780,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 BoardModifier bm{ModifierKind::QuadForm};
                 bm.split_n = static_cast<int>(args[0].number);
-                if (args.size() == 2) bm.form_sel = resolve_selector_arg("quadForm", args[1], SelectorType::Quad, parse_quad_selector);
+                if (args.size() == 2) bm.form_sel = resolve_selector_arg("quadForm", args[1], SelectorType{SelectorKind::Quad}, parse_quad_selector);
                 return make_mod(bm);
             },
         };
@@ -734,11 +812,40 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                 throw std::runtime_error("cleg: '" + callee + "' argument 1: expected sel, string, or set, got " + type_to_string(arg_types[0]));
             return MOD_TYPE;
         };
+        // `simpCentralize(n[, selArg])`: builds a SimpCentralize BoardModifier - `n` (the simplex
+        // arity) followed by an optional selArg (resolved against simp `n`) restricting which
+        // n-simplices get centralized. `n`'s own validity (integer >= 2) is only checked at
+        // evaluation time (simp_centralize's own assert, board_config.cpp) - check_call only ever
+        // sees `n`'s TYPE, never its runtime value. Mirrors shared/clegEval.ts's
+        // simpCentralizeCheckCall/BUILTIN_FUNCTIONS['simpCentralize'].
+        CheckCallFn simp_centralize_check_call = [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
+            if (arg_types.size() != 1 && arg_types.size() != 2)
+                throw std::runtime_error("cleg: '" + callee + "' expects 1 or 2 argument(s), got " + std::to_string(arg_types.size()));
+            if (arg_types[0].kind != CTKind::Number)
+                throw std::runtime_error("cleg: '" + callee + "' argument 1: expected number, got " + type_to_string(arg_types[0]));
+            if (arg_types.size() == 2 && arg_types[1].kind != CTKind::Sel && arg_types[1].kind != CTKind::String && arg_types[1].kind != CTKind::Set)
+                throw std::runtime_error("cleg: '" + callee + "' argument 2: expected sel, string, or set, got " + type_to_string(arg_types[1]));
+            return MOD_TYPE;
+        };
+        m["simpCentralize"] = BuiltinFunction{
+            simp_centralize_check_call,
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+                int n = static_cast<int>(args[0].number);
+                BoardModifier bm{ModifierKind::SimpCentralize}; bm.split_n = n;
+                if (args.size() == 2)
+                    bm.form_sel = resolve_selector_arg(
+                        "simpCentralize", args[1], simp_type(n), [n](const std::string& s) { return parse_simp_selector(n, s); });
+                return make_mod(bm);
+            },
+        };
+
+        // triCentralize is just simpCentralize(2, ...) with its own fixed-shape builtin, kept for
+        // backward compatibility. Mirrors shared/clegEval.ts's own doc comment.
         m["triCentralize"] = BuiltinFunction{
             centralize_mod_check_call,
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 BoardModifier bm{ModifierKind::TriCentralize};
-                if (args.size() == 1) bm.form_sel = resolve_selector_arg("triCentralize", args[0], SelectorType::Tri, parse_triangle_selector);
+                if (args.size() == 1) bm.form_sel = resolve_selector_arg("triCentralize", args[0], simp_type(2), parse_triangle_selector);
                 return make_mod(bm);
             },
         };
@@ -746,7 +853,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             centralize_mod_check_call,
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 BoardModifier bm{ModifierKind::QuadCentralize};
-                if (args.size() == 1) bm.form_sel = resolve_selector_arg("quadCentralize", args[0], SelectorType::Quad, parse_quad_selector);
+                if (args.size() == 1) bm.form_sel = resolve_selector_arg("quadCentralize", args[0], SelectorType{SelectorKind::Quad}, parse_quad_selector);
                 return make_mod(bm);
             },
         };

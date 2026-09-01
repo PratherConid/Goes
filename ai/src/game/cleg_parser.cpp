@@ -136,7 +136,7 @@ private:
 
 static const std::set<std::string>& type_keywords() {
     static const std::set<std::string> kws = {
-        "egr", "number", "string", "bool", "edge", "tri", "quad", "sel", "mod", "msel",
+        "egr", "number", "string", "bool", "edge", "simp", "tri", "quad", "sel", "mod", "msel",
     };
     return kws;
 }
@@ -144,17 +144,19 @@ static const std::set<std::string>& type_keywords() {
 // to check the raw base-type TOKEN (a string) before any ClegType/CTKind exists yet, unlike the type
 // checker's own SetLit case, which already has a resolved CTKind to check instead.
 static const std::set<std::string>& set_elem_kind_words() {
-    static const std::set<std::string> kws = {"number", "string", "bool", "edge", "tri", "quad"};
+    static const std::set<std::string> kws = {"number", "string", "bool", "edge", "simp", "tri", "quad"};
     return kws;
 }
 
+// "tri" is an older spelling of the same (now-erased) simp type - both map to CTKind::Simp. Mirrors
+// shared/clegBase.ts's own "tri means the same type as simp" note (its own top comment).
 static CTKind base_type_kind(const std::string& base) {
     if (base == "egr") return CTKind::Egr;
     if (base == "number") return CTKind::Number;
     if (base == "string") return CTKind::String;
     if (base == "bool") return CTKind::Bool;
     if (base == "edge") return CTKind::Edge;
-    if (base == "tri") return CTKind::Tri;
+    if (base == "simp" || base == "tri") return CTKind::Simp;
     if (base == "quad") return CTKind::Quad;
     if (base == "sel") return CTKind::Sel;
     if (base == "mod") return CTKind::Mod;
@@ -176,7 +178,7 @@ static ClegType parse_type(TokenCursor& c) {
     } else {
         std::string base = c.expect_ident();
         if (!type_keywords().count(base))
-            throw std::runtime_error("cleg: expected a type (egr/number/string/bool/edge/tri/quad/sel/mod), got '" + base + "'");
+            throw std::runtime_error("cleg: expected a type (egr/number/string/bool/edge/simp/tri/quad/sel/mod), got '" + base + "'");
         type = ClegType{base_type_kind(base), nullptr};
         if (c.is_punct("{")) {
             if (!set_elem_kind_words().count(base))

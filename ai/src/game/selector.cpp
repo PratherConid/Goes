@@ -80,29 +80,29 @@ static double next_nonneg_number(ParseCursor& c, const std::string& context) {
 
 static Selector parse_sel_expr(ParseCursor& c);
 
-// Display name for `type` used in parse_sel_expr's own rejection messages - Tri reads as "triangle"
-// here (unlike describe_selector_type's "a tri" below, used by parse_top_level's own and each
-// evaluator's own wrong-kind-selector messages). Mirrors shared/selector.ts's selectorKindName.
-static std::string selector_kind_name(SelectorType type) {
-    switch (type) {
-        case SelectorType::Node: return "node";
-        case SelectorType::Edge: return "edge";
-        case SelectorType::Tri:  return "triangle";
-        case SelectorType::Quad: return "quad";
+// True iff `type` is some simp N (of any N) - the general stand-in every place that used to check
+// for the fixed old Tri kind specifically now needs. Mirrors shared/selector.ts's isSimpType().
+static bool is_simp_type(const SelectorType& type) { return type.kind == SelectorKind::Simp; }
+
+// Display name for `type` used in parse_sel_expr's own rejection messages and
+// describe_selector_type below - simp N reads as "simp N" (N=2 still reads as "triangle", since
+// that's the name every existing triangle-specific error message already uses). Mirrors
+// shared/selector.ts's selectorKindName().
+static std::string selector_kind_name(const SelectorType& type) {
+    switch (type.kind) {
+        case SelectorKind::Node: return "node";
+        case SelectorKind::Edge: return "edge";
+        case SelectorKind::Quad: return "quad";
+        case SelectorKind::Simp: return type.n == 2 ? "triangle" : "simp " + std::to_string(type.n);
     }
     throw std::runtime_error("selector_kind_name: unknown type");
 }
 
-// "a node"/"an edge"/"a tri"/"a quad" - shared by parse_top_level's own wrong-result-kind message
+// "a node"/"an edge"/"a simp 3"/"a quad" - shared by parse_top_level's own wrong-result-kind message
 // below, and by each evaluator's own wrong-kind error message further down.
-static std::string describe_selector_type(SelectorType type) {
-    switch (type) {
-        case SelectorType::Node: return "a node";
-        case SelectorType::Edge: return "an edge";
-        case SelectorType::Tri:  return "a tri";
-        case SelectorType::Quad: return "a quad";
-    }
-    throw std::runtime_error("describe_selector_type: unknown type");
+static std::string describe_selector_type(const SelectorType& type) {
+    std::string name = selector_kind_name(type);
+    return (type.kind == SelectorKind::Edge ? "an " : "a ") + name;
 }
 
 // The grammar's own op keyword for `op` - shared by parse_top_level's own wrong-result-kind message
@@ -127,30 +127,43 @@ static std::string selector_op_keyword(SelectorOp op) {
     throw std::runtime_error("selector_op_keyword: unknown op");
 }
 
-// Parses a node/edge/tri/quad kind token, throwing `context`'s own "kind must be..." message (naming
-// `op` in it) if `tok` isn't one. Shared by parse_sel_expr's own all/none case and parse_conversion
-// below - both read a leading kind token with the same accepted set and the same error shape.
-static SelectorType parse_kind_token(const std::string& tok, const std::string& op, const std::string& noun) {
-    if (tok == "node") return SelectorType::Node;
-    if (tok == "edge") return SelectorType::Edge;
-    if (tok == "tri") return SelectorType::Tri;
-    if (tok == "quad") return SelectorType::Quad;
+// Parses a node/edge/quad/tri/"simp N" kind token (the shape (all ...)/(none ...)/conva/conve's own
+// leading token all share) - 'tri' is sugar for simp_type(2); 'simp' consumes one more token from
+// `c`, an integer >= 2, and builds simp_type(n). `op`/`noun` name the production in the thrown
+// error. Mirrors shared/selector.ts's parseSelectorTypeToken().
+static SelectorType parse_kind_token(ParseCursor& c, const std::string& op, const std::string& noun) {
+    std::string tok = c.next();
+    if (tok == "node") return SelectorType{SelectorKind::Node};
+    if (tok == "edge") return SelectorType{SelectorKind::Edge};
+    if (tok == "quad") return SelectorType{SelectorKind::Quad};
+    if (tok == "tri") return simp_type(2);
+    if (tok == "simp") {
+        std::string n_tok = c.next();
+        size_t end = 0;
+        double n = 0;
+        bool ok = false;
+        try { n = std::stod(n_tok, &end); ok = end == n_tok.size(); } catch (...) { ok = false; }
+        if (!ok || !std::isfinite(n) || n != std::floor(n) || n < 2)
+            throw std::runtime_error(
+                "selector: (" + op + " ...) 'simp' arity must be an integer >= 2, got '" + n_tok + "'");
+        return simp_type(static_cast<int>(n));
+    }
     throw std::runtime_error(
-        "selector: (" + op + " ...) " + noun + " must be 'node', 'edge', 'tri', or 'quad', got '" + tok + "'");
+        "selector: (" + op + " ...) " + noun + " must be 'node', 'edge', 'simp <n>', 'tri', or 'quad', got '" + tok + "'");
 }
 
-// Mirrors shared/selector.ts's parseConversion() - the leading node/edge/tri/quad token now names
-// the "to"/result kind (see selector.h's own top comment); the operand is parsed via the ordinary
-// context-free parse_sel_expr(c), and its own bottom-up-inferred `type` is the "from" kind.
+// Mirrors shared/selector.ts's parseConversion() - the leading kind token now names the "to"/result
+// kind (see selector.h's own top comment); the operand is parsed via the ordinary context-free
+// parse_sel_expr(c), and its own bottom-up-inferred `type` is the "from" kind.
 static Selector parse_conversion(ParseCursor& c, SelectorOp op) {
     std::string op_name = op == SelectorOp::Conva ? "conva" : "conve";
-    SelectorType to_type = parse_kind_token(c.next(), op_name, "result kind");
+    SelectorType to_type = parse_kind_token(c, op_name, "result kind");
     Selector a = parse_sel_expr(c);
     c.expect(")");
-    if ((a.type == SelectorType::Tri && to_type == SelectorType::Quad) ||
-        (a.type == SelectorType::Quad && to_type == SelectorType::Tri))
+    if ((is_simp_type(a.type) && to_type.kind == SelectorKind::Quad) ||
+        (a.type.kind == SelectorKind::Quad && is_simp_type(to_type)))
         throw std::runtime_error(
-            "selector: (" + op_name + " ...) has no association defined between 'tri' and 'quad'");
+            "selector: (" + op_name + " ...) has no association defined between 'simp' and 'quad'");
     if (a.type == to_type) return a; // same-kind conversion is a no-op
     Selector sel;
     sel.op = op; sel.type = to_type; sel.from = a.type;
@@ -217,7 +230,7 @@ static Selector parse_sel_expr(ParseCursor& c) {
         if (c.peek() != "(") sel.steps = next_nonneg_int(c, "(more ...) step count");
         sel.a = std::make_shared<Selector>(parse_sel_expr(c));
         c.expect(")");
-        if (sel.a->type != SelectorType::Node && sel.a->type != SelectorType::Edge)
+        if (sel.a->type != SelectorType{SelectorKind::Node} && sel.a->type != SelectorType{SelectorKind::Edge})
             throw std::runtime_error(
                 "selector: (more ...) requires a node or edge selector, got a " +
                 selector_kind_name(sel.a->type) + " selector");
@@ -226,7 +239,7 @@ static Selector parse_sel_expr(ParseCursor& c) {
     }
     if (op == "all" || op == "none") {
         SelectorOp sop = op == "all" ? SelectorOp::All : SelectorOp::None;
-        SelectorType kind = parse_kind_token(c.next(), op, "kind");
+        SelectorType kind = parse_kind_token(c, op, "kind");
         c.expect(")");
         return Selector{sop, kind};
     }
@@ -241,7 +254,7 @@ static Selector parse_sel_expr(ParseCursor& c) {
         int n = next_nonneg_int(c, "(deg ...) argument");
         c.expect(")");
         Selector sel;
-        sel.op = SelectorOp::Deg; sel.type = SelectorType::Node; sel.cmp = cmp; sel.n = n;
+        sel.op = SelectorOp::Deg; sel.type = SelectorType{SelectorKind::Node}; sel.cmp = cmp; sel.n = n;
         return sel;
     }
     if (op == "conva" || op == "conve")
@@ -292,10 +305,11 @@ static Selector parse_top_level(const std::string& s, SelectorType want) {
     return sel;
 }
 
-Selector parse_node_selector(const std::string& s) { return parse_top_level(s, SelectorType::Node); }
-Selector parse_edge_selector(const std::string& s) { return parse_top_level(s, SelectorType::Edge); }
-Selector parse_triangle_selector(const std::string& s) { return parse_top_level(s, SelectorType::Tri); }
-Selector parse_quad_selector(const std::string& s) { return parse_top_level(s, SelectorType::Quad); }
+Selector parse_node_selector(const std::string& s) { return parse_top_level(s, SelectorType{SelectorKind::Node}); }
+Selector parse_edge_selector(const std::string& s) { return parse_top_level(s, SelectorType{SelectorKind::Edge}); }
+Selector parse_triangle_selector(const std::string& s) { return parse_top_level(s, simp_type(2)); }
+Selector parse_simp_selector(int n, const std::string& s) { return parse_top_level(s, simp_type(n)); }
+Selector parse_quad_selector(const std::string& s) { return parse_top_level(s, SelectorType{SelectorKind::Quad}); }
 
 // Renders a double the way JS's default Number->string conversion would for the plain decimal
 // literals (rrmp) actually seen in board presets ("0.1", "0.6666", "1", ...) - an integral value
@@ -309,17 +323,19 @@ static std::string format_double(double d) {
     return oss.str();
 }
 
-// The literal grammar token for `type` ("node"/"edge"/"tri"/"quad") - used by format_selector's own
-// All/None/Conva/Conve cases below (the inverse of parse_kind_token above); unlike
-// selector_kind_name's long form ("triangle" for Tri), this is what actually appears in the SEL text.
-static std::string selector_kind_token(SelectorType type) {
-    switch (type) {
-        case SelectorType::Node: return "node";
-        case SelectorType::Edge: return "edge";
-        case SelectorType::Tri:  return "tri";
-        case SelectorType::Quad: return "quad";
+// Renders a SelectorType back into its own grammar token(s) - "node"/"edge"/"quad" as-is, or
+// "simp N" (two tokens) for a simp type - used by format_selector's own All/None/Conva/Conve cases
+// below (the inverse of parse_kind_token above). Always uses the canonical "simp N" spelling, even
+// for simp 2 - round-tripping doesn't preserve "tri" sugar, only meaning (the same simp 2 Selector
+// results either way). Mirrors shared/selector.ts's formatSelectorType().
+static std::string format_selector_type(const SelectorType& type) {
+    switch (type.kind) {
+        case SelectorKind::Node: return "node";
+        case SelectorKind::Edge: return "edge";
+        case SelectorKind::Quad: return "quad";
+        case SelectorKind::Simp: return "simp " + std::to_string(type.n);
     }
-    throw std::runtime_error("selector_kind_token: unknown type");
+    throw std::runtime_error("format_selector_type: unknown type");
 }
 
 // Mirrors shared/selector.ts's formatSelector() - the inverse of parsing.
@@ -340,8 +356,8 @@ std::string format_selector(const Selector& sel) {
             return sel.steps.has_value()
                 ? "(more " + std::to_string(*sel.steps) + " " + format_selector(*sel.a) + ")"
                 : "(more " + format_selector(*sel.a) + ")";
-        case SelectorOp::All:   return "(all " + selector_kind_token(sel.type) + ")";
-        case SelectorOp::None:  return "(none " + selector_kind_token(sel.type) + ")";
+        case SelectorOp::All:   return "(all " + format_selector_type(sel.type) + ")";
+        case SelectorOp::None:  return "(none " + format_selector_type(sel.type) + ")";
         case SelectorOp::Deg: {
             std::string cmp = sel.cmp == DegCmp::Eq ? "eq" : sel.cmp == DegCmp::Gt ? "gt" : "lt";
             return "(deg " + cmp + " " + std::to_string(sel.n) + ")";
@@ -351,7 +367,7 @@ std::string format_selector(const Selector& sel) {
             // sel.type is the "to"/result kind - see selector.h's own top comment on why that's what
             // the explicit token now names (sel.from, the "to" kind's mirror, is read off sel.a's own
             // type instead, so it doesn't need spelling out here).
-            return "(" + name + " " + selector_kind_token(sel.type) + " " + format_selector(*sel.a) + ")";
+            return "(" + name + " " + format_selector_type(sel.type) + " " + format_selector(*sel.a) + ")";
         }
         case SelectorOp::Rrmn: return "(rrmn " + std::to_string(sel.count) + " " + format_selector(*sel.a) + ")";
         case SelectorOp::Rrmp: return "(rrmp " + format_double(sel.frac) + " " + format_selector(*sel.a) + ")";
@@ -376,7 +392,7 @@ bool Selector::operator==(const Selector& other) const {
     if (op == SelectorOp::Union || op == SelectorOp::Inter) return items == other.items;
     if (op == SelectorOp::Raw)
         return raw_nodes == other.raw_nodes && raw_edges == other.raw_edges &&
-               raw_tris == other.raw_tris && raw_quads == other.raw_quads;
+               raw_simps == other.raw_simps && raw_quads == other.raw_quads;
     return true;
 }
 
@@ -388,16 +404,21 @@ static int degree(const std::vector<std::vector<int>>& adj, int i) {
     return d;
 }
 
-// BoardEdge/BoardTriangle/BoardQuad aren't valid std::set/std::unordered_map keys themselves (two
+// BoardEdge/BoardSimplex/BoardQuad aren't valid std::set/std::unordered_map keys themselves (two
 // structurally-equal values are different objects, and none has an operator< or std::hash), so
-// union/inter/diff/compl below key them by these canonical string ids (n1 < n2 < ... already makes
-// each one unique per object) whenever they need set-like membership tests. Mirrors
-// shared/selector.ts's edgeKey()/triKey()/sqKey().
+// union/inter/diff/compl below key them by these canonical string ids (n1 < n2 < ...`/`nodes`
+// ascending already makes each one unique per object) whenever they need set-like membership tests.
+// Mirrors shared/selector.ts's edgeKey()/simpKey()/quadKey().
 static std::string edge_key(const BoardEdge& e) {
     return std::to_string(e.n1) + "," + std::to_string(e.n2);
 }
-static std::string tri_key(const BoardTriangle& t) {
-    return std::to_string(t.n1) + "," + std::to_string(t.n2) + "," + std::to_string(t.n3);
+static std::string simp_key(const BoardSimplex& t) {
+    std::string key;
+    for (size_t i = 0; i < t.nodes.size(); i++) {
+        if (i) key += ",";
+        key += std::to_string(t.nodes[i]);
+    }
+    return key;
 }
 static std::string quad_key(const BoardQuad& s) {
     return std::to_string(s.n1) + "," + std::to_string(s.n2) + "," + std::to_string(s.n3) + "," + std::to_string(s.n4);
@@ -430,7 +451,7 @@ static int node_key(const int& n) { return n; }
 
 // True iff `a`'s own members are completely contained in `b`'s, or vice versa - the general
 // "association" test conva/conve rely on (see selector.h's own top comment). Every object kind here
-// has a fixed arity (node 1, edge 2, triangle 3, quad 4) and every object's own members are
+// has a fixed arity (node 1, edge 2, simp N N+1, quad 4) and every object's own members are
 // distinct node indices, so containment can only ever run from the smaller-arity list into the
 // larger one; this checks whichever direction applies rather than assuming a fixed order.
 static bool is_associated(const std::vector<int>& a, const std::vector<int>& b) {
@@ -470,7 +491,7 @@ static std::vector<T> convert_objects(
 std::set<int> select_node(const std::vector<std::vector<int>>& adj,
                            const std::vector<std::vector<unsigned>>& pos,
                            const Selector& sel) {
-    if (sel.type != SelectorType::Node)
+    if (sel.type != SelectorType{SelectorKind::Node})
         throw std::runtime_error("select_node: expected a node selector, got " + describe_selector_type(sel.type));
     int N = static_cast<int>(adj.size());
     switch (sel.op) {
@@ -483,7 +504,7 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
             return out;
         }
         case SelectorOp::Inter: {
-            if (sel.items.empty()) return select_node(adj, pos, Selector{SelectorOp::All, SelectorType::Node});
+            if (sel.items.empty()) return select_node(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Node}});
             auto acc = select_node(adj, pos, sel.items[0]);
             for (size_t i = 1; i < sel.items.size(); i++) {
                 auto next = select_node(adj, pos, sel.items[i]);
@@ -543,11 +564,11 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
         }
         case SelectorOp::Conva: case SelectorOp::Conve: {
             bool require_all = sel.op == SelectorOp::Conva;
-            if (sel.from == SelectorType::Node) return select_node(adj, pos, *sel.a); // same-kind: no-op (defensive)
+            if (sel.from == SelectorType{SelectorKind::Node}) return select_node(adj, pos, *sel.a); // same-kind: no-op (defensive)
             std::vector<int> to_nodes(N);
             for (int i = 0; i < N; i++) to_nodes[i] = i;
-            if (sel.from == SelectorType::Edge) {
-                auto all_from = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType::Edge});
+            if (sel.from == SelectorType{SelectorKind::Edge}) {
+                auto all_from = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Edge}});
                 std::set<std::string> selected_keys;
                 for (auto& e : select_edge(adj, pos, *sel.a)) selected_keys.insert(edge_key(e));
                 auto result = convert_objects<BoardEdge, int, std::string>(
@@ -556,17 +577,17 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
                     edge_key, selected_keys, require_all);
                 return std::set<int>(result.begin(), result.end());
             }
-            if (sel.from == SelectorType::Tri) {
-                auto all_from = select_triangle(adj, pos, Selector{SelectorOp::All, SelectorType::Tri});
+            if (is_simp_type(sel.from)) {
+                auto all_from = select_simp(adj, pos, Selector{SelectorOp::All, sel.from});
                 std::set<std::string> selected_keys;
-                for (auto& t : select_triangle(adj, pos, *sel.a)) selected_keys.insert(tri_key(t));
-                auto result = convert_objects<BoardTriangle, int, std::string>(
+                for (auto& t : select_simp(adj, pos, *sel.a)) selected_keys.insert(simp_key(t));
+                auto result = convert_objects<BoardSimplex, int, std::string>(
                     to_nodes, node_members, all_from,
-                    +[](const BoardTriangle& t) -> std::vector<int> { return { t.n1, t.n2, t.n3 }; },
-                    tri_key, selected_keys, require_all);
+                    +[](const BoardSimplex& t) -> std::vector<int> { return t.nodes; },
+                    simp_key, selected_keys, require_all);
                 return std::set<int>(result.begin(), result.end());
             }
-            auto all_from = select_quad(adj, pos, Selector{SelectorOp::All, SelectorType::Quad});
+            auto all_from = select_quad(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
             std::set<std::string> selected_keys;
             for (auto& s : select_quad(adj, pos, *sel.a)) selected_keys.insert(quad_key(s));
             auto result = convert_objects<BoardQuad, int, std::string>(
@@ -598,7 +619,7 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
 std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
                                     const std::vector<std::vector<unsigned>>& pos,
                                     const Selector& sel) {
-    if (sel.type != SelectorType::Edge)
+    if (sel.type != SelectorType{SelectorKind::Edge})
         throw std::runtime_error("select_edge: expected an edge selector, got " + describe_selector_type(sel.type));
     int N = static_cast<int>(adj.size());
     switch (sel.op) {
@@ -611,7 +632,7 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
             return dedupe_by_key<BoardEdge, std::string>(all, edge_key);
         }
         case SelectorOp::Inter: {
-            if (sel.items.empty()) return select_edge(adj, pos, Selector{SelectorOp::All, SelectorType::Edge});
+            if (sel.items.empty()) return select_edge(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Edge}});
             auto acc = select_edge(adj, pos, sel.items[0]);
             for (size_t i = 1; i < sel.items.size(); i++) {
                 auto next = select_edge(adj, pos, sel.items[i]);
@@ -682,10 +703,10 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
             return {};
         case SelectorOp::Conva: case SelectorOp::Conve: {
             bool require_all = sel.op == SelectorOp::Conva;
-            if (sel.from == SelectorType::Edge) return select_edge(adj, pos, *sel.a); // same-kind: no-op (defensive)
-            auto all_to = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType::Edge});
+            if (sel.from == SelectorType{SelectorKind::Edge}) return select_edge(adj, pos, *sel.a); // same-kind: no-op (defensive)
+            auto all_to = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Edge}});
             auto edge_members = +[](const BoardEdge& e) -> std::vector<int> { return { e.n1, e.n2 }; };
-            if (sel.from == SelectorType::Node) {
+            if (sel.from == SelectorType{SelectorKind::Node}) {
                 std::set<int> selected_keys;
                 for (int n : select_node(adj, pos, *sel.a)) selected_keys.insert(n);
                 std::vector<int> all_from(N);
@@ -693,16 +714,16 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
                 return convert_objects<int, BoardEdge, int>(
                     all_to, edge_members, all_from, node_members, node_key, selected_keys, require_all);
             }
-            if (sel.from == SelectorType::Tri) {
-                auto all_from = select_triangle(adj, pos, Selector{SelectorOp::All, SelectorType::Tri});
+            if (is_simp_type(sel.from)) {
+                auto all_from = select_simp(adj, pos, Selector{SelectorOp::All, sel.from});
                 std::set<std::string> selected_keys;
-                for (auto& t : select_triangle(adj, pos, *sel.a)) selected_keys.insert(tri_key(t));
-                return convert_objects<BoardTriangle, BoardEdge, std::string>(
+                for (auto& t : select_simp(adj, pos, *sel.a)) selected_keys.insert(simp_key(t));
+                return convert_objects<BoardSimplex, BoardEdge, std::string>(
                     all_to, edge_members, all_from,
-                    +[](const BoardTriangle& t) -> std::vector<int> { return { t.n1, t.n2, t.n3 }; },
-                    tri_key, selected_keys, require_all);
+                    +[](const BoardSimplex& t) -> std::vector<int> { return t.nodes; },
+                    simp_key, selected_keys, require_all);
             }
-            auto all_from = select_quad(adj, pos, Selector{SelectorOp::All, SelectorType::Quad});
+            auto all_from = select_quad(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
             std::set<std::string> selected_keys;
             for (auto& s : select_quad(adj, pos, *sel.a)) selected_keys.insert(quad_key(s));
             return convert_objects<BoardQuad, BoardEdge, std::string>(
@@ -726,100 +747,115 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
     }
 }
 
-std::vector<BoardTriangle> select_triangle(const std::vector<std::vector<int>>& adj,
-                                            const std::vector<std::vector<unsigned>>& pos,
-                                            const Selector& sel) {
-    if (sel.type != SelectorType::Tri)
+std::vector<BoardSimplex> select_simp(const std::vector<std::vector<int>>& adj,
+                                       const std::vector<std::vector<unsigned>>& pos,
+                                       const Selector& sel) {
+    int n = simp_n(sel.type);
+    if (n < 0)
         throw std::runtime_error(
-            "select_triangle: expected a triangle selector, got " + describe_selector_type(sel.type));
+            "select_simp: expected a simp selector, got " + describe_selector_type(sel.type));
     switch (sel.op) {
         case SelectorOp::Union: {
-            std::vector<BoardTriangle> all;
+            std::vector<BoardSimplex> all;
             for (auto& item : sel.items) {
-                auto s = select_triangle(adj, pos, item);
+                auto s = select_simp(adj, pos, item);
                 all.insert(all.end(), s.begin(), s.end());
             }
-            std::set<std::string> seen;
-            std::vector<BoardTriangle> deduped;
-            for (auto& t : all) if (seen.insert(tri_key(t)).second) deduped.push_back(t);
-            return deduped;
+            return dedupe_by_key<BoardSimplex, std::string>(all, simp_key);
         }
         case SelectorOp::Inter: {
-            if (sel.items.empty()) return select_triangle(adj, pos, Selector{SelectorOp::All, SelectorType::Tri});
-            auto acc = select_triangle(adj, pos, sel.items[0]);
+            if (sel.items.empty()) return select_simp(adj, pos, Selector{SelectorOp::All, sel.type});
+            auto acc = select_simp(adj, pos, sel.items[0]);
             for (size_t i = 1; i < sel.items.size(); i++) {
-                auto next = select_triangle(adj, pos, sel.items[i]);
+                auto next = select_simp(adj, pos, sel.items[i]);
                 std::set<std::string> next_keys;
-                for (auto& t : next) next_keys.insert(tri_key(t));
-                std::vector<BoardTriangle> out;
-                for (auto& t : acc) if (next_keys.count(tri_key(t))) out.push_back(t);
+                for (auto& t : next) next_keys.insert(simp_key(t));
+                std::vector<BoardSimplex> out;
+                for (auto& t : acc) if (next_keys.count(simp_key(t))) out.push_back(t);
                 acc = std::move(out);
             }
             return acc;
         }
         case SelectorOp::Diff: {
-            auto a = select_triangle(adj, pos, *sel.a);
+            auto a = select_simp(adj, pos, *sel.a);
             std::set<std::string> b_keys;
-            for (auto& t : select_triangle(adj, pos, *sel.b)) b_keys.insert(tri_key(t));
-            std::vector<BoardTriangle> out;
-            for (auto& t : a) if (!b_keys.count(tri_key(t))) out.push_back(t);
+            for (auto& t : select_simp(adj, pos, *sel.b)) b_keys.insert(simp_key(t));
+            std::vector<BoardSimplex> out;
+            for (auto& t : a) if (!b_keys.count(simp_key(t))) out.push_back(t);
             return out;
         }
         case SelectorOp::Compl: {
             std::set<std::string> a_keys;
-            for (auto& t : select_triangle(adj, pos, *sel.a)) a_keys.insert(tri_key(t));
-            std::vector<BoardTriangle> out;
-            for (auto& t : find_triangles(adj)) if (!a_keys.count(tri_key(t))) out.push_back(t);
+            for (auto& t : select_simp(adj, pos, *sel.a)) a_keys.insert(simp_key(t));
+            std::vector<BoardSimplex> out;
+            for (auto& t : find_simplices(adj, n)) if (!a_keys.count(simp_key(t))) out.push_back(t);
             return out;
         }
         case SelectorOp::All:
-            return find_triangles(adj);
+            return find_simplices(adj, n);
         case SelectorOp::None:
             return {};
         case SelectorOp::Conva: case SelectorOp::Conve: {
-            if (sel.from == SelectorType::Quad)
-                throw std::runtime_error("select_triangle: no association is defined between 'tri' and 'quad'");
+            if (sel.from == SelectorType{SelectorKind::Quad})
+                throw std::runtime_error("select_simp: no association is defined between 'simp' and 'quad'");
             bool require_all = sel.op == SelectorOp::Conva;
-            if (sel.from == SelectorType::Tri) return select_triangle(adj, pos, *sel.a); // same-kind: no-op (defensive)
-            auto all_to = select_triangle(adj, pos, Selector{SelectorOp::All, SelectorType::Tri});
-            auto tri_members = +[](const BoardTriangle& t) -> std::vector<int> { return { t.n1, t.n2, t.n3 }; };
-            if (sel.from == SelectorType::Node) {
+            if (sel.from == sel.type) return select_simp(adj, pos, *sel.a); // same-kind: no-op (defensive)
+            auto all_to = select_simp(adj, pos, Selector{SelectorOp::All, sel.type});
+            auto simp_members = +[](const BoardSimplex& t) -> std::vector<int> { return t.nodes; };
+            if (sel.from == SelectorType{SelectorKind::Node}) {
                 std::set<int> selected_keys;
-                for (int n : select_node(adj, pos, *sel.a)) selected_keys.insert(n);
+                for (int n2 : select_node(adj, pos, *sel.a)) selected_keys.insert(n2);
                 std::vector<int> all_from(adj.size());
                 for (size_t i = 0; i < adj.size(); i++) all_from[i] = static_cast<int>(i);
-                return convert_objects<int, BoardTriangle, int>(
-                    all_to, tri_members, all_from, node_members, node_key, selected_keys, require_all);
+                return convert_objects<int, BoardSimplex, int>(
+                    all_to, simp_members, all_from, node_members, node_key, selected_keys, require_all);
             }
-            // sel.from == SelectorType::Edge
-            auto all_from = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType::Edge});
+            if (sel.from == SelectorType{SelectorKind::Edge}) {
+                auto all_from = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Edge}});
+                std::set<std::string> selected_keys;
+                for (auto& e : select_edge(adj, pos, *sel.a)) selected_keys.insert(edge_key(e));
+                return convert_objects<BoardEdge, BoardSimplex, std::string>(
+                    all_to, simp_members, all_from,
+                    +[](const BoardEdge& e) -> std::vector<int> { return { e.n1, e.n2 }; },
+                    edge_key, selected_keys, require_all);
+            }
+            // sel.from is some other simp M (M != n, checked above) - the simp <-> simp conversion,
+            // via the same general containment rule as every other pair.
+            auto all_from = select_simp(adj, pos, Selector{SelectorOp::All, sel.from});
             std::set<std::string> selected_keys;
-            for (auto& e : select_edge(adj, pos, *sel.a)) selected_keys.insert(edge_key(e));
-            return convert_objects<BoardEdge, BoardTriangle, std::string>(
-                all_to, tri_members, all_from,
-                +[](const BoardEdge& e) -> std::vector<int> { return { e.n1, e.n2 }; },
-                edge_key, selected_keys, require_all);
+            for (auto& t : select_simp(adj, pos, *sel.a)) selected_keys.insert(simp_key(t));
+            return convert_objects<BoardSimplex, BoardSimplex, std::string>(
+                all_to, simp_members, all_from, simp_members, simp_key, selected_keys, require_all);
         }
         case SelectorOp::Rrmn: {
-            auto base = select_triangle(adj, pos, *sel.a);
+            auto base = select_simp(adj, pos, *sel.a);
             return randomly_remove(base, sel.count);
         }
         case SelectorOp::Rrmp: {
-            auto base = select_triangle(adj, pos, *sel.a);
+            auto base = select_simp(adj, pos, *sel.a);
             int remove_count = static_cast<int>(std::floor(sel.frac * static_cast<double>(base.size())));
             return randomly_remove(base, remove_count);
         }
         case SelectorOp::Raw:
-            return sel.raw_tris;
+            return sel.raw_simps;
         default:
-            throw std::runtime_error("select_triangle: unexpected triangle-selector op");
+            throw std::runtime_error("select_simp: unexpected simp-selector op");
     }
+}
+
+std::vector<BoardSimplex> select_triangle(const std::vector<std::vector<int>>& adj,
+                                           const std::vector<std::vector<unsigned>>& pos,
+                                           const Selector& sel) {
+    if (sel.type != simp_type(2))
+        throw std::runtime_error(
+            "select_triangle: expected a triangle selector, got " + describe_selector_type(sel.type));
+    return select_simp(adj, pos, sel);
 }
 
 std::vector<BoardQuad> select_quad(const std::vector<std::vector<int>>& adj,
                                         const std::vector<std::vector<unsigned>>& pos,
                                         const Selector& sel) {
-    if (sel.type != SelectorType::Quad)
+    if (sel.type != SelectorType{SelectorKind::Quad})
         throw std::runtime_error(
             "select_quad: expected a quad selector, got " + describe_selector_type(sel.type));
     switch (sel.op) {
@@ -835,7 +871,7 @@ std::vector<BoardQuad> select_quad(const std::vector<std::vector<int>>& adj,
             return deduped;
         }
         case SelectorOp::Inter: {
-            if (sel.items.empty()) return select_quad(adj, pos, Selector{SelectorOp::All, SelectorType::Quad});
+            if (sel.items.empty()) return select_quad(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
             auto acc = select_quad(adj, pos, sel.items[0]);
             for (size_t i = 1; i < sel.items.size(); i++) {
                 auto next = select_quad(adj, pos, sel.items[i]);
@@ -867,13 +903,13 @@ std::vector<BoardQuad> select_quad(const std::vector<std::vector<int>>& adj,
         case SelectorOp::None:
             return {};
         case SelectorOp::Conva: case SelectorOp::Conve: {
-            if (sel.from == SelectorType::Tri)
-                throw std::runtime_error("select_quad: no association is defined between 'tri' and 'quad'");
+            if (is_simp_type(sel.from))
+                throw std::runtime_error("select_quad: no association is defined between 'simp' and 'quad'");
             bool require_all = sel.op == SelectorOp::Conva;
-            if (sel.from == SelectorType::Quad) return select_quad(adj, pos, *sel.a); // same-kind: no-op (defensive)
-            auto all_to = select_quad(adj, pos, Selector{SelectorOp::All, SelectorType::Quad});
+            if (sel.from == SelectorType{SelectorKind::Quad}) return select_quad(adj, pos, *sel.a); // same-kind: no-op (defensive)
+            auto all_to = select_quad(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
             auto quad_members = +[](const BoardQuad& s) -> std::vector<int> { return { s.n1, s.n2, s.n3, s.n4 }; };
-            if (sel.from == SelectorType::Node) {
+            if (sel.from == SelectorType{SelectorKind::Node}) {
                 std::set<int> selected_keys;
                 for (int n : select_node(adj, pos, *sel.a)) selected_keys.insert(n);
                 std::vector<int> all_from(adj.size());
@@ -881,8 +917,8 @@ std::vector<BoardQuad> select_quad(const std::vector<std::vector<int>>& adj,
                 return convert_objects<int, BoardQuad, int>(
                     all_to, quad_members, all_from, node_members, node_key, selected_keys, require_all);
             }
-            // sel.from == SelectorType::Edge
-            auto all_from = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType::Edge});
+            // sel.from == SelectorType{SelectorKind::Edge}
+            auto all_from = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Edge}});
             std::set<std::string> selected_keys;
             for (auto& e : select_edge(adj, pos, *sel.a)) selected_keys.insert(edge_key(e));
             return convert_objects<BoardEdge, BoardQuad, std::string>(

@@ -29,7 +29,7 @@ static std::string ctkind_word(CTKind k) {
         case CTKind::String: return "string";
         case CTKind::Bool: return "bool";
         case CTKind::Edge: return "edge";
-        case CTKind::Tri: return "tri";
+        case CTKind::Simp: return "simp";
         case CTKind::Quad: return "quad";
         case CTKind::Sel: return "sel";
         case CTKind::Mod: return "mod";
@@ -87,8 +87,16 @@ static std::string format_number_exact(double d) {
 static std::string edge_key_str(const BoardEdge& e) {
     return std::to_string(e.n1) + "," + std::to_string(e.n2);
 }
-static std::string tri_key_str(const BoardTriangle& t) {
-    return std::to_string(t.n1) + "," + std::to_string(t.n2) + "," + std::to_string(t.n3);
+// A plain comma-join of nodes.size()-many indices is already an unambiguous, collision-free key
+// across every arity - mirrors shared/clegBase.ts's own clegSetKey 'simp' case doc comment on why no
+// separate arity tag is needed.
+static std::string simp_key_str(const BoardSimplex& t) {
+    std::string key;
+    for (size_t i = 0; i < t.nodes.size(); i++) {
+        if (i) key += ",";
+        key += std::to_string(t.nodes[i]);
+    }
+    return key;
 }
 static std::string quad_key_str(const BoardQuad& q) {
     return std::to_string(q.n1) + "," + std::to_string(q.n2) + "," + std::to_string(q.n3) + "," + std::to_string(q.n4);
@@ -100,7 +108,7 @@ std::string cleg_set_key(const ClegValue& v) {
         case CTKind::String: return "s:" + v.str;
         case CTKind::Bool: return v.boolean ? "b:1" : "b:0";
         case CTKind::Edge: return "e:" + edge_key_str(v.edge_v);
-        case CTKind::Tri: return "t:" + tri_key_str(v.tri_v);
+        case CTKind::Simp: return "s:" + simp_key_str(v.simp_v);
         case CTKind::Quad: return "q:" + quad_key_str(v.quad_v);
         default:
             throw std::runtime_error("cleg: '" + type_to_string(cleg_value_type(v)) + "' cannot be a set element");

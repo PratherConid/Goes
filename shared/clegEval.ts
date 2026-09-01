@@ -21,7 +21,7 @@ import {
     BoardArgType, numArg, csvArg, parseBoardArgToken,
     makeBoardEdge, makeBoardSimplex, makeBoardQuad, Embedding, simpType, simpN,
     type BoardArgEntry, type BoardConfig, type BoardEdge, type BoardSimplex, type BoardQuad,
-    type Selector, type SelectorType, type SelectedVals, type BoardModifier,
+    type Selector, type SelectorType, type SelectedVals, type BoardModifier, type LocalReplaceSelector,
 } from './types.js';
 import {
     PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, product, applyModifiers,
@@ -400,12 +400,11 @@ BUILTIN_FUNCTIONS['mkSel'] = {
 
 const MOD_TYPE: ClegType = { kind: 'mod' };
 
-// `rectify`/`truncate`/`globalCentralize`/`quadOctarize`: zero-argument BoardModifier constructors,
-// one per shared/types.ts's own like-named BoardModifier kind - build the value directly
-// (`{ kind: 'X' }`) rather than calling shared/boardConfig.ts's own
-// rectify()/truncate()/globalCentralize()/quadOctarize() (those APPLY a modifier to a board
-// immediately; these instead build the modifier value itself, to be applied later - see
-// shared/clegBase.ts's own top comment on the `mod` type).
+// `rectify`/`truncate`/`globalCentralize`: zero-argument BoardModifier constructors, one per
+// shared/types.ts's own like-named BoardModifier kind - build the value directly (`{ kind: 'X' }`)
+// rather than calling shared/boardConfig.ts's own rectify()/truncate()/globalCentralize() (those
+// APPLY a modifier to a board immediately; these instead build the modifier value itself, to be
+// applied later - see shared/clegBase.ts's own top comment on the `mod` type).
 BUILTIN_FUNCTIONS['rectify'] = {
     checkCall: fixedSignature([], MOD_TYPE),
     call: () => ({ kind: 'mod', value: { kind: 'Rectify' } }),
@@ -418,13 +417,9 @@ BUILTIN_FUNCTIONS['globalCentralize'] = {
     checkCall: fixedSignature([], MOD_TYPE),
     call: () => ({ kind: 'mod', value: { kind: 'GlobalCentralize' } }),
 };
-BUILTIN_FUNCTIONS['quadOctarize'] = {
-    checkCall: fixedSignature([], MOD_TYPE),
-    call: () => ({ kind: 'mod', value: { kind: 'QuadOctarize' } }),
-};
 
 // `edgeSplit`/`mergeClose`/`scale`: one-number-argument BoardModifier constructors, same
-// "build the value, don't apply it" rationale as rectify/globalCentralize/quadOctarize above.
+// "build the value, don't apply it" rationale as rectify/globalCentralize above.
 BUILTIN_FUNCTIONS['edgeSplit'] = {
     checkCall: fixedSignature([NUMBER_TYPE], MOD_TYPE),
     call: ([n]) => ({ kind: 'mod', value: { kind: 'EdgeSplit', splitN: (n as { value: number }).value } }),
@@ -613,13 +608,60 @@ BUILTIN_FUNCTIONS['form'] = {
     },
 };
 
-// `simpCentralize(n[, selArg])`: builds a SimpCentralize BoardModifier - `n` (the simplex arity)
-// followed by an optional `selArg` (a `sel`, `string`, or `set`, resolved via resolveSelectorArg
-// against simp `n`) restricting which n-simplices get centralized, mirroring SimpCentralize's own
-// `n: number, sel?: Selector` fields exactly - triCentralize below is its own fixed-n=2 special
-// case. `n`'s own validity (integer >= 2) is only checked at evaluation time (simpCentralize's own
-// assert, shared/boardConfig.ts) - checkCall only ever sees `n`'s TYPE (number), never its runtime
-// value, so it can't validate the value itself (same reason mkSimp above can't either).
+const LRS_TYPE: ClegType = { kind: 'lrs' };
+
+// `quadCentralize([selArg])`/`quadOctarize([selArg])`: each builds an `lrs` value (a
+// LocalReplaceSelector - see shared/types.ts's own doc comment and shared/clegBase.ts's own top
+// comment on why this is a separate step from building the actual `mod`) of the like-named branch -
+// `selArg` (a `sel`, `string`, or `set`, resolved via resolveSelectorArg against the matching
+// SelectorType) restricts which quads it names; omitted, every one found is named. Variable-arity (0
+// or 1 args) rather than fixedSignature(...), to mirror that optionality exactly. triCentralize below
+// (a thin wrapper over simpCentralize, not a LocalReplaceSelector branch of its own - see that type's
+// own doc comment, shared/types.ts) shares this same 0-or-1-arg shape.
+function localReplaceSelCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length !== 0 && argTypes.length !== 1)
+        throw new Error(`cleg: '${callee}' expects 0 or 1 argument(s), got ${argTypes.length}`);
+    if (argTypes.length === 1 && argTypes[0].kind !== 'sel' && argTypes[0].kind !== 'string' && argTypes[0].kind !== 'set')
+        throw new Error(`cleg: '${callee}' argument 1: expected sel, string, or set, got ${typeToString(argTypes[0])}`);
+    return LRS_TYPE;
+}
+BUILTIN_FUNCTIONS['quadCentralize'] = {
+    checkCall: localReplaceSelCheckCall,
+    call: (args) => {
+        if (args.length === 0) return { kind: 'lrs', value: { kind: 'QuadCentralize' } };
+        const sel = resolveSelectorArg('quadCentralize', args[0], 'quad', parseQuadSelector);
+        return { kind: 'lrs', value: { kind: 'QuadCentralize', sel } };
+    },
+};
+BUILTIN_FUNCTIONS['quadOctarize'] = {
+    checkCall: localReplaceSelCheckCall,
+    call: (args) => {
+        if (args.length === 0) return { kind: 'lrs', value: { kind: 'QuadOctarize' } };
+        const sel = resolveSelectorArg('quadOctarize', args[0], 'quad', parseQuadSelector);
+        return { kind: 'lrs', value: { kind: 'QuadOctarize', sel } };
+    },
+};
+
+// `quadCentering([selArg])`: same shape as quadCentralize above, but builds a QuadCentering branch -
+// the quad's own 4-cycle edges are dropped rather than kept once genericLocalReplace actually applies
+// it (see LocalReplaceSelector's own doc comment, shared/types.ts).
+BUILTIN_FUNCTIONS['quadCentering'] = {
+    checkCall: localReplaceSelCheckCall,
+    call: (args) => {
+        if (args.length === 0) return { kind: 'lrs', value: { kind: 'QuadCentering' } };
+        const sel = resolveSelectorArg('quadCentering', args[0], 'quad', parseQuadSelector);
+        return { kind: 'lrs', value: { kind: 'QuadCentering', sel } };
+    },
+};
+
+// `simpCentralize(n[, selArg])`: builds an `lrs` value of the SimpCentralize branch - `n` (the
+// simplex arity) followed by an optional `selArg` (resolved via resolveSelectorArg against simp `n`)
+// restricting which n-simplices it names, mirroring SimpCentralize's own `n: number, sel?: Selector`
+// fields exactly - triCentralize below is its own fixed-n=2 thin wrapper, not a separate branch (see
+// LocalReplaceSelector's own doc comment, shared/types.ts). `n`'s own validity (integer >= 2) is only
+// checked at evaluation time (genericLocalReplace's own assert, shared/boardConfig.ts) - checkCall
+// only ever sees `n`'s TYPE (number), never its runtime value, so it can't validate the value itself
+// (same reason mkSimp above can't either).
 function simpCentralizeCheckCall(callee: string, argTypes: ClegType[]): ClegType {
     if (argTypes.length !== 1 && argTypes.length !== 2)
         throw new Error(`cleg: '${callee}' expects 1 or 2 argument(s), got ${argTypes.length}`);
@@ -627,69 +669,79 @@ function simpCentralizeCheckCall(callee: string, argTypes: ClegType[]): ClegType
         throw new Error(`cleg: '${callee}' argument 1: expected number, got ${typeToString(argTypes[0])}`);
     if (argTypes.length === 2 && argTypes[1].kind !== 'sel' && argTypes[1].kind !== 'string' && argTypes[1].kind !== 'set')
         throw new Error(`cleg: '${callee}' argument 2: expected sel, string, or set, got ${typeToString(argTypes[1])}`);
-    return MOD_TYPE;
+    return LRS_TYPE;
 }
 BUILTIN_FUNCTIONS['simpCentralize'] = {
     checkCall: simpCentralizeCheckCall,
     call: (args) => {
         const n = (args[0] as { value: number }).value;
-        if (args.length === 1) return { kind: 'mod', value: { kind: 'SimpCentralize', n } };
+        if (args.length === 1) return { kind: 'lrs', value: { kind: 'SimpCentralize', n } };
         const sel = resolveSelectorArg('simpCentralize', args[1], simpType(n), (s) => parseSimpSelector(n, s));
-        return { kind: 'mod', value: { kind: 'SimpCentralize', n, sel } };
+        return { kind: 'lrs', value: { kind: 'SimpCentralize', n, sel } };
     },
 };
 
-// `triCentralize([selArg])`/`quadCentralize([selArg])`: builds a TriCentralize/QuadCentralize
-// BoardModifier - `selArg` (a `sel`, `string`, or `set`, resolved via resolveSelectorArg) restricts
-// which triangles/quads get centralized, mirroring TriCentralize/QuadCentralize's own optional
-// `sel?: Selector` field exactly - omitted, every one found gets centralized. Variable-arity (0 or 1
-// args) rather than fixedSignature(...), to mirror that optionality exactly. triCentralize itself
-// is just simpCentralize(2, ...) with its own fixed-shape builtin, kept for backward compatibility.
-function centralizeModCheckCall(callee: string, argTypes: ClegType[]): ClegType {
-    if (argTypes.length !== 0 && argTypes.length !== 1)
-        throw new Error(`cleg: '${callee}' expects 0 or 1 argument(s), got ${argTypes.length}`);
-    if (argTypes.length === 1 && argTypes[0].kind !== 'sel' && argTypes[0].kind !== 'string' && argTypes[0].kind !== 'set')
-        throw new Error(`cleg: '${callee}' argument 1: expected sel, string, or set, got ${typeToString(argTypes[0])}`);
-    return MOD_TYPE;
+// `simpCentering(n[, selArg])`: same shape as simpCentralize above, but builds a SimpCentering branch
+// - the simplex's own C(n+1,2) clique edges are dropped rather than kept once genericLocalReplace
+// actually applies it (see LocalReplaceSelector's own doc comment, shared/types.ts).
+function simpCenteringCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length !== 1 && argTypes.length !== 2)
+        throw new Error(`cleg: '${callee}' expects 1 or 2 argument(s), got ${argTypes.length}`);
+    if (argTypes[0].kind !== 'number')
+        throw new Error(`cleg: '${callee}' argument 1: expected number, got ${typeToString(argTypes[0])}`);
+    if (argTypes.length === 2 && argTypes[1].kind !== 'sel' && argTypes[1].kind !== 'string' && argTypes[1].kind !== 'set')
+        throw new Error(`cleg: '${callee}' argument 2: expected sel, string, or set, got ${typeToString(argTypes[1])}`);
+    return LRS_TYPE;
 }
+BUILTIN_FUNCTIONS['simpCentering'] = {
+    checkCall: simpCenteringCheckCall,
+    call: (args) => {
+        const n = (args[0] as { value: number }).value;
+        if (args.length === 1) return { kind: 'lrs', value: { kind: 'SimpCentering', n } };
+        const sel = resolveSelectorArg('simpCentering', args[1], simpType(n), (s) => parseSimpSelector(n, s));
+        return { kind: 'lrs', value: { kind: 'SimpCentering', n, sel } };
+    },
+};
+
+// `triCentralize([selArg])`: simpCentralize's own fixed-n=2 special case - a thin wrapper building
+// the exact same SimpCentralize-branch `lrs` value simpCentralize(2, selArg) would, kept as its own
+// named builtin for backward compatibility (mirrors shared/boardConfig.ts's own triCentralize thin
+// wrapper over simpCentralize).
 BUILTIN_FUNCTIONS['triCentralize'] = {
-    checkCall: centralizeModCheckCall,
+    checkCall: localReplaceSelCheckCall,
     call: (args) => {
-        if (args.length === 0) return { kind: 'mod', value: { kind: 'TriCentralize' } };
+        if (args.length === 0) return { kind: 'lrs', value: { kind: 'SimpCentralize', n: 2 } };
         const sel = resolveSelectorArg('triCentralize', args[0], simpType(2), parseTriangleSelector);
-        return { kind: 'mod', value: { kind: 'TriCentralize', sel } };
-    },
-};
-BUILTIN_FUNCTIONS['quadCentralize'] = {
-    checkCall: centralizeModCheckCall,
-    call: (args) => {
-        if (args.length === 0) return { kind: 'mod', value: { kind: 'QuadCentralize' } };
-        const sel = resolveSelectorArg('quadCentralize', args[0], 'quad', parseQuadSelector);
-        return { kind: 'mod', value: { kind: 'QuadCentralize', sel } };
+        return { kind: 'lrs', value: { kind: 'SimpCentralize', n: 2, sel } };
     },
 };
 
-// `centralize(...sels)`: builds a Centralize BoardModifier - one or more selector arguments (each a
-// `sel`, bare `string`, or `set` - resolved via resolveAnyKindSelectorArg, same as form/mkSel/msBase),
-// mirroring genericCentralize's own (bc, sels) signature (genericCentralize itself accepts an empty
-// `sels` as a no-op; `centralize` requires at least one, below, since a cleg call with none would be
-// a pointless no-op board program). None of `sel`/`string`/`set` carries a tri-or-quad kind at the
-// type level, so a non-tri/quad argument type-checks here but is rejected at runtime by
-// genericCentralize itself - the same check any hand-built Selector needs, not something
-// `centralize` repeats.
-function centralizeCheckCall(callee: string, argTypes: ClegType[]): ClegType {
-    if (argTypes.length < 1)
-        throw new Error(`cleg: '${callee}' expects at least 1 argument(s), got ${argTypes.length}`);
-    for (let i = 0; i < argTypes.length; i++)
-        if (argTypes[i].kind !== 'sel' && argTypes[i].kind !== 'string' && argTypes[i].kind !== 'set')
-            throw new Error(`cleg: '${callee}' argument ${i + 1}: expected sel, string, or set, got ${typeToString(argTypes[i])}`);
-    return MOD_TYPE;
-}
-BUILTIN_FUNCTIONS['centralize'] = {
-    checkCall: centralizeCheckCall,
+// `triCentering([selArg])`: simpCentering's own fixed-n=2 special case - a thin wrapper building the
+// exact same SimpCentering-branch `lrs` value simpCentering(2, selArg) would, the same way
+// triCentralize is simpCentralize's (mirrors shared/boardConfig.ts's own triCentering thin wrapper).
+BUILTIN_FUNCTIONS['triCentering'] = {
+    checkCall: localReplaceSelCheckCall,
     call: (args) => {
-        const sels = args.map(a => resolveAnyKindSelectorArg('centralize', a));
-        return { kind: 'mod', value: { kind: 'Centralize', sels } };
+        if (args.length === 0) return { kind: 'lrs', value: { kind: 'SimpCentering', n: 2 } };
+        const sel = resolveSelectorArg('triCentering', args[0], simpType(2), parseTriangleSelector);
+        return { kind: 'lrs', value: { kind: 'SimpCentering', n: 2, sel } };
+    },
+};
+
+// `localReplace(lrs[])`: builds a LocalReplace BoardModifier from an array of `lrs` values (each
+// built by triCentralize/quadCentralize/simpCentralize/quadOctarize/quadCentering/simpCentering/
+// triCentering above) - the one builtin that turns a list of `lrs` into the actual `mod`, mirroring
+// shared/boardConfig.ts's own genericLocalReplace(bc, selectors) signature. Unlike `form`/the old
+// `centralize` (variadic, since each of THEIR own selector arguments can be a genuinely different
+// type - sel/string/set - which a single array literal can't hold), every `lrs` argument here already
+// shares the exact same type, so a plain `lrs[]` array parameter (fixedSignature(...), same as
+// `modify`'s own `mod[]`) is both simpler and the more directly analogous precedent - localReplace's
+// job is structurally identical to modify's: bundle N same-typed values into one next step.
+BUILTIN_FUNCTIONS['localReplace'] = {
+    checkCall: fixedSignature([{ kind: 'array', elem: LRS_TYPE }], MOD_TYPE),
+    call: ([lrsVal]) => {
+        const selectors = (lrsVal as { value: ClegValue[] }).value.map(v => (v as { value: LocalReplaceSelector }).value);
+        return { kind: 'mod', value: { kind: 'LocalReplace', selectors } };
     },
 };
 

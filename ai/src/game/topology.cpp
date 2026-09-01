@@ -1,5 +1,6 @@
 #include "game/topology.h"
 #include <algorithm>
+#include <cassert>
 #include <numeric>
 #include <functional>
 
@@ -90,19 +91,33 @@ AdjacencyList to_adjacency_list(const std::vector<std::vector<int>>& adj) {
     return list;
 }
 
-std::vector<BoardTriangle> find_triangles(const std::vector<std::vector<int>>& adj) {
+// Mirrors shared/topology.ts's findSimplices(): does an increasing-order DFS to depth n+1 - at each
+// level, `candidates` is the current chain's own common-neighbor set (already filtered to be > the
+// chain's own last member), so extending the chain by picking v from candidates and re-filtering
+// candidates itself down to {x in candidates : x > v, adj_list[v] has x} for the next level is
+// exactly "every vertex adjacent to the WHOLE chain so far, in increasing order" - fixing this
+// increasing order (same trick this used to use directly for n=2) is what guarantees each simplex
+// is found exactly once, with no separate deduplication pass needed.
+std::vector<BoardSimplex> find_simplices(const std::vector<std::vector<int>>& adj, int n) {
+    assert(n >= 1 && "find_simplices: n must be at least 1");
     int N = (int)adj.size();
     auto adj_list = to_adjacency_list(adj);
-    std::vector<BoardTriangle> triangles;
-    for (int u = 0; u < N; u++)
-        for (int v : adj_list[u]) {
-            if (v <= u) continue;
-            for (int w : adj_list[v]) {
-                if (w <= v) continue;
-                if (adj_list[u].count(w)) triangles.push_back(make_board_triangle(u, v, w));
-            }
+    std::vector<BoardSimplex> simplices;
+    std::vector<int> current;
+    std::function<void(const std::vector<int>&)> rec = [&](const std::vector<int>& candidates) {
+        if ((int)current.size() == n + 1) { simplices.push_back(make_board_simplex(current)); return; }
+        for (int v : candidates) {
+            std::vector<int> next_candidates;
+            for (int x : candidates) if (x > v && adj_list[v].count(x)) next_candidates.push_back(x);
+            current.push_back(v);
+            rec(next_candidates);
+            current.pop_back();
         }
-    return triangles;
+    };
+    std::vector<int> all(N);
+    for (int i = 0; i < N; i++) all[i] = i;
+    rec(all);
+    return simplices;
 }
 
 std::vector<BoardQuad> find_quads(const std::vector<std::vector<int>>& adj) {

@@ -1,1 +1,1 @@
-modify([quadOctarize()], twsqB(3, 3, 4));
+modify([localReplace([quadOctarize()])], twsqB(3, 3, 4));

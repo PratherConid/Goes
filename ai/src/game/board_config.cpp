@@ -278,15 +278,15 @@ BoardConfig merge_close(const BoardConfig& bc, double dist) {
     return quotient_board(bc, quot);
 }
 
-// "tri"/"quad" (etc.) for generic_form's own wrong-kind error message below - mirrors
-// shared/selector.ts's selectorKindName, kept local here since selector.cpp's own copy is
-// translation-unit-private.
-static std::string selector_type_name(SelectorType t) {
-    switch (t) {
-        case SelectorType::Node: return "node";
-        case SelectorType::Edge: return "edge";
-        case SelectorType::Tri:  return "triangle";
-        case SelectorType::Quad: return "quad";
+// "node"/"edge"/"simp N"/"quad" for generic_form's/generic_centralize's own wrong-kind error
+// messages below - mirrors shared/selector.ts's selectorKindName, kept local here since
+// selector.cpp's own copy is translation-unit-private.
+static std::string selector_type_name(const SelectorType& t) {
+    switch (t.kind) {
+        case SelectorKind::Node: return "node";
+        case SelectorKind::Edge: return "edge";
+        case SelectorKind::Simp: return "simp " + std::to_string(t.n);
+        case SelectorKind::Quad: return "quad";
     }
     return "?";
 }
@@ -318,12 +318,13 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<Selecto
     int next_idx = N;
 
     for (auto& sel : sels) {
-        if (sel.type == SelectorType::Tri) {
+        if (sel.type == simp_type(2)) {
             auto triangles = select_triangle(bc.adj, bc.embed, sel);
             int n_face = w * (w + 1) / 2;
             auto local_idx = [](int i, int j) { return i * (i + 1) / 2 + j; };
             const int dirs[6][2] = {{1,0},{1,1},{0,1},{-1,0},{-1,-1},{0,-1}};
-            for (auto& [A, B, C] : triangles) {
+            for (auto& simplex : triangles) {
+                int A = simplex.nodes[0], B = simplex.nodes[1], C = simplex.nodes[2];
                 int offset = next_idx;
                 next_idx += n_face;
                 auto global_idx = [=](int i, int j) { return offset + local_idx(i, j); };
@@ -341,7 +342,7 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<Selecto
                 add_side(A, C, [=](int k) { return global_idx(k, k); });
                 add_side(B, C, [=](int k) { return global_idx(w - 1, k); });
             }
-        } else if (sel.type == SelectorType::Quad) {
+        } else if (sel.type == SelectorType{SelectorKind::Quad}) {
             auto quads = select_quad(bc.adj, bc.embed, sel);
             int n_face = w * w;
             auto local_idx = [&](int i, int j) { return i * w + j; };
@@ -371,7 +372,7 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<Selecto
             }
         } else {
             throw std::runtime_error(
-                "generic_form: each selector in sels must be a triangle or quad selector, got a " +
+                "generic_form: each selector in sels must be a triangle (simp 2) or quad selector, got a " +
                 selector_type_name(sel.type) + " selector");
         }
     }
@@ -401,11 +402,11 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<Selecto
 }
 
 BoardConfig triangle_form(const BoardConfig& bc, int w, std::optional<Selector> sel) {
-    return generic_form(bc, w, { sel.value_or(Selector{SelectorOp::All, SelectorType::Tri}) });
+    return generic_form(bc, w, { sel.value_or(Selector{SelectorOp::All, simp_type(2)}) });
 }
 
 BoardConfig quad_form(const BoardConfig& bc, int w, std::optional<Selector> sel) {
-    return generic_form(bc, w, { sel.value_or(Selector{SelectorOp::All, SelectorType::Quad}) });
+    return generic_form(bc, w, { sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}}) });
 }
 
 BoardConfig generic_centralize(const BoardConfig& bc, const std::vector<Selector>& sels) {
@@ -414,15 +415,7 @@ BoardConfig generic_centralize(const BoardConfig& bc, const std::vector<Selector
     std::vector<std::pair<int, int>> extra_edges;
 
     for (auto& sel : sels) {
-        if (sel.type == SelectorType::Tri) {
-            auto triangles = select_triangle(bc.adj, bc.embed, sel);
-            for (auto& [A, B, C] : triangles) {
-                int hub = next_idx++;
-                extra_edges.push_back({hub, A});
-                extra_edges.push_back({hub, B});
-                extra_edges.push_back({hub, C});
-            }
-        } else if (sel.type == SelectorType::Quad) {
+        if (sel.type == SelectorType{SelectorKind::Quad}) {
             auto quads = select_quad(bc.adj, bc.embed, sel);
             for (auto& [A, B, C, D] : quads) {
                 int hub = next_idx++;
@@ -431,10 +424,16 @@ BoardConfig generic_centralize(const BoardConfig& bc, const std::vector<Selector
                 extra_edges.push_back({hub, C});
                 extra_edges.push_back({hub, D});
             }
+        } else if (simp_n(sel.type) >= 0) {
+            auto simplices = select_simp(bc.adj, bc.embed, sel);
+            for (auto& simplex : simplices) {
+                int hub = next_idx++;
+                for (int v : simplex.nodes) extra_edges.push_back({hub, v});
+            }
         } else {
             throw std::runtime_error(
-                "generic_centralize: each selector in sels must be a triangle or quad selector, got a " +
-                selector_type_name(sel.type) + " selector");
+                "generic_centralize: each selector in sels must be a simplex (e.g. triangle/simp 2) "
+                "or quad selector, got a " + selector_type_name(sel.type) + " selector");
         }
     }
 
@@ -455,12 +454,17 @@ BoardConfig generic_centralize(const BoardConfig& bc, const std::vector<Selector
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
+BoardConfig simp_centralize(const BoardConfig& bc, int n, std::optional<Selector> sel) {
+    assert(n >= 2 && "simp_centralize: n must be at least 2");
+    return generic_centralize(bc, { sel.value_or(Selector{SelectorOp::All, simp_type(n)}) });
+}
+
 BoardConfig tri_centralize(const BoardConfig& bc, std::optional<Selector> sel) {
-    return generic_centralize(bc, { sel.value_or(Selector{SelectorOp::All, SelectorType::Tri}) });
+    return simp_centralize(bc, 2, sel);
 }
 
 BoardConfig quad_centralize(const BoardConfig& bc, std::optional<Selector> sel) {
-    return generic_centralize(bc, { sel.value_or(Selector{SelectorOp::All, SelectorType::Quad}) });
+    return generic_centralize(bc, { sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}}) });
 }
 
 BoardConfig global_centralize(const BoardConfig& bc) {
@@ -587,6 +591,7 @@ BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier)
         case ModifierKind::TriangleForm: return triangle_form(bc, modifier.split_n, modifier.form_sel);
         case ModifierKind::QuadForm: return quad_form(bc, modifier.split_n, modifier.form_sel);
         case ModifierKind::Form: return generic_form(bc, modifier.split_n, modifier.form_sels);
+        case ModifierKind::SimpCentralize: return simp_centralize(bc, modifier.split_n, modifier.form_sel);
         case ModifierKind::TriCentralize: return tri_centralize(bc, modifier.form_sel);
         case ModifierKind::QuadCentralize: return quad_centralize(bc, modifier.form_sel);
         case ModifierKind::Centralize: return generic_centralize(bc, modifier.form_sels);

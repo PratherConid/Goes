@@ -37,7 +37,7 @@
 // ── Types ────────────────────────────────────────────────────────────────────
 
 enum class CTKind {
-    Egr, Number, String, Bool, Edge, Tri, Quad, Sel, Mod, Msel, Array, Set, Func
+    Egr, Number, String, Bool, Edge, Simp, Quad, Sel, Mod, Msel, Array, Set, Func
 };
 
 // Mirrors shared/clegBase.ts's ClegType - `elem` meaningful iff kind == Array/Set; `params`/
@@ -78,10 +78,10 @@ struct ClegValue {
     std::string str;
     bool boolean = false;
     BoardEdge edge_v{};
-    BoardTriangle tri_v{};
+    BoardSimplex simp_v{};
     BoardQuad quad_v{};
     std::shared_ptr<BoardConfig> egr_v;
-    SelectorType sel_type = SelectorType::Node;      // Sel only
+    SelectorType sel_type = SelectorType{SelectorKind::Node}; // Sel only
     Selector sel_v;
     BoardModifier mod_v{ModifierKind::Rectify};
     MultiSelector msel_v;
@@ -113,7 +113,7 @@ inline ClegValue make_number(double n) { ClegValue v; v.kind = CTKind::Number; v
 inline ClegValue make_string(std::string s) { ClegValue v; v.kind = CTKind::String; v.str = std::move(s); return v; }
 inline ClegValue make_bool(bool b) { ClegValue v; v.kind = CTKind::Bool; v.boolean = b; return v; }
 inline ClegValue make_edge_v(BoardEdge e) { ClegValue v; v.kind = CTKind::Edge; v.edge_v = e; return v; }
-inline ClegValue make_tri_v(BoardTriangle t) { ClegValue v; v.kind = CTKind::Tri; v.tri_v = t; return v; }
+inline ClegValue make_simp_v(BoardSimplex t) { ClegValue v; v.kind = CTKind::Simp; v.simp_v = std::move(t); return v; }
 inline ClegValue make_quad_v(BoardQuad q) { ClegValue v; v.kind = CTKind::Quad; v.quad_v = q; return v; }
 inline ClegValue make_egr(BoardConfig bc) {
     ClegValue v; v.kind = CTKind::Egr; v.egr_v = std::make_shared<BoardConfig>(std::move(bc)); return v;
