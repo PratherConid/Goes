@@ -66,8 +66,8 @@ BoardConfig merge_close(const BoardConfig& bc, double dist);
 // tell QuadCentralize/QuadCentering/QuadOctarize apart), but FormSelector still tags the kind
 // explicitly, for the same API shape LocalReplaceSelector already has. `sel`, on every branch,
 // nullopt means "every object of the matching kind found" (mirrors triangle_form/quad_form/
-// quad_diag_form's own `sel` parameter below).
-enum class FormSelKind { TriForm, QuadForm, QuadDiagForm };
+// quad_diag_form/quad_knight_form/quad_bishop_form's own `sel` parameter below).
+enum class FormSelKind { TriForm, QuadForm, QuadDiagForm, QuadKnightForm, QuadBishopForm };
 struct FormSelector {
     FormSelKind kind = FormSelKind::TriForm;
     std::optional<Selector> sel;
@@ -79,18 +79,23 @@ struct FormSelector {
 // w-by-w grid for a quad (QuadForm), or, also for a quad, a diagonally-oriented square lattice
 // (QuadDiagForm: a w-by-w "primary" grid plus a (w-1)-by-(w-1) "center" grid - one center per primary
 // unit cell, connected only to that cell's own 4 primary corners, so every edge runs diagonally and
-// no primary-primary or center-center edge exists; w*w + (w-1)*(w-1) nodes total) - gluing new
-// corners back to the original vertices and gluing every original edge's own new boundary points
-// together across every lattice that consumes that edge as one of its own sides, regardless of which
-// FormSelector kind that lattice came from (any two of these sharing an edge still glue seamlessly,
-// since gluing is driven by shared ORIGINAL edges, not by matching kinds - QuadDiagForm's own
-// boundary, like QuadForm's, is exactly its w primary corner nodes along each side; its center nodes
-// are always strictly interior, never on a side). Each element of `sels` is a FormSelector naming
-// both which kind to look for AND (via its own optional `sel`) restricting which ones of that kind
-// qualify - `sel` nullopt means "every one found, no restriction". `w` is shared by every element of
-// `sels`, since two lattices sharing an edge can only glue node-for-node if their own boundary
-// sequences are the same length. triangle_form/quad_form/quad_diag_form below are the single-kind
-// special cases, each just calling this with one FormSelector - like them, this always produces an
+// no primary-primary or center-center edge exists; w*w + (w-1)*(w-1) nodes total), or, for a quad,
+// the SAME w-by-w grid QuadForm builds but with different internal edges: QuadKnightForm connects
+// two grid nodes iff they're a knight's move apart (one coordinate differs by 1, the other by 2),
+// QuadBishopForm iff they're diagonally adjacent (both coordinates differ by exactly 1 - the same
+// direction QuadDiagForm's own primary-to-center edges run in, but directly between grid nodes here,
+// with no extra center nodes) - gluing new corners back to the original vertices and gluing every
+// original edge's own new boundary points together across every lattice that consumes that edge as
+// one of its own sides, regardless of which FormSelector kind that lattice came from (any two of
+// these sharing an edge still glue seamlessly, since gluing is driven by shared ORIGINAL edges, not
+// by matching kinds - every quad-based kind shares the exact same w primary/grid corner nodes along
+// each side; QuadDiagForm's own center nodes are always strictly interior, never on a side). Each
+// element of `sels` is a FormSelector naming both which kind to look for AND (via its own optional
+// `sel`) restricting which ones of that kind qualify - `sel` nullopt means "every one found, no
+// restriction". `w` is shared by every element of `sels`, since two lattices sharing an edge can
+// only glue node-for-node if their own boundary sequences are the same length. triangle_form/
+// quad_form/quad_diag_form/quad_knight_form/quad_bishop_form below are the single-kind special
+// cases, each just calling this with one FormSelector - like them, this always produces an
 // emb_dim = 0 board.
 BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSelector>& sels);
 
@@ -121,6 +126,20 @@ BoardConfig quad_form(const BoardConfig& bc, int w, std::optional<Selector> sel 
 // of generic_form, the same way quad_form is, with `sel` (if given) restricting this to only the
 // quads it selects, every other quad left untouched. Mirrors shared/boardConfig.ts's quadDiagForm().
 BoardConfig quad_diag_form(const BoardConfig& bc, int w, std::optional<Selector> sel = std::nullopt);
+
+// Replaces every quad (4 distinct vertices forming a cycle with no diagonal edges - see
+// topology.h's find_quads) in bc with the same w-by-w grid quad_form builds, but connecting two grid
+// nodes iff they're a knight's move apart instead of axis-adjacent - the single-kind special case of
+// generic_form, the same way quad_form is, with `sel` (if given) restricting this to only the quads
+// it selects, every other quad left untouched. Mirrors shared/boardConfig.ts's quadKnightForm().
+BoardConfig quad_knight_form(const BoardConfig& bc, int w, std::optional<Selector> sel = std::nullopt);
+
+// Replaces every quad (4 distinct vertices forming a cycle with no diagonal edges - see
+// topology.h's find_quads) in bc with the same w-by-w grid quad_form builds, but connecting two grid
+// nodes iff they're diagonally adjacent instead of axis-adjacent - the single-kind special case of
+// generic_form, the same way quad_form is, with `sel` (if given) restricting this to only the quads
+// it selects, every other quad left untouched. Mirrors shared/boardConfig.ts's quadBishopForm().
+BoardConfig quad_bishop_form(const BoardConfig& bc, int w, std::optional<Selector> sel = std::nullopt);
 
 // One selected face plus which LOCAL shape to replace it with - mirrors shared/types.ts's
 // LocalReplaceSelector (see its own doc comment for why a bare Selector can't say this on its own: a
@@ -310,14 +329,14 @@ std::string format_board_arg_entry(const BoardArgEntry& e);
 // call, or a real `for` loop, instead) - so unlike every other variant here, nothing constructs a
 // Prod- or Repeat-kind BoardModifier value anymore.
 enum class ModifierKind {
-    Rectify, Truncate, EdgeSplit, MergeClose, TriangleForm, QuadForm, QuadDiagForm, Form,
-    LocalReplace, GlobalCentralize, Scale, NodeInducedSubgraph, EdgeInducedSubgraph
+    Rectify, Truncate, EdgeSplit, MergeClose, TriangleForm, QuadForm, QuadDiagForm, QuadKnightForm,
+    QuadBishopForm, Form, LocalReplace, GlobalCentralize, Scale, NodeInducedSubgraph, EdgeInducedSubgraph
 };
 struct BoardModifier {
     ModifierKind kind;
-    // split_n is reused for TriangleForm/QuadForm/QuadDiagForm/Form's own single int parameter (its
-    // w) - all four are "one plain int argument" modifiers.
-    int split_n = 0;   // meaningful when kind == ModifierKind::EdgeSplit/TriangleForm/QuadForm/QuadDiagForm/Form
+    // split_n is reused for TriangleForm/QuadForm/QuadDiagForm/QuadKnightForm/QuadBishopForm/Form's
+    // own single int parameter (its w) - all six are "one plain int argument" modifiers.
+    int split_n = 0;   // meaningful when kind == ModifierKind::EdgeSplit/TriangleForm/QuadForm/QuadDiagForm/QuadKnightForm/QuadBishopForm/Form
     // dist is reused for Scale's own single double parameter (its factor) - both are "one plain
     // double argument" modifiers.
     double dist = 0.0;             // meaningful when kind == ModifierKind::MergeClose / Scale
@@ -325,12 +344,12 @@ struct BoardModifier {
     // game/selector.h. Always present for these two (unlike form_sel below), matching the TS side's
     // own non-optional `sel: Selector` field for those two variants.
     Selector sel;
-    // TriangleForm/QuadForm/QuadDiagForm's own optional restricting selector (nullopt = every
-    // triangle/quad found, matching the TS side's `sel?: Selector`) - see triangle_form/quad_form/
-    // quad_diag_form's own doc comments (board_config.h). A separate field from `sel` above (rather
-    // than reusing it) since NodeInducedSubgraph/EdgeInducedSubgraph's own `sel` is mandatory, not
-    // optional.
-    std::optional<Selector> form_sel; // meaningful when kind == TriangleForm/QuadForm/QuadDiagForm
+    // TriangleForm/QuadForm/QuadDiagForm/QuadKnightForm/QuadBishopForm's own optional restricting
+    // selector (nullopt = every triangle/quad found, matching the TS side's `sel?: Selector`) - see
+    // triangle_form/quad_form/quad_diag_form/quad_knight_form/quad_bishop_form's own doc comments
+    // (board_config.h). A separate field from `sel` above (rather than reusing it) since
+    // NodeInducedSubgraph/EdgeInducedSubgraph's own `sel` is mandatory, not optional.
+    std::optional<Selector> form_sel; // meaningful when kind == TriangleForm/QuadForm/QuadDiagForm/QuadKnightForm/QuadBishopForm
     // Form's own list of face-and-kind selectors, one per face to look for - see generic_form's own
     // doc comment above.
     std::vector<FormSelector> form_sels; // meaningful when kind == ModifierKind::Form
@@ -349,9 +368,9 @@ struct BoardModifier {
 };
 
 // Applies modifier to bc, dispatching to rectify / edge_split / merge_close / triangle_form /
-// quad_form / quad_diag_form / generic_form / generic_local_replace / global_centralize /
-// scale_board / node_induced_subgraph / edge_induced_subgraph. Mirrors shared/boardConfig.ts's
-// applyModifier().
+// quad_form / quad_diag_form / quad_knight_form / quad_bishop_form / generic_form /
+// generic_local_replace / global_centralize / scale_board / node_induced_subgraph /
+// edge_induced_subgraph. Mirrors shared/boardConfig.ts's applyModifier().
 BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier);
 
 // Applies every modifier in modifiers, in order, to bc. Mirrors shared/boardConfig.ts's

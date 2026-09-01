@@ -304,6 +304,38 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
     std::vector<std::pair<int,int>> extra_edges;
     int next_idx = N;
 
+    // Shared by QuadForm/QuadKnightForm/QuadBishopForm below - each puts the same w-by-w node grid
+    // (same corner positions, same corner/boundary gluing) over a selected quad, differing only in
+    // which pair of cells `dirs` connects: QuadForm's own axis-aligned neighbors, a knight's-move
+    // offset, or a diagonal neighbor (see generic_form's own doc comment for what each kind means).
+    auto build_quad_grid_lattice = [&](const std::vector<BoardQuad>& quads, const std::vector<std::pair<int,int>>& dirs) {
+        int n_face = w * w;
+        auto local_idx = [&](int i, int j) { return i * w + j; };
+        for (auto& [A, B, C, D] : quads) {
+            int offset = next_idx;
+            next_idx += n_face;
+            auto global_idx = [=](int i, int j) { return offset + local_idx(i, j); };
+            for (int i = 0; i < w; i++)
+                for (int j = 0; j < w; j++)
+                    for (auto& [di, dj] : dirs) {
+                        int ni = i + di, nj = j + dj;
+                        if (ni >= 0 && ni < w && nj >= 0 && nj < w)
+                            extra_edges.push_back({global_idx(i, j), global_idx(ni, nj)});
+                    }
+            quot.push_back({A, global_idx(0, 0)});
+            quot.push_back({B, global_idx(0, w - 1)});
+            quot.push_back({C, global_idx(w - 1, w - 1)});
+            quot.push_back({D, global_idx(w - 1, 0)});
+            // Same top/right/bottom/left convention as the old quad_form's own natural_seq -
+            // add_side itself handles the min/max reorientation, so these are always declared
+            // running from each side's first-listed corner to its second.
+            add_side(A, B, [=](int k) { return global_idx(0, k); });
+            add_side(B, C, [=](int k) { return global_idx(k, w - 1); });
+            add_side(C, D, [=](int k) { return global_idx(w - 1, w - 1 - k); });
+            add_side(D, A, [=](int k) { return global_idx(w - 1 - k, 0); });
+        }
+    };
+
     for (auto& fsel : sels) {
         if (fsel.kind == FormSelKind::TriForm) {
             auto sel = fsel.sel.value_or(Selector{SelectorOp::All, simp_type(2)});
@@ -332,33 +364,14 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
             }
         } else if (fsel.kind == FormSelKind::QuadForm) {
             auto sel = fsel.sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
-            auto quads = select_quad(bc.adj, bc.embed, sel);
-            int n_face = w * w;
-            auto local_idx = [&](int i, int j) { return i * w + j; };
-            const int dirs[4][2] = {{0,1},{1,0},{0,-1},{-1,0}};
-            for (auto& [A, B, C, D] : quads) {
-                int offset = next_idx;
-                next_idx += n_face;
-                auto global_idx = [=](int i, int j) { return offset + local_idx(i, j); };
-                for (int i = 0; i < w; i++)
-                    for (int j = 0; j < w; j++)
-                        for (auto& d : dirs) {
-                            int ni = i + d[0], nj = j + d[1];
-                            if (ni >= 0 && ni < w && nj >= 0 && nj < w)
-                                extra_edges.push_back({global_idx(i, j), global_idx(ni, nj)});
-                        }
-                quot.push_back({A, global_idx(0, 0)});
-                quot.push_back({B, global_idx(0, w - 1)});
-                quot.push_back({C, global_idx(w - 1, w - 1)});
-                quot.push_back({D, global_idx(w - 1, 0)});
-                // Same top/right/bottom/left convention as the old quad_form's own natural_seq -
-                // add_side itself handles the min/max reorientation, so these are always declared
-                // running from each side's first-listed corner to its second.
-                add_side(A, B, [=](int k) { return global_idx(0, k); });
-                add_side(B, C, [=](int k) { return global_idx(k, w - 1); });
-                add_side(C, D, [=](int k) { return global_idx(w - 1, w - 1 - k); });
-                add_side(D, A, [=](int k) { return global_idx(w - 1 - k, 0); });
-            }
+            build_quad_grid_lattice(select_quad(bc.adj, bc.embed, sel), {{0,1},{1,0},{0,-1},{-1,0}});
+        } else if (fsel.kind == FormSelKind::QuadKnightForm) {
+            auto sel = fsel.sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
+            build_quad_grid_lattice(select_quad(bc.adj, bc.embed, sel),
+                {{1,2},{2,1},{2,-1},{1,-2},{-1,-2},{-2,-1},{-2,1},{-1,2}});
+        } else if (fsel.kind == FormSelKind::QuadBishopForm) {
+            auto sel = fsel.sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
+            build_quad_grid_lattice(select_quad(bc.adj, bc.embed, sel), {{1,1},{1,-1},{-1,1},{-1,-1}});
         } else { // FormSelKind::QuadDiagForm
             auto sel = fsel.sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
             auto quads = select_quad(bc.adj, bc.embed, sel);
@@ -429,6 +442,14 @@ BoardConfig quad_form(const BoardConfig& bc, int w, std::optional<Selector> sel)
 
 BoardConfig quad_diag_form(const BoardConfig& bc, int w, std::optional<Selector> sel) {
     return generic_form(bc, w, { FormSelector{FormSelKind::QuadDiagForm, sel} });
+}
+
+BoardConfig quad_knight_form(const BoardConfig& bc, int w, std::optional<Selector> sel) {
+    return generic_form(bc, w, { FormSelector{FormSelKind::QuadKnightForm, sel} });
+}
+
+BoardConfig quad_bishop_form(const BoardConfig& bc, int w, std::optional<Selector> sel) {
+    return generic_form(bc, w, { FormSelector{FormSelKind::QuadBishopForm, sel} });
 }
 
 // Mirrors shared/boardConfig.ts's genericLocalReplace() - unlike the TS side, every branch here
@@ -638,6 +659,8 @@ BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier)
         case ModifierKind::TriangleForm: return triangle_form(bc, modifier.split_n, modifier.form_sel);
         case ModifierKind::QuadForm: return quad_form(bc, modifier.split_n, modifier.form_sel);
         case ModifierKind::QuadDiagForm: return quad_diag_form(bc, modifier.split_n, modifier.form_sel);
+        case ModifierKind::QuadKnightForm: return quad_knight_form(bc, modifier.split_n, modifier.form_sel);
+        case ModifierKind::QuadBishopForm: return quad_bishop_form(bc, modifier.split_n, modifier.form_sel);
         case ModifierKind::Form: return generic_form(bc, modifier.split_n, modifier.form_sels);
         case ModifierKind::LocalReplace: return generic_local_replace(bc, modifier.selectors);
         case ModifierKind::GlobalCentralize: return global_centralize(bc);

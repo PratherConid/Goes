@@ -309,6 +309,14 @@ BUILTIN_FUNCTIONS['sqrt'] = {
         return { kind: 'number', value: Math.sqrt(v) };
     },
 };
+// `pow(a, b)`: a^b, fixed-signature (number, number) -> number like abs/sqrt above.
+BUILTIN_FUNCTIONS['pow'] = {
+    checkCall: fixedSignature([NUMBER_TYPE, NUMBER_TYPE], NUMBER_TYPE),
+    call: ([a, b]) => ({
+        kind: 'number',
+        value: Math.pow((a as { value: number }).value, (b as { value: number }).value),
+    }),
+};
 
 // `mkEdge`/`mkTri`/`mkQuad`: build an edge/simp/quad from node indices, canonicalized exactly as
 // shared/types.ts's own makeBoardEdge/makeBoardSimplex/makeBoardQuad do (mkQuad's arguments must
@@ -546,11 +554,12 @@ BUILTIN_FUNCTIONS['selectQuad'] = {
     },
 };
 
-// `triangleForm(w, [selArg])`/`quadForm(w, [selArg])`/`quadDiagForm(w, [selArg])`: builds a
-// TriangleForm/QuadForm/QuadDiagForm BoardModifier - `selArg` (a `sel`, `string`, or `set`, resolved
-// via resolveSelectorArg) restricts which triangles/quads get replaced, mirroring each kind's own
-// optional `sel?: Selector` field exactly - omitted, every one found gets replaced. Variable-arity
-// (1 or 2 args) rather than fixedSignature(...), to mirror that optionality exactly.
+// `triangleForm(w, [selArg])`/`quadForm(w, [selArg])`/`quadDiagForm(w, [selArg])`/
+// `quadKnightForm(w, [selArg])`/`quadBishopForm(w, [selArg])`: builds a TriangleForm/QuadForm/
+// QuadDiagForm/QuadKnightForm/QuadBishopForm BoardModifier - `selArg` (a `sel`, `string`, or `set`,
+// resolved via resolveSelectorArg) restricts which triangles/quads get replaced, mirroring each
+// kind's own optional `sel?: Selector` field exactly - omitted, every one found gets replaced.
+// Variable-arity (1 or 2 args) rather than fixedSignature(...), to mirror that optionality exactly.
 function formModCheckCall(callee: string, argTypes: ClegType[]): ClegType {
     if (argTypes.length !== 1 && argTypes.length !== 2)
         throw new Error(`cleg: '${callee}' expects 1 or 2 argument(s), got ${argTypes.length}`);
@@ -587,13 +596,32 @@ BUILTIN_FUNCTIONS['quadDiagForm'] = {
         return { kind: 'mod', value: { kind: 'QuadDiagForm', w, sel } };
     },
 };
+BUILTIN_FUNCTIONS['quadKnightForm'] = {
+    checkCall: formModCheckCall,
+    call: (args) => {
+        const w = (args[0] as { value: number }).value;
+        if (args.length === 1) return { kind: 'mod', value: { kind: 'QuadKnightForm', w } };
+        const sel = resolveSelectorArg('quadKnightForm', args[1], 'quad', parseQuadSelector);
+        return { kind: 'mod', value: { kind: 'QuadKnightForm', w, sel } };
+    },
+};
+BUILTIN_FUNCTIONS['quadBishopForm'] = {
+    checkCall: formModCheckCall,
+    call: (args) => {
+        const w = (args[0] as { value: number }).value;
+        if (args.length === 1) return { kind: 'mod', value: { kind: 'QuadBishopForm', w } };
+        const sel = resolveSelectorArg('quadBishopForm', args[1], 'quad', parseQuadSelector);
+        return { kind: 'mod', value: { kind: 'QuadBishopForm', w, sel } };
+    },
+};
 
 const FORMSEL_TYPE: ClegType = { kind: 'formsel' };
 
-// The 3 real FormSelector branches, as their own cleg-facing type strings - lowercase-first, same
+// The 5 real FormSelector branches, as their own cleg-facing type strings - lowercase-first, same
 // convention LRS_TYPE_STRINGS below uses.
-type FormSelTypeString = 'triForm' | 'quadForm' | 'quadDiagForm';
-const FORMSEL_TYPE_STRINGS: readonly FormSelTypeString[] = ['triForm', 'quadForm', 'quadDiagForm'];
+type FormSelTypeString = 'triForm' | 'quadForm' | 'quadDiagForm' | 'quadKnightForm' | 'quadBishopForm';
+const FORMSEL_TYPE_STRINGS: readonly FormSelTypeString[] =
+    ['triForm', 'quadForm', 'quadDiagForm', 'quadKnightForm', 'quadBishopForm'];
 function isFormSelTypeString(s: string): s is FormSelTypeString {
     return (FORMSEL_TYPE_STRINGS as readonly string[]).includes(s);
 }
@@ -601,15 +629,18 @@ const FORMSEL_KIND_OF: Record<FormSelTypeString, FormSelector['kind']> = {
     triForm: 'TriForm',
     quadForm: 'QuadForm',
     quadDiagForm: 'QuadDiagForm',
+    quadKnightForm: 'QuadKnightForm',
+    quadBishopForm: 'QuadBishopForm',
 };
 
 // `mkFormSel(typeStr, selArg?)`: builds a `formsel` value (a FormSelector - see shared/types.ts's own
-// doc comment) of the branch named by `typeStr` ("triForm", "quadForm", or "quadDiagForm") -
+// doc comment) of the branch named by `typeStr` ("triForm", "quadForm", "quadDiagForm",
+// "quadKnightForm", or "quadBishopForm") -
 // `selArg` (a `sel`, `string`, or `set`, resolved via resolveAnyKindSelectorArg since the wanted
 // kind depends on `typeStr`'s own runtime value, not something checkCall can see ahead of time)
 // restricts which faces it names; omitted, every one found is named. `typeStr`'s own validity, and
-// whether `selArg` actually matches the kind `typeStr` implies (simp 2 for "triForm", quad for
-// "quadForm"/"quadDiagForm"), are only checked at evaluation time - checkCall only ever sees
+// whether `selArg` actually matches the kind `typeStr` implies (simp 2 for "triForm", quad for every
+// other type string), are only checked at evaluation time - checkCall only ever sees
 // `typeStr`'s TYPE (string), never its runtime value (same reason mkLRS's own `typeStr` above can't
 // be validated statically either).
 function mkFormSelCheckCall(callee: string, argTypes: ClegType[]): ClegType {

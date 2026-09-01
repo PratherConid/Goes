@@ -1,0 +1,18 @@
+bool teardropCond(number w, number[] coords) {
+  number x = coords[0];
+  number y = coords[1];
+  return pow(x, 4) - pow(x, 3) * w + y * y * w * w <= 0;
+}
+bool racketCond(number w, number hw, number hd, number[] coords) {
+  number x = coords[0];
+  number y = coords[1];
+  bool inHandle = x >= -hw && x <= hw / 2 && y >= -hd && y <= hd;
+  return teardropCond(w, coords) || inHandle;
+}
+egr racketB(number w, number hw, number hd) {
+  return subHcublatB(
+    [[((-1.5) * w), (1.5 * w)], [((-1.5) * w), (1.5 * w)]],
+    racketCond(w, hw, hd, #)
+  );
+}
+racketB(24.5, 10, 1.5);

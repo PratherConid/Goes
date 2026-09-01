@@ -75,6 +75,7 @@ const _boardConfigNames = [
     'goDesk_19_19_5_2_6_2', 'ring_5_12.5', 'shell_6_7.5', 'roundTable_9.5_5_3_2',
     'snubsqtri_4_4_4', 'trunc_trunc_cublat_3_3_3', 'truncated_24_cell',
     'truncated_centralized_rect_6_6', 'tetrahedron_centering_9', 'diamondCubic_10',
+    'rect_7_7_diag_non_diag_3_0.5', 'cuboid_5_5_5_diag_non_diag_3_0.5', 'soccer_ball', 'heart_9.5', 'teardrop_24.5', 'racket_24.5_10_1.5',
 ];
 
 
@@ -1640,6 +1641,12 @@ export class Renderer {
                 + 'square lattice of side w (w*w + (w-1)*(w-1) nodes: a w-by-w corner grid plus a '
                 + '(w-1)-by-(w-1) center grid, each center connected only to its own 4 diagonal '
                 + 'corners) instead of a plain w-by-w grid')}
+            ${row('quadKnightForm(w, sel?)',
+                'QuadKnightForm: same as quadForm (same w-by-w node grid, no extra nodes), but two '
+                + "grid nodes are connected iff they're a knight's move apart instead of axis-adjacent")}
+            ${row('quadBishopForm(w, sel?)',
+                'QuadBishopForm: same as quadForm (same w-by-w node grid, no extra nodes), but two '
+                + "grid nodes are connected iff they're diagonally adjacent instead of axis-adjacent")}
             ${row('form(w, [FormSel…])',
                 'Form: generalizes triangleForm/quadForm (see their own entries above) to one or more '
                 + 'FormSel values (each built by mkFormSel - see Form Selectors) at once, all sharing '
@@ -1744,9 +1751,16 @@ export class Renderer {
             ${row('"quadDiagForm"',
                 'Every quad - or, if sel is given, only the ones it selects - built as a '
                 + 'diagonally-oriented square lattice rather than a plain grid')}
+            ${row('"quadKnightForm"',
+                "Every quad - or, if sel is given, only the ones it selects - connected knight's-move "
+                + 'style instead of a plain grid')}
+            ${row('"quadBishopForm"',
+                'Every quad - or, if sel is given, only the ones it selects - connected diagonally '
+                + 'instead of a plain grid')}
         `);
 
         this.commandReferenceBuiltinFunctionsPanel.innerHTML = table(`
+            ${row('pow(a, b)', 'a raised to the power b')}
             ${row('nil(TYPE)', 'An empty array of the given element type - e.g. nil(number) is an '
                 + 'empty number[] - needed anywhere an empty [...]/{...} literal can\'t infer its own '
                 + 'element type on its own, such as msUnion([]) or msInter([])')}

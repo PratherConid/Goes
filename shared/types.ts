@@ -508,7 +508,14 @@ export type FormSelector =
     // QuadDiagForm: like QuadForm, but genericForm builds a diagonally-oriented square lattice for
     // each selected quad instead of a plain w-by-w grid - see genericForm's own doc comment
     // (shared/boardConfig.ts) for the actual node/edge construction.
-    | { kind: 'QuadDiagForm'; sel?: Selector };
+    | { kind: 'QuadDiagForm'; sel?: Selector }
+    // QuadKnightForm/QuadBishopForm: same w-by-w node grid as QuadForm, but genericForm connects
+    // only nodes a knight's move apart (QuadKnightForm) or diagonally adjacent (QuadBishopForm,
+    // same directions QuadDiagForm's own primary-to-center edges run in, but here directly between
+    // grid nodes - no extra center nodes) instead of QuadForm's own axis-aligned grid edges - see
+    // genericForm's own doc comment (shared/boardConfig.ts) for the actual construction.
+    | { kind: 'QuadKnightForm'; sel?: Selector }
+    | { kind: 'QuadBishopForm'; sel?: Selector };
 
 /**
  * One selected face plus which LOCAL shape to replace it with - see shared/boardConfig.ts's
@@ -551,6 +558,8 @@ export type BoardModifier =
     | { kind: 'TriangleForm'; w: number; sel?: Selector }
     | { kind: 'QuadForm'; w: number; sel?: Selector }
     | { kind: 'QuadDiagForm'; w: number; sel?: Selector }
+    | { kind: 'QuadKnightForm'; w: number; sel?: Selector }
+    | { kind: 'QuadBishopForm'; w: number; sel?: Selector }
     // sels: one FormSelector per face-and-kind to look for - see genericForm's own doc comment
     // (shared/boardConfig.ts), which this wraps.
     | { kind: 'Form'; w: number; sels: FormSelector[] }

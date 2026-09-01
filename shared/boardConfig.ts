@@ -1,4 +1,4 @@
-import type { BoardArgEntry, BoardConfig, BoardModifier, LocalReplaceSelector, FormSelector, Selector, BoardEdge } from './types.js';
+import type { BoardArgEntry, BoardConfig, BoardModifier, LocalReplaceSelector, FormSelector, Selector, BoardEdge, BoardQuad } from './types.js';
 import type { GameConfig } from './gameConfig.js';
 // Type-only - see types.ts's own note on why this isn't a real circular runtime import.
 import type { ClegProgram } from './clegBase.js';
@@ -347,13 +347,18 @@ export function edgeInducedSubgraph(bc: BoardConfig, edges: BoardEdge[]): BoardC
  * square lattice (QuadDiagForm: a `w`-by-`w` "primary" grid plus a `(w-1)`-by-`(w-1)` "center" grid
  * - one center per primary unit cell, connected only to that cell's own 4 primary corners, so every
  * edge runs diagonally and no primary-primary or center-center edge exists; `w*w + (w-1)*(w-1)`
- * nodes total) - gluing new corners back to the original vertices and gluing every original edge's
- * own new boundary points together across every lattice that consumes that edge as one of its own
- * sides, regardless of which FormSelector kind that lattice came from - this is what makes a mixed
- * `sels` list meaningful: any two of these sharing an edge still glue seamlessly, since gluing is
- * driven by shared ORIGINAL edges, not by matching kinds (QuadDiagForm's own boundary, like
- * QuadForm's, is exactly its `w` primary corner nodes along each side - its center nodes are always
- * strictly interior, never on a side). Each element of `sels` is a FormSelector (see its own doc
+ * nodes total), or, for a quad, the SAME `w`-by-`w` grid QuadForm builds but with different internal
+ * edges: QuadKnightForm connects two grid nodes iff they're a knight's move apart (chess-style: one
+ * coordinate differs by 1 and the other by 2), QuadBishopForm iff they're diagonally adjacent (both
+ * coordinates differ by exactly 1 - the same direction QuadDiagForm's own primary-to-center edges
+ * run in, but directly between grid nodes here, with no extra center nodes) - gluing new corners
+ * back to the original vertices and gluing every original edge's own new boundary points together
+ * across every lattice that consumes that edge as one of its own sides, regardless of which
+ * FormSelector kind that lattice came from - this is what makes a mixed `sels` list meaningful: any
+ * two of these sharing an edge still glue seamlessly, since gluing is driven by shared ORIGINAL
+ * edges, not by matching kinds (every quad-based kind shares the exact same `w` primary/grid corner
+ * nodes along each side - QuadDiagForm's own center nodes are always strictly interior, never on a
+ * side). Each element of `sels` is a FormSelector (see its own doc
  * comment, shared/types.ts) naming both which kind to look for AND (via its own optional `sel`)
  * restricting which ones of that kind qualify - `sel` omitted means "every one found, no
  * restriction". `w` is shared by every element of `sels`, since two lattices sharing an edge can
@@ -390,6 +395,49 @@ export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): B
     const extraEdges: [number, number][] = [];
     let nextIdx = N;
 
+    // Shared by QuadForm/QuadKnightForm/QuadBishopForm below - each puts the same w-by-w node grid
+    // (same corner positions, same corner/boundary gluing) over a selected quad, differing only in
+    // which pair-of-cells `dirs` connects: QuadForm's own axis-aligned neighbors, a knight's-move
+    // offset, or a diagonal neighbor (see genericForm's own doc comment for what each kind means).
+    function buildQuadGridLattice(quads: BoardQuad[], dirs: [number, number][]) {
+        const nFace = w * w;
+        const localIdx = (i: number, j: number) => i * w + j;
+        const denom = (w - 1) * (w - 1);
+        for (const { n1: A, n2: B, n3: C, n4: D } of quads) {
+            const offset = nextIdx;
+            nextIdx += nFace;
+            const globalIdx = (i: number, j: number) => offset + localIdx(i, j);
+            const cornerA = scaledPos[A], cornerB = scaledPos[B], cornerC = scaledPos[C], cornerD = scaledPos[D];
+            for (let i = 0; i < w; i++)
+                for (let j = 0; j < w; j++) {
+                    const wA = (w - 1 - i) * (w - 1 - j), wB = (w - 1 - i) * j;
+                    const wC = i * j, wD = i * (w - 1 - j);
+                    extraPos[globalIdx(i, j) - N] = w === 1
+                        ? cornerA.map((_, k) => (cornerA[k] + cornerB[k] + cornerC[k] + cornerD[k]) / 4)
+                        : cornerA.map((_, k) =>
+                            (wA * cornerA[k] + wB * cornerB[k] + wC * cornerC[k] + wD * cornerD[k]) / denom);
+                }
+            for (let i = 0; i < w; i++)
+                for (let j = 0; j < w; j++)
+                    for (const [di, dj] of dirs) {
+                        const ni = i + di, nj = j + dj;
+                        if (ni < 0 || ni >= w || nj < 0 || nj >= w) continue;
+                        extraEdges.push([globalIdx(i, j), globalIdx(ni, nj)]);
+                    }
+            cornerQuot.push(
+                [A, globalIdx(0, 0)], [B, globalIdx(0, w - 1)],
+                [C, globalIdx(w - 1, w - 1)], [D, globalIdx(w - 1, 0)],
+            );
+            // Same top/right/bottom/left convention as the old quadForm's own naturalSeq -
+            // addSide itself handles the min/max reorientation, so these are always declared
+            // running from each side's first-listed corner to its second.
+            addSide(A, B, k => globalIdx(0, k));
+            addSide(B, C, k => globalIdx(k, w - 1));
+            addSide(C, D, k => globalIdx(w - 1, w - 1 - k));
+            addSide(D, A, k => globalIdx(w - 1 - k, 0));
+        }
+    }
+
     for (const fsel of sels) {
         if (fsel.kind === 'TriForm') {
             const sel = fsel.sel ?? { op: 'all' as const, type: simpType(2) };
@@ -423,44 +471,15 @@ export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): B
             }
         } else if (fsel.kind === 'QuadForm') {
             const sel = fsel.sel ?? { op: 'all' as const, type: 'quad' as const };
-            const quads = selectQuad(bc.adj, bc.emb.pos, sel);
-            const nFace = w * w;
-            const localIdx = (i: number, j: number) => i * w + j;
-            const dirs: [number, number][] = [[0, 1], [1, 0], [0, -1], [-1, 0]];
-            const denom = (w - 1) * (w - 1);
-            for (const { n1: A, n2: B, n3: C, n4: D } of quads) {
-                const offset = nextIdx;
-                nextIdx += nFace;
-                const globalIdx = (i: number, j: number) => offset + localIdx(i, j);
-                const cornerA = scaledPos[A], cornerB = scaledPos[B], cornerC = scaledPos[C], cornerD = scaledPos[D];
-                for (let i = 0; i < w; i++)
-                    for (let j = 0; j < w; j++) {
-                        const wA = (w - 1 - i) * (w - 1 - j), wB = (w - 1 - i) * j;
-                        const wC = i * j, wD = i * (w - 1 - j);
-                        extraPos[globalIdx(i, j) - N] = w === 1
-                            ? cornerA.map((_, k) => (cornerA[k] + cornerB[k] + cornerC[k] + cornerD[k]) / 4)
-                            : cornerA.map((_, k) =>
-                                (wA * cornerA[k] + wB * cornerB[k] + wC * cornerC[k] + wD * cornerD[k]) / denom);
-                    }
-                for (let i = 0; i < w; i++)
-                    for (let j = 0; j < w; j++)
-                        for (const [di, dj] of dirs) {
-                            const ni = i + di, nj = j + dj;
-                            if (ni < 0 || ni >= w || nj < 0 || nj >= w) continue;
-                            extraEdges.push([globalIdx(i, j), globalIdx(ni, nj)]);
-                        }
-                cornerQuot.push(
-                    [A, globalIdx(0, 0)], [B, globalIdx(0, w - 1)],
-                    [C, globalIdx(w - 1, w - 1)], [D, globalIdx(w - 1, 0)],
-                );
-                // Same top/right/bottom/left convention as the old quadForm's own naturalSeq -
-                // addSide itself handles the min/max reorientation, so these are always declared
-                // running from each side's first-listed corner to its second.
-                addSide(A, B, k => globalIdx(0, k));
-                addSide(B, C, k => globalIdx(k, w - 1));
-                addSide(C, D, k => globalIdx(w - 1, w - 1 - k));
-                addSide(D, A, k => globalIdx(w - 1 - k, 0));
-            }
+            buildQuadGridLattice(selectQuad(bc.adj, bc.emb.pos, sel), [[0, 1], [1, 0], [0, -1], [-1, 0]]);
+        } else if (fsel.kind === 'QuadKnightForm') {
+            const sel = fsel.sel ?? { op: 'all' as const, type: 'quad' as const };
+            buildQuadGridLattice(selectQuad(bc.adj, bc.emb.pos, sel), [
+                [1, 2], [2, 1], [2, -1], [1, -2], [-1, -2], [-2, -1], [-2, 1], [-1, 2],
+            ]);
+        } else if (fsel.kind === 'QuadBishopForm') {
+            const sel = fsel.sel ?? { op: 'all' as const, type: 'quad' as const };
+            buildQuadGridLattice(selectQuad(bc.adj, bc.emb.pos, sel), [[1, 1], [1, -1], [-1, 1], [-1, -1]]);
         } else {
             const sel = fsel.sel ?? { op: 'all' as const, type: 'quad' as const };
             const quads = selectQuad(bc.adj, bc.emb.pos, sel);
@@ -575,6 +594,30 @@ export function quadForm(bc: BoardConfig, w: number, sel?: Selector): BoardConfi
  */
 export function quadDiagForm(bc: BoardConfig, w: number, sel?: Selector): BoardConfig {
     return genericForm(bc, w, [{ kind: 'QuadDiagForm', sel }]);
+}
+
+/**
+ * Replaces every quad (4 distinct vertices forming a cycle with no diagonal edges - see
+ * topology.ts's findQuads) in `bc` with the same `w`-by-`w` grid quadForm builds, but connecting two
+ * grid nodes iff they're a knight's move apart instead of axis-adjacent - the single-kind special
+ * case of genericForm (see its own doc comment), the same way quadForm is. `sel`, if given,
+ * restricts this to only the quads it selects (evaluated against `bc`'s own adj/pos) - every other
+ * quad is left untouched, as if it didn't exist.
+ */
+export function quadKnightForm(bc: BoardConfig, w: number, sel?: Selector): BoardConfig {
+    return genericForm(bc, w, [{ kind: 'QuadKnightForm', sel }]);
+}
+
+/**
+ * Replaces every quad (4 distinct vertices forming a cycle with no diagonal edges - see
+ * topology.ts's findQuads) in `bc` with the same `w`-by-`w` grid quadForm builds, but connecting two
+ * grid nodes iff they're diagonally adjacent instead of axis-adjacent - the single-kind special case
+ * of genericForm (see its own doc comment), the same way quadForm is. `sel`, if given, restricts
+ * this to only the quads it selects (evaluated against `bc`'s own adj/pos) - every other quad is
+ * left untouched, as if it didn't exist.
+ */
+export function quadBishopForm(bc: BoardConfig, w: number, sel?: Selector): BoardConfig {
+    return genericForm(bc, w, [{ kind: 'QuadBishopForm', sel }]);
 }
 
 /**
@@ -2256,6 +2299,8 @@ export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardCo
         case 'TriangleForm': return triangleForm(bc, modifier.w, modifier.sel);
         case 'QuadForm': return quadForm(bc, modifier.w, modifier.sel);
         case 'QuadDiagForm': return quadDiagForm(bc, modifier.w, modifier.sel);
+        case 'QuadKnightForm': return quadKnightForm(bc, modifier.w, modifier.sel);
+        case 'QuadBishopForm': return quadBishopForm(bc, modifier.w, modifier.sel);
         case 'Form': return genericForm(bc, modifier.w, modifier.sels);
         case 'LocalReplace': return genericLocalReplace(bc, modifier.selectors);
         case 'GlobalCentralize': return globalCentralize(bc);

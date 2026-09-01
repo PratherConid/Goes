@@ -563,6 +563,11 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                 return make_number(std::sqrt(v));
             },
         };
+        // `pow(a, b)`: a^b. Mirrors shared/clegEval.ts's BUILTIN_FUNCTIONS['pow'].
+        m["pow"] = BuiltinFunction{
+            fixed_signature({NUMBER_TYPE, NUMBER_TYPE}, NUMBER_TYPE),
+            [](const std::vector<ClegValue>& args, UserFuncTable&) { return make_number(std::pow(args[0].number, args[1].number)); },
+        };
 
         m["mkEdge"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE, NUMBER_TYPE}, EDGE_TYPE),
@@ -797,23 +802,45 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                 return make_mod(bm);
             },
         };
+        m["quadKnightForm"] = BuiltinFunction{
+            form_mod_check_call,
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+                BoardModifier bm{ModifierKind::QuadKnightForm};
+                bm.split_n = static_cast<int>(args[0].number);
+                if (args.size() == 2) bm.form_sel = resolve_selector_arg("quadKnightForm", args[1], SelectorType{SelectorKind::Quad}, parse_quad_selector);
+                return make_mod(bm);
+            },
+        };
+        m["quadBishopForm"] = BuiltinFunction{
+            form_mod_check_call,
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+                BoardModifier bm{ModifierKind::QuadBishopForm};
+                bm.split_n = static_cast<int>(args[0].number);
+                if (args.size() == 2) bm.form_sel = resolve_selector_arg("quadBishopForm", args[1], SelectorType{SelectorKind::Quad}, parse_quad_selector);
+                return make_mod(bm);
+            },
+        };
 
-        // The 3 real FormSelector branches, as their own cleg-facing type strings - lowercase-first,
+        // The 5 real FormSelector branches, as their own cleg-facing type strings - lowercase-first,
         // same convention lrs_type_strings below uses. Mirrors shared/clegEval.ts's
         // FORMSEL_TYPE_STRINGS.
-        static const std::vector<std::string> form_sel_type_strings = {"triForm", "quadForm", "quadDiagForm"};
+        static const std::vector<std::string> form_sel_type_strings =
+            {"triForm", "quadForm", "quadDiagForm", "quadKnightForm", "quadBishopForm"};
         auto is_form_sel_type_string = [](const std::string& s) {
             return std::find(form_sel_type_strings.begin(), form_sel_type_strings.end(), s) != form_sel_type_strings.end();
         };
         auto form_sel_kind_of = [](const std::string& s) {
             if (s == "triForm") return FormSelKind::TriForm;
             if (s == "quadForm") return FormSelKind::QuadForm;
-            return FormSelKind::QuadDiagForm;
+            if (s == "quadDiagForm") return FormSelKind::QuadDiagForm;
+            if (s == "quadKnightForm") return FormSelKind::QuadKnightForm;
+            return FormSelKind::QuadBishopForm;
         };
 
         // `mkFormSel(typeStr, selArg?)`: builds a `formsel` value (a FormSelector) of the branch
-        // named by `typeStr` ("triForm", "quadForm", or "quadDiagForm") - `selArg` (a `sel`,
-        // `string`, or `set`, resolved via resolve_any_kind_selector_arg since the wanted kind
+        // named by `typeStr` ("triForm", "quadForm", "quadDiagForm", "quadKnightForm", or
+        // "quadBishopForm") - `selArg` (a `sel`, `string`, or `set`, resolved via
+        // resolve_any_kind_selector_arg since the wanted kind
         // depends on `typeStr`'s own runtime value) restricts which faces it names; omitted, every
         // one found is named. Mirrors shared/clegEval.ts's mkFormSelCheckCall/
         // BUILTIN_FUNCTIONS['mkFormSel'].
