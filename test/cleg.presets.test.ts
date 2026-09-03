@@ -46,6 +46,7 @@ function edgeCount(adj: number[][]): number {
 // assertion; add a new entry (and re-run to capture its own golden value) for a new preset file.
 const BOARD_PRESET_GOLDEN: Record<string, { N: number; edges: number }> = {
     'biTemple_13_13_9_3.cleg': { N: 450, edges: 864 },
+    'bishop_ortho_7_7_3_0.5.cleg': { N: 169, edges: 344 },
     'cpentflake_4.cleg': { N: 560, edges: 820 },
     'cpolyflake_8_3.cleg': { N: 392, edges: 560 },
     'cublat_2_2_2_es_1_rect_form_7_(tri)_(quad)_scale_0.75.cleg': { N: 362, edges: 864 },
@@ -55,7 +56,7 @@ const BOARD_PRESET_GOLDEN: Record<string, { N: number; edges: number }> = {
     'cublat_3_3_3_sel_(deg_gt_3)_quadform_6.cleg': { N: 331, edges: 630 },
     'cublat_4_4_4_cub_0010_quadform_4.cleg': { N: 584, edges: 1224 },
     'cublat_9_9_9_nice_drop_0.2.cleg': { N: 569, edges: 1201 },
-    'cuboid_5_5_5_diag_non_diag_3_0.5.cleg': { N: 578, edges: 1242 },
+    'cuboid_5_5_5_diag_ortho_3_0.5.cleg': { N: 578, edges: 1242 },
     'diamondCubic_10.cleg': { N: 385, edges: 660 },
     'dodeca_gcent_triform_6.cleg': { N: 401, edges: 1150 },
     'goDesk_19_19_5_2_6_2.cleg': { N: 1300, edges: 2604 },
@@ -71,7 +72,7 @@ const BOARD_PRESET_GOLDEN: Record<string, { N: number; edges: number }> = {
     'rect_19_19_nis_(rrmp_0.1_(all))_nis_(conve_quad_(conva_node_(all))).cleg': { N: 315, edges: 537 },
     'rect_3_3.cleg': { N: 9, edges: 12 },
     'rect_5_5_fractaldrop_3_0.05.cleg': { N: 636, edges: 1142 },
-    'rect_7_7_diag_non_diag_3_0.5.cleg': { N: 241, edges: 488 },
+    'rect_7_7_diag_ortho_3_0.5.cleg': { N: 241, edges: 488 },
     'rect_9_9.cleg': { N: 81, edges: 144 },
     'regpoly_13_prod_regpoly_13.cleg': { N: 169, edges: 338 },
     'regpoly_5_es_5_prod_lin_6.cleg': { N: 150, edges: 275 },

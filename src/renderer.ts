@@ -60,6 +60,7 @@ const _presetDescriptions = new Map([
 // names directly (underscores replaced with spaces), not a separate description - there's no
 // human-readable text shown anywhere for these beyond the name itself.
 const _boardConfigNames = [
+    'bishop_ortho_7_7_3_0.5',
     'rect_3_3', 'rect_9_9', 'rect_13_13', 'rect_19_19', 'twsq_7_7_2',
     'twsq_3_3_2_es_3_prod_lin_4', 'regpoly_5_es_5_prod_lin_6', 'cublat_2_2_2_quadform_9',
     'cublat_3_3_3_sel_(deg_gt_3)_quadform_6', 'cublat_3_3_3_quadform_5_nice_drop_0.1',
@@ -75,13 +76,118 @@ const _boardConfigNames = [
     'goDesk_19_19_5_2_6_2', 'ring_5_12.5', 'shell_6_7.5', 'roundTable_9.5_5_3_2',
     'snubsqtri_4_4_4', 'trunc_trunc_cublat_3_3_3', 'truncated_24_cell',
     'truncated_centralized_rect_6_6', 'tetrahedron_centering_9', 'diamondCubic_10',
-    'rect_7_7_diag_non_diag_3_0.5', 'cuboid_5_5_5_diag_non_diag_3_0.5', 'soccer_ball', 'heart_9.5', 'teardrop_24.5', 'racket_24.5_10_1.5',
+    'rect_7_7_diag_ortho_3_0.5', 'cuboid_5_5_5_diag_ortho_3_0.5', 'soccer_ball', 'heart_9.5', 'teardrop_24.5', 'racket_24.5_10_1.5',
 ];
 
 
-const COLOR_GRID    = '#000000';
-const COLOR_ILLEGAL = '#ba9347';
-const COLOR_BOARD   = '#e5b24c';
+// A color theme names every themeable color: the three SVG board colors (drawn directly via
+// setAttribute, so switching themes must reassign the module-level COLOR_GRID/COLOR_ILLEGAL/
+// COLOR_BOARD variables below) plus the surrounding UI chrome, which index.html defines entirely
+// as CSS custom properties (--color-*) on :root - switching a theme just overwrites those on
+// document.documentElement.style. Player stone colors (STONE_MAP, shared/types.ts) are deliberately
+// NOT themed - they're shared game data, not purely visual chrome.
+interface ColorTheme {
+    grid: string;
+    illegal: string;
+    board: string;
+    css: Record<string, string>;
+}
+
+// One entry per theme name usable with the 'ctheme' command - 'wooden' matches index.html's own
+// :root defaults exactly, so applying it is a visual no-op.
+const COLOR_THEMES: Record<string, ColorTheme> = {
+    wooden: {
+        grid: '#000000',
+        illegal: '#ba9347',
+        board: '#e5b24c',
+        css: {
+            '--color-bg-main': '#997750',
+            '--color-bg-panel': '#b0895c',
+            '--color-bg-surface': '#c29765',
+            '--color-bg-surface-hover': '#d6a76f',
+            '--color-bg-cmdarea': '#1a1208',
+            '--color-bg-overlay': 'rgba(0, 0, 0, 0.5)',
+            '--color-accent': '#5c442e',
+            '--color-accent-hover': '#7a5827',
+            '--color-btn-disabled': '#b5a99e',
+            '--color-border': '#5c442e',
+            '--color-ctrl-border': '#4a3625',
+            // Same value as --color-bg-panel - #side-panel's own border should be invisible in
+            // 'wooden', unlike 'default' below. var(...) rather than repeating the literal hex:
+            // custom properties resolve lazily at use time (not at applyColorTheme's own
+            // setProperty call), so this always tracks --color-bg-panel's current value exactly.
+            '--color-panel-border': 'var(--color-bg-panel)',
+            // Same reasoning as --color-panel-border just above, but #ctrl-bar has no background
+            // of its own - it sits directly on body's, so this tracks --color-bg-main instead.
+            '--color-ctrlbar-border': 'var(--color-bg-main)',
+            '--color-icon-filter': 'none',
+            '--color-text': '#000',
+            '--color-text-inverse': '#fff',
+            '--color-text-muted': '#aaa',
+            '--color-text-placeholder': '#533d29',
+            '--color-divider': '#8a6830',
+            '--color-heading': '#1a0a00',
+            '--color-outline': '#333',
+        },
+    },
+    // Minimal white/black theme: every background var is white, every text var is black; the two
+    // hover vars (--color-accent-hover backs .panel-mode-btn's hover, --color-bg-surface-hover
+    // backs .panel-child-btn/.status-login-btn/.nav-btn's hover - both are buttons whose own
+    // background is now white) get a light gray, a conventional hover shade for a white button.
+    // --color-border/--color-divider/--color-outline aren't a background or text color (borders,
+    // a table-header rule, and a stone-dot border, respectively) - kept visible against the new
+    // white backgrounds (--color-border black - it's what frames every side-panel button/input,
+    // and wants to read clearly rather than recede - --color-divider/--color-outline a lighter
+    // gray, for their own more minor dividing-line/stone-dot roles), now that --color-border
+    // (unlike --color-accent, which
+    // still backs several buttons' own white background) is free to be a real border color.
+    default: {
+        grid: '#000000',
+        illegal: '#ba9347',
+        board: '#e5b24c',
+        css: {
+            '--color-bg-main': '#ffffff',
+            '--color-bg-panel': '#ffffff',
+            '--color-bg-surface': '#ffffff',
+            '--color-bg-surface-hover': '#e6e6e6',
+            '--color-bg-cmdarea': '#ffffff',
+            '--color-bg-overlay': 'rgba(255, 255, 255, 0.5)',
+            '--color-accent': '#ffffff',
+            '--color-accent-hover': '#e6e6e6',
+            '--color-btn-disabled': '#d9d9d9',
+            '--color-border': '#000',
+            '--color-ctrl-border': '#000',
+            '--color-panel-border': '#000',
+            '--color-ctrlbar-border': '#000',
+            // .panel-mode-btn's nav icons (public/icons/*.svg) are baked white - invisible against
+            // this theme's own white --color-accent button background without this.
+            '--color-icon-filter': 'invert(1)',
+            '--color-text': '#000',
+            '--color-text-inverse': '#000',
+            '--color-text-muted': '#000',
+            '--color-text-placeholder': '#000',
+            '--color-divider': '#ccc',
+            '--color-heading': '#000',
+            '--color-outline': '#ccc',
+        },
+    },
+};
+
+let COLOR_GRID    = COLOR_THEMES.wooden!.grid;
+let COLOR_ILLEGAL = COLOR_THEMES.wooden!.illegal;
+let COLOR_BOARD   = COLOR_THEMES.wooden!.board;
+
+// Applies a COLOR_THEMES entry: reassigns the module-level SVG board color variables (picked up by
+// the next drawBoardFull() call - every command handler triggers one via _render()) and overwrites
+// index.html's --color-* custom properties on documentElement, which restyles the CSS chrome
+// immediately (no redraw needed for that half).
+function applyColorTheme(theme: ColorTheme): void {
+    COLOR_GRID = theme.grid;
+    COLOR_ILLEGAL = theme.illegal;
+    COLOR_BOARD = theme.board;
+    for (const [prop, value] of Object.entries(theme.css))
+        document.documentElement.style.setProperty(prop, value);
+}
 
 // SVG elements must be created via createElementNS with this namespace -
 // document.createElement('circle') etc. produce non-rendering HTMLUnknownElements.
@@ -543,6 +649,7 @@ export class Renderer {
     showTerritory = false;
     showIllegalMoves = false;
     showNodes = false;
+    colorTheme = 'default';
     // True while a click on a multi-stone turn is waiting for the player to
     // pick which offered stone to place (see _onBoardClick/_renderMainBoard).
     selectingStone = false;
@@ -724,6 +831,7 @@ export class Renderer {
     private engineManager = new EngineManager();
 
     constructor(game: BoardState) {
+        applyColorTheme(COLOR_THEMES[this.colorTheme]!);
         const initCfg = this.newCfg.copy();
         for (let slot = 1; slot <= initCfg.numPlayers; slot++)
             initCfg.players.set(slot, new PlayerInfo('local', ''));
@@ -1550,6 +1658,7 @@ export class Renderer {
             ${row('simv',        'Toggle illegal move markers on the main board')}
             ${row('tlv',         'Toggle lock view: lock/unlock camera rotation on the main board')}
             ${row('snode',       'Toggle node markers: draw a small dot at every node on the main board')}
+            ${row('ctheme <name>', 'Switch color theme (known: wooden, default)')}
             ${row('rsv',
                 'Reset view: reset the main board camera to its default orientation and focus (0 0 0)')}
             ${row('focus &lt;x&gt; &lt;y&gt; &lt;z&gt;',
@@ -3243,6 +3352,16 @@ export class Renderer {
         else if (cmd === 'simv') this.showIllegalMoves = !this.showIllegalMoves;
         else if (cmd === 'tlv')  this._active.rotationLocked = !this._active.rotationLocked;
         else if (cmd === 'snode') this.showNodes = !this.showNodes;
+        else if (cmd === 'ctheme') {
+            if (!parts[1]) { this._setCmdOutput('Usage: ctheme <name>'); return; }
+            const theme = COLOR_THEMES[parts[1]];
+            if (!theme) {
+                this._setCmdOutput(`Unknown color theme: ${parts[1]} (known: ${Object.keys(COLOR_THEMES).join(', ')})`);
+                return;
+            }
+            this.colorTheme = parts[1];
+            applyColorTheme(theme);
+        }
         else if (cmd === 'rsv') {
             this._active.viewport.quat = QUAT_IDENTITY;
             this._active.viewport.focus = [0, 0, 0];

@@ -5,6 +5,49 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Goes</title>
   <style>
+    /* Color theme: default values are the 'default' theme (see src/renderer.ts's own
+       COLOR_THEMES/applyColorTheme, driven by the 'ctheme' command and Renderer.colorTheme's own
+       default) - every color used below is a var(--color-*) referencing one of these, so switching
+       themes just overwrites these custom properties on documentElement at runtime. Player stone
+       colors (STONE_MAP, shared/types.ts) and the SVG board colors (COLOR_GRID/COLOR_ILLEGAL/
+       COLOR_BOARD, src/renderer.ts) are handled separately - stone colors aren't themed at all, and
+       the board's own colors are applied via SVG attributes rather than CSS. --color-border is its
+       own variable (not folded into --color-accent, despite sharing 'wooden's own value)
+       specifically because --color-accent also backs several button/scrollbar-thumb BACKGROUNDS - a
+       theme wanting light buttons on a light background still needs a darker, independently-set
+       border to stay visible.
+       --color-ctrl-border is its own variable too (rather than reusing --color-border) - the main
+       board's own controls (#pass-btn's own group, .ply-nav-btn, #ply-num) want a border that reads
+       as dark in every theme, unlike --color-border, which panels/inputs/etc. want themed lighter
+       to match a light theme's own background. --color-panel-border/--color-ctrlbar-border are each
+       their own variable (rather than reusing --color-border/--color-ctrl-border) since #side-panel/
+       #ctrl-bar want their own OUTER border to disappear into whatever's behind them in 'wooden'
+       (--color-bg-panel/--color-bg-main respectively - #ctrl-bar has no background of its own, so
+       it's body's), not read as a themed accent border the way their own CHILDREN's borders do. */
+    :root {
+      --color-bg-main: #ffffff;
+      --color-bg-panel: #ffffff;
+      --color-bg-surface: #ffffff;
+      --color-bg-surface-hover: #e6e6e6;
+      --color-bg-cmdarea: #ffffff;
+      --color-bg-overlay: rgba(255, 255, 255, 0.5);
+      --color-accent: #ffffff;
+      --color-accent-hover: #e6e6e6;
+      --color-btn-disabled: #d9d9d9;
+      --color-border: #000;
+      --color-ctrl-border: #000;
+      --color-panel-border: #000;
+      --color-ctrlbar-border: #000;
+      --color-icon-filter: invert(1);
+      --color-text: #000;
+      --color-text-inverse: #000;
+      --color-text-muted: #000;
+      --color-text-placeholder: #000;
+      --color-divider: #ccc;
+      --color-heading: #000;
+      --color-outline: #ccc;
+    }
+
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     /* Suppresses the double-tap-to-zoom gesture on rapid taps (mobile
@@ -44,13 +87,13 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      background: rgba(0, 0, 0, 0.5);
+      background: var(--color-bg-overlay);
       z-index: 3000;
     }
     #popup-overlay[hidden] { display: none; }
     .popup-box {
-      background: #b0895c;
-      color: #000;
+      background: var(--color-bg-panel);
+      color: var(--color-text);
       padding: 20px;
       border-radius: 8px;
       max-width: 320px;
@@ -78,7 +121,7 @@
       resize: vertical;
       overflow-x: auto;
     }
-    .mod-edit-error { color: #000; margin-top: 8px; font-size: 13px; }
+    .mod-edit-error { color: var(--color-text); margin-top: 8px; font-size: 13px; }
 
     /* Fixed top-right so it's reachable regardless of layout mode - even
        when #side-panel is hidden/fullscreen and nothing else is on screen. */
@@ -95,8 +138,8 @@
       height: 28px;
       border: none;
       border-radius: 4px;
-      background: #5c442e;
-      color: #fff;
+      background: var(--color-accent);
+      color: var(--color-text-inverse);
       font-size: 15px;
       line-height: 1;
       cursor: pointer;
@@ -104,13 +147,19 @@
       align-items: center;
       justify-content: center;
     }
+    /* The nav icons (public/icons/*.svg) are baked white (fill="#fff") - fine against 'wooden's
+       own dark --color-accent button background, illegible against a light one (e.g. 'default's
+       white). Since they're plain <img src> (not inline SVG), CSS can't reach their own fill - a
+       per-theme filter is the smallest lever that can still recolor them: invert(1) flips a pure
+       white-on-transparent icon to black without touching the transparency. */
+    .panel-mode-btn img { filter: var(--color-icon-filter); }
     /* Scoped to real pointers only - on touchscreens, :hover gets "stuck"
        applied to whatever element the browser re-hit-tests at the last touch
        point after a DOM change, which happens on every side-panel navigation
        since its buttons are rebuilt from scratch (see childButtons() call
        sites). */
     @media (hover: hover) and (pointer: fine) {
-      .panel-mode-btn:hover { background: #7a5827; }
+      .panel-mode-btn:hover { background: var(--color-accent-hover); }
     }
     /* The `hidden` attribute's UA-stylesheet display:none is normal-priority,
        so it loses to .panel-mode-btn's own display:flex above (any
@@ -123,8 +172,8 @@
     .panel-mode-btn:disabled { opacity: 0.5; cursor: default; }
 
     body {
-      background: #997750;
-      color: #000;
+      background: var(--color-bg-main);
+      color: var(--color-text);
       font-family: Calibri, sans-serif;
       font-size: 16px;
       height: 100dvh;
@@ -167,6 +216,9 @@
       display: flex;
       flex-direction: column;
       flex-shrink: 0;
+      border: 1px solid var(--color-ctrlbar-border);
+      border-radius: 8px;
+      margin: 0 16px;
       --u: max(16px, min(100dvw, 100dvh) / 25);
     }
     #ctrl-bar-top, #ctrl-bar-bottom {
@@ -182,7 +234,7 @@
       width: calc(var(--u) * 8 / 7);
       height: calc(var(--u) * 8 / 7);
       border-radius: 50%;
-      border: 1px solid #333;
+      border: 1px solid var(--color-outline);
       flex-shrink: 0;
     }
 
@@ -190,10 +242,10 @@
       height: var(--u);
       padding: 0 calc(var(--u) * 5 / 7);
       border-radius: 4px;
-      border: none;
-      background: #5c442e;
+      border: 1px solid var(--color-ctrl-border);
+      background: var(--color-accent);
       font-size: calc(var(--u) / 1.8);
-      color: #fff;
+      color: var(--color-text-inverse);
       cursor: pointer;
       display: flex;
       align-items: center;
@@ -201,7 +253,7 @@
     }
     #pass-btn:disabled, #withdraw-btn:disabled, #wcd-btn:disabled,
     #reset-viewport-btn:disabled, #lock-rotation-btn:disabled, #resign-btn:disabled {
-      background: #b5a99e;
+      background: var(--color-btn-disabled);
       cursor: default;
     }
     /* Fixed width (sized for "Unlock", the longer of its two labels) so toggling the label
@@ -217,10 +269,10 @@
 
     .ply-nav-btn {
       height: var(--u);
-      border: none;
+      border: 1px solid var(--color-ctrl-border);
       border-radius: 4px;
-      background: #5c442e;
-      color: #fff;
+      background: var(--color-accent);
+      color: var(--color-text-inverse);
       font-size: calc(var(--u) / 1.8);
       cursor: pointer;
       display: flex;
@@ -228,7 +280,7 @@
       justify-content: center;
       flex-shrink: 0;
     }
-    .ply-nav-btn:disabled { background: #b5a99e; cursor: default; }
+    .ply-nav-btn:disabled { background: var(--color-btn-disabled); cursor: default; }
     #bw-btn,   #fw-btn     { width: var(--u); }
     #bw10-btn, #fw10-btn   { width: calc(var(--u) * 6 / 5); }
     #bwend-btn, #fwend-btn { width: calc(var(--u) * 3 / 2); }
@@ -239,8 +291,9 @@
       height: var(--u);
       padding: 0 calc(var(--u) * 4 / 7);
       border-radius: 4px;
-      background: #5c442e;
-      color: #fff;
+      border: 1px solid var(--color-ctrl-border);
+      background: var(--color-accent);
+      color: var(--color-text-inverse);
       font-size: calc(var(--u) / 1.8);
       display: flex;
       align-items: center;
@@ -249,14 +302,14 @@
 
     /* command input */
     #cmd-area {
-      background: #1a1208;
+      background: var(--color-bg-cmdarea);
       padding: 4px 8px;
       flex-shrink: 0;
     }
 
     #cmd-output {
       min-height: 1.2em;
-      color: #aaa;
+      color: var(--color-text-muted);
       font-family: Consolas, monospace;
       font-size: 15px;
       white-space: pre-line;
@@ -267,7 +320,7 @@
       background: transparent;
       border: none;
       outline: none;
-      color: #fff;
+      color: var(--color-text-inverse);
       font-family: Consolas, monospace;
       font-size: 15px;
     }
@@ -277,7 +330,8 @@
       flex: 1 1 0;
       display: flex;
       flex-direction: column;
-      background: #b0895c;
+      background: var(--color-bg-panel);
+      border-left: 1px solid var(--color-panel-border);
       min-width: 0;
     }
 
@@ -294,16 +348,16 @@
       padding: 8px 10px;
       margin-top: 6px;
       margin-bottom: 6px;
-      border: 1px solid #5c442e;
+      border: 1px solid var(--color-border);
       border-radius: 6px;
-      background: #c29765;
-      color: #000;
+      background: var(--color-bg-surface);
+      color: var(--color-text);
       cursor: pointer;
       font-size: 16px;
       text-align: left;
     }
     @media (hover: hover) and (pointer: fine) {
-      .panel-child-btn:hover { background: #d6a76f; }
+      .panel-child-btn:hover { background: var(--color-bg-surface-hover); }
     }
     .panel-child-btn:disabled { opacity: 0.5; cursor: default; }
 
@@ -321,15 +375,15 @@
       width: auto;
       padding: 2px 10px;
       margin-left: 6px;
-      border: 1px solid #5c442e;
+      border: 1px solid var(--color-border);
       border-radius: 6px;
-      background: #c29765;
-      color: #000;
+      background: var(--color-bg-surface);
+      color: var(--color-text);
       cursor: pointer;
       font-size: 16px;
     }
     @media (hover: hover) and (pointer: fine) {
-      .status-login-btn:hover { background: #d6a76f; }
+      .status-login-btn:hover { background: var(--color-bg-surface-hover); }
     }
     /* Same convention as .panel-mode-btn:disabled - marks the mode a mode-select button pair
        (e.g. the fading Clamp/Slice buttons) is already in. */
@@ -352,15 +406,15 @@
       text-transform: uppercase;
       letter-spacing: 0.05em;
       padding: 8px 4px 2px;
-      border-bottom: 1px solid #8a6830;
-      color: #1a0a00;
+      border-bottom: 1px solid var(--color-divider);
+      color: var(--color-heading);
     }
     .commands-subpanel td { padding: 2px 6px 2px 4px; vertical-align: top; }
     .commands-subpanel td:first-child {
       font-family: Consolas, monospace;
-      color: #000;
+      color: var(--color-text);
     }
-    .commands-subpanel td:last-child { color: #000; }
+    .commands-subpanel td:last-child { color: var(--color-text); }
 
     #home-panel, #history-panel, #status-panel, #current-game-setup-panel, #new-game-panel,
     #game-records-panel, #commands-panel, #cleg-reference-panel, #game-preset-selection-panel, #board-preset-selection-panel,
@@ -384,7 +438,7 @@
     }
 
     .history-entry {
-      background: #997750;
+      background: var(--color-bg-main);
       border-radius: 4px;
       display: flex;
       align-items: center;
@@ -409,7 +463,7 @@
       width: calc(max(min(100cqh / 4, 100cqw / 5), 16px));
       height: calc(max(min(100cqh / 4, 100cqw / 5), 16px));
       border-radius: 50%;
-      border: 1px solid #333;
+      border: 1px solid var(--color-outline);
       flex-shrink: 0;
     }
 
@@ -448,16 +502,16 @@
     }
 
     .nav-btn {
-      background: #c29765;
-      color: #000;
-      border: 1px solid #5c442e;
+      background: var(--color-bg-surface);
+      color: var(--color-text);
+      border: 1px solid var(--color-border);
       border-radius: 6px;
       padding: 4px;
       cursor: pointer;
       font-size: 13px;
     }
     @media (hover: hover) and (pointer: fine) {
-      .nav-btn:hover { background: #d6a76f; }
+      .nav-btn:hover { background: var(--color-bg-surface-hover); }
     }
 
     #home-panel, #status-panel, #current-game-setup-panel, #new-game-panel, #game-records-panel,
@@ -471,14 +525,14 @@
     }
 
     /* Same thumb/track treatment as #chat-log's scrollbar, but matching #side-panel's own
-       background (#b0895c) - none of these sets its own. */
+       background (var(--color-bg-panel)) - none of these sets its own. */
     #commands-panel, #cleg-reference-panel, .commands-subpanel,
     #home-panel, #status-panel, #current-game-setup-panel, #new-game-panel, #game-records-panel,
     #game-preset-selection-panel, #board-preset-selection-panel, #active-local-games-panel,
     #pending-games-panel, #active-online-games-panel, #finished-online-games-panel, #account-panel,
     #configure-online-players-panel, #configure-viewport-panel {
       scrollbar-width: thin;
-      scrollbar-color: #5c442e #b0895c;
+      scrollbar-color: var(--color-accent) var(--color-bg-panel);
     }
     #commands-panel::-webkit-scrollbar, #cleg-reference-panel::-webkit-scrollbar, .commands-subpanel::-webkit-scrollbar,
     #home-panel::-webkit-scrollbar, #status-panel::-webkit-scrollbar,
@@ -498,7 +552,7 @@
     #pending-games-panel::-webkit-scrollbar-track, #active-online-games-panel::-webkit-scrollbar-track,
     #finished-online-games-panel::-webkit-scrollbar-track, #account-panel::-webkit-scrollbar-track,
     #configure-online-players-panel::-webkit-scrollbar-track, #configure-viewport-panel::-webkit-scrollbar-track {
-      background: #b0895c;
+      background: var(--color-bg-panel);
     }
     #commands-panel::-webkit-scrollbar-thumb, #cleg-reference-panel::-webkit-scrollbar-thumb, .commands-subpanel::-webkit-scrollbar-thumb,
     #home-panel::-webkit-scrollbar-thumb, #status-panel::-webkit-scrollbar-thumb,
@@ -508,7 +562,7 @@
     #pending-games-panel::-webkit-scrollbar-thumb, #active-online-games-panel::-webkit-scrollbar-thumb,
     #finished-online-games-panel::-webkit-scrollbar-thumb, #account-panel::-webkit-scrollbar-thumb,
     #configure-online-players-panel::-webkit-scrollbar-thumb, #configure-viewport-panel::-webkit-scrollbar-thumb {
-      background: #5c442e;
+      background: var(--color-accent);
       border-radius: 3px;
     }
 
@@ -518,7 +572,7 @@
       display: flex;
       flex-direction: column;
       gap: 6px;
-      border: 1px solid #5c442e;
+      border: 1px solid var(--color-border);
       border-radius: 6px;
       padding: 8px 10px;
       margin: 6px 0;
@@ -536,7 +590,7 @@
     .colp-invite-row .account-input { flex: 1 1 0; }
 
     /* Same font-size/border as .panel-child-btn (the Add Local/Add Engine/... buttons right
-       below it), but keeps the panel's own background rather than the buttons' #c29765, and a
+       below it), but keeps the panel's own background rather than the buttons' var(--color-bg-surface), and a
        smaller vertical padding since it holds one line of plain text, not a clickable button.
        margin-top/bottom match .panel-child-btn's own (6px each) - the toggle button above and
        the first button inside .btn-row below both carry that same 6px margin themselves
@@ -545,7 +599,7 @@
        and others doubled (12px). */
     .colp-list-line {
       font-size: 16px;
-      border: 1px solid #5c442e;
+      border: 1px solid var(--color-border);
       border-radius: 6px;
       padding: 4px 10px;
       margin-top: 6px;
@@ -568,20 +622,20 @@
       line-height: 1.6;
       /* Same look as .account-input (the chat textbox) - not an input itself, just visually
          matched to it. */
-      background: #c29765;
-      border: 1px solid #5c442e;
+      background: var(--color-bg-surface);
+      border: 1px solid var(--color-border);
       border-radius: 3px;
       scrollbar-width: thin;
-      scrollbar-color: #5c442e #c29765;
+      scrollbar-color: var(--color-accent) var(--color-bg-surface);
     }
     #chat-log::-webkit-scrollbar {
       width: 10px;
     }
     #chat-log::-webkit-scrollbar-track {
-      background: #c29765;
+      background: var(--color-bg-surface);
     }
     #chat-log::-webkit-scrollbar-thumb {
-      background: #5c442e;
+      background: var(--color-accent);
       border-radius: 3px;
     }
     .chat-entry {
@@ -618,17 +672,17 @@
       width: 100%;
       box-sizing: border-box;
       padding: 6px 8px;
-      border: 1px solid #5c442e;
+      border: 1px solid var(--color-border);
       border-radius: 3px;
       font-size: 14px;
-      /* 10% lighter than #side-panel's #b0895c background. */
-      background: #c29765;
+      /* 10% lighter than #side-panel's var(--color-bg-panel) background. */
+      background: var(--color-bg-surface);
     }
     /* Default browser placeholder gray doesn't have enough contrast against
-       the lighter #c29765 background above - match the input's own border
+       the lighter var(--color-bg-surface) background above - match the input's own border
        color instead (e.g. the "Username to invite" textbox's placeholder). */
     .account-input::placeholder {
-      color: #533d29;
+      color: var(--color-text-placeholder);
       opacity: 0.6;
     }
 
@@ -656,10 +710,10 @@
       width: 5.25em;
       box-sizing: border-box;
       padding: 2px 4px;
-      border: 1px solid #5c442e;
+      border: 1px solid var(--color-border);
       border-radius: 3px;
       font-size: 13px;
-      background: #c29765;
+      background: var(--color-bg-surface);
     }
     /* Same 4px gap as .status-projmat-row's own, but inline (the Focus line's 3 boxes sit next to
        the "Focus:" label on one line, not stacked into their own row like a projmat row). */
