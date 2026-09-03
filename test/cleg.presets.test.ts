@@ -57,6 +57,7 @@ const BOARD_PRESET_GOLDEN: Record<string, { N: number; edges: number }> = {
     'cublat_4_4_4_cub_0010_quadform_4.cleg': { N: 584, edges: 1224 },
     'diamondCubic_10.cleg': { N: 385, edges: 660 },
     'dodeca_gcent_triform_6.cleg': { N: 401, edges: 1150 },
+    'dodflake_2.cleg': { N: 340, edges: 570 },
     'goDesk_19_19_5_2_6_2.cleg': { N: 1300, edges: 2604 },
     'hcub_2_6_6_6_6.cleg': { N: 528, edges: 1120 },
     'heart_9.5.cleg': { N: 326, edges: 609 },

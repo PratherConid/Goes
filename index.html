@@ -45,7 +45,6 @@
       --color-text-placeholder: #000;
       --color-divider: #ccc;
       --color-heading: #000;
-      --color-outline: #ccc;
     }
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -239,9 +238,9 @@
       width: calc(var(--u) * 8 / 7);
       height: calc(var(--u) * 8 / 7);
       border-radius: 50%;
-      /* --color-ctrl-border, not --color-outline (used by .hist-stone's own equivalent border in
-         the history panel) - this is a main-area control, wants the same dark-in-every-theme
-         border #pass-btn's own group/.ply-nav-btn/#ply-num already use. */
+      /* --color-ctrl-border - same as #pass-btn's own group/.ply-nav-btn/#ply-num, and .hist-stone's
+         own equivalent border in the history panel - dark in every theme, unlike the lighter-themed
+         --color-border used elsewhere. */
       border: 1px solid var(--color-ctrl-border);
       flex-shrink: 0;
     }
@@ -471,7 +470,7 @@
       width: calc(max(min(100cqh / 4, 100cqw / 5), 16px));
       height: calc(max(min(100cqh / 4, 100cqw / 5), 16px));
       border-radius: 50%;
-      border: 1px solid var(--color-outline);
+      border: 1px solid var(--color-ctrl-border);
       flex-shrink: 0;
     }
 
@@ -796,13 +795,16 @@
         <button id="lock-rotation-btn">Lock</button>
       </div>
       <div id="ctrl-bar-bottom">
-        <button id="bwend-btn" class="ply-nav-btn">&#10074;&#9664;</button>
-        <button id="bw10-btn"  class="ply-nav-btn">&#9664;&#9664;</button>
-        <button id="bw-btn"    class="ply-nav-btn">&#9664;</button>
+        <!-- &#xFE0E; (VS15, "text presentation selector") after each triangle/bar glyph - without
+             it, Safari renders U+25C4/U+25BA/U+275A as colored emoji-style glyphs instead of the
+             plain monochrome character every other browser shows. -->
+        <button id="bwend-btn" class="ply-nav-btn">&#10074;&#xFE0E;&#9664;&#xFE0E;</button>
+        <button id="bw10-btn"  class="ply-nav-btn">&#9664;&#xFE0E;&#9664;&#xFE0E;</button>
+        <button id="bw-btn"    class="ply-nav-btn">&#9664;&#xFE0E;</button>
         <div id="turn-stone"></div>
-        <button id="fw-btn"    class="ply-nav-btn">&#9654;</button>
-        <button id="fw10-btn"  class="ply-nav-btn">&#9654;&#9654;</button>
-        <button id="fwend-btn" class="ply-nav-btn">&#9654;&#10074;</button>
+        <button id="fw-btn"    class="ply-nav-btn">&#9654;&#xFE0E;</button>
+        <button id="fw10-btn"  class="ply-nav-btn">&#9654;&#xFE0E;&#9654;&#xFE0E;</button>
+        <button id="fwend-btn" class="ply-nav-btn">&#9654;&#xFE0E;&#10074;&#xFE0E;</button>
         <span id="ply-num">0</span>
       </div>
     </div>

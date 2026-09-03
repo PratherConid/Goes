@@ -65,7 +65,7 @@ const _boardConfigNames = [
     'cublat_3_3_3_sel_(deg_gt_3)_quadform_6', 'cublat_3_3_3_quadform_5_nice_drop_0.1',
     'cublat_9_9_9_nice_drop_0.2', 'regpoly_13_prod_regpoly_13', 'star_5_es_6_prod_line_5',
     'regpoly_5_prod_line_2_gcent_triform_7', 'regpoly_5_gcent_prod_line_2_quadform_7',
-    'dodeca_gcent_triform_6', 'twsq_3_3_4_quadocta', 'octa_triform_4_quadform_4_triform_4',
+    'dodeca_gcent_triform_6', 'dodflake_2', 'twsq_3_3_4_quadocta', 'octa_triform_4_quadform_4_triform_4',
     'sier_3_5', 'hcub_2_6_6_6_6', 'cpentflake_4', 'cpolyflake_8_3', 'menger_3_3_0101',
     'menger_4_2_011', 'rect_19_19_nis_(rrmp_0.1_(all))_nis_(conve_quad_(conva_node_(all)))',
     'rect_5_5_fractaldrop_3_0.05', 'tri_4_fractaldrop_3_0.05',
@@ -127,20 +127,18 @@ const COLOR_THEMES: Record<string, ColorTheme> = {
             '--color-text-placeholder': '#533d29',
             '--color-divider': '#8a6830',
             '--color-heading': '#1a0a00',
-            '--color-outline': '#333',
         },
     },
     // Minimal white/black theme: every background var is white, every text var is black; the two
     // hover vars (--color-accent-hover backs .panel-mode-btn's hover, --color-bg-surface-hover
     // backs .panel-child-btn/.status-login-btn/.nav-btn's hover - both are buttons whose own
     // background is now white) get a light gray, a conventional hover shade for a white button.
-    // --color-border/--color-divider/--color-outline aren't a background or text color (borders,
-    // a table-header rule, and a stone-dot border, respectively) - kept visible against the new
-    // white backgrounds (--color-border black - it's what frames every side-panel button/input,
-    // and wants to read clearly rather than recede - --color-divider/--color-outline a lighter
-    // gray, for their own more minor dividing-line/stone-dot roles), now that --color-border
-    // (unlike --color-accent, which
-    // still backs several buttons' own white background) is free to be a real border color.
+    // --color-border/--color-divider aren't a background or text color (borders and a table-header
+    // rule, respectively) - kept visible against the new white backgrounds (--color-border black -
+    // it's what frames every side-panel button/input, and wants to read clearly rather than recede
+    // - --color-divider a lighter gray, for its own more minor dividing-line role), now that
+    // --color-border (unlike --color-accent, which still backs several buttons' own white
+    // background) is free to be a real border color.
     default: {
         grid: '#000000',
         illegal: '#ba9347',
@@ -168,7 +166,6 @@ const COLOR_THEMES: Record<string, ColorTheme> = {
             '--color-text-placeholder': '#000',
             '--color-divider': '#ccc',
             '--color-heading': '#000',
-            '--color-outline': '#ccc',
         },
     },
 };
