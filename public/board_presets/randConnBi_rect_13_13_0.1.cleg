@@ -1,0 +1,28 @@
+bool trueCond(number[] coords) {
+  return true;
+}
+bool randConnBiECond(number w, number d, number{} s, number[] coords1, number[] coords2) {
+  number x1 = coords1[0];
+  number y1 = coords1[1];
+  number z1 = coords1[2];
+  number x2 = coords2[0];
+  number y2 = coords2[1];
+  number z2 = coords2[2];
+  if ((z1 == z2)) {
+    return true;
+  }
+  if ((z1 != z2)) {
+    return (((x1 == x2) && (y1 == y2)) && has(s, ((x1 * d) + y1)));
+  }
+  return false;
+}
+egr randConnBiRectB(number w, number d, number p) {
+  number{} s = toSet(range((w * d)));
+  s = randTakeP(s, p);
+  return subHcublatB(
+    [[0, (w - 1)], [0, (d - 1)], [0, 1]],
+    trueCond(#),
+    randConnBiECond(w, d, s, #, #)
+  );
+}
+randConnBiRectB(13, 13, 0.1);

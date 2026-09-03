@@ -62,9 +62,9 @@ static const ClegType FORMSEL_TYPE{CTKind::Formsel, nullptr};
 static const ClegType LRS_TYPE{CTKind::Lrs, nullptr};
 static const ClegType MSEL_TYPE{CTKind::Msel, nullptr};
 
-// Argument/return types shared by subHcublatB's two overloads (build_sub_hcublat/its own
-// BuiltinFunction entry below). Mirrors shared/clegEval.ts's HCUBLAT_BOUNDS_TYPE/HCUBLAT_POINT_TYPE/
-// HCUBLAT_COND_TYPE/HCUBLAT_ECOND_TYPE.
+// Argument/return types shared by subHcublatB's three overloads (build_sub_hcublat/
+// build_sub_hcublat_custom_adj/its own BuiltinFunction entry below). Mirrors shared/clegEval.ts's
+// HCUBLAT_BOUNDS_TYPE/HCUBLAT_POINT_TYPE/HCUBLAT_COND_TYPE/HCUBLAT_ECOND_TYPE/HCUBLAT_ADJFN_TYPE.
 static const ClegType HCUBLAT_BOUNDS_TYPE{
     CTKind::Array, std::make_shared<ClegType>(ClegType{CTKind::Array, std::make_shared<ClegType>(NUMBER_TYPE)})};
 static const ClegType HCUBLAT_POINT_TYPE{CTKind::Array, std::make_shared<ClegType>(NUMBER_TYPE)};
@@ -73,6 +73,11 @@ static const ClegType HCUBLAT_COND_TYPE{
 static const ClegType HCUBLAT_ECOND_TYPE{
     CTKind::Func, nullptr, {HCUBLAT_POINT_TYPE, HCUBLAT_POINT_TYPE},
     std::make_shared<ClegType>(ClegType{CTKind::Bool, nullptr})};
+// `adj_fn`'s own type (build_sub_hcublat_custom_adj below): one point in, the list of OTHER points
+// (as their own absolute coordinates) it should connect to, out.
+static const ClegType HCUBLAT_ADJFN_TYPE{
+    CTKind::Func, nullptr, {HCUBLAT_POINT_TYPE},
+    std::make_shared<ClegType>(ClegType{CTKind::Array, std::make_shared<ClegType>(HCUBLAT_POINT_TYPE)})};
 
 // CTKind-based counterpart of set_elem_kind_words() (game/cleg_parser.cpp) - used by the type
 // checker's SetLit case (game/cleg_check.cpp).
@@ -457,27 +462,14 @@ static BuiltResult eval_multi_selector(
     throw std::runtime_error("cleg: eval_multi_selector: unexpected MSelOp");
 }
 
-// The general construction shared by subHcublatB's two overloads (its own BuiltinFunction entry
-// below) - mirrors shared/clegEval.ts's buildSubHcublat exactly (bounds/cond semantics, stride
-// bookkeeping, delta=+1-only/canonical-order edge scan with econd's verdict mirrored into both
-// adjacency cells), with ONE deviation, scoped to the embedding only (see this file's own top
-// comment on why a deviation like this is sometimes needed): TS re-centers the final embedding by
-// subtracting each dimension's own (generally negative, or a half-integer) midpoint, but
-// BoardConfig::embed here is exact non-negative-integer-only - so, exactly like hypercuboid_board's
-// own convention, each surviving node's embedding position (`pos`, appended to BoardConfig) is
-// simply its own LOCAL (0-based, always a non-negative integer) lattice coordinate, never
-// `lo`-shifted or re-centered. `cond`/`econd` are still always called with the point's real ABSOLUTE
-// coordinates (`abs_pos`, a separate signed array from `pos`), exactly matching the TS side - this
-// matters for `econd` in particular, since (unlike `pos`) it's never embedding-constrained to be
-// non-negative.
-static ClegValue build_sub_hcublat(
-    const ClegValue& bounds_val, const ClegValue& cond_val,
-    const std::function<bool(const std::vector<int>&, const std::vector<int>&)>& econd, UserFuncTable& funcs
-) {
+// Parses/validates `bounds_val` into per-dimension `lo`/`dims` - shared by every subHcublatB
+// overload's own construction function (build_sub_hcublat/build_sub_hcublat_custom_adj below).
+// Mirrors shared/clegEval.ts's parseHcublatBounds.
+static void parse_hcublat_bounds(const ClegValue& bounds_val, std::vector<int>& lo, std::vector<int>& dims) {
     const auto& bounds_arr = bounds_val.arr_v;
     size_t k = bounds_arr.size();
     if (k == 0) throw std::runtime_error("cleg: 'subHcublatB' bounds must be non-empty");
-    std::vector<int> lo(k), dims(k);
+    lo.resize(k); dims.resize(k);
     for (size_t i = 0; i < k; i++) {
         const auto& pair = bounds_arr[i].arr_v;
         if (pair.size() != 2)
@@ -496,6 +488,28 @@ static ClegValue build_sub_hcublat(
         lo[i] = static_cast<int>(a);
         dims[i] = static_cast<int>(b - a) + 1;
     }
+}
+
+// The general construction shared by `subHcublatB(bounds, cond)`/`subHcublatB(bounds, cond,
+// econd)` (its own BuiltinFunction entry below) - mirrors shared/clegEval.ts's buildSubHcublat
+// exactly (bounds/cond semantics, stride bookkeeping, delta=+1-only/canonical-order edge scan with
+// econd's verdict mirrored into both adjacency cells), with ONE deviation, scoped to the embedding
+// only (see this file's own top comment on why a deviation like this is sometimes needed): TS
+// re-centers the final embedding by subtracting each dimension's own (generally negative, or a
+// half-integer) midpoint, but BoardConfig::embed here is exact non-negative-integer-only - so,
+// exactly like hypercuboid_board's own convention, each surviving node's embedding position (`pos`,
+// appended to BoardConfig) is simply its own LOCAL (0-based, always a non-negative integer) lattice
+// coordinate, never `lo`-shifted or re-centered. `cond`/`econd` are still always called with the
+// point's real ABSOLUTE coordinates (`abs_pos`, a separate signed array from `pos`), exactly
+// matching the TS side - this matters for `econd` in particular, since (unlike `pos`) it's never
+// embedding-constrained to be non-negative.
+static ClegValue build_sub_hcublat(
+    const ClegValue& bounds_val, const ClegValue& cond_val,
+    const std::function<bool(const std::vector<int>&, const std::vector<int>&)>& econd, UserFuncTable& funcs
+) {
+    std::vector<int> lo, dims;
+    parse_hcublat_bounds(bounds_val, lo, dims);
+    size_t k = lo.size();
 
     std::vector<long long> strides(k);
     strides[0] = 1;
@@ -553,6 +567,80 @@ static ClegValue build_sub_hcublat(
             if (!econd(abs_pos[bi], abs_pos[nbi])) continue;
             adj[bi][nbi] = 1;
             adj[nbi][bi] = 1;
+        }
+    }
+    return make_egr(BoardConfig{N, std::move(adj), static_cast<unsigned>(k), std::move(pos)});
+}
+
+// Joins an absolute-coordinate point into a string key - mirrors shared/clegEval.ts's own
+// `point.join(',')`, used by build_sub_hcublat_custom_adj below to look surviving nodes up by
+// coordinate rather than by full-lattice index.
+static std::string hcublat_point_key(const std::vector<int>& point) {
+    std::string key;
+    for (size_t i = 0; i < point.size(); i++) { if (i) key += ','; key += std::to_string(point[i]); }
+    return key;
+}
+
+// The construction behind subHcublatB's third, `adj_fn` overload - mirrors shared/clegEval.ts's
+// buildSubHcublatCustomAdj: deliberately a SEPARATE function from build_sub_hcublat above, not
+// another parameter threaded into it, because it discards that function's whole structural-edge
+// notion rather than merely gating it: `cond` still decides which lattice points become nodes (via
+// parse_hcublat_bounds + call_user_function, same as build_sub_hcublat's own), but adjacency comes
+// ENTIRELY from `adj_fn` - the cubical lattice's own "differs by 1 in one dimension" structure plays
+// no role in which edges exist. `adj_fn(point)` names, for one surviving node, the exact list of
+// OTHER points (as their own absolute coordinates) it should connect to; each is looked up directly
+// by coordinate (hcublat_point_key above) rather than by full-lattice index/stride, since a named
+// target may be anywhere, not just structurally adjacent - a target that doesn't match any
+// surviving node (out of `bounds`, cond-rejected, or simply not a real point) is silently skipped,
+// and naming a node's own coordinates back is silently ignored too (no self-loops). Every edge
+// `adj_fn` names is added as undirected (mirrored into both adjacency cells) regardless of whether
+// the target's own adj_fn(...) call names it back. Same LOCAL-vs-ABSOLUTE-coordinate embedding
+// deviation as build_sub_hcublat's own (see its doc comment) - `pos` (the actual BoardConfig
+// embedding) stays local/non-negative, while `abs_pos` (what `cond`/`adj_fn` are actually called
+// with) is the real, possibly-negative absolute coordinate.
+static ClegValue build_sub_hcublat_custom_adj(
+    const ClegValue& bounds_val, const ClegValue& cond_val,
+    const std::function<std::vector<std::vector<int>>(const std::vector<int>&)>& adj_fn, UserFuncTable& funcs
+) {
+    std::vector<int> lo, dims;
+    parse_hcublat_bounds(bounds_val, lo, dims);
+    size_t k = lo.size();
+
+    long long full_n = 1;
+    for (int d : dims) full_n *= d;
+    auto local_coords_of = [&](long long n) {
+        std::vector<int> coords(k);
+        for (size_t i = 0; i < k; i++) { coords[i] = static_cast<int>(n % dims[i]); n /= dims[i]; }
+        return coords;
+    };
+
+    std::unordered_map<std::string, int> board_idx_of_point;
+    std::vector<std::vector<int>> abs_pos;
+    std::vector<std::vector<unsigned>> pos;
+    for (long long n = 0; n < full_n; n++) {
+        std::vector<int> local = local_coords_of(n);
+        std::vector<int> point(k);
+        for (size_t i = 0; i < k; i++) point[i] = local[i] + lo[i];
+        ClegValue point_arg; point_arg.kind = CTKind::Array; point_arg.elem = NUMBER_TYPE;
+        for (int c : point) point_arg.arr_v.push_back(make_number(c));
+        bool keep = call_user_function(
+            *funcs.at(cond_val.func_name), fill_holes(cond_val.func_bound_args, {point_arg}), funcs).boolean;
+        if (!keep) continue;
+        board_idx_of_point[hcublat_point_key(point)] = static_cast<int>(abs_pos.size());
+        std::vector<unsigned> p(k);
+        for (size_t i = 0; i < k; i++) p[i] = static_cast<unsigned>(local[i]);
+        abs_pos.push_back(std::move(point));
+        pos.push_back(std::move(p));
+    }
+    int N = static_cast<int>(abs_pos.size());
+
+    auto adj = zero_adj(N);
+    for (int bi = 0; bi < N; bi++) {
+        for (const auto& target : adj_fn(abs_pos[bi])) {
+            auto it = board_idx_of_point.find(hcublat_point_key(target));
+            if (it == board_idx_of_point.end() || it->second == bi) continue;
+            adj[bi][it->second] = 1;
+            adj[it->second][bi] = 1;
         }
     }
     return make_egr(BoardConfig{N, std::move(adj), static_cast<unsigned>(k), std::move(pos)});
@@ -1330,12 +1418,14 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
         };
 
-        // `subHcublatB(bounds, cond)`/`subHcublatB(bounds, cond, econd)`: both build via
-        // build_sub_hcublat above - the 2-arg overload with a trivial econd (every structural edge
-        // kept, i.e. unchanged behavior from before econd existed), the 3-arg overload with a real
-        // one (evaluated the same closure-aware way `cond` already is - call_user_function/
-        // fill_holes, since it may be a partial application). Mirrors shared/clegEval.ts's
-        // subHcublatCheckCall/econdCallback/BUILTIN_FUNCTIONS['subHcublatB'].
+        // `subHcublatB(bounds, cond)` / `subHcublatB(bounds, cond, econd)` / `subHcublatB(bounds,
+        // cond, adj_fn)`: the first two build via build_sub_hcublat (the 2-arg overload with a
+        // trivial econd, i.e. unchanged behavior from before econd existed; the econd overload with
+        // a real one, evaluated the same closure-aware way `cond` already is), the third via the
+        // wholly separate build_sub_hcublat_custom_adj - see its own doc comment for why it isn't
+        // just a third mode of build_sub_hcublat. The 3rd argument's own arity (func_params.size():
+        // 1 vs. 2) is what tells the econd/adj_fn overloads apart, same as shared/clegEval.ts's own
+        // subHcublatCheckCall/call.
         m["subHcublatB"] = BuiltinFunction{
             [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
                 if (arg_types.size() != 2 && arg_types.size() != 3)
@@ -1348,28 +1438,46 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                     throw std::runtime_error(
                         "cleg: '" + callee + "' argument 2: expected " + type_to_string(HCUBLAT_COND_TYPE) + ", got " +
                         type_to_string(arg_types[1]));
-                if (arg_types.size() == 3 && !type_equals(arg_types[2], HCUBLAT_ECOND_TYPE))
+                if (arg_types.size() == 3 && !type_equals(arg_types[2], HCUBLAT_ECOND_TYPE) && !type_equals(arg_types[2], HCUBLAT_ADJFN_TYPE))
                     throw std::runtime_error(
-                        "cleg: '" + callee + "' argument 3: expected " + type_to_string(HCUBLAT_ECOND_TYPE) + ", got " +
-                        type_to_string(arg_types[2]));
+                        "cleg: '" + callee + "' argument 3: expected " + type_to_string(HCUBLAT_ECOND_TYPE) + " or " +
+                        type_to_string(HCUBLAT_ADJFN_TYPE) + ", got " + type_to_string(arg_types[2]));
                 return EGR_TYPE;
             },
             [](const std::vector<ClegValue>& args, UserFuncTable& funcs) {
-                std::function<bool(const std::vector<int>&, const std::vector<int>&)> econd;
-                if (args.size() == 3) {
-                    econd = [&args, &funcs](const std::vector<int>& a, const std::vector<int>& b) {
-                        const ClegValue& econd_val = args[2];
-                        ClegValue a_arg; a_arg.kind = CTKind::Array; a_arg.elem = NUMBER_TYPE;
-                        for (int c : a) a_arg.arr_v.push_back(make_number(c));
-                        ClegValue b_arg; b_arg.kind = CTKind::Array; b_arg.elem = NUMBER_TYPE;
-                        for (int c : b) b_arg.arr_v.push_back(make_number(c));
-                        return call_user_function(
-                            *funcs.at(econd_val.func_name), fill_holes(econd_val.func_bound_args, {a_arg, b_arg}), funcs).boolean;
-                    };
-                } else {
-                    econd = [](const std::vector<int>&, const std::vector<int>&) { return true; };
+                if (args.size() == 2) {
+                    auto econd = [](const std::vector<int>&, const std::vector<int>&) { return true; };
+                    return build_sub_hcublat(args[0], args[1], econd, funcs);
                 }
-                return build_sub_hcublat(args[0], args[1], econd, funcs);
+                if (args[2].func_params.size() == 2) {
+                    std::function<bool(const std::vector<int>&, const std::vector<int>&)> econd =
+                        [&args, &funcs](const std::vector<int>& a, const std::vector<int>& b) {
+                            const ClegValue& econd_val = args[2];
+                            ClegValue a_arg; a_arg.kind = CTKind::Array; a_arg.elem = NUMBER_TYPE;
+                            for (int c : a) a_arg.arr_v.push_back(make_number(c));
+                            ClegValue b_arg; b_arg.kind = CTKind::Array; b_arg.elem = NUMBER_TYPE;
+                            for (int c : b) b_arg.arr_v.push_back(make_number(c));
+                            return call_user_function(
+                                *funcs.at(econd_val.func_name), fill_holes(econd_val.func_bound_args, {a_arg, b_arg}), funcs).boolean;
+                        };
+                    return build_sub_hcublat(args[0], args[1], econd, funcs);
+                }
+                std::function<std::vector<std::vector<int>>(const std::vector<int>&)> adj_fn =
+                    [&args, &funcs](const std::vector<int>& point) {
+                        const ClegValue& adj_fn_val = args[2];
+                        ClegValue point_arg; point_arg.kind = CTKind::Array; point_arg.elem = NUMBER_TYPE;
+                        for (int c : point) point_arg.arr_v.push_back(make_number(c));
+                        ClegValue result = call_user_function(
+                            *funcs.at(adj_fn_val.func_name), fill_holes(adj_fn_val.func_bound_args, {point_arg}), funcs);
+                        std::vector<std::vector<int>> targets;
+                        for (auto& inner : result.arr_v) {
+                            std::vector<int> t;
+                            for (auto& c : inner.arr_v) t.push_back(static_cast<int>(std::llround(c.number)));
+                            targets.push_back(std::move(t));
+                        }
+                        return targets;
+                    };
+                return build_sub_hcublat_custom_adj(args[0], args[1], adj_fn, funcs);
             },
         };
 

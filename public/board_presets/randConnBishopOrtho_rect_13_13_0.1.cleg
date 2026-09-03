@@ -1,0 +1,37 @@
+bool trueCond(number[] coords) {
+  return true;
+}
+number[][] randConnBishopOrthoAdj(number w, number d, number{} s, number[] coords) {
+  number x = coords[0];
+  number y = coords[1];
+  number z = coords[2];
+  if ((z == 0)) {
+    number[] n1 = [(x - 1), y, 0];
+    number[] n2 = [(x + 1), y, 0];
+    number[] n3 = [x, (y - 1), 0];
+    number[] n4 = [x, (y + 1), 0];
+    if (has(s, ((x * d) + y))) {
+      number[] up = [x, y, 1];
+      return [n1, n2, n3, n4, up];
+    }
+    return [n1, n2, n3, n4];
+  }
+  if ((z == 1)) {
+    number[] n1 = [(x - 1), (y - 1), 1];
+    number[] n2 = [(x - 1), (y + 1), 1];
+    number[] n3 = [(x + 1), (y - 1), 1];
+    number[] n4 = [(x + 1), (y + 1), 1];
+    return [n1, n2, n3, n4];
+  }
+  return nil(number[]);
+}
+egr randConnBishopOrthoRectB(number w, number d, number p) {
+  number{} s = toSet(range((w * d)));
+  s = randTakeP(s, p);
+  return subHcublatB(
+    [[0, (w - 1)], [0, (d - 1)], [0, 1]],
+    trueCond(#),
+    randConnBishopOrthoAdj(w, d, s, #)
+  );
+}
+randConnBishopOrthoRectB(13, 13, 0.1);
