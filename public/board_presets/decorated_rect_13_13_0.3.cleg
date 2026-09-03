@@ -1,0 +1,25 @@
+bool decoratedRectCond(number w, number d, number{} s, number[] coords) {
+  number x = coords[0];
+  number y = coords[1];
+  number z = coords[2];
+  bool in = ((((0 <= x) && (x < w)) && (0 <= y)) && (y < d));
+  if ((!in)) {
+    return false;
+  }
+  if ((z == 0)) {
+    return true;
+  }
+  if ((z == 1)) {
+    return has(s, ((x * d) + y));
+  }
+  return false;
+}
+egr decoratedRectB(number w, number d, number p) {
+  number{} s = toSet(range((w * d)));
+  s = randTakeP(s, p);
+  return subHcublatB(
+    [[0, w], [0, d], [0, 1]],
+    decoratedRectCond(w, d, s, #)
+  );
+}
+decoratedRectB(13, 13, 0.3);

@@ -166,6 +166,22 @@ std::vector<T> randomly_remove(std::vector<T> items, int remove_count) {
     return items;
 }
 
+// The take-instead-of-remove counterpart of randomly_remove just above - same partial Fisher-Yates
+// shuffle (the first take_count positions become the randomized ones), but keeps THOSE positions
+// (the taken elements) rather than erasing them - mirrors shared/selector.ts's randomlyTake().
+template <typename T>
+std::vector<T> randomly_take(std::vector<T> items, int take_count) {
+    int n = static_cast<int>(items.size());
+    int to_take = std::min(std::max(take_count, 0), n);
+    for (int i = 0; i < to_take; i++) {
+        std::uniform_int_distribution<int> dist(i, n - 1);
+        int j = dist(cleg_selector_rng());
+        std::swap(items[i], items[j]);
+    }
+    items.erase(items.begin() + to_take, items.end());
+    return items;
+}
+
 // Parses `s` as a selector of whichever kind it turns out to be, inferred bottom-up from `s` itself
 // (see this file's own top comment) - throws std::runtime_error if `s` doesn't follow the grammar.
 // Unlike the four parse_*_selector functions below, doesn't check the result's own kind against

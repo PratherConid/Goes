@@ -426,6 +426,21 @@ export function randomlyRemove<T>(items: T[], removeCount: number): T[] {
     return shuffled.slice(toRemove);
 }
 
+// The take-instead-of-remove counterpart of randomlyRemove just above - same partial Fisher-Yates
+// shuffle (the first `takeCount` positions become the randomized ones), but returns THOSE positions
+// (the taken elements) rather than the rest. Exported for shared/clegEval.ts's own `randTakeN`
+// builtin, which performs this exact operation on a cleg set.
+export function randomlyTake<T>(items: T[], takeCount: number): T[] {
+    const n = items.length;
+    const toTake = Math.min(Math.max(takeCount, 0), n);
+    const shuffled = [...items];
+    for (let i = 0; i < toTake; i++) {
+        const j = i + Math.floor(Math.random() * (n - i));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled.slice(0, toTake);
+}
+
 // True iff `a`'s own members are completely contained in `b`'s, or vice versa - the general
 // "association" test conva/conve rely on (see this file's own top comment). Every object kind here
 // has a fixed arity (node 1, edge 2, simp N N+1, quad 4) and every object's own members are

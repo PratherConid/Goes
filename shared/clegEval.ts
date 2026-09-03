@@ -29,7 +29,7 @@ import {
     make, nodeInducedSubgraph, edgeInducedSubgraph,
 } from './boardConfig.js';
 import {
-    randomlyRemove, parseSelector, parseNodeSelector, parseEdgeSelector, parseTriangleSelector,
+    randomlyRemove, randomlyTake, parseSelector, parseNodeSelector, parseEdgeSelector, parseTriangleSelector,
     parseQuadSelector, parseSimpSelector, selectNode, selectEdge, selectTriangle, selectSimp, selectQuad,
 } from './selector.js';
 import { zeroAdj } from './topology.js';
@@ -182,6 +182,30 @@ BUILTIN_FUNCTIONS['has'] = {
     },
 };
 
+// `toSet(arr)`: `T[] -> T{}` for any T with a defined equality (SET_ELEM_KINDS, same restriction
+// as `has` above) - deduplicates via makeClegSet, the same helper every other set-building
+// operation (set literals, setUnion, ...) already uses, so duplicate elements collapse the same way
+// they would anywhere else a T{} is built.
+function toSetCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length !== 1)
+        throw new Error(`cleg: '${callee}' expects 1 argument(s), got ${argTypes.length}`);
+    if (argTypes[0].kind !== 'array')
+        throw new Error(`cleg: '${callee}' argument 1: expected an array, got ${typeToString(argTypes[0])}`);
+    const elem = (argTypes[0] as { elem: ClegType }).elem;
+    if (!SET_ELEM_KINDS.has(elem.kind))
+        throw new Error(
+            `cleg: '${callee}' argument 1: element type ${typeToString(elem)} has no defined equality - only ` +
+            `number/string/bool/edge/simp/quad elements are supported`);
+    return { kind: 'set', elem };
+}
+BUILTIN_FUNCTIONS['toSet'] = {
+    checkCall: toSetCheckCall,
+    call: ([arr]) => {
+        const a = arr as { elem: ClegType; value: ClegValue[] };
+        return makeClegSet(a.elem, a.value);
+    },
+};
+
 // `randRmN`/`randRmP`: both `(T{}, number) -> T{}`, differing only in how the second argument
 // becomes a removal count - share this one checkCall rather than duplicating its arg-count/
 // arg-type checks. Like `len`, their result type depends on the actual argument type (here, the
@@ -223,6 +247,32 @@ BUILTIN_FUNCTIONS['randRmP'] = {
         if (!Number.isFinite(frac) || frac < 0)
             throw new Error(`cleg: 'randRmP' portion must be a nonnegative number, got ${frac}`);
         return { kind: 'set', elem: s.elem, value: randomlyRemove(s.value, Math.floor(frac * s.value.length)) };
+    },
+};
+
+// `randTakeN`/`randTakeP`: the take-instead-of-remove counterparts of randRmN/randRmP just above -
+// same (T{}, number) -> T{} shape (reuses randRmCheckCall), same wording of every check, but calls
+// shared/selector.ts's own randomlyTake() instead of randomlyRemove(), so `count`/`frac` picks how
+// many elements are KEPT rather than how many are dropped.
+BUILTIN_FUNCTIONS['randTakeN'] = {
+    checkCall: randRmCheckCall,
+    call(args) {
+        const s = args[0] as { kind: 'set'; elem: ClegType; value: ClegValue[] };
+        const count = (args[1] as { value: number }).value;
+        if (!Number.isInteger(count) || count < 0)
+            throw new Error(`cleg: 'randTakeN' count must be a nonnegative integer, got ${count}`);
+        return { kind: 'set', elem: s.elem, value: randomlyTake(s.value, count) };
+    },
+};
+
+BUILTIN_FUNCTIONS['randTakeP'] = {
+    checkCall: randRmCheckCall,
+    call(args) {
+        const s = args[0] as { kind: 'set'; elem: ClegType; value: ClegValue[] };
+        const frac = (args[1] as { value: number }).value;
+        if (!Number.isFinite(frac) || frac < 0)
+            throw new Error(`cleg: 'randTakeP' portion must be a nonnegative number, got ${frac}`);
+        return { kind: 'set', elem: s.elem, value: randomlyTake(s.value, Math.floor(frac * s.value.length)) };
     },
 };
 
@@ -316,6 +366,44 @@ BUILTIN_FUNCTIONS['pow'] = {
         kind: 'number',
         value: Math.pow((a as { value: number }).value, (b as { value: number }).value),
     }),
+};
+
+// `range(stop)`/`range(start, stop)`/`range(start, stop, step)`: builds a number[] with the same
+// semantics as Python's range() - start defaults to 0, step defaults to 1, stop is exclusive.
+// Variable-arity (1 to 3 args) like mkFormSel/formModCheckCall above, rather than fixedSignature(
+// ...). Every argument must be an integer, and step must be nonzero - neither is statically
+// knowable from `number`'s type alone, so (like sqrt's own nonnegativity check) both are checked
+// at evaluation time instead.
+function rangeCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length < 1 || argTypes.length > 3)
+        throw new Error(`cleg: '${callee}' expects 1 to 3 argument(s), got ${argTypes.length}`);
+    argTypes.forEach((t, i) => {
+        if (t.kind !== 'number')
+            throw new Error(`cleg: '${callee}' argument ${i + 1} must be a number, got ${typeToString(t)}`);
+    });
+    return { kind: 'array', elem: NUMBER_TYPE };
+}
+BUILTIN_FUNCTIONS['range'] = {
+    checkCall: rangeCheckCall,
+    call(args) {
+        const nums = args.map(a => (a as { value: number }).value);
+        nums.forEach((n, i) => {
+            if (!Number.isInteger(n))
+                throw new Error(`cleg: 'range' argument ${i + 1} must be an integer, got ${n}`);
+        });
+        const [start, stop, step] =
+            nums.length === 1 ? [0, nums[0]!, 1] :
+            nums.length === 2 ? [nums[0]!, nums[1]!, 1] :
+            [nums[0]!, nums[1]!, nums[2]!];
+        if (step === 0)
+            throw new Error(`cleg: 'range' step must not be zero`);
+        const values: ClegValue[] = [];
+        if (step > 0)
+            for (let n = start; n < stop; n += step) values.push({ kind: 'number', value: n });
+        else
+            for (let n = start; n > stop; n += step) values.push({ kind: 'number', value: n });
+        return { kind: 'array', elem: NUMBER_TYPE, value: values };
+    },
 };
 
 // `mkEdge`/`mkTri`/`mkQuad`: build an edge/simp/quad from node indices, canonicalized exactly as

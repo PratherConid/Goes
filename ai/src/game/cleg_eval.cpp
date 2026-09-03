@@ -514,6 +514,28 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
         };
 
+        // `toSet(arr)`: `T[] -> T{}` for any T with a defined equality (is_set_elem_kind, same
+        // restriction as `has` above) - deduplicates via make_cleg_set, the same helper every other
+        // set-building operation already uses. Mirrors shared/clegEval.ts's toSetCheckCall/
+        // BUILTIN_FUNCTIONS['toSet'].
+        m["toSet"] = BuiltinFunction{
+            [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
+                if (arg_types.size() != 1)
+                    throw std::runtime_error("cleg: '" + callee + "' expects 1 argument(s), got " + std::to_string(arg_types.size()));
+                if (arg_types[0].kind != CTKind::Array)
+                    throw std::runtime_error("cleg: '" + callee + "' argument 1: expected an array, got " + type_to_string(arg_types[0]));
+                const ClegType& elem = *arg_types[0].elem;
+                if (!is_set_elem_kind(elem.kind))
+                    throw std::runtime_error(
+                        "cleg: '" + callee + "' argument 1: element type " + type_to_string(elem) + " has no defined "
+                        "equality - only number/string/bool/edge/tri/quad elements are supported");
+                return ClegType{CTKind::Set, std::make_shared<ClegType>(elem)};
+            },
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+                return make_cleg_set(args[0].elem, args[0].arr_v);
+            },
+        };
+
         CheckCallFn rand_rm_check_call = [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
             if (arg_types.size() != 2)
                 throw std::runtime_error("cleg: '" + callee + "' expects 2 argument(s), got " + std::to_string(arg_types.size()));
@@ -547,6 +569,34 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
         };
 
+        // `randTakeN`/`randTakeP`: the take-instead-of-remove counterparts of randRmN/randRmP just
+        // above - same (T{}, number) -> T{} shape (reuses rand_rm_check_call), same wording of every
+        // check, but calls selector.h's own randomly_take() instead of randomly_remove(). Mirrors
+        // shared/clegEval.ts's BUILTIN_FUNCTIONS['randTakeN']/['randTakeP'].
+        m["randTakeN"] = BuiltinFunction{
+            rand_rm_check_call,
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+                double count = args[1].number;
+                if (count != std::floor(count) || count < 0)
+                    throw std::runtime_error("cleg: 'randTakeN' count must be a nonnegative integer, got " + format_number_display(count));
+                auto kept = randomly_take(args[0].arr_v, static_cast<int>(count));
+                ClegValue v; v.kind = CTKind::Set; v.elem = args[0].elem; v.arr_v = std::move(kept);
+                return v;
+            },
+        };
+        m["randTakeP"] = BuiltinFunction{
+            rand_rm_check_call,
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+                double frac = args[1].number;
+                if (!std::isfinite(frac) || frac < 0)
+                    throw std::runtime_error("cleg: 'randTakeP' portion must be a nonnegative number, got " + format_number_display(frac));
+                int take_count = static_cast<int>(std::floor(frac * static_cast<double>(args[0].arr_v.size())));
+                auto kept = randomly_take(args[0].arr_v, take_count);
+                ClegValue v; v.kind = CTKind::Set; v.elem = args[0].elem; v.arr_v = std::move(kept);
+                return v;
+            },
+        };
+
         // Mirrors shared/clegEval.ts's `abs`/`sqrt` - fixed-signature `number -> number`. `sqrt`
         // throws at evaluation time for a negative argument (not statically knowable from `number`'s
         // type alone) rather than returning NaN, matching every other cleg evaluation-time validity
@@ -567,6 +617,42 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         m["pow"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE, NUMBER_TYPE}, NUMBER_TYPE),
             [](const std::vector<ClegValue>& args, UserFuncTable&) { return make_number(std::pow(args[0].number, args[1].number)); },
+        };
+
+        // `range(stop)`/`range(start, stop)`/`range(start, stop, step)`: builds a number[] with the
+        // same Python range() semantics as shared/clegEval.ts's own rangeCheckCall/
+        // BUILTIN_FUNCTIONS['range'] - variable arity (1 to 3 args), every argument must be an
+        // integer, step must be nonzero (both checked at evaluation time, same as sqrt's own
+        // nonnegativity check above).
+        m["range"] = BuiltinFunction{
+            [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
+                if (arg_types.size() < 1 || arg_types.size() > 3)
+                    throw std::runtime_error("cleg: '" + callee + "' expects 1 to 3 argument(s), got " + std::to_string(arg_types.size()));
+                for (size_t i = 0; i < arg_types.size(); i++)
+                    if (arg_types[i].kind != CTKind::Number)
+                        throw std::runtime_error(
+                            "cleg: '" + callee + "' argument " + std::to_string(i + 1) + " must be a number, got " +
+                            type_to_string(arg_types[i]));
+                return ClegType{CTKind::Array, std::make_shared<ClegType>(NUMBER_TYPE)};
+            },
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+                std::vector<double> nums;
+                for (auto& a : args) nums.push_back(a.number);
+                for (size_t i = 0; i < nums.size(); i++)
+                    if (nums[i] != std::floor(nums[i]))
+                        throw std::runtime_error(
+                            "cleg: 'range' argument " + std::to_string(i + 1) + " must be an integer, got " +
+                            format_number_display(nums[i]));
+                double start = 0, stop, step = 1;
+                if (nums.size() == 1) { stop = nums[0]; }
+                else if (nums.size() == 2) { start = nums[0]; stop = nums[1]; }
+                else { start = nums[0]; stop = nums[1]; step = nums[2]; }
+                if (step == 0) throw std::runtime_error("cleg: 'range' step must not be zero");
+                ClegValue out; out.kind = CTKind::Array; out.elem = NUMBER_TYPE;
+                if (step > 0) for (double n = start; n < stop; n += step) out.arr_v.push_back(make_number(n));
+                else for (double n = start; n > stop; n += step) out.arr_v.push_back(make_number(n));
+                return out;
+            },
         };
 
         m["mkEdge"] = BuiltinFunction{
