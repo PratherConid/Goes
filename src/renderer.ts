@@ -60,7 +60,6 @@ const _presetDescriptions = new Map([
 // names directly (underscores replaced with spaces), not a separate description - there's no
 // human-readable text shown anywhere for these beyond the name itself.
 const _boardConfigNames = [
-    'bishop_ortho_7_7_3_0.5',
     'rect_3_3', 'rect_9_9', 'rect_13_13', 'rect_19_19', 'twsq_7_7_2',
     'twsq_3_3_2_es_3_prod_lin_4', 'regpoly_5_es_5_prod_lin_6', 'cublat_2_2_2_quadform_9',
     'cublat_3_3_3_sel_(deg_gt_3)_quadform_6', 'cublat_3_3_3_quadform_5_nice_drop_0.1',
@@ -76,7 +75,7 @@ const _boardConfigNames = [
     'goDesk_19_19_5_2_6_2', 'ring_5_12.5', 'shell_6_7.5', 'roundTable_9.5_5_3_2',
     'snubsqtri_4_4_4', 'trunc_trunc_cublat_3_3_3', 'truncated_24_cell',
     'truncated_centralized_rect_6_6', 'tetrahedron_centering_9', 'diamondCubic_10',
-    'rect_7_7_diag_ortho_3_0.5', 'cuboid_5_5_5_diag_ortho_3_0.5', 'soccer_ball', 'heart_9.5', 'teardrop_24.5', 'racket_24.5_10_1.5',
+    'rect_7_7_diag_ortho_3_0.5', 'rect_7_7_bishop_ortho_3_0.5', 'rect_6_6_knight_ortho_4_0.5', 'cuboid_5_5_5_diag_ortho_3_0.5', 'soccer_ball', 'heart_9.5', 'teardrop_24.5', 'racket_24.5_10_1.5',
 ];
 
 
@@ -147,7 +146,7 @@ const COLOR_THEMES: Record<string, ColorTheme> = {
         board: '#e5b24c',
         css: {
             '--color-bg-main': '#ffffff',
-            '--color-bg-panel': '#ffffff',
+            '--color-bg-panel': '#e4e4e4',
             '--color-bg-surface': '#ffffff',
             '--color-bg-surface-hover': '#e6e6e6',
             '--color-bg-cmdarea': '#ffffff',

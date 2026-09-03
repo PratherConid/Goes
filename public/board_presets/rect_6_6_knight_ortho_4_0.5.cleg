@@ -1,4 +1,4 @@
-egr bishopNonDiagRectB(number w, number h, number g, number p) {
+egr knightOrthoRectB(number w, number h, number g, number p) {
   egr b = rectB(w, h);
   quad{} s1 = selectQuad((("(rrmp " + p) + " (all quad))"), b);
   quad{} s2 = (selectQuad("(all quad)", b) - s1);
@@ -6,10 +6,10 @@ egr bishopNonDiagRectB(number w, number h, number g, number p) {
     [
       form(
         g,
-        [mkFormSel("quadBishopForm", s1), mkFormSel("quadForm", s2)]
+        [mkFormSel("quadKnightForm", s1), mkFormSel("quadForm", s2)]
       )
     ],
     b
   );
 }
-bishopNonDiagRectB(7, 7, 3, 0.5);
+knightOrthoRectB(6, 6, 4, 0.5);

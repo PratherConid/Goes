@@ -46,7 +46,6 @@ function edgeCount(adj: number[][]): number {
 // assertion; add a new entry (and re-run to capture its own golden value) for a new preset file.
 const BOARD_PRESET_GOLDEN: Record<string, { N: number; edges: number }> = {
     'biTemple_13_13_9_3.cleg': { N: 450, edges: 864 },
-    'bishop_ortho_7_7_3_0.5.cleg': { N: 169, edges: 344 },
     'cpentflake_4.cleg': { N: 560, edges: 820 },
     'cpolyflake_8_3.cleg': { N: 392, edges: 560 },
     'cublat_2_2_2_es_1_rect_form_7_(tri)_(quad)_scale_0.75.cleg': { N: 362, edges: 864 },
@@ -72,6 +71,8 @@ const BOARD_PRESET_GOLDEN: Record<string, { N: number; edges: number }> = {
     'rect_19_19_nis_(rrmp_0.1_(all))_nis_(conve_quad_(conva_node_(all))).cleg': { N: 315, edges: 537 },
     'rect_3_3.cleg': { N: 9, edges: 12 },
     'rect_5_5_fractaldrop_3_0.05.cleg': { N: 636, edges: 1142 },
+    'rect_6_6_knight_ortho_4_0.5.cleg': { N: 256, edges: 567 },
+    'rect_7_7_bishop_ortho_3_0.5.cleg': { N: 169, edges: 344 },
     'rect_7_7_diag_ortho_3_0.5.cleg': { N: 241, edges: 488 },
     'rect_9_9.cleg': { N: 81, edges: 144 },
     'regpoly_13_prod_regpoly_13.cleg': { N: 169, edges: 338 },
