@@ -1255,125 +1255,170 @@ BUILTIN_FUNCTIONS['multiProd'] = {
     },
 };
 
-// `subHcublatB(bounds, cond)`: a "sub-region" of an N-dimensional hypercubical lattice - `bounds` is
-// an N-length array of `[lo, hi]` pairs (inclusive bounds, one pair per dimension, describing the
-// bounding hyperrectangle - not necessarily integers themselves: `lo` is rounded UP and `hi` rounded
-// DOWN to the nearest integer lattice point before use, i.e. the actual integer range is
-// `[Math.ceil(lo), Math.floor(hi)]`, so a non-integer bound just trims the lattice down to the
-// integer points genuinely inside `[lo, hi]` rather than being rejected); `cond` decides which lattice points inside it actually
-// become nodes, called once per candidate point (as that point's own N coordinates, a `number[]`)
-// via callUserFunction - the one builtin so far that needs to call back into a `func`-typed argument,
-// which is why `funcs` is threaded through BuiltinFunction's own `call` signature. Surviving nodes
-// keep the plain grid adjacency (connected iff their coordinates differ by exactly 1 in exactly one
-// dimension) and their own lattice coordinates, re-centered (see below), as their N-dim embedding
-// position - same convention, and the same full-lattice-index/stride bookkeeping to avoid an
-// O(survivors^2) adjacency scan, as
-// shared/boardConfig.ts's own hypercuboidBoard, just over an explicit per-dimension [lo, hi] rather
-// than always starting at 0 - unlike hypercuboidBoard, the re-centering (see the end of `call`
-// below) is computed from the SURVIVING nodes' own bounding box, not from `bounds` itself, since
-// `cond` may keep a shape nowhere near centered within the hyperrectangle it was given.
-BUILTIN_FUNCTIONS['subHcublatB'] = {
-    checkCall: fixedSignature(
-        [
-            { kind: 'array', elem: { kind: 'array', elem: NUMBER_TYPE } },
-            { kind: 'func', params: [{ kind: 'array', elem: NUMBER_TYPE }], returnType: { kind: 'bool' } },
-        ],
-        EGR_TYPE,
-    ),
-    call([boundsVal, condVal], funcs) {
-        const boundsArr = (boundsVal as { value: ClegValue[] }).value;
-        const k = boundsArr.length;
-        if (k === 0) throw new Error(`cleg: 'subHcublatB' bounds must be non-empty`);
-        const lo = new Array<number>(k);
-        const dims = new Array<number>(k);
-        boundsArr.forEach((pairVal, i) => {
-            const pair = (pairVal as { value: ClegValue[] }).value;
-            if (pair.length !== 2)
-                throw new Error(`cleg: 'subHcublatB' bounds[${i}] must have exactly 2 entries (lower, upper), got ${pair.length}`);
-            // `lo`/`hi` need not themselves be integers - rounded to the nearest integer lattice
-            // point INWARD (lo up, hi down) before use, so e.g. `[0.5, 2.5]` becomes the integer
-            // range `[1, 2]`, not an error.
-            const a = Math.ceil((pair[0] as { value: number }).value);
-            const b = Math.floor((pair[1] as { value: number }).value);
-            if (a > b)
-                throw new Error(
-                    `cleg: 'subHcublatB' bounds[${i}] has no integer lattice point in range after ` +
-                    `rounding (lower up, upper down), got [${a}, ${b}]`);
-            lo[i] = a;
-            dims[i] = b - a + 1;
-        });
-        // `condVal` may be a plain top-level-function reference OR a partial application (e.g.
-        // `goDeskCond(l, w, h, fw, fh, in, #)`) closing over everything but the one open `number[]`
-        // position - fillHoles interleaves `pointArg` into whichever slot that is, rather than
-        // assuming `fn`'s own full parameter list is just `[pointArg]` (it was, for a plain
-        // reference, but not in general once `cond` can be a closure).
-        const cond = condVal as { name: string; boundArgs: (ClegValue | null)[] };
-        const fn = funcs[cond.name];
+const HCUBLAT_BOUNDS_TYPE: ClegType = { kind: 'array', elem: { kind: 'array', elem: NUMBER_TYPE } };
+const HCUBLAT_POINT_TYPE: ClegType = { kind: 'array', elem: NUMBER_TYPE };
+const HCUBLAT_COND_TYPE: ClegType = { kind: 'func', params: [HCUBLAT_POINT_TYPE], returnType: { kind: 'bool' } };
+const HCUBLAT_ECOND_TYPE: ClegType =
+    { kind: 'func', params: [HCUBLAT_POINT_TYPE, HCUBLAT_POINT_TYPE], returnType: { kind: 'bool' } };
 
-        const strides = new Array<number>(k);
-        strides[0] = 1;
-        for (let i = 1; i < k; i++) strides[i] = strides[i - 1] * dims[i - 1];
-        const fullN = dims.reduce((p, d) => p * d, 1);
-        const localCoordsOf = (n: number): number[] => {
-            const coords = new Array<number>(k);
-            for (let i = 0; i < k; i++) { coords[i] = n % dims[i]; n = Math.floor(n / dims[i]); }
-            return coords;
+// The general construction shared by both `subHcublatB` overloads below - a "sub-region" of an
+// N-dimensional hypercubical lattice. `bounds` is an N-length array of `[lo, hi]` pairs (inclusive
+// bounds, one pair per dimension, describing the bounding hyperrectangle - not necessarily integers
+// themselves: `lo` is rounded UP and `hi` rounded DOWN to the nearest integer lattice point before
+// use, i.e. the actual integer range is `[Math.ceil(lo), Math.floor(hi)]`, so a non-integer bound
+// just trims the lattice down to the integer points genuinely inside `[lo, hi]` rather than being
+// rejected); `cond` decides which lattice points inside it actually become nodes, called once per
+// candidate point (as that point's own N coordinates, a `number[]`) via callUserFunction - the
+// reason `funcs` is threaded through BuiltinFunction's own `call` signature in the first place.
+// `econd` gates which of the resulting structural grid edges (connecting points whose coordinates
+// differ by exactly 1 in exactly one dimension, same structural notion as before) actually get
+// added - called once per structural edge CANDIDATE between two surviving points, as their own two
+// N-dim coordinate arrays (lower-coordinate point first, a canonical order so the result is a valid
+// symmetric adjacency regardless of whether `econd` itself is symmetric). Surviving nodes keep
+// their own lattice coordinates, re-centered (see below), as their N-dim embedding position - same
+// convention, and the same full-lattice-index/stride bookkeeping to avoid an O(survivors^2)
+// adjacency scan, as shared/boardConfig.ts's own hypercuboidBoard, just over an explicit
+// per-dimension [lo, hi] rather than always starting at 0 - unlike hypercuboidBoard, the
+// re-centering (see the end of this function) is computed from the SURVIVING nodes' own bounding
+// box, not from `bounds` itself, since `cond` may keep a shape nowhere near centered within the
+// hyperrectangle it was given.
+function buildSubHcublat(
+    boundsVal: ClegValue, condVal: ClegValue, econd: (a: number[], b: number[]) => boolean, funcs: UserFuncTable,
+): ClegValue {
+    const boundsArr = (boundsVal as { value: ClegValue[] }).value;
+    const k = boundsArr.length;
+    if (k === 0) throw new Error(`cleg: 'subHcublatB' bounds must be non-empty`);
+    const lo = new Array<number>(k);
+    const dims = new Array<number>(k);
+    boundsArr.forEach((pairVal, i) => {
+        const pair = (pairVal as { value: ClegValue[] }).value;
+        if (pair.length !== 2)
+            throw new Error(`cleg: 'subHcublatB' bounds[${i}] must have exactly 2 entries (lower, upper), got ${pair.length}`);
+        // `lo`/`hi` need not themselves be integers - rounded to the nearest integer lattice
+        // point INWARD (lo up, hi down) before use, so e.g. `[0.5, 2.5]` becomes the integer
+        // range `[1, 2]`, not an error.
+        const a = Math.ceil((pair[0] as { value: number }).value);
+        const b = Math.floor((pair[1] as { value: number }).value);
+        if (a > b)
+            throw new Error(
+                `cleg: 'subHcublatB' bounds[${i}] has no integer lattice point in range after ` +
+                `rounding (lower up, upper down), got [${a}, ${b}]`);
+        lo[i] = a;
+        dims[i] = b - a + 1;
+    });
+    // `condVal` may be a plain top-level-function reference OR a partial application (e.g.
+    // `goDeskCond(l, w, h, fw, fh, in, #)`) closing over everything but the one open `number[]`
+    // position - fillHoles interleaves `pointArg` into whichever slot that is, rather than
+    // assuming `fn`'s own full parameter list is just `[pointArg]` (it was, for a plain
+    // reference, but not in general once `cond` can be a closure).
+    const cond = condVal as { name: string; boundArgs: (ClegValue | null)[] };
+    const fn = funcs[cond.name];
+
+    const strides = new Array<number>(k);
+    strides[0] = 1;
+    for (let i = 1; i < k; i++) strides[i] = strides[i - 1] * dims[i - 1];
+    const fullN = dims.reduce((p, d) => p * d, 1);
+    const localCoordsOf = (n: number): number[] => {
+        const coords = new Array<number>(k);
+        for (let i = 0; i < k; i++) { coords[i] = n % dims[i]; n = Math.floor(n / dims[i]); }
+        return coords;
+    };
+
+    // Only surviving (cond-kept) nodes get a board index (compacted, in ascending
+    // full-lattice-index order) - boardIdxOf maps a full-lattice index to that compacted index,
+    // absent for a point cond rejected.
+    const boardIdxOf = new Map<number, number>();
+    const survivingLocal: number[][] = [];
+    const pos: number[][] = [];
+    for (let n = 0; n < fullN; n++) {
+        const local = localCoordsOf(n);
+        const point = local.map((c, i) => c + lo[i]);
+        const pointArg: ClegValue = {
+            kind: 'array', elem: NUMBER_TYPE, value: point.map(v => ({ kind: 'number', value: v })),
         };
+        const keep = (callUserFunction(fn, fillHoles(cond.boundArgs, [pointArg]), funcs) as { value: boolean }).value;
+        if (!keep) continue;
+        boardIdxOf.set(n, survivingLocal.length);
+        survivingLocal.push(local);
+        pos.push(point);
+    }
+    const N = survivingLocal.length;
 
-        // Only surviving (cond-kept) nodes get a board index (compacted, in ascending
-        // full-lattice-index order) - boardIdxOf maps a full-lattice index to that compacted index,
-        // absent for a point cond rejected.
-        const boardIdxOf = new Map<number, number>();
-        const survivingLocal: number[][] = [];
-        const pos: number[][] = [];
-        for (let n = 0; n < fullN; n++) {
-            const local = localCoordsOf(n);
-            const point = local.map((c, i) => c + lo[i]);
-            const pointArg: ClegValue = {
-                kind: 'array', elem: NUMBER_TYPE, value: point.map(v => ({ kind: 'number', value: v })),
-            };
-            const keep = (callUserFunction(fn, fillHoles(cond.boundArgs, [pointArg]), funcs) as { value: boolean }).value;
-            if (!keep) continue;
-            boardIdxOf.set(n, survivingLocal.length);
-            survivingLocal.push(local);
-            pos.push(point);
+    // Only the delta=+1 direction is scanned (rather than both +1/-1, as a "does A have neighbor B"
+    // check alone would need) - each structural edge is a candidate exactly once this way, in a
+    // canonical (lower-coordinate-first) order, with `econd`'s own verdict mirrored into both
+    // adjacency cells.
+    const adj = zeroAdj(N);
+    for (let bi = 0; bi < N; bi++) {
+        const local = survivingLocal[bi];
+        for (let i = 0; i < k; i++) {
+            const nc = local[i] + 1;
+            if (nc >= dims[i]) continue;
+            const nlocal = local.slice();
+            nlocal[i] = nc;
+            const flat = nlocal.reduce((s, c, j) => s + c * strides[j], 0);
+            const nbi = boardIdxOf.get(flat);
+            if (nbi === undefined) continue;
+            if (!econd(pos[bi], pos[nbi])) continue;
+            adj[bi][nbi] = 1;
+            adj[nbi][bi] = 1;
         }
-        const N = survivingLocal.length;
+    }
 
-        const adj = zeroAdj(N);
-        for (let bi = 0; bi < N; bi++) {
-            const local = survivingLocal[bi];
-            for (let i = 0; i < k; i++)
-                for (const delta of [1, -1]) {
-                    const nc = local[i] + delta;
-                    if (nc < 0 || nc >= dims[i]) continue;
-                    const nlocal = local.slice();
-                    nlocal[i] = nc;
-                    const flat = nlocal.reduce((s, c, j) => s + c * strides[j], 0);
-                    const nbi = boardIdxOf.get(flat);
-                    if (nbi === undefined) continue;
-                    adj[bi][nbi] = 1;
-                }
-        }
-
-        // Re-center: subtract each dimension's own midpoint - (min + max) / 2, computed from the
-        // SURVIVING nodes' own coordinates (not `bounds` itself) - so the shape sits roughly around
-        // the origin regardless of where within `bounds` `cond` happened to keep it. No-op (and no
-        // division-by-zero-shaped issue) when N === 0 - there's nothing to center.
-        if (N > 0) {
-            const mid = new Array<number>(k);
-            for (let i = 0; i < k; i++) {
-                let minC = pos[0][i];
-                let maxC = pos[0][i];
-                for (let j = 1; j < N; j++) {
-                    if (pos[j][i] < minC) minC = pos[j][i];
-                    if (pos[j][i] > maxC) maxC = pos[j][i];
-                }
-                mid[i] = (minC + maxC) / 2;
+    // Re-center: subtract each dimension's own midpoint - (min + max) / 2, computed from the
+    // SURVIVING nodes' own coordinates (not `bounds` itself) - so the shape sits roughly around
+    // the origin regardless of where within `bounds` `cond` happened to keep it. No-op (and no
+    // division-by-zero-shaped issue) when N === 0 - there's nothing to center.
+    if (N > 0) {
+        const mid = new Array<number>(k);
+        for (let i = 0; i < k; i++) {
+            let minC = pos[0][i];
+            let maxC = pos[0][i];
+            for (let j = 1; j < N; j++) {
+                if (pos[j][i] < minC) minC = pos[j][i];
+                if (pos[j][i] > maxC) maxC = pos[j][i];
             }
-            for (const p of pos) for (let i = 0; i < k; i++) p[i] -= mid[i];
+            mid[i] = (minC + maxC) / 2;
         }
-        return { kind: 'egr', value: make(new Embedding(k, pos), adj) };
+        for (const p of pos) for (let i = 0; i < k; i++) p[i] -= mid[i];
+    }
+    return { kind: 'egr', value: make(new Embedding(k, pos), adj) };
+}
+
+// Builds a plain JS `(a, b) => boolean` callback out of a cleg `func`-typed `econdVal`, evaluated
+// the same way buildSubHcublat's own `cond` already is (callUserFunction/fillHoles, since it may be
+// a partial application) - shared by subHcublatB's 3-arg overload only; the 2-arg overload never
+// calls this, passing a trivial `() => true` (every structural edge kept) straight to
+// buildSubHcublat instead.
+function econdCallback(econdVal: ClegValue, funcs: UserFuncTable): (a: number[], b: number[]) => boolean {
+    const econd = econdVal as { name: string; boundArgs: (ClegValue | null)[] };
+    const fn = funcs[econd.name];
+    return (a, b) => {
+        const aArg: ClegValue = { kind: 'array', elem: NUMBER_TYPE, value: a.map(v => ({ kind: 'number', value: v })) };
+        const bArg: ClegValue = { kind: 'array', elem: NUMBER_TYPE, value: b.map(v => ({ kind: 'number', value: v })) };
+        return (callUserFunction(fn, fillHoles(econd.boundArgs, [aArg, bArg]), funcs) as { value: boolean }).value;
+    };
+}
+
+// `subHcublatB(bounds, cond)`/`subHcublatB(bounds, cond, econd)`: both build via buildSubHcublat
+// above - the 2-arg overload with a trivial econd (every structural edge kept, i.e. unchanged
+// behavior from before econd existed), the 3-arg overload with a real one (econdCallback above).
+function subHcublatCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length !== 2 && argTypes.length !== 3)
+        throw new Error(`cleg: '${callee}' expects 2 or 3 argument(s), got ${argTypes.length}`);
+    if (!typeEquals(argTypes[0], HCUBLAT_BOUNDS_TYPE))
+        throw new Error(`cleg: '${callee}' argument 1: expected ${typeToString(HCUBLAT_BOUNDS_TYPE)}, got ${typeToString(argTypes[0])}`);
+    if (!typeEquals(argTypes[1], HCUBLAT_COND_TYPE))
+        throw new Error(`cleg: '${callee}' argument 2: expected ${typeToString(HCUBLAT_COND_TYPE)}, got ${typeToString(argTypes[1])}`);
+    if (argTypes.length === 3 && !typeEquals(argTypes[2], HCUBLAT_ECOND_TYPE))
+        throw new Error(`cleg: '${callee}' argument 3: expected ${typeToString(HCUBLAT_ECOND_TYPE)}, got ${typeToString(argTypes[2])}`);
+    return EGR_TYPE;
+}
+BUILTIN_FUNCTIONS['subHcublatB'] = {
+    checkCall: subHcublatCheckCall,
+    call([boundsVal, condVal, econdVal], funcs) {
+        const econd = econdVal ? econdCallback(econdVal, funcs) : () => true;
+        return buildSubHcublat(boundsVal, condVal, econd, funcs);
     },
 };
 

@@ -1,0 +1,37 @@
+bool spikedRectCond(number w, number d, number{} s, number[] coords) {
+  number x = coords[0];
+  number y = coords[1];
+  number z = coords[2];
+  if ((z == 0)) {
+    return true;
+  }
+  if ((z == 1)) {
+    return has(s, ((x * d) + y));
+  }
+  return false;
+}
+bool spikedRectECond(number w, number d, number{} s, number[] coords1, number[] coords2) {
+  number x1 = coords1[0];
+  number y1 = coords1[1];
+  number z1 = coords1[2];
+  number x2 = coords2[0];
+  number y2 = coords2[1];
+  number z2 = coords2[2];
+  if (((z1 == 0) && (z2 == 0))) {
+    return true;
+  }
+  if ((z1 != z2)) {
+    return ((x1 == x2) && (y1 == y2));
+  }
+  return false;
+}
+egr spikedRectB(number w, number d, number p) {
+  number{} s = toSet(range((w * d)));
+  s = randTakeP(s, p);
+  return subHcublatB(
+    [[0, (w - 1)], [0, (d - 1)], [0, 1]],
+    spikedRectCond(w, d, s, #),
+    spikedRectECond(w, d, s, #, #)
+  );
+}
+spikedRectB(13, 13, 0.3);

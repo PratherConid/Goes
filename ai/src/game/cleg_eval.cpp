@@ -62,6 +62,18 @@ static const ClegType FORMSEL_TYPE{CTKind::Formsel, nullptr};
 static const ClegType LRS_TYPE{CTKind::Lrs, nullptr};
 static const ClegType MSEL_TYPE{CTKind::Msel, nullptr};
 
+// Argument/return types shared by subHcublatB's two overloads (build_sub_hcublat/its own
+// BuiltinFunction entry below). Mirrors shared/clegEval.ts's HCUBLAT_BOUNDS_TYPE/HCUBLAT_POINT_TYPE/
+// HCUBLAT_COND_TYPE/HCUBLAT_ECOND_TYPE.
+static const ClegType HCUBLAT_BOUNDS_TYPE{
+    CTKind::Array, std::make_shared<ClegType>(ClegType{CTKind::Array, std::make_shared<ClegType>(NUMBER_TYPE)})};
+static const ClegType HCUBLAT_POINT_TYPE{CTKind::Array, std::make_shared<ClegType>(NUMBER_TYPE)};
+static const ClegType HCUBLAT_COND_TYPE{
+    CTKind::Func, nullptr, {HCUBLAT_POINT_TYPE}, std::make_shared<ClegType>(ClegType{CTKind::Bool, nullptr})};
+static const ClegType HCUBLAT_ECOND_TYPE{
+    CTKind::Func, nullptr, {HCUBLAT_POINT_TYPE, HCUBLAT_POINT_TYPE},
+    std::make_shared<ClegType>(ClegType{CTKind::Bool, nullptr})};
+
 // CTKind-based counterpart of set_elem_kind_words() (game/cleg_parser.cpp) - used by the type
 // checker's SetLit case (game/cleg_check.cpp).
 bool is_set_elem_kind(CTKind k) {
@@ -443,6 +455,107 @@ static BuiltResult eval_multi_selector(
         }
     }
     throw std::runtime_error("cleg: eval_multi_selector: unexpected MSelOp");
+}
+
+// The general construction shared by subHcublatB's two overloads (its own BuiltinFunction entry
+// below) - mirrors shared/clegEval.ts's buildSubHcublat exactly (bounds/cond semantics, stride
+// bookkeeping, delta=+1-only/canonical-order edge scan with econd's verdict mirrored into both
+// adjacency cells), with ONE deviation, scoped to the embedding only (see this file's own top
+// comment on why a deviation like this is sometimes needed): TS re-centers the final embedding by
+// subtracting each dimension's own (generally negative, or a half-integer) midpoint, but
+// BoardConfig::embed here is exact non-negative-integer-only - so, exactly like hypercuboid_board's
+// own convention, each surviving node's embedding position (`pos`, appended to BoardConfig) is
+// simply its own LOCAL (0-based, always a non-negative integer) lattice coordinate, never
+// `lo`-shifted or re-centered. `cond`/`econd` are still always called with the point's real ABSOLUTE
+// coordinates (`abs_pos`, a separate signed array from `pos`), exactly matching the TS side - this
+// matters for `econd` in particular, since (unlike `pos`) it's never embedding-constrained to be
+// non-negative.
+static ClegValue build_sub_hcublat(
+    const ClegValue& bounds_val, const ClegValue& cond_val,
+    const std::function<bool(const std::vector<int>&, const std::vector<int>&)>& econd, UserFuncTable& funcs
+) {
+    const auto& bounds_arr = bounds_val.arr_v;
+    size_t k = bounds_arr.size();
+    if (k == 0) throw std::runtime_error("cleg: 'subHcublatB' bounds must be non-empty");
+    std::vector<int> lo(k), dims(k);
+    for (size_t i = 0; i < k; i++) {
+        const auto& pair = bounds_arr[i].arr_v;
+        if (pair.size() != 2)
+            throw std::runtime_error(
+                "cleg: 'subHcublatB' bounds[" + std::to_string(i) + "] must have exactly 2 entries "
+                "(lower, upper), got " + std::to_string(pair.size()));
+        // `lo`/`hi` need not themselves be integers - rounded to the nearest integer lattice
+        // point INWARD (lo up, hi down) before use, so e.g. [0.5, 2.5] becomes the integer
+        // range [1, 2], not an error.
+        double a = std::ceil(pair[0].number), b = std::floor(pair[1].number);
+        if (a > b)
+            throw std::runtime_error(
+                "cleg: 'subHcublatB' bounds[" + std::to_string(i) + "] has no integer lattice point in "
+                "range after rounding (lower up, upper down), got [" + format_number_display(a) + ", " +
+                format_number_display(b) + "]");
+        lo[i] = static_cast<int>(a);
+        dims[i] = static_cast<int>(b - a) + 1;
+    }
+
+    std::vector<long long> strides(k);
+    strides[0] = 1;
+    for (size_t i = 1; i < k; i++) strides[i] = strides[i - 1] * dims[i - 1];
+    long long full_n = 1;
+    for (int d : dims) full_n *= d;
+    auto local_coords_of = [&](long long n) {
+        std::vector<int> coords(k);
+        for (size_t i = 0; i < k; i++) { coords[i] = static_cast<int>(n % dims[i]); n /= dims[i]; }
+        return coords;
+    };
+
+    // Only surviving (cond-kept) nodes get a board index (compacted, in ascending
+    // full-lattice-index order) - board_idx_of maps a full-lattice index to that
+    // compacted index, absent for a point cond rejected.
+    std::unordered_map<long long, int> board_idx_of;
+    std::vector<std::vector<int>> surviving_local;
+    std::vector<std::vector<int>> abs_pos;
+    std::vector<std::vector<unsigned>> pos;
+    for (long long n = 0; n < full_n; n++) {
+        std::vector<int> local = local_coords_of(n);
+        std::vector<int> point(k);
+        for (size_t i = 0; i < k; i++) point[i] = local[i] + lo[i];
+        ClegValue point_arg; point_arg.kind = CTKind::Array; point_arg.elem = NUMBER_TYPE;
+        for (int c : point) point_arg.arr_v.push_back(make_number(c));
+        bool keep = call_user_function(
+            *funcs.at(cond_val.func_name), fill_holes(cond_val.func_bound_args, {point_arg}), funcs).boolean;
+        if (!keep) continue;
+        board_idx_of[n] = static_cast<int>(surviving_local.size());
+        surviving_local.push_back(local);
+        abs_pos.push_back(std::move(point));
+        std::vector<unsigned> p(k);
+        for (size_t i = 0; i < k; i++) p[i] = static_cast<unsigned>(local[i]);
+        pos.push_back(std::move(p));
+    }
+    int N = static_cast<int>(surviving_local.size());
+
+    // Only the delta=+1 direction is scanned (rather than both +1/-1, as a "does A have neighbor B"
+    // check alone would need) - each structural edge is a candidate exactly once this way, in a
+    // canonical (lower-coordinate-first) order, with `econd`'s own verdict mirrored into both
+    // adjacency cells.
+    auto adj = zero_adj(N);
+    for (int bi = 0; bi < N; bi++) {
+        const auto& local = surviving_local[bi];
+        for (size_t i = 0; i < k; i++) {
+            int nc = local[i] + 1;
+            if (nc >= dims[i]) continue;
+            std::vector<int> nlocal = local;
+            nlocal[i] = nc;
+            long long flat = 0;
+            for (size_t j = 0; j < k; j++) flat += nlocal[j] * strides[j];
+            auto it = board_idx_of.find(flat);
+            if (it == board_idx_of.end()) continue;
+            int nbi = it->second;
+            if (!econd(abs_pos[bi], abs_pos[nbi])) continue;
+            adj[bi][nbi] = 1;
+            adj[nbi][bi] = 1;
+        }
+    }
+    return make_egr(BoardConfig{N, std::move(adj), static_cast<unsigned>(k), std::move(pos)});
 }
 
 // Mirrors shared/clegEval.ts's BUILTIN_FUNCTIONS - built once via a function-local static (thread-safety
@@ -1217,112 +1330,46 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
         };
 
-        // Mirrors shared/clegEval.ts's subHcublatB(bounds, cond): a "sub-region" of an N-dimensional
-        // hypercubical lattice - `bounds` is an N-length array of `[lo, hi]` pairs (inclusive
-        // bounds, one pair per dimension, describing the bounding hyperrectangle - not necessarily
-        // integers themselves: `lo` is rounded UP (std::ceil) and `hi` rounded DOWN (std::floor) to
-        // the nearest integer lattice point before use, so a non-integer bound just trims the
-        // lattice down to the integer points genuinely inside `[lo, hi]` rather than being
-        // rejected); `cond` decides which lattice points inside it actually become nodes, called once per candidate
-        // point (as that point's own N ABSOLUTE coordinates, a number[]) via call_user_function -
-        // fill_holes lets `cond` be a plain reference OR a partial application, same as any other
-        // func-typed argument call. Surviving nodes keep the plain grid adjacency (connected iff
-        // their coordinates differ by exactly 1 in exactly one dimension), via the same full-
-        // lattice-index/stride bookkeeping as this file's own hypercuboid_board (board_config.cpp)
-        // and its own TS-side analog, hypercuboidBoard, to avoid an O(survivors^2) adjacency scan.
-        // ONE deviation from the TS side, scoped to the embedding only (see game/cleg_base.h's own
-        // top comment on why a deviation like this is sometimes needed): TS re-centers the final
-        // embedding by subtracting each dimension's own (generally negative, or a half-integer)
-        // midpoint, but BoardConfig::embed here is exact non-negative-integer-only - so, exactly
-        // like hypercuboid_board's own convention, each surviving node's embedding position is
-        // simply its own LOCAL (0-based, always a non-negative integer) lattice coordinate, never
-        // `lo`-shifted or re-centered; `cond` itself is still always called with the point's real
-        // ABSOLUTE coordinates (`lo[i] + local[i]`), exactly matching the TS side.
+        // `subHcublatB(bounds, cond)`/`subHcublatB(bounds, cond, econd)`: both build via
+        // build_sub_hcublat above - the 2-arg overload with a trivial econd (every structural edge
+        // kept, i.e. unchanged behavior from before econd existed), the 3-arg overload with a real
+        // one (evaluated the same closure-aware way `cond` already is - call_user_function/
+        // fill_holes, since it may be a partial application). Mirrors shared/clegEval.ts's
+        // subHcublatCheckCall/econdCallback/BUILTIN_FUNCTIONS['subHcublatB'].
         m["subHcublatB"] = BuiltinFunction{
-            fixed_signature(
-                {
-                    ClegType{CTKind::Array, std::make_shared<ClegType>(ClegType{CTKind::Array, std::make_shared<ClegType>(NUMBER_TYPE)})},
-                    ClegType{
-                        CTKind::Func, nullptr,
-                        {ClegType{CTKind::Array, std::make_shared<ClegType>(NUMBER_TYPE)}},
-                        std::make_shared<ClegType>(ClegType{CTKind::Bool, nullptr}),
-                    },
-                },
-                EGR_TYPE),
+            [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
+                if (arg_types.size() != 2 && arg_types.size() != 3)
+                    throw std::runtime_error("cleg: '" + callee + "' expects 2 or 3 argument(s), got " + std::to_string(arg_types.size()));
+                if (!type_equals(arg_types[0], HCUBLAT_BOUNDS_TYPE))
+                    throw std::runtime_error(
+                        "cleg: '" + callee + "' argument 1: expected " + type_to_string(HCUBLAT_BOUNDS_TYPE) + ", got " +
+                        type_to_string(arg_types[0]));
+                if (!type_equals(arg_types[1], HCUBLAT_COND_TYPE))
+                    throw std::runtime_error(
+                        "cleg: '" + callee + "' argument 2: expected " + type_to_string(HCUBLAT_COND_TYPE) + ", got " +
+                        type_to_string(arg_types[1]));
+                if (arg_types.size() == 3 && !type_equals(arg_types[2], HCUBLAT_ECOND_TYPE))
+                    throw std::runtime_error(
+                        "cleg: '" + callee + "' argument 3: expected " + type_to_string(HCUBLAT_ECOND_TYPE) + ", got " +
+                        type_to_string(arg_types[2]));
+                return EGR_TYPE;
+            },
             [](const std::vector<ClegValue>& args, UserFuncTable& funcs) {
-                const auto& bounds_arr = args[0].arr_v;
-                size_t k = bounds_arr.size();
-                if (k == 0) throw std::runtime_error("cleg: 'subHcublatB' bounds must be non-empty");
-                std::vector<int> lo(k), dims(k);
-                for (size_t i = 0; i < k; i++) {
-                    const auto& pair = bounds_arr[i].arr_v;
-                    if (pair.size() != 2)
-                        throw std::runtime_error(
-                            "cleg: 'subHcublatB' bounds[" + std::to_string(i) + "] must have exactly 2 entries "
-                            "(lower, upper), got " + std::to_string(pair.size()));
-                    // `lo`/`hi` need not themselves be integers - rounded to the nearest integer
-                    // lattice point INWARD (lo up, hi down) before use, so e.g. [0.5, 2.5] becomes
-                    // the integer range [1, 2], not an error.
-                    double a = std::ceil(pair[0].number), b = std::floor(pair[1].number);
-                    if (a > b)
-                        throw std::runtime_error(
-                            "cleg: 'subHcublatB' bounds[" + std::to_string(i) + "] has no integer lattice point in "
-                            "range after rounding (lower up, upper down), got [" + format_number_display(a) + ", " +
-                            format_number_display(b) + "]");
-                    lo[i] = static_cast<int>(a);
-                    dims[i] = static_cast<int>(b - a) + 1;
+                std::function<bool(const std::vector<int>&, const std::vector<int>&)> econd;
+                if (args.size() == 3) {
+                    econd = [&args, &funcs](const std::vector<int>& a, const std::vector<int>& b) {
+                        const ClegValue& econd_val = args[2];
+                        ClegValue a_arg; a_arg.kind = CTKind::Array; a_arg.elem = NUMBER_TYPE;
+                        for (int c : a) a_arg.arr_v.push_back(make_number(c));
+                        ClegValue b_arg; b_arg.kind = CTKind::Array; b_arg.elem = NUMBER_TYPE;
+                        for (int c : b) b_arg.arr_v.push_back(make_number(c));
+                        return call_user_function(
+                            *funcs.at(econd_val.func_name), fill_holes(econd_val.func_bound_args, {a_arg, b_arg}), funcs).boolean;
+                    };
+                } else {
+                    econd = [](const std::vector<int>&, const std::vector<int>&) { return true; };
                 }
-                const ClegValue& cond = args[1];
-
-                std::vector<long long> strides(k);
-                strides[0] = 1;
-                for (size_t i = 1; i < k; i++) strides[i] = strides[i - 1] * dims[i - 1];
-                long long full_n = 1;
-                for (int d : dims) full_n *= d;
-                auto local_coords_of = [&](long long n) {
-                    std::vector<int> coords(k);
-                    for (size_t i = 0; i < k; i++) { coords[i] = static_cast<int>(n % dims[i]); n /= dims[i]; }
-                    return coords;
-                };
-
-                // Only surviving (cond-kept) nodes get a board index (compacted, in ascending
-                // full-lattice-index order) - board_idx_of maps a full-lattice index to that
-                // compacted index, absent for a point cond rejected.
-                std::unordered_map<long long, int> board_idx_of;
-                std::vector<std::vector<int>> surviving_local;
-                std::vector<std::vector<unsigned>> pos;
-                for (long long n = 0; n < full_n; n++) {
-                    std::vector<int> local = local_coords_of(n);
-                    ClegValue point_arg; point_arg.kind = CTKind::Array; point_arg.elem = NUMBER_TYPE;
-                    for (size_t i = 0; i < k; i++) point_arg.arr_v.push_back(make_number(local[i] + lo[i]));
-                    bool keep = call_user_function(
-                        *funcs.at(cond.func_name), fill_holes(cond.func_bound_args, {point_arg}), funcs).boolean;
-                    if (!keep) continue;
-                    board_idx_of[n] = static_cast<int>(surviving_local.size());
-                    surviving_local.push_back(local);
-                    std::vector<unsigned> p(k);
-                    for (size_t i = 0; i < k; i++) p[i] = static_cast<unsigned>(local[i]);
-                    pos.push_back(std::move(p));
-                }
-                int N = static_cast<int>(surviving_local.size());
-
-                auto adj = zero_adj(N);
-                for (int bi = 0; bi < N; bi++) {
-                    const auto& local = surviving_local[bi];
-                    for (size_t i = 0; i < k; i++)
-                        for (int delta : {1, -1}) {
-                            int nc = local[i] + delta;
-                            if (nc < 0 || nc >= dims[i]) continue;
-                            std::vector<int> nlocal = local;
-                            nlocal[i] = nc;
-                            long long flat = 0;
-                            for (size_t j = 0; j < k; j++) flat += nlocal[j] * strides[j];
-                            auto it = board_idx_of.find(flat);
-                            if (it == board_idx_of.end()) continue;
-                            adj[bi][it->second] = 1;
-                        }
-                }
-                return make_egr(BoardConfig{N, std::move(adj), static_cast<unsigned>(k), std::move(pos)});
+                return build_sub_hcublat(args[0], args[1], econd, funcs);
             },
         };
 

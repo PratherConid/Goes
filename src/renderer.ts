@@ -75,6 +75,7 @@ const _boardConfigNames = [
     'goDesk_19_19_5_2_6_2', 'ring_5_12.5', 'shell_6_7.5', 'roundTable_9.5_5_3_2',
     'snubsqtri_4_4_4', 'trunc_trunc_cublat_3_3_3', 'truncated_24_cell',
     'truncated_centralized_rect_6_6', 'tetrahedron_centering_9', 'diamondCubic_10', 'decorated_rect_13_13_0.3',
+    'spiked_rect_13_13_0.3',
     'rect_7_7_diag_ortho_3_0.5', 'rect_7_7_bishop_ortho_3_0.5', 'rect_6_6_knight_ortho_4_0.5', 'cuboid_5_5_5_diag_ortho_3_0.5', 'soccer_ball', 'heart_9.5', 'teardrop_24.5', 'racket_24.5_10_1.5',
 ];
 
@@ -1928,13 +1929,16 @@ export class Renderer {
             ${row('mkQuad(a, b, c, d)',
                 'Builds a quad value from four node indices, which must already be in cycle order')}
             ${row('prod(egr, egr)', 'The graph (tensor) product of two boards')}
-            ${row('subHcublatB(bounds, cond)',
+            ${row('subHcublatB(bounds, cond)/subHcublatB(bounds, cond, econd)',
                 'A board over the integer lattice points inside an N-dimensional hyperrectangle - '
                 + 'bounds is an N-length array of [lo, hi] pairs (rounded inward to the nearest '
                 + 'integer point), and cond(point) - point being that candidate\'s own N-length '
                 + 'coordinate array - decides which of those points actually become nodes. Surviving '
-                + 'nodes keep plain grid adjacency (connected iff exactly one coordinate differs by '
-                + '1) and are re-centered around the surviving nodes\' own bounding box')}
+                + 'nodes are candidates for plain grid adjacency (connected iff exactly one '
+                + 'coordinate differs by 1) - the 2-arg overload keeps every such edge, while the '
+                + '3-arg overload additionally gates each one through econd(a, b) (the two candidate '
+                + 'endpoints\' own coordinate arrays) - and are re-centered around the surviving '
+                + 'nodes\' own bounding box')}
             ${row('mkSel(X)',
                 'Builds a selector value (type sel) from X - a string (parsed as a selector, kind '
                 + 'inferred from the text itself - see Selectors) or a set of number/edge/simp/quad '
