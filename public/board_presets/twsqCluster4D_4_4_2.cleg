@@ -1,12 +1,12 @@
 multiProd(
   [twsqB(4, 4, 2), twsqB(4, 4, 2)],
-  msUnion(
+  psUnion(
     [
-      msBase(
+      psBase(
         0,
         mkSel("(diff (more 2 (deg lt 3)) (more 1 (deg lt 3)))")
       ),
-      msBase(
+      psBase(
         1,
         mkSel("(diff (more 2 (deg lt 3)) (more 1 (deg lt 3)))")
       )

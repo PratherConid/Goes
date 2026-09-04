@@ -60,7 +60,7 @@ static const ClegType FORMSEL_TYPE{CTKind::Formsel, nullptr};
 // The one ClegType for an lrs (LocalReplaceSelector) value of any branch. Mirrors shared/clegEval.ts's
 // LRS_TYPE.
 static const ClegType LRS_TYPE{CTKind::Lrs, nullptr};
-static const ClegType MSEL_TYPE{CTKind::Msel, nullptr};
+static const ClegType PSEL_TYPE{CTKind::Psel, nullptr};
 
 // Argument/return types shared by subHcublatB's three overloads (build_sub_hcublat/
 // build_sub_hcublat_custom_adj/its own BuiltinFunction entry below). Mirrors shared/clegEval.ts's
@@ -250,7 +250,7 @@ static BoardArgEntry value_to_board_arg_entry(BoardArgKind kind, const ClegValue
     throw std::runtime_error("cleg: value_to_board_arg_entry: unexpected BoardArgKind");
 }
 
-// ── multiProd: N-ary Cartesian board product, restricted by a MultiSelector ────
+// ── multiProd: N-ary Cartesian board product, restricted by a ProdSelector ────
 
 // Inverse of selector_set_elem_kind above, for the three SelectorType kinds it CAN determine purely
 // from the CTKind - used only by resolve_any_kind_selector_arg below, which (unlike
@@ -346,22 +346,69 @@ static RestrictResult restrict_board_by_selector(const BoardConfig& board, const
         return {edge_induced_subgraph(board, edges), std::move(survivors)};
     }
     throw std::runtime_error(
-        "cleg: multiProd: msBase's own selector must be a node or edge selector, got a '" +
+        "cleg: multiProd: psBase's own selector must be a node or edge selector, got a '" +
         selector_type_word(sel.type) + "' selector");
 }
 
-static std::set<long long> universal_original_indices(const FullProductIndex& fpi) {
-    std::set<long long> all;
-    for (long long i = 0; i < fpi.total; i++) all.insert(i);
-    return all;
+// psBaseNE's own restriction (eval_prod_selector's own PSelOp::BaseNE case) - unlike
+// restrict_board_by_selector above (one selector, kind decides the whole strategy), `node_sel`/
+// `edge_sel` are already fixed to node/edge respectively (checked by psBaseNE's own
+// resolve_selector_arg calls, not here), so there's no kind dispatch: the restricted board is always
+// edge_sel's own edge-induced subgraph, plus whichever extra nodes node_sel selects (see
+// node_edge_induced_subgraph). Mirrors shared/clegEval.ts's restrictBoardByNodeAndEdgeSelector().
+static RestrictResult restrict_board_by_node_and_edge_selector(
+    const BoardConfig& board, const Selector& node_sel, const Selector& edge_sel)
+{
+    auto extra_nodes = select_node(board.adj, board.embed, node_sel);
+    auto edges = select_edge(board.adj, board.embed, edge_sel);
+    std::set<int> kept = extra_nodes;
+    for (auto& e : edges) { kept.insert(e.n1); kept.insert(e.n2); }
+    std::vector<int> survivors(kept.begin(), kept.end());
+    return {node_edge_induced_subgraph(board, extra_nodes, edges), std::move(survivors)};
 }
 
-// Mirrors shared/clegEval.ts's buildFromOriginalIndices() - no defaultProductProjMat/Embedding here
-// (unlike TS, C++'s BoardConfig has no projection-matrix field at all - it never renders, see
-// board_config.h's own top comment), so the fresh BoardConfig is built directly.
 struct BuiltResult { BoardConfig bc; std::vector<long long> orig_index; };
-static BuiltResult build_from_original_indices(
-    const std::vector<BoardConfig>& boards, const FullProductIndex& fpi, const std::set<long long>& kept_original)
+
+// Mirrors shared/clegEval.ts's edgeKey() - canonical (order-independent) string key for an edge
+// between two ORIGINAL flat indices.
+static std::string edge_key(long long a, long long b) {
+    if (a > b) std::swap(a, b);
+    return std::to_string(a) + "," + std::to_string(b);
+}
+
+// Mirrors shared/clegEval.ts's originalEdgeKeysOf() - the exact edge set a BuiltResult denotes, in
+// ORIGINAL-flat-index terms, read directly off `bc`'s own local adjacency rather than re-derived
+// from any per-factor board.
+static std::set<std::string> original_edge_keys_of(const BoardConfig& bc, const std::vector<long long>& orig_index) {
+    std::set<std::string> keys;
+    for (int i = 0; i < bc.N; i++)
+        for (int j = i + 1; j < bc.N; j++)
+            if (bc.adj[i][j]) keys.insert(edge_key(orig_index[i], orig_index[j]));
+    return keys;
+}
+
+// Mirrors shared/clegEval.ts's fullProductResult() - the full, entirely unrestricted N-ary product
+// ('all', and 'inter' with zero operands both denote this); origIndex is simply 0..fpi.total-1, no
+// remapping needed (see combineRestrictedFactor's own doc comment on why an unrestricted factor's
+// own local index already equals the full flat index).
+static BuiltResult full_product_result(const std::vector<BoardConfig>& boards, const FullProductIndex& fpi) {
+    BoardConfig bc = boards[0];
+    for (size_t i = 1; i < boards.size(); i++) bc = product(bc, boards[i]);
+    std::vector<long long> orig_index(fpi.total);
+    for (long long i = 0; i < fpi.total; i++) orig_index[i] = i;
+    return {std::move(bc), std::move(orig_index)};
+}
+
+// Mirrors shared/clegEval.ts's buildFromNodesAndEdges() - builds a BoardConfig directly from an
+// explicit node set AND edge set (both in ORIGINAL flat-index terms), never re-deriving adjacency
+// from any per-factor board's own unrestricted adjacency; `edge_keys` is already the complete,
+// authoritative edge list (see eval_prod_selector's own doc comment for why this - not
+// re-derivation - is what lets an edge a selector deliberately dropped stay dropped through
+// PSelOp::Union/Inter/Diff). No defaultProductProjMat/Embedding here (unlike TS, C++'s BoardConfig
+// has no projection-matrix field at all - it never renders, see board_config.h's own top comment).
+static BuiltResult build_from_nodes_and_edges(
+    const std::vector<BoardConfig>& boards, const FullProductIndex& fpi,
+    const std::set<long long>& kept_original, const std::set<std::string>& edge_keys)
 {
     std::vector<long long> orig_index(kept_original.begin(), kept_original.end()); // std::set already ascending
     std::vector<std::vector<int>> tuples;
@@ -378,88 +425,115 @@ static BuiltResult build_from_original_indices(
             pos[i].insert(pos[i].end(), bp.begin(), bp.end());
         }
     }
+    std::unordered_map<long long, int> local_index_of_original;
+    for (size_t i = 0; i < orig_index.size(); i++) local_index_of_original[orig_index[i]] = static_cast<int>(i);
     auto adj = zero_adj(static_cast<int>(K));
-    for (size_t a = 0; a < K; a++) {
-        for (size_t b = a + 1; b < K; b++) {
-            int diff_coord = -1;
-            bool too_many_diffs = false;
-            for (size_t k = 0; k < boards.size(); k++) {
-                if (tuples[a][k] != tuples[b][k]) {
-                    if (diff_coord != -1) { too_many_diffs = true; break; }
-                    diff_coord = static_cast<int>(k);
-                }
-            }
-            if (!too_many_diffs && diff_coord >= 0 &&
-                boards[diff_coord].adj[tuples[a][diff_coord]][tuples[b][diff_coord]]) {
-                adj[a][b] = 1;
-                adj[b][a] = 1;
-            }
-        }
+    for (auto& key : edge_keys) {
+        size_t comma = key.find(',');
+        int a = local_index_of_original.at(std::stoll(key.substr(0, comma)));
+        int b = local_index_of_original.at(std::stoll(key.substr(comma + 1)));
+        adj[a][b] = 1;
+        adj[b][a] = 1;
     }
     BoardConfig bc{static_cast<int>(K), std::move(adj), emb_dim, std::move(pos)};
     return {std::move(bc), std::move(orig_index)};
 }
 
-// Mirrors shared/clegEval.ts's evalMultiSelector() - see its own doc comment for the full algorithm.
-static BuiltResult eval_multi_selector(
-    const std::vector<BoardConfig>& boards, const FullProductIndex& fpi, const MultiSelector& msel)
+// Shared by eval_prod_selector's own PSelOp::Base/BaseNE cases - see eval_prod_selector's own doc
+// comment for the full algorithm (folding product() across every factor, `number`'s own replaced by
+// `restricted`, then translating the fold's local node indices back into the fixed full-product
+// index space via `survivors`/`fpi`). Mirrors shared/clegEval.ts's combineRestrictedFactor().
+static BuiltResult combine_restricted_factor(
+    const std::vector<BoardConfig>& boards, const FullProductIndex& fpi, int number,
+    const BoardConfig& restricted, const std::vector<int>& survivors)
 {
-    switch (msel.op) {
-        case MSelOp::All:
-            return build_from_original_indices(boards, fpi, universal_original_indices(fpi));
-        case MSelOp::Base: {
-            auto restricted = restrict_board_by_selector(boards[msel.number], *msel.sel);
-            std::vector<BoardConfig> factor_boards = boards;
-            factor_boards[msel.number] = restricted.bc;
-            BoardConfig bc = factor_boards[0];
-            for (size_t i = 1; i < factor_boards.size(); i++) bc = product(bc, factor_boards[i]);
-            std::vector<int> local_ns(factor_boards.size());
-            for (size_t i = 0; i < factor_boards.size(); i++) local_ns[i] = factor_boards[i].N;
-            std::vector<long long> local_stride(local_ns.size());
-            local_stride.back() = 1;
-            for (int k = static_cast<int>(local_ns.size()) - 2; k >= 0; k--)
-                local_stride[k] = local_stride[k + 1] * local_ns[k + 1];
-            std::vector<long long> orig_index(bc.N);
-            for (int local = 0; local < bc.N; local++) {
-                std::vector<int> tuple(local_ns.size());
-                for (size_t k = 0; k < local_ns.size(); k++)
-                    tuple[k] = static_cast<int>((local / local_stride[k]) % local_ns[k]);
-                tuple[msel.number] = restricted.survivors[tuple[msel.number]];
-                orig_index[local] = full_index_of(fpi, tuple);
-            }
-            return {std::move(bc), std::move(orig_index)};
+    std::vector<BoardConfig> factor_boards = boards;
+    factor_boards[number] = restricted;
+    BoardConfig bc = factor_boards[0];
+    for (size_t i = 1; i < factor_boards.size(); i++) bc = product(bc, factor_boards[i]);
+    std::vector<int> local_ns(factor_boards.size());
+    for (size_t i = 0; i < factor_boards.size(); i++) local_ns[i] = factor_boards[i].N;
+    std::vector<long long> local_stride(local_ns.size());
+    local_stride.back() = 1;
+    for (int k = static_cast<int>(local_ns.size()) - 2; k >= 0; k--)
+        local_stride[k] = local_stride[k + 1] * local_ns[k + 1];
+    std::vector<long long> orig_index(bc.N);
+    for (int local = 0; local < bc.N; local++) {
+        std::vector<int> tuple(local_ns.size());
+        for (size_t k = 0; k < local_ns.size(); k++)
+            tuple[k] = static_cast<int>((local / local_stride[k]) % local_ns[k]);
+        tuple[number] = survivors[tuple[number]];
+        orig_index[local] = full_index_of(fpi, tuple);
+    }
+    return {std::move(bc), std::move(orig_index)};
+}
+
+// Mirrors shared/clegEval.ts's evalProdSelector() - see its own doc comment for the full algorithm.
+// PSelOp::Union/Inter/Diff track nodes AND edges separately (original_edge_keys_of, read off each
+// operand's own BuiltResult) rather than re-deriving adjacency from `boards[k]`'s own unrestricted
+// adjacency - this is what lets an edge a selector deliberately dropped (PSelOp::BaseNE's own
+// edge_sel, or an edge-typed PSelOp::Base) stay dropped once combined with another selector.
+static BuiltResult eval_prod_selector(
+    const std::vector<BoardConfig>& boards, const FullProductIndex& fpi, const ProdSelector& psel)
+{
+    switch (psel.op) {
+        case PSelOp::All:
+            return full_product_result(boards, fpi);
+        case PSelOp::Base: {
+            auto restricted = restrict_board_by_selector(boards[psel.number], *psel.sel);
+            return combine_restricted_factor(boards, fpi, psel.number, restricted.bc, restricted.survivors);
         }
-        case MSelOp::Union: {
-            std::set<long long> kept;
-            for (auto& item : msel.items) {
-                auto r = eval_multi_selector(boards, fpi, item);
-                kept.insert(r.orig_index.begin(), r.orig_index.end());
-            }
-            return build_from_original_indices(boards, fpi, kept);
+        case PSelOp::BaseNE: {
+            auto restricted = restrict_board_by_node_and_edge_selector(boards[psel.number], *psel.node_sel, *psel.edge_sel);
+            return combine_restricted_factor(boards, fpi, psel.number, restricted.bc, restricted.survivors);
         }
-        case MSelOp::Inter: {
-            if (msel.items.empty()) return build_from_original_indices(boards, fpi, universal_original_indices(fpi));
-            auto first = eval_multi_selector(boards, fpi, msel.items[0]);
-            std::set<long long> kept(first.orig_index.begin(), first.orig_index.end());
-            for (size_t i = 1; i < msel.items.size(); i++) {
-                auto next = eval_multi_selector(boards, fpi, msel.items[i]);
-                std::set<long long> next_set(next.orig_index.begin(), next.orig_index.end());
-                std::set<long long> out;
-                for (long long idx : kept) if (next_set.count(idx)) out.insert(idx);
-                kept = std::move(out);
+        case PSelOp::Union: {
+            std::set<long long> nodes;
+            std::set<std::string> edges;
+            for (auto& item : psel.items) {
+                auto r = eval_prod_selector(boards, fpi, item);
+                nodes.insert(r.orig_index.begin(), r.orig_index.end());
+                auto item_edges = original_edge_keys_of(r.bc, r.orig_index);
+                edges.insert(item_edges.begin(), item_edges.end());
             }
-            return build_from_original_indices(boards, fpi, kept);
+            return build_from_nodes_and_edges(boards, fpi, nodes, edges);
         }
-        case MSelOp::Diff: {
-            auto ra = eval_multi_selector(boards, fpi, *msel.a);
-            auto rb = eval_multi_selector(boards, fpi, *msel.b);
-            std::set<long long> b_set(rb.orig_index.begin(), rb.orig_index.end());
-            std::set<long long> out;
-            for (long long idx : ra.orig_index) if (!b_set.count(idx)) out.insert(idx);
-            return build_from_original_indices(boards, fpi, out);
+        case PSelOp::Inter: {
+            if (psel.items.empty()) return full_product_result(boards, fpi);
+            auto first = eval_prod_selector(boards, fpi, psel.items[0]);
+            std::set<long long> nodes(first.orig_index.begin(), first.orig_index.end());
+            std::set<std::string> edges = original_edge_keys_of(first.bc, first.orig_index);
+            for (size_t i = 1; i < psel.items.size(); i++) {
+                auto next = eval_prod_selector(boards, fpi, psel.items[i]);
+                std::set<long long> next_nodes(next.orig_index.begin(), next.orig_index.end());
+                std::set<long long> kept_nodes;
+                for (long long idx : nodes) if (next_nodes.count(idx)) kept_nodes.insert(idx);
+                nodes = std::move(kept_nodes);
+                auto next_edges = original_edge_keys_of(next.bc, next.orig_index);
+                std::set<std::string> kept_edges;
+                for (auto& key : edges) if (next_edges.count(key)) kept_edges.insert(key);
+                edges = std::move(kept_edges);
+            }
+            return build_from_nodes_and_edges(boards, fpi, nodes, edges);
+        }
+        case PSelOp::Diff: {
+            auto ra = eval_prod_selector(boards, fpi, *psel.a);
+            auto rb = eval_prod_selector(boards, fpi, *psel.b);
+            std::set<long long> b_nodes(rb.orig_index.begin(), rb.orig_index.end());
+            std::set<long long> nodes;
+            for (long long idx : ra.orig_index) if (!b_nodes.count(idx)) nodes.insert(idx);
+            auto a_edges = original_edge_keys_of(ra.bc, ra.orig_index);
+            std::set<std::string> edges;
+            for (auto& key : a_edges) {
+                size_t comma = key.find(',');
+                long long ea = std::stoll(key.substr(0, comma));
+                long long eb = std::stoll(key.substr(comma + 1));
+                if (nodes.count(ea) && nodes.count(eb)) edges.insert(key);
+            }
+            return build_from_nodes_and_edges(boards, fpi, nodes, edges);
         }
     }
-    throw std::runtime_error("cleg: eval_multi_selector: unexpected MSelOp");
+    throw std::runtime_error("cleg: eval_prod_selector: unexpected PSelOp");
 }
 
 // Parses/validates `bounds_val` into per-dimension `lo`/`dims` - shared by every subHcublatB
@@ -1023,7 +1097,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
         };
         // `selectSimp(X, bc)`: the general, any-arity counterpart of selectTriangle above - X is
-        // resolved via resolve_any_kind_selector_arg (like mkSel/form/msBase), whichever arity
+        // resolved via resolve_any_kind_selector_arg (like mkSel/form/psBase), whichever arity
         // its own text/value turns out to be, then checked (at evaluation time, not statically) to
         // actually be SOME simp N and not e.g. a node/edge/quad selector. Mirrors
         // shared/clegEval.ts's BUILTIN_FUNCTIONS['selectSimp'].
@@ -1359,10 +1433,10 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
         };
 
-        m["msAll"] = BuiltinFunction{
-            fixed_signature({}, MSEL_TYPE), [](const std::vector<ClegValue>&, UserFuncTable&) { return make_msel(MultiSelector{MSelOp::All}); },
+        m["psAll"] = BuiltinFunction{
+            fixed_signature({}, PSEL_TYPE), [](const std::vector<ClegValue>&, UserFuncTable&) { return make_psel(ProdSelector{PSelOp::All}); },
         };
-        m["msBase"] = BuiltinFunction{
+        m["psBase"] = BuiltinFunction{
             [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
                 if (arg_types.size() != 2)
                     throw std::runtime_error("cleg: '" + callee + "' expects 2 argument(s), got " + std::to_string(arg_types.size()));
@@ -1370,50 +1444,80 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                     throw std::runtime_error("cleg: '" + callee + "' argument 1: expected number, got " + type_to_string(arg_types[0]));
                 if (arg_types[1].kind != CTKind::Sel && arg_types[1].kind != CTKind::String && arg_types[1].kind != CTKind::Set)
                     throw std::runtime_error("cleg: '" + callee + "' argument 2: expected sel, string, or set, got " + type_to_string(arg_types[1]));
-                return MSEL_TYPE;
+                return PSEL_TYPE;
             },
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 double number = args[0].number;
                 if (number != std::floor(number) || number < 0)
-                    throw std::runtime_error("cleg: msBase: number must be a nonnegative integer, got " + format_number_display(number));
-                MultiSelector ms; ms.op = MSelOp::Base; ms.number = static_cast<int>(number);
-                ms.sel = std::make_shared<Selector>(resolve_any_kind_selector_arg("msBase", args[1]));
-                return make_msel(ms);
+                    throw std::runtime_error("cleg: psBase: number must be a nonnegative integer, got " + format_number_display(number));
+                ProdSelector ps; ps.op = PSelOp::Base; ps.number = static_cast<int>(number);
+                ps.sel = std::make_shared<Selector>(resolve_any_kind_selector_arg("psBase", args[1]));
+                return make_psel(ps);
             },
         };
-        m["msUnion"] = BuiltinFunction{
-            fixed_signature({ClegType{CTKind::Array, std::make_shared<ClegType>(MSEL_TYPE)}}, MSEL_TYPE),
+        // `psBaseNE(number, nodeX, edgeX)`: like `psBase` above, but takes two selectors instead of
+        // one - `nodeX` (a node selector) and `edgeX` (an edge selector), each resolved against its
+        // own FIXED want_kind (resolve_selector_arg, same as nis/eis - unlike `psBase`'s own single,
+        // any-kind argument). The restricted board is edgeX's own edge-induced subgraph, plus
+        // whichever extra nodes nodeX selects (see restrict_board_by_node_and_edge_selector).
+        // Mirrors shared/clegEval.ts's BUILTIN_FUNCTIONS['psBaseNE'].
+        m["psBaseNE"] = BuiltinFunction{
+            [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
+                if (arg_types.size() != 3)
+                    throw std::runtime_error("cleg: '" + callee + "' expects 3 argument(s), got " + std::to_string(arg_types.size()));
+                if (arg_types[0].kind != CTKind::Number)
+                    throw std::runtime_error("cleg: '" + callee + "' argument 1: expected number, got " + type_to_string(arg_types[0]));
+                if (arg_types[1].kind != CTKind::Sel && arg_types[1].kind != CTKind::String && arg_types[1].kind != CTKind::Set)
+                    throw std::runtime_error("cleg: '" + callee + "' argument 2: expected sel, string, or set, got " + type_to_string(arg_types[1]));
+                if (arg_types[2].kind != CTKind::Sel && arg_types[2].kind != CTKind::String && arg_types[2].kind != CTKind::Set)
+                    throw std::runtime_error("cleg: '" + callee + "' argument 3: expected sel, string, or set, got " + type_to_string(arg_types[2]));
+                return PSEL_TYPE;
+            },
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
-                MultiSelector ms; ms.op = MSelOp::Union;
-                for (auto& v : args[0].arr_v) ms.items.push_back(v.msel_v);
-                return make_msel(ms);
+                double number = args[0].number;
+                if (number != std::floor(number) || number < 0)
+                    throw std::runtime_error("cleg: psBaseNE: number must be a nonnegative integer, got " + format_number_display(number));
+                ProdSelector ps; ps.op = PSelOp::BaseNE; ps.number = static_cast<int>(number);
+                ps.node_sel = std::make_shared<Selector>(
+                    resolve_selector_arg("psBaseNE", args[1], SelectorType{SelectorKind::Node}, parse_node_selector));
+                ps.edge_sel = std::make_shared<Selector>(
+                    resolve_selector_arg("psBaseNE", args[2], SelectorType{SelectorKind::Edge}, parse_edge_selector));
+                return make_psel(ps);
             },
         };
-        m["msInter"] = BuiltinFunction{
-            fixed_signature({ClegType{CTKind::Array, std::make_shared<ClegType>(MSEL_TYPE)}}, MSEL_TYPE),
+        m["psUnion"] = BuiltinFunction{
+            fixed_signature({ClegType{CTKind::Array, std::make_shared<ClegType>(PSEL_TYPE)}}, PSEL_TYPE),
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
-                MultiSelector ms; ms.op = MSelOp::Inter;
-                for (auto& v : args[0].arr_v) ms.items.push_back(v.msel_v);
-                return make_msel(ms);
+                ProdSelector ps; ps.op = PSelOp::Union;
+                for (auto& v : args[0].arr_v) ps.items.push_back(v.psel_v);
+                return make_psel(ps);
             },
         };
-        m["msDiff"] = BuiltinFunction{
-            fixed_signature({MSEL_TYPE, MSEL_TYPE}, MSEL_TYPE),
+        m["psInter"] = BuiltinFunction{
+            fixed_signature({ClegType{CTKind::Array, std::make_shared<ClegType>(PSEL_TYPE)}}, PSEL_TYPE),
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
-                MultiSelector ms; ms.op = MSelOp::Diff;
-                ms.a = std::make_shared<MultiSelector>(args[0].msel_v);
-                ms.b = std::make_shared<MultiSelector>(args[1].msel_v);
-                return make_msel(ms);
+                ProdSelector ps; ps.op = PSelOp::Inter;
+                for (auto& v : args[0].arr_v) ps.items.push_back(v.psel_v);
+                return make_psel(ps);
+            },
+        };
+        m["psDiff"] = BuiltinFunction{
+            fixed_signature({PSEL_TYPE, PSEL_TYPE}, PSEL_TYPE),
+            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+                ProdSelector ps; ps.op = PSelOp::Diff;
+                ps.a = std::make_shared<ProdSelector>(args[0].psel_v);
+                ps.b = std::make_shared<ProdSelector>(args[1].psel_v);
+                return make_psel(ps);
             },
         };
         m["multiProd"] = BuiltinFunction{
-            fixed_signature({ClegType{CTKind::Array, std::make_shared<ClegType>(EGR_TYPE)}, MSEL_TYPE}, EGR_TYPE),
+            fixed_signature({ClegType{CTKind::Array, std::make_shared<ClegType>(EGR_TYPE)}, PSEL_TYPE}, EGR_TYPE),
             [](const std::vector<ClegValue>& args, UserFuncTable&) {
                 std::vector<BoardConfig> boards;
                 for (auto& v : args[0].arr_v) boards.push_back(*v.egr_v);
                 if (boards.empty()) throw std::runtime_error("cleg: multiProd: boards must be non-empty");
                 FullProductIndex fpi = make_full_product_index(boards);
-                auto result = eval_multi_selector(boards, fpi, args[1].msel_v);
+                auto result = eval_prod_selector(boards, fpi, args[1].psel_v);
                 return make_egr(std::move(result.bc));
             },
         };

@@ -484,6 +484,54 @@ test('rrmn/rrmp also work over triangle/quad selectors', () => {
     assert.equal(keptQuad.length, 0);
 });
 
+test('rpkn/rpkp reject a malformed count/portion argument', () => {
+    assert.throws(() => parseNodeSelector('(rpkn -1 (all node))'), /nonnegative integer/);
+    assert.throws(() => parseNodeSelector('(rpkn 1.5 (all node))'), /nonnegative integer/);
+    assert.throws(() => parseNodeSelector('(rpkn abc (all node))'), /nonnegative integer/);
+    assert.throws(() => parseNodeSelector('(rpkp -0.5 (all node))'), /nonnegative number/);
+    assert.throws(() => parseNodeSelector('(rpkp abc (all node))'), /nonnegative number/);
+});
+
+// rpkn/rpkp are randomized - these tests only check the deterministic invariants (result size, and
+// that every kept item really was in the original set), not which specific items got picked.
+test('rpkn picks exactly count items (clamped to the set size), chosen from the original set', () => {
+    for (const count of [0, 1, 3, 4, 10]) {
+        const kept = selectNode(adj, pos, parseNodeSelector(`(rpkn ${count} (all node))`));
+        assert.equal(kept.size, Math.min(count, 4));
+        for (const n of kept) assert.ok([0, 1, 2, 3].includes(n));
+    }
+});
+
+test('rpkp picks floor(frac * size) items, clamped to the set size', () => {
+    const cases: [number, number][] = [[0, 0], [0.25, 1], [0.5, 2], [1, 4], [1.5, 4]];
+    for (const [frac, expectedSize] of cases) {
+        const kept = selectNode(adj, pos, parseNodeSelector(`(rpkp ${frac} (all node))`));
+        assert.equal(kept.size, expectedSize, `frac=${frac}`);
+        for (const n of kept) assert.ok([0, 1, 2, 3].includes(n));
+    }
+});
+
+test('rpkn/rpkp also work over edge selectors', () => {
+    const kept = selectEdge(adj, pos, parseEdgeSelector('(rpkn 2 (all edge))'));
+    assert.equal(kept.length, 2);
+    const all = selectEdge(adj, pos, parseEdgeSelector('(all edge)'));
+    for (const e of kept) assert.ok(all.some(a => a.n1 === e.n1 && a.n2 === e.n2));
+
+    const keptFrac = selectEdge(adj, pos, parseEdgeSelector('(rpkp 0.6666 (all edge))'));
+    // floor(0.6666 * 3) = 1 picked.
+    assert.equal(keptFrac.length, 1);
+});
+
+test('rpkn/rpkp also work over triangle/quad selectors', () => {
+    const keptTri = selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(rpkn 1 (all tri))'));
+    assert.equal(keptTri.length, 1);
+    const allTri = selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(all tri)'));
+    for (const t of keptTri) assert.ok(allTri.some(a => a.nodes.join(',') === t.nodes.join(',')));
+
+    const keptQuad = selectQuad(quadAdj, quadPos, parseQuadSelector('(rpkp 0 (all quad))'));
+    assert.equal(keptQuad.length, 0);
+});
+
 test('selectNode/selectEdge/selectTriangle/selectQuad throw when given a selector of the wrong kind', () => {
     const edgeSel = parseEdgeSelector('(conva edge (deg eq 2))');
     assert.throws(() => selectNode(adj, pos, edgeSel), /expected a node selector, got an edge selector/);

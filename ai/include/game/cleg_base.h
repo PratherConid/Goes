@@ -22,10 +22,10 @@
 //   - No garbage collector: recursive AST/value substructures use std::shared_ptr for genuine
 //     sharing (Expr/Stmt children, ClegValue's `egr` payload) or plain std::vector/value members
 //     where TS's own object-reference semantics never actually needed sharing (Array/Set contents,
-//     Selector/BoardModifier/MultiSelector payloads - each already cheap to copy, since
-//     Selector/MultiSelector use shared_ptr internally for their own recursive children).
+//     Selector/BoardModifier/ProdSelector payloads - each already cheap to copy, since
+//     Selector/ProdSelector use shared_ptr internally for their own recursive children).
 //   - TS's `number` (a JS double) is a C++ `double` throughout; an int is only ever produced at the
-//     C++/board-primitive boundary (mkEdge/mkTri/mkQuad, board-arg conversion, msBase's index), via
+//     C++/board-primitive boundary (mkEdge/mkTri/mkQuad, board-arg conversion, psBase's index), via
 //     an explicit int conversion - a data-type constraint the TS side doesn't have.
 //   - Every ClegType/ClegValue/AST struct gives EVERY field a default member initializer, even ones
 //     TS's own type only ever reads after unconditionally setting it - a defensive C++-only
@@ -37,7 +37,7 @@
 // ── Types ────────────────────────────────────────────────────────────────────
 
 enum class CTKind {
-    Egr, Number, String, Bool, Edge, Simp, Quad, Sel, Mod, Formsel, Lrs, Msel, Array, Set, Func
+    Egr, Number, String, Bool, Edge, Simp, Quad, Sel, Mod, Formsel, Lrs, Psel, Array, Set, Func
 };
 
 // Mirrors shared/clegBase.ts's ClegType - `elem` meaningful iff kind == Array/Set; `params`/
@@ -53,15 +53,17 @@ struct ClegType {
 bool type_equals(const ClegType& a, const ClegType& b);
 std::string type_to_string(const ClegType& t);
 
-// Mirrors shared/clegBase.ts's MultiSelector - defined ahead of ClegValue since ClegValue holds one
+// Mirrors shared/clegBase.ts's ProdSelector - defined ahead of ClegValue since ClegValue holds one
 // by value.
-enum class MSelOp { All, Base, Union, Inter, Diff };
-struct MultiSelector {
-    MSelOp op = MSelOp::All;
-    int number = 0;                       // Base
+enum class PSelOp { All, Base, BaseNE, Union, Inter, Diff };
+struct ProdSelector {
+    PSelOp op = PSelOp::All;
+    int number = 0;                       // Base/BaseNE
     std::shared_ptr<Selector> sel;        // Base
-    std::vector<MultiSelector> items;     // Union/Inter
-    std::shared_ptr<MultiSelector> a, b;  // Diff
+    std::shared_ptr<Selector> node_sel;   // BaseNE
+    std::shared_ptr<Selector> edge_sel;   // BaseNE
+    std::vector<ProdSelector> items;      // Union/Inter
+    std::shared_ptr<ProdSelector> a, b;   // Diff
 };
 
 // ── Values ───────────────────────────────────────────────────────────────────
@@ -86,7 +88,7 @@ struct ClegValue {
     BoardModifier mod_v{ModifierKind::Rectify};
     FormSelector form_sel_v; // Formsel only
     LocalReplaceSelector lrs_v; // Lrs only
-    MultiSelector msel_v;
+    ProdSelector psel_v;
     std::vector<ClegValue> arr_v;                    // Array or Set (Set: deduplicated by cleg_set_key)
     // Func only - mirrors shared/clegBase.ts's ClegValue own 'func' variant: a function-pointer value
     // is a reference to one of `program`'s own top-level functions, held by `func_name` (looked up in
@@ -123,7 +125,7 @@ inline ClegValue make_egr(BoardConfig bc) {
 inline ClegValue make_mod(BoardModifier m) { ClegValue v; v.kind = CTKind::Mod; v.mod_v = std::move(m); return v; }
 inline ClegValue make_form_sel_v(FormSelector s) { ClegValue v; v.kind = CTKind::Formsel; v.form_sel_v = std::move(s); return v; }
 inline ClegValue make_lrs_v(LocalReplaceSelector s) { ClegValue v; v.kind = CTKind::Lrs; v.lrs_v = std::move(s); return v; }
-inline ClegValue make_msel(MultiSelector m) { ClegValue v; v.kind = CTKind::Msel; v.msel_v = std::move(m); return v; }
+inline ClegValue make_psel(ProdSelector p) { ClegValue v; v.kind = CTKind::Psel; v.psel_v = std::move(p); return v; }
 
 // Renders a double for error messages/number-string concatenation - an integral value prints with
 // no decimal point/trailing zeros (matching JS's own Number->string for the plain integers cleg

@@ -16,11 +16,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const boardPresetsDir = path.join(__dirname, '..', 'public', 'board_presets');
 const gamePresetsDir = path.join(__dirname, '..', 'public', 'game_presets');
 
-// shared/selector.ts's randomlyRemove() is the one Math.random() call site any preset can reach
-// (via a (rrmp ...)/(rrmn ...) selector, or the randRmN/randRmP cleg builtins) - seeded here so the
-// handful of presets using it (fractaldrop-built ones, nice_drop, rrmp) evaluate to the exact same
-// board every run, the same substitute-a-seeded-PRNG technique used earlier this session to verify
-// randomized presets structurally.
+// shared/selector.ts's randomlyRemove()/randomlyTake() are the Math.random() call sites any preset
+// can reach (via a (rrmp ...)/(rrmn ...)/(rpkp ...)/(rpkn ...) selector, or the randRmN/randRmP/
+// randTakeN/randTakeP cleg builtins) - seeded here so the handful of presets using them
+// (fractaldrop-built ones, nice_drop, rrmp) evaluate to the exact same board every run, the same
+// substitute-a-seeded-PRNG technique used earlier this session to verify randomized presets
+// structurally.
 function mulberry32(seed: number): () => number {
     return () => {
         seed |= 0;
@@ -103,7 +104,7 @@ const BOARD_PRESET_GOLDEN: Record<string, { N: number; edges: number }> = {
 // pin down, tripped by any internal reordering of random draws even when real (unseeded) behavior
 // is unchanged. Presets that use one of these still get evaluated below (so a genuine crash/error
 // is still caught), just not checked against a golden N/edge count.
-const RANDOM_BUILTIN_NAMES = ['rrmp', 'rrmn', 'randRmN', 'randRmP', 'randTakeN', 'randTakeP'];
+const RANDOM_BUILTIN_NAMES = ['rrmp', 'rrmn', 'rpkp', 'rpkn', 'randRmN', 'randRmP', 'randTakeN', 'randTakeP'];
 const RANDOM_BUILTIN_RE = new RegExp(`\\b(${RANDOM_BUILTIN_NAMES.join('|')})\\b`);
 
 test('every public/board_presets/*.cleg file parses and evaluates without throwing, and every ' +

@@ -149,7 +149,7 @@
  * itself turns out to be, bottom-up, is `sel`'s own kind, so unlike the old design `mkSel` no longer
  * needs to be told separately what kind to parse X as - or a `set` of number/edge/simp/quad, wrapped
  * directly into a `raw` Selector with no parsing at all, its own kind read off the set's own element
- * type (see resolveAnyKindSelectorArg in shared/clegEval.ts, also used by `msBase` for the same
+ * type (see resolveAnyKindSelectorArg in shared/clegEval.ts, also used by `psBase` for the same
  * kind-from-the-value-itself resolution). `sel` itself carries no kind at the type level - the kind a
  * given `mkSel(X)` call actually produces depends on X's own runtime value, not something the type
  * checker can see ahead of a call - so two `sel`-typed locals can hold selectors of two different
@@ -170,7 +170,7 @@
  * `mkFormSel(typeStr, selArg?)` below - `typeStr` names the branch directly (one of the 2
  * FormSelector `kind` tags themselves, lowercase-first - "triForm"/"quadForm") - and consumed only
  * by `form(w, formsel[])`, the one builtin that turns an array of `formsel` values (plus `w`) into
- * the actual `Form`-kind `mod`. Opaque the same way `sel`/`mod`/`msel` are.
+ * the actual `Form`-kind `mod`. Opaque the same way `sel`/`mod`/`psel` are.
  *
  * `lrs` wraps a real shared/types.ts LocalReplaceSelector - a selected face paired with which local
  * shape to replace it with (see that type's own doc comment for why a bare `sel` can't say this on
@@ -180,7 +180,7 @@
  * lowercase-first, `simp`'s own arity omitted since it's read off `selArg` at evaluation time instead
  * - see mkLRS's own doc comment, shared/clegEval.ts) - and consumed only by `localReplace(lrs[])`,
  * the one builtin that actually turns an array of `lrs` values into a `mod`. Opaque the same way
- * `sel`/`mod`/`msel` are.
+ * `sel`/`mod`/`psel` are.
  *
  * ## Builtins
  *
@@ -222,7 +222,7 @@
  * their own first argument); `mkSel`/`mkFormSel`/`mkLRS`'s own `selArg` accept a `string` or `set`
  * too (not a `sel` - see `sel`'s own doc comment above), but (unlike those) have no fixed wantKind of
  * their own to resolve against, so they go through resolveAnyKindSelectorArg instead (also shared/clegEval.ts,
- * also used by `form`'s own variadic selector arguments and by `msBase`).
+ * also used by `form`'s own variadic selector arguments and by `psBase`).
  *
  * `selectNode`/`selectEdge`/`selectTriangle`/`selectQuad`/`selectSimp` (X, bc) similarly each accept
  * a `sel`, `string`, or `set`, but evaluate it immediately against a real board `bc` (an `egr`) and
@@ -253,7 +253,7 @@
  *
  *   TYPE       := (BASETYPE ('{' '}')? | FUNCTYPE | '(' FUNCTYPE ')') ('[' ']')*
  *   BASETYPE   := 'egr' | 'number' | 'string' | 'bool' | 'edge' | 'simp' | 'tri' | 'quad'
- *               | 'sel' | 'mod' | 'formsel' | 'lrs' | 'msel'
+ *               | 'sel' | 'mod' | 'formsel' | 'lrs' | 'psel'
  *   FUNCTYPE   := '(' (TYPE (',' TYPE)*)? ')' '->' TYPE
  *   PROGRAM    := (FUNCDECL | TOPSTMT)*
  *   TOPSTMT    := VARDECL | ASSIGNSTMT | EXPRSTMT
@@ -357,12 +357,12 @@ export type ClegType =
      * `LocalReplace`-kind `mod`. One flat type covering every LocalReplaceSelector kind, the same
      * way `mod` covers every BoardModifier kind. */
     | { kind: 'lrs' }
-    /** Wraps a MultiSelector (defined below, near ClegValue's own 'msel' variant) - a cleg-internal-
+    /** Wraps a ProdSelector (defined below, near ClegValue's own 'psel' variant) - a cleg-internal-
      * only concept, unlike sel/mod (neither of which is exposed via shared/types.ts either, but each
      * wraps something a consumer OUTSIDE cleg's own files also builds/uses: a real
      * Selector/BoardModifier) - nothing outside shared/clegEval.ts ever builds or consumes a
-     * MultiSelector directly. */
-    | { kind: 'msel' }
+     * ProdSelector directly. */
+    | { kind: 'psel' }
     | { kind: 'array'; elem: ClegType }
     | { kind: 'set'; elem: ClegType }
     /** A monomorphic function-pointer type - `(number, number) -> bool` syntax (parseType's own
@@ -435,7 +435,7 @@ export type ClegValue =
     | { kind: 'mod'; value: BoardModifier }
     | { kind: 'formsel'; value: FormSelector }
     | { kind: 'lrs'; value: LocalReplaceSelector }
-    | { kind: 'msel'; value: MultiSelector }
+    | { kind: 'psel'; value: ProdSelector }
     | { kind: 'array'; elem: ClegType; value: ClegValue[] }
     /** A set's `value` is always deduplicated by clegSetKey (see makeClegSet) - unlike 'array',
      * where `value` may hold anything an ArrayLit/array-typed value can, `value` here never holds
@@ -471,22 +471,29 @@ export function clegValueType(v: ClegValue): ClegType {
 
 // Denotes a subset of the FULL N-ary Cartesian product's own node space (fixed once per multiProd
 // call, from `boards`' own ORIGINAL, unrestricted sizes - see shared/clegEval.ts's own
-// FullProductIndex) - cleg-internal only (see ClegType's own 'msel' doc comment above), built by
-// msAll/msBase/msUnion/msInter/msDiff and consumed only by multiProd's own evalMultiSelector (both
-// in shared/clegEval.ts) - declared here, alongside ClegValue's own 'msel' variant that carries it,
-// rather than in clegEval.ts itself, purely so ClegValue doesn't need a back-reference into a file
-// that itself depends on this one. `base`'s own `sel` may syntactically be any Selector - msBase
-// itself doesn't check its SelectorType at all, only multiProd's own evaluation does, once it
-// actually needs to restrict a specific board (see restrictBoardBySelector) - so a simp/quad
-// selector parses/builds fine as an msBase argument and only fails later, when actually evaluated. `all` is
-// every original index, unrestricted - the same universal set `msInter(nil(msel))` already denotes
-// (the usual absorbing-element identity for an empty intersection fold), just spelled directly
-// rather than via that idiom.
-export type MultiSelector =
+// FullProductIndex) - cleg-internal only (see ClegType's own 'psel' doc comment above), built by
+// psAll/psBase/psBaseNE/psUnion/psInter/psDiff and consumed only by multiProd's own
+// evalProdSelector (both in shared/clegEval.ts) - declared here, alongside ClegValue's own 'psel'
+// variant that carries it, rather than in clegEval.ts itself, purely so ClegValue doesn't need a
+// back-reference into a file that itself depends on this one. `base`'s own `sel` may syntactically
+// be any Selector - psBase itself doesn't check its SelectorType at all, only multiProd's own
+// evaluation does, once it actually needs to restrict a specific board (see
+// restrictBoardBySelector) - so a simp/quad selector parses/builds fine as an psBase argument and
+// only fails later, when actually evaluated. `baseNE` is `base`'s own two-selector variant: `nodeSel`
+// and `edgeSel` ARE fixed to node/edge respectively (unlike `base`'s own `sel`), since psBaseNE
+// itself resolves each against its own fixed wantKind (see shared/clegEval.ts's own resolveSelectorArg)
+// rather than accepting any kind the way psBase does - the restricted board keeps `edgeSel`'s own
+// edge-induced subgraph PLUS whichever extra nodes `nodeSel` selects (see
+// restrictBoardByNodeAndEdgeSelector/nodeEdgeInducedSubgraph), so a node from `nodeSel` alone
+// survives even with no kept incident edge. `all` is every original index, unrestricted - the same
+// universal set `psInter(nil(psel))` already denotes (the usual absorbing-element identity for an
+// empty intersection fold), just spelled directly rather than via that idiom.
+export type ProdSelector =
     | { op: 'all' }
     | { op: 'base'; number: number; sel: Selector }
-    | { op: 'union' | 'inter'; items: MultiSelector[] }
-    | { op: 'diff'; a: MultiSelector; b: MultiSelector };
+    | { op: 'baseNE'; number: number; nodeSel: Selector; edgeSel: Selector }
+    | { op: 'union' | 'inter'; items: ProdSelector[] }
+    | { op: 'diff'; a: ProdSelector; b: ProdSelector };
 
 // ── Binary operators ─────────────────────────────────────────────────────────
 
@@ -896,7 +903,7 @@ export interface BinaryExpr {
  * negation (`!x`, requires a `bool` operand - see checkExpr's own UnaryExpr case). */
 export interface UnaryExpr { kind: 'UnaryExpr'; op: '-' | '!'; operand: Expr; }
 /** `nil(TYPE)` - an empty array whose element type is TYPE, e.g. `nil(number)` is an empty
- * `number[]`, `nil(msel)` an empty `msel[]`, `nil(number[])` an empty `number[][]` - the escape
+ * `number[]`, `nil(psel)` an empty `psel[]`, `nil(number[])` an empty `number[][]` - the escape
  * hatch for ArrayLit's own empty-literal simplification (see its own doc comment): unlike every
  * other Expr, `TYPE` is a real ClegType (parsed via parseType, not parseExpr), not itself an Expr. */
 export interface NilExpr { kind: 'NilExpr'; type: ClegType; }

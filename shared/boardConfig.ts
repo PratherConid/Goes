@@ -341,6 +341,35 @@ export function edgeInducedSubgraph(bc: BoardConfig, edges: BoardEdge[]): BoardC
 }
 
 /**
+ * Same as edgeInducedSubgraph, but `nodes` also survives - unioned into the kept-node set before
+ * compacting, same ascending-original-index order. Only `edges` ever contributes adjacency (exactly
+ * like edgeInducedSubgraph's own rule) - a node that's in `nodes` but not touched by any kept edge
+ * survives as an isolated node, not connected to anything else that survives, even a neighbor it was
+ * adjacent to in `bc`. Used by shared/clegEval.ts's own `psBaseNE` (a ProdSelector variant, not a
+ * BoardModifier - unlike nodeInducedSubgraph/edgeInducedSubgraph, this has no separate
+ * `applyModifier` case of its own).
+ */
+export function nodeEdgeInducedSubgraph(
+    bc: BoardConfig, nodes: Set<number>, edges: BoardEdge[],
+): BoardConfig {
+    const touched = new Set<number>(nodes);
+    for (const e of edges) { touched.add(e.n1); touched.add(e.n2); }
+    const kept: number[] = [];
+    for (let i = 0; i < bc.N; i++) if (touched.has(i)) kept.push(i);
+    const newIdx = new Map<number, number>(kept.map((orig, idx) => [orig, idx]));
+
+    const pos = kept.map(i => bc.emb.pos[i]);
+    const adj = zeroAdj(kept.length);
+    for (const e of edges) {
+        const a = newIdx.get(e.n1)!, b = newIdx.get(e.n2)!;
+        adj[a][b] = 1;
+        adj[b][a] = 1;
+    }
+
+    return make(new Embedding(bc.emb.embDim, pos), adj);
+}
+
+/**
  * Replaces every selected triangle and/or quad (see topology.ts's findSimplices(adj, 2)/findQuads)
  * in `bc` with its own w-sided lattice - a `triangularBoard(w)`-shaped lattice for a triangle
  * (TriForm), a `w`-by-`w` grid for a quad (QuadForm), or, also for a quad, a diagonally-oriented

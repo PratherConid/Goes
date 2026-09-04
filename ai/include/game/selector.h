@@ -13,8 +13,11 @@
 //   (union SEL...) / (inter SEL...) / (diff SEL SEL) / (compl SEL) / (more [<num>] SEL) /
 //   (all <node|edge|simp N|tri|quad>) / (none <node|edge|simp N|tri|quad>) /
 //   (deg <eq|gt|lt> <num>) / (conva <node|edge|simp N|tri|quad> SEL) /
-//   (conve <node|edge|simp N|tri|quad> SEL) / (rrmn <num> SEL) / (rrmp <num> SEL)
-// "tri" is sugar for "simp 2" everywhere (both parse to the identical Selector).
+//   (conve <node|edge|simp N|tri|quad> SEL) / (rrmn <num> SEL) / (rrmp <num> SEL) /
+//   (rpkn <num> SEL) / (rpkp <num> SEL)
+// "tri" is sugar for "simp 2" everywhere (both parse to the identical Selector). rpkn/rpkp are the
+// pick-instead-of-remove counterparts of rrmn/rrmp - same count/portion argument, but keep those
+// elements instead of dropping them.
 
 // Mirrors shared/types.ts's BoardEdge: n1 <= n2 always (see make_board_edge below).
 struct BoardEdge {
@@ -85,7 +88,7 @@ inline int simp_n(const SelectorType& t) { return t.kind == SelectorKind::Simp ?
 // discriminated-union Selector type. `Raw` has no textual grammar (format_selector rejects it) -
 // it's built only by game/cleg.cpp, wrapping a `set`-typed cleg selector argument directly (mirrors
 // shared/types.ts's Selector 'raw' variant).
-enum class SelectorOp { Union, Inter, Diff, Compl, More, All, None, Deg, Conva, Conve, Rrmn, Rrmp, Raw };
+enum class SelectorOp { Union, Inter, Diff, Compl, More, All, None, Deg, Conva, Conve, Rrmn, Rrmp, Rpkn, Rpkp, Raw };
 
 // Mirrors the comparator argument of a Deg selector ('eq'/'gt'/'lt' in the TS grammar).
 enum class DegCmp { Eq, Gt, Lt };
@@ -114,8 +117,8 @@ struct Selector {
     std::vector<Selector> items;
     DegCmp cmp = DegCmp::Eq;         // meaningful iff op == Deg
     int n = 0;                       // meaningful iff op == Deg
-    int count = 0;                   // meaningful iff op == Rrmn
-    double frac = 0.0;               // meaningful iff op == Rrmp
+    int count = 0;                   // meaningful iff op == Rrmn/Rpkn
+    double frac = 0.0;               // meaningful iff op == Rrmp/Rpkp
     // meaningful iff op == Conva/Conve - the "from" kind, read off sel.a's own bottom-up-inferred
     // `type` at parse time (NOT a literal token - `type` above is now what the leading
     // node/edge/simp N/quad token in the grammar names, the "to"/result kind; see parse_conversion).

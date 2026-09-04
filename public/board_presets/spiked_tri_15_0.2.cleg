@@ -1,0 +1,10 @@
+egr spikify(egr b, number p) {
+  number{} nodes = randTakeP(selectNode("(all node)", b), p);
+  psel ps1 = psBase(1, {0});
+  psel ps2 = psBaseNE(0, nodes, "(none edge)");
+  return multiProd([b, lineB(2)], psUnion([ps1, ps2]));
+}
+egr spikedTriangularB(number w, number p) {
+  return spikify(triB(w), p);
+}
+spikedTriangularB(15, 0.2);

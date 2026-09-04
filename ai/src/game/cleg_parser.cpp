@@ -136,7 +136,7 @@ private:
 
 static const std::set<std::string>& type_keywords() {
     static const std::set<std::string> kws = {
-        "egr", "number", "string", "bool", "edge", "simp", "tri", "quad", "sel", "mod", "formsel", "lrs", "msel",
+        "egr", "number", "string", "bool", "edge", "simp", "tri", "quad", "sel", "mod", "formsel", "lrs", "psel",
     };
     return kws;
 }
@@ -162,7 +162,7 @@ static CTKind base_type_kind(const std::string& base) {
     if (base == "mod") return CTKind::Mod;
     if (base == "formsel") return CTKind::Formsel;
     if (base == "lrs") return CTKind::Lrs;
-    if (base == "msel") return CTKind::Msel;
+    if (base == "psel") return CTKind::Psel;
     throw std::runtime_error("cleg: base_type_kind: unknown base type '" + base + "'");
 }
 

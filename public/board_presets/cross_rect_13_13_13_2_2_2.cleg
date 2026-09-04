@@ -1,0 +1,10 @@
+egr crossRectB(number w, number d, number h, number nw, number nd, number nh) {
+  psel ps0 = psBase(0, (("(rpkn " + nw) + " (all node))"));
+  psel ps1 = psBase(1, (("(rpkn " + nd) + " (all node))"));
+  psel ps2 = psBase(2, (("(rpkn " + nh) + " (all node))"));
+  return multiProd(
+    [lineB(w), lineB(d), lineB(h)],
+    psUnion([ps0, ps1, ps2])
+  );
+}
+crossRectB(13, 13, 13, 2, 2, 2);

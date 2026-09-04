@@ -35,7 +35,7 @@ static std::string ctkind_word(CTKind k) {
         case CTKind::Mod: return "mod";
         case CTKind::Formsel: return "formsel";
         case CTKind::Lrs: return "lrs";
-        case CTKind::Msel: return "msel";
+        case CTKind::Psel: return "psel";
         case CTKind::Array: case CTKind::Set: case CTKind::Func: break; // handled by type_to_string below
     }
     throw std::runtime_error("cleg: ctkind_word: unexpected kind");

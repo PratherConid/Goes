@@ -122,6 +122,8 @@ static std::string selector_op_keyword(SelectorOp op) {
         case SelectorOp::Conve: return "conve";
         case SelectorOp::Rrmn:  return "rrmn";
         case SelectorOp::Rrmp:  return "rrmp";
+        case SelectorOp::Rpkn:  return "rpkn";
+        case SelectorOp::Rpkp:  return "rpkp";
         case SelectorOp::Raw:   return "raw";
     }
     throw std::runtime_error("selector_op_keyword: unknown op");
@@ -174,8 +176,8 @@ static Selector parse_conversion(ParseCursor& c, SelectorOp op) {
 // Parses one SEL, inferring its own `type` bottom-up rather than being told what to expect (see
 // selector.h's own top comment and shared/selector.ts's own top comment) - context-free, unlike the
 // old parse_sel_expr(c, type). Every case below either propagates an operand's own already-parsed
-// `type` unchanged (union/inter/diff/compl/rrmn/rrmp - diff/union/inter also check their operands
-// agree with each other), reads an explicit leading token because nothing else could supply the kind
+// `type` unchanged (union/inter/diff/compl/rrmn/rrmp/rpkn/rpkp - diff/union/inter also check their
+// operands agree with each other), reads an explicit leading token because nothing else could supply the kind
 // (all/none's own kind; conva/conve's own "to" kind, via parse_conversion above), or is hardcoded to
 // a single always-valid kind (deg: always Node). deg/more reject a mismatched kind (deg implicitly,
 // by always being Node regardless of context; more explicitly, by checking its own operand's
@@ -277,6 +279,24 @@ static Selector parse_sel_expr(ParseCursor& c) {
         sel.type = sel.a->type;
         return sel;
     }
+    if (op == "rpkn") {
+        int count = next_nonneg_int(c, "(rpkn ...) count");
+        Selector sel;
+        sel.op = SelectorOp::Rpkn; sel.count = count;
+        sel.a = std::make_shared<Selector>(parse_sel_expr(c));
+        c.expect(")");
+        sel.type = sel.a->type;
+        return sel;
+    }
+    if (op == "rpkp") {
+        double frac = next_nonneg_number(c, "(rpkp ...) portion");
+        Selector sel;
+        sel.op = SelectorOp::Rpkp; sel.frac = frac;
+        sel.a = std::make_shared<Selector>(parse_sel_expr(c));
+        c.expect(")");
+        sel.type = sel.a->type;
+        return sel;
+    }
     throw std::runtime_error("selector: unknown selector operator '" + op + "'");
 }
 
@@ -371,6 +391,8 @@ std::string format_selector(const Selector& sel) {
         }
         case SelectorOp::Rrmn: return "(rrmn " + std::to_string(sel.count) + " " + format_selector(*sel.a) + ")";
         case SelectorOp::Rrmp: return "(rrmp " + format_double(sel.frac) + " " + format_selector(*sel.a) + ")";
+        case SelectorOp::Rpkn: return "(rpkn " + std::to_string(sel.count) + " " + format_selector(*sel.a) + ")";
+        case SelectorOp::Rpkp: return "(rpkp " + format_double(sel.frac) + " " + format_selector(*sel.a) + ")";
         case SelectorOp::Raw:
             throw std::runtime_error("format_selector: 'raw' has no text representation");
     }
@@ -385,8 +407,8 @@ bool Selector::operator==(const Selector& other) const {
     };
     if (!eq_ptr(a, other.a) || !eq_ptr(b, other.b)) return false;
     if (op == SelectorOp::Deg) return cmp == other.cmp && n == other.n;
-    if (op == SelectorOp::Rrmn) return count == other.count;
-    if (op == SelectorOp::Rrmp) return frac == other.frac;
+    if (op == SelectorOp::Rrmn || op == SelectorOp::Rpkn) return count == other.count;
+    if (op == SelectorOp::Rrmp || op == SelectorOp::Rpkp) return frac == other.frac;
     if (op == SelectorOp::Conva || op == SelectorOp::Conve) return from == other.from;
     if (op == SelectorOp::More) return steps == other.steps;
     if (op == SelectorOp::Union || op == SelectorOp::Inter) return items == other.items;
@@ -609,6 +631,19 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
             auto kept = randomly_remove(std::move(base), remove_count);
             return std::set<int>(kept.begin(), kept.end());
         }
+        case SelectorOp::Rpkn: {
+            auto base_set = select_node(adj, pos, *sel.a);
+            std::vector<int> base(base_set.begin(), base_set.end());
+            auto kept = randomly_take(std::move(base), sel.count);
+            return std::set<int>(kept.begin(), kept.end());
+        }
+        case SelectorOp::Rpkp: {
+            auto base_set = select_node(adj, pos, *sel.a);
+            std::vector<int> base(base_set.begin(), base_set.end());
+            int take_count = static_cast<int>(std::floor(sel.frac * static_cast<double>(base.size())));
+            auto kept = randomly_take(std::move(base), take_count);
+            return std::set<int>(kept.begin(), kept.end());
+        }
         case SelectorOp::Raw:
             return sel.raw_nodes;
         default:
@@ -740,6 +775,15 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
             int remove_count = static_cast<int>(std::floor(sel.frac * static_cast<double>(base.size())));
             return randomly_remove(base, remove_count);
         }
+        case SelectorOp::Rpkn: {
+            auto base = select_edge(adj, pos, *sel.a);
+            return randomly_take(base, sel.count);
+        }
+        case SelectorOp::Rpkp: {
+            auto base = select_edge(adj, pos, *sel.a);
+            int take_count = static_cast<int>(std::floor(sel.frac * static_cast<double>(base.size())));
+            return randomly_take(base, take_count);
+        }
         case SelectorOp::Raw:
             return sel.raw_edges;
         default:
@@ -835,6 +879,15 @@ std::vector<BoardSimplex> select_simp(const std::vector<std::vector<int>>& adj,
             auto base = select_simp(adj, pos, *sel.a);
             int remove_count = static_cast<int>(std::floor(sel.frac * static_cast<double>(base.size())));
             return randomly_remove(base, remove_count);
+        }
+        case SelectorOp::Rpkn: {
+            auto base = select_simp(adj, pos, *sel.a);
+            return randomly_take(base, sel.count);
+        }
+        case SelectorOp::Rpkp: {
+            auto base = select_simp(adj, pos, *sel.a);
+            int take_count = static_cast<int>(std::floor(sel.frac * static_cast<double>(base.size())));
+            return randomly_take(base, take_count);
         }
         case SelectorOp::Raw:
             return sel.raw_simps;
@@ -934,6 +987,15 @@ std::vector<BoardQuad> select_quad(const std::vector<std::vector<int>>& adj,
             auto base = select_quad(adj, pos, *sel.a);
             int remove_count = static_cast<int>(std::floor(sel.frac * static_cast<double>(base.size())));
             return randomly_remove(base, remove_count);
+        }
+        case SelectorOp::Rpkn: {
+            auto base = select_quad(adj, pos, *sel.a);
+            return randomly_take(base, sel.count);
+        }
+        case SelectorOp::Rpkp: {
+            auto base = select_quad(adj, pos, *sel.a);
+            int take_count = static_cast<int>(std::floor(sel.frac * static_cast<double>(base.size())));
+            return randomly_take(base, take_count);
         }
         case SelectorOp::Raw:
             return sel.raw_quads;

@@ -26,7 +26,7 @@ import {
 } from './types.js';
 import {
     PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns, product, applyModifiers,
-    make, nodeInducedSubgraph, edgeInducedSubgraph,
+    make, nodeInducedSubgraph, edgeInducedSubgraph, nodeEdgeInducedSubgraph,
 } from './boardConfig.js';
 import {
     randomlyRemove, randomlyTake, parseSelector, parseNodeSelector, parseEdgeSelector, parseTriangleSelector,
@@ -35,7 +35,7 @@ import {
 import { zeroAdj } from './topology.js';
 import {
     type ClegType, type ClegValue, SET_ELEM_KINDS, typeEquals, typeToString, clegValueType,
-    clegSetKey, makeClegSet, BINARY_OPERATOR_OVERLOADS, type MultiSelector,
+    clegSetKey, makeClegSet, BINARY_OPERATOR_OVERLOADS, type ProdSelector,
     type FunctionDecl, type Block, type Stmt, type Expr, type ClegProgram,
 } from './clegBase.js';
 import { parseCleg } from './clegParser.js';
@@ -472,7 +472,7 @@ BUILTIN_FUNCTIONS['prod'] = {
 // `mkSel(X)`: builds a selector from X - a `string` (parsed via selector.ts's own context-free
 // parseSelector, whichever kind it turns out to be bottom-up - see that file's own top comment) or a
 // `set` (of number/edge/simp/quad, wrapped into a `raw` Selector, its own kind read off the set's own
-// element type), resolved via resolveAnyKindSelectorArg below exactly like msBase's own selector
+// element type), resolved via resolveAnyKindSelectorArg below exactly like psBase's own selector
 // argument - there's no separate `kind` argument anymore, since a Selector already self-describes its
 // own kind, so reading it off X directly replaces the old design where mkSel had to be told which
 // kind to parse X as. For "every object of some kind K", pass the text "(all K)" directly rather than
@@ -952,9 +952,9 @@ BUILTIN_FUNCTIONS['modify'] = {
     },
 };
 
-// ── multiProd: N-ary Cartesian board product, restricted by a MultiSelector ────
+// ── multiProd: N-ary Cartesian board product, restricted by a ProdSelector ────
 
-const MSEL_TYPE: ClegType = { kind: 'msel' };
+const PSEL_TYPE: ClegType = { kind: 'psel' };
 
 // Inverse of selectorSetElemKind above, for the three ClegType kinds it CAN determine purely from
 // the type - used only by resolveAnyKindSelectorArg below, which (unlike resolveSelectorArg) has no
@@ -969,7 +969,7 @@ function selectorTypeBySetElem(elem: ClegType): SelectorType | null {
     return null;
 }
 
-// Resolves a selector argument whose own kind isn't fixed ahead of the call (mkSel/form/msBase) into
+// Resolves a selector argument whose own kind isn't fixed ahead of the call (mkSel/form/psBase) into
 // a real Selector - a `sel` value (used directly, whatever SelectorType it is), a `string` (parsed via
 // selector.ts's own context-free parseSelector, whichever kind the text itself turns out to be -
 // unlike resolveSelectorArg's own string case, which parses against one fixed wantKind), or a `set`
@@ -1007,69 +1007,99 @@ function resolveAnyKindSelectorArg(callee: string, arg: ClegValue): Selector {
     throw new Error(`cleg: '${callee}': expected sel, string, or set, got ${typeToString(clegValueType(arg))}`);
 }
 
-function msBaseCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+function psBaseCheckCall(callee: string, argTypes: ClegType[]): ClegType {
     if (argTypes.length !== 2)
         throw new Error(`cleg: '${callee}' expects 2 argument(s), got ${argTypes.length}`);
     if (argTypes[0].kind !== 'number')
         throw new Error(`cleg: '${callee}' argument 1: expected number, got ${typeToString(argTypes[0])}`);
     if (argTypes[1].kind !== 'sel' && argTypes[1].kind !== 'string' && argTypes[1].kind !== 'set')
         throw new Error(`cleg: '${callee}' argument 2: expected sel, string, or set, got ${typeToString(argTypes[1])}`);
-    return MSEL_TYPE;
+    return PSEL_TYPE;
 }
-// `msAll()`: every node of the full product, unrestricted - see MultiSelector's own 'all' doc
+// `psAll()`: every node of the full product, unrestricted - see ProdSelector's own 'all' doc
 // comment.
-BUILTIN_FUNCTIONS['msAll'] = {
-    checkCall: fixedSignature([], MSEL_TYPE),
-    call: () => ({ kind: 'msel', value: { op: 'all' } }),
+BUILTIN_FUNCTIONS['psAll'] = {
+    checkCall: fixedSignature([], PSEL_TYPE),
+    call: () => ({ kind: 'psel', value: { op: 'all' } }),
 };
 
-// `msBase(number, X)`: "every full-product node whose `number`-th coordinate is kept by X, every
-// other coordinate unrestricted" - see MultiSelector's own doc comment for what X may be. X is a
+// `psBase(number, X)`: "every full-product node whose `number`-th coordinate is kept by X, every
+// other coordinate unrestricted" - see ProdSelector's own doc comment for what X may be. X is a
 // `sel`, a bare `string` (parsed via resolveAnyKindSelectorArg below - kind inferred bottom-up from
 // the text itself, same as form/mkSel), or a `set`.
-BUILTIN_FUNCTIONS['msBase'] = {
-    checkCall: msBaseCheckCall,
+BUILTIN_FUNCTIONS['psBase'] = {
+    checkCall: psBaseCheckCall,
     call: ([numberVal, arg]) => {
         const number = (numberVal as { value: number }).value;
         if (!Number.isInteger(number) || number < 0)
-            throw new Error(`cleg: msBase: number must be a nonnegative integer, got ${number}`);
-        const sel = resolveAnyKindSelectorArg('msBase', arg);
-        return { kind: 'msel', value: { op: 'base', number, sel } };
+            throw new Error(`cleg: psBase: number must be a nonnegative integer, got ${number}`);
+        const sel = resolveAnyKindSelectorArg('psBase', arg);
+        return { kind: 'psel', value: { op: 'base', number, sel } };
     },
 };
 
-// `msUnion(items)`/`msInter(items)`: fixed-signature (msel[] -> msel) - a plain array, not a set,
+function psBaseNECheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length !== 3)
+        throw new Error(`cleg: '${callee}' expects 3 argument(s), got ${argTypes.length}`);
+    if (argTypes[0].kind !== 'number')
+        throw new Error(`cleg: '${callee}' argument 1: expected number, got ${typeToString(argTypes[0])}`);
+    if (argTypes[1].kind !== 'sel' && argTypes[1].kind !== 'string' && argTypes[1].kind !== 'set')
+        throw new Error(`cleg: '${callee}' argument 2: expected sel, string, or set, got ${typeToString(argTypes[1])}`);
+    if (argTypes[2].kind !== 'sel' && argTypes[2].kind !== 'string' && argTypes[2].kind !== 'set')
+        throw new Error(`cleg: '${callee}' argument 3: expected sel, string, or set, got ${typeToString(argTypes[2])}`);
+    return PSEL_TYPE;
+}
+// `psBaseNE(number, nodeX, edgeX)`: like `psBase` above, but takes two selectors instead of one -
+// `nodeX` (a node selector) and `edgeX` (an edge selector), each resolved against its own FIXED
+// wantKind (resolveSelectorArg, same as nis/eis - unlike `psBase`'s own single, any-kind argument)
+// rather than either accepting whatever kind the value turns out to be. The restricted board is
+// edgeX's own edge-induced subgraph, plus whichever extra nodes nodeX selects (see
+// restrictBoardByNodeAndEdgeSelector) - a node nodeX selects survives even with no kept incident
+// edge.
+BUILTIN_FUNCTIONS['psBaseNE'] = {
+    checkCall: psBaseNECheckCall,
+    call: ([numberVal, nodeArg, edgeArg]) => {
+        const number = (numberVal as { value: number }).value;
+        if (!Number.isInteger(number) || number < 0)
+            throw new Error(`cleg: psBaseNE: number must be a nonnegative integer, got ${number}`);
+        const nodeSel = resolveSelectorArg('psBaseNE', nodeArg, 'node', parseNodeSelector);
+        const edgeSel = resolveSelectorArg('psBaseNE', edgeArg, 'edge', parseEdgeSelector);
+        return { kind: 'psel', value: { op: 'baseNE', number, nodeSel, edgeSel } };
+    },
+};
+
+// `psUnion(items)`/`psInter(items)`: fixed-signature (psel[] -> psel) - a plain array, not a set,
 // mirroring modify's own mods array (see its own doc comment) and the underlying Selector grammar's
 // own (union SEL...)/(inter SEL...), which are similarly plain lists.
-BUILTIN_FUNCTIONS['msUnion'] = {
-    checkCall: fixedSignature([{ kind: 'array', elem: MSEL_TYPE }], MSEL_TYPE),
+BUILTIN_FUNCTIONS['psUnion'] = {
+    checkCall: fixedSignature([{ kind: 'array', elem: PSEL_TYPE }], PSEL_TYPE),
     call: ([itemsVal]) => ({
-        kind: 'msel',
+        kind: 'psel',
         value: {
             op: 'union',
-            items: (itemsVal as { value: ClegValue[] }).value.map(v => (v as { value: MultiSelector }).value),
+            items: (itemsVal as { value: ClegValue[] }).value.map(v => (v as { value: ProdSelector }).value),
         },
     }),
 };
-BUILTIN_FUNCTIONS['msInter'] = {
-    checkCall: fixedSignature([{ kind: 'array', elem: MSEL_TYPE }], MSEL_TYPE),
+BUILTIN_FUNCTIONS['psInter'] = {
+    checkCall: fixedSignature([{ kind: 'array', elem: PSEL_TYPE }], PSEL_TYPE),
     call: ([itemsVal]) => ({
-        kind: 'msel',
+        kind: 'psel',
         value: {
             op: 'inter',
-            items: (itemsVal as { value: ClegValue[] }).value.map(v => (v as { value: MultiSelector }).value),
+            items: (itemsVal as { value: ClegValue[] }).value.map(v => (v as { value: ProdSelector }).value),
         },
     }),
 };
-// `msDiff(a, b)`: fixed-signature (msel, msel -> msel).
-BUILTIN_FUNCTIONS['msDiff'] = {
-    checkCall: fixedSignature([MSEL_TYPE, MSEL_TYPE], MSEL_TYPE),
+// `psDiff(a, b)`: fixed-signature (psel, psel -> psel).
+BUILTIN_FUNCTIONS['psDiff'] = {
+    checkCall: fixedSignature([PSEL_TYPE, PSEL_TYPE], PSEL_TYPE),
     call: ([a, b]) => ({
-        kind: 'msel',
+        kind: 'psel',
         value: {
             op: 'diff',
-            a: (a as { value: MultiSelector }).value,
-            b: (b as { value: MultiSelector }).value,
+            a: (a as { value: ProdSelector }).value,
+            b: (b as { value: ProdSelector }).value,
         },
     }),
 };
@@ -1077,10 +1107,10 @@ BUILTIN_FUNCTIONS['msDiff'] = {
 // Fixed once per multiProd call, from `boards`' own ORIGINAL (unrestricted) sizes: `Ns[k]` is
 // boards[k]'s own node count, and `stride[k]` lets any tuple of per-board node indices flatten
 // to/from one "original" flat index into the full (never fully materialized)
-// Ns[0] x Ns[1] x ... x Ns[N-1] product space - the one shared universe every MultiSelector
-// combinator (msUnion/msInter/msDiff) has to combine its own operands against. This has to be fixed
-// UP FRONT, before any msBase/msUnion/msInter/msDiff runs: two differently-restricted intermediate
-// boards (e.g. one msBase restricting board 0, another restricting board 1) would otherwise have no
+// Ns[0] x Ns[1] x ... x Ns[N-1] product space - the one shared universe every ProdSelector
+// combinator (psUnion/psInter/psDiff) has to combine its own operands against. This has to be fixed
+// UP FRONT, before any psBase/psUnion/psInter/psDiff runs: two differently-restricted intermediate
+// boards (e.g. one psBase restricting board 0, another restricting board 1) would otherwise have no
 // common index space to combine against at all.
 interface FullProductIndex { Ns: number[]; stride: number[]; total: number; }
 
@@ -1101,15 +1131,15 @@ function tupleOfFullIndex(fpi: FullProductIndex, idx: number): number[] {
     return fpi.Ns.map((n, k) => Math.floor(idx / fpi.stride[k]) % n);
 }
 
-// Restricts `board` (always boards[msel.number], see evalMultiSelector's own 'base' case) to just
+// Restricts `board` (always boards[psel.number], see evalProdSelector's own 'base' case) to just
 // the nodes `sel` keeps - nodeInducedSubgraph directly for a node selector, or (mirroring
 // edgeInducedSubgraph's own "which nodes survive" rule) the nodes touched by at least one selected
 // edge for an edge selector. Returns the restricted board AND which of `board`'s own ORIGINAL node
 // indices survived, in the same ascending order nodeInducedSubgraph/edgeInducedSubgraph themselves
-// compact to - evalMultiSelector's own full-product index bookkeeping needs that mapping to place
+// compact to - evalProdSelector's own full-product index bookkeeping needs that mapping to place
 // the restricted board's own local nodes back into the fixed full index space (FullProductIndex).
-// Throws for any SelectorType other than node/edge - unlike msBase itself (which accepts any
-// SelectorType at the data-structure level - see MultiSelector's own doc comment), multiProd's own
+// Throws for any SelectorType other than node/edge - unlike psBase itself (which accepts any
+// SelectorType at the data-structure level - see ProdSelector's own doc comment), multiProd's own
 // evaluation requires node or edge specifically, since there's no other sensible way to turn a
 // tri/quad selection into "which nodes of this one factor board survive".
 function restrictBoardBySelector(board: BoardConfig, sel: Selector): { bc: BoardConfig; survivors: number[] } {
@@ -1123,135 +1153,221 @@ function restrictBoardBySelector(board: BoardConfig, sel: Selector): { bc: Board
         return { bc: edgeInducedSubgraph(board, edges), survivors: [...kept].sort((a, b) => a - b) };
     }
     throw new Error(
-        `cleg: multiProd: msBase's own selector must be a node or edge selector, got a '${sel.type}' selector`);
+        `cleg: multiProd: psBase's own selector must be a node or edge selector, got a '${sel.type}' selector`);
+}
+
+// psBaseNE's own restriction (evalProdSelector's own 'baseNE' case) - unlike restrictBoardBySelector
+// above (one selector, kind decides the whole strategy), `nodeSel`/`edgeSel` are already fixed to
+// node/edge respectively (checked by psBaseNE's own resolveSelectorArg calls, not here), so there's
+// no kind dispatch: the restricted board is always edgeSel's own edge-induced subgraph, plus
+// whichever extra nodes nodeSel selects (see nodeEdgeInducedSubgraph) - a node nodeSel selects
+// survives even with no kept incident edge, unlike a bare edge selector's own restriction.
+function restrictBoardByNodeAndEdgeSelector(
+    board: BoardConfig, nodeSel: Selector, edgeSel: Selector,
+): { bc: BoardConfig; survivors: number[] } {
+    const extraNodes = selectNode(board.adj, board.emb.pos, nodeSel);
+    const edges = selectEdge(board.adj, board.emb.pos, edgeSel);
+    const kept = new Set(extraNodes);
+    for (const e of edges) { kept.add(e.n1); kept.add(e.n2); }
+    return { bc: nodeEdgeInducedSubgraph(board, extraNodes, edges), survivors: [...kept].sort((a, b) => a - b) };
 }
 
 // Every original flat index, 0..fpi.total-1 - the universal set 'all' and 'inter' (with zero
-// operands) both denote (see MultiSelector's own doc comment on why those two coincide).
-function universalOriginalIndices(fpi: FullProductIndex): Set<number> {
-    const all = new Set<number>();
-    for (let i = 0; i < fpi.total; i++) all.add(i);
-    return all;
+// operands) both denote (see ProdSelector's own doc comment on why those two coincide).
+// Canonical (order-independent) string key for an edge between two ORIGINAL flat indices - the
+// representation every combinator below actually tracks edges in (a Set<string>, alongside each
+// node set's own Set<number>), so an edge a selector deliberately DROPS (psBaseNE's own `edgeSel`,
+// or an edge-typed psBase whose selector excludes an edge between two otherwise-surviving nodes)
+// stays dropped through psUnion/psInter/psDiff - unlike the old design (see this section's own git
+// history), which tracked only node survival and re-derived every edge from `boards[k]`'s own
+// ORIGINAL, unrestricted adjacency, silently reinstating any edge a selector had excluded the moment
+// it was combined with another selector.
+function edgeKey(a: number, b: number): string {
+    return a < b ? `${a},${b}` : `${b},${a}`;
 }
 
-// Builds a real BoardConfig for an arbitrary subset of the full product's node space, given only the
-// kept ORIGINAL flat indices (`keptOriginal`) - decomposes each back into its own per-board tuple
-// (via `fpi`) to compute adjacency (Cartesian product rule: two kept nodes are adjacent iff they
-// differ in EXACTLY one coordinate k, adjacent there in boards[k]) and embedding (per-board
-// positions concatenated) directly, never materializing the full product's own (possibly enormous)
-// N x N adjacency matrix. Compacts to a fresh 0..K-1 range in ascending original-index order (same
-// convention as nodeInducedSubgraph/edgeInducedSubgraph) - returns both the new BoardConfig and
-// origIndex (new local index -> kept original flat index), so a further msUnion/msInter/msDiff can
-// keep combining against the very same fixed full-product index space. Used by every
-// evalMultiSelector case except 'base' (which instead reuses the real product() function directly -
-// see its own comment on why that still ends up with the exact same adjacency/embedding).
-function buildFromOriginalIndices(
-    boards: BoardConfig[], fpi: FullProductIndex, keptOriginal: Set<number>,
+// The exact edge set a `{ bc, origIndex }` result denotes, in ORIGINAL-flat-index terms (`bc`'s own
+// local adjacency, translated back via `origIndex` the same way its own node set already is) -
+// how every combinator below reads an operand's own edges, instead of re-deriving them from
+// `boards[k]`'s own unrestricted adjacency.
+function originalEdgeKeysOf(bc: BoardConfig, origIndex: number[]): Set<string> {
+    const keys = new Set<string>();
+    for (let i = 0; i < bc.N; i++)
+        for (let j = i + 1; j < bc.N; j++)
+            if (bc.adj[i][j]) keys.add(edgeKey(origIndex[i], origIndex[j]));
+    return keys;
+}
+
+// The full, entirely unrestricted N-ary product - 'all', and 'inter' with zero operands (the usual
+// absorbing-element identity for an empty intersection fold, matching Selector's own `(inter)`),
+// both denote this. Folding product() across every factor UNCHANGED already produces local indices
+// identical to the full flat index space (see combineRestrictedFactor's own doc comment on why an
+// unrestricted factor's own "survivors" is the identity map), so origIndex here is simply
+// `[0, 1, ..., fpi.total - 1]` - no remapping needed at all.
+function fullProductResult(boards: BoardConfig[], fpi: FullProductIndex): { bc: BoardConfig; origIndex: number[] } {
+    const bc = boards.reduce((acc, b) => product(acc, b));
+    const origIndex = Array.from({ length: fpi.total }, (_, i) => i);
+    return { bc, origIndex };
+}
+
+// Builds a real BoardConfig directly from an explicit node set AND edge set (both in ORIGINAL
+// flat-index terms) - unlike the old buildFromOriginalIndices (see this section's own git history),
+// this never re-derives adjacency from `boards[k]`'s own unrestricted adjacency; `edgeKeys` is
+// already the complete, authoritative edge list, computed by whichever combinator called this from
+// its own operands' own `originalEdgeKeysOf`. Every edge's own two endpoints are guaranteed to
+// already be in `keptOriginal` (each combinator below only ever adds an edge alongside both its
+// endpoints - see 'union'/'inter'/'diff' below), so no defensive lookup-miss handling is needed here.
+// Embedding positions are unaffected by any of this - always the per-board position at the surviving
+// tuple's own per-board node index, same as ever.
+function buildFromNodesAndEdges(
+    boards: BoardConfig[], fpi: FullProductIndex, keptOriginal: Set<number>, edgeKeys: Set<string>,
 ): { bc: BoardConfig; origIndex: number[] } {
     const origIndex = [...keptOriginal].sort((a, b) => a - b);
     const tuples = origIndex.map(idx => tupleOfFullIndex(fpi, idx));
     const embDim = boards.reduce((s, b) => s + b.emb.embDim, 0);
     const pos = tuples.map(tuple => tuple.flatMap((n, k) => boards[k].emb.pos[n]));
     const K = origIndex.length;
+    const localIndexOfOriginal = new Map<number, number>(origIndex.map((orig, i) => [orig, i]));
     const adj = zeroAdj(K);
-    for (let a = 0; a < K; a++) {
-        for (let b = a + 1; b < K; b++) {
-            let diffCoord = -1;
-            let tooManyDiffs = false;
-            for (let k = 0; k < boards.length; k++) {
-                if (tuples[a][k] !== tuples[b][k]) {
-                    if (diffCoord !== -1) { tooManyDiffs = true; break; }
-                    diffCoord = k;
-                }
-            }
-            if (!tooManyDiffs && diffCoord >= 0 && boards[diffCoord].adj[tuples[a][diffCoord]][tuples[b][diffCoord]]) {
-                adj[a][b] = 1;
-                adj[b][a] = 1;
-            }
-        }
+    for (const key of edgeKeys) {
+        const [aStr, bStr] = key.split(',');
+        const a = localIndexOfOriginal.get(Number(aStr))!;
+        const b = localIndexOfOriginal.get(Number(bStr))!;
+        adj[a][b] = 1;
+        adj[b][a] = 1;
     }
     return { bc: make(new Embedding(embDim, pos), adj), origIndex };
 }
 
 /**
- * Evaluates a MultiSelector against `boards`/`fpi` into a real BoardConfig plus origIndex (see
- * buildFromOriginalIndices) - every combinator ultimately reduces to a set operation over
- * origIndex's own shared "which of the full product's original flat indices survive" universe (see
- * FullProductIndex's own doc comment on why that has to be fixed up front, from `boards`' own
- * unrestricted sizes, rather than derived along the way).
+ * Evaluates a ProdSelector against `boards`/`fpi` into a real BoardConfig plus origIndex - every
+ * combinator ultimately reduces to a pair of set operations, one over NODES (origIndex, "which of
+ * the full product's original flat indices survive" - see FullProductIndex's own doc comment on why
+ * that has to be fixed up front, from `boards`' own unrestricted sizes, rather than derived along
+ * the way) and one over EDGES (edgeKey pairs, kept ENTIRELY separate from node survival - this is
+ * what lets a selector that deliberately excludes an edge between two otherwise-surviving nodes
+ * (psBaseNE's own `edgeSel`, or an edge-typed psBase) stay excluded once combined with another
+ * selector, rather than being silently reinstated from `boards[k]`'s own unrestricted adjacency).
  *
- * 'base' restricts boards[number] (see restrictBoardBySelector) and folds the real product()
- * pairwise, left to right, across every factor (boards[number] replaced by its restriction) -
- * mathematically identical adjacency/embedding to a direct N-ary construction, since product()'s own
- * row-major node indexing composes correctly under folding (`product(product(A,B),C)`'s own index
- * `(a*NB+b)*NC+c` already equals the direct 3-ary flattening `a*NB*NC+b*NC+c`). The resulting local
- * node indices are then translated back into the fixed full-product index space one at a time
- * (decompose via the RESTRICTED factors' own sizes, substitute the restricted coordinate's own local
- * index for its ORIGINAL boards[number] index via `survivors`, then flatten via `fpi`).
+ * 'all' is the full, unrestricted product (fullProductResult) - trivially both node- and
+ * edge-complete, no restriction to speak of.
  *
- * 'union'/'inter'/'diff' recursively evaluate their own operands first (discarding each one's own
- * `bc`, since only its origIndex set matters for combining), combine via ordinary Set operations,
- * then materialize a fresh BoardConfig for exactly the combined set via buildFromOriginalIndices.
- * 'inter' with zero operands is the universal set (every original index) - the usual absorbing-
- * element identity for an empty intersection fold, matching Selector's own `(inter)`.
+ * 'base'/'baseNE' both restrict boards[number] (see restrictBoardBySelector/
+ * restrictBoardByNodeAndEdgeSelector - the only difference between the two cases) and then, via the
+ * shared combineRestrictedFactor, fold the real product() pairwise, left to right, across every
+ * factor (boards[number] replaced by its restriction) - mathematically identical adjacency/embedding
+ * to a direct N-ary construction, since product()'s own row-major node indexing composes correctly
+ * under folding (`product(product(A,B),C)`'s own index `(a*NB+b)*NC+c` already equals the direct
+ * 3-ary flattening `a*NB*NC+b*NC+c`). The resulting local node indices (and, since this is a real
+ * product() fold rather than a re-derivation, the resulting EDGES too, already correctly reflecting
+ * whichever edges the restriction dropped) are then translated back into the fixed full-product
+ * index space one at a time (decompose via the RESTRICTED factors' own sizes, substitute the
+ * restricted coordinate's own local index for its ORIGINAL boards[number] index via `survivors`,
+ * then flatten via `fpi`).
+ *
+ * 'union'/'inter'/'diff' recursively evaluate their own operands first, read each operand's own
+ * node AND edge sets (origIndex, originalEdgeKeysOf(bc, origIndex)) - NOT `boards[k]`'s own
+ * unrestricted adjacency - and combine both via the SAME ordinary Set operation the combinator's own
+ * name implies: 'union' unions both; 'inter' intersects both (an edge survives only if literally
+ * every operand's own edge set contains it, which - since an edge's presence in an operand already
+ * implies both its endpoints are in that SAME operand's own node set - automatically guarantees both
+ * endpoints survive the node intersection too, no extra filtering needed); 'diff' subtracts `b`'s
+ * own NODES from `a`'s (exactly as before - `b` only ever determines node removal, never touches
+ * `a`'s own edge exclusions directly), then keeps exactly `a`'s own edges whose both endpoints
+ * survived that node removal. Every combined result is finally materialized via
+ * buildFromNodesAndEdges - a fresh BoardConfig for exactly the combined node AND edge sets, no
+ * re-derivation from the original per-factor boards anywhere in this path.
  */
-function evalMultiSelector(
-    boards: BoardConfig[], fpi: FullProductIndex, msel: MultiSelector,
+// Shared by evalProdSelector's own 'base'/'baseNE' cases - see evalProdSelector's own doc comment
+// for the full algorithm this implements (folding product() across every factor, `number`'s own
+// replaced by `restricted`, then translating the fold's local node indices back into the fixed
+// full-product index space via `survivors`/`fpi`). The two cases differ only in how `restricted`/
+// `survivors` themselves get computed (restrictBoardBySelector vs.
+// restrictBoardByNodeAndEdgeSelector) - everything downstream of that is identical, hence this one
+// shared helper rather than two near-duplicate case bodies.
+function combineRestrictedFactor(
+    boards: BoardConfig[], fpi: FullProductIndex, number: number, restricted: BoardConfig, survivors: number[],
 ): { bc: BoardConfig; origIndex: number[] } {
-    switch (msel.op) {
+    const factorBoards = boards.map((b, i) => i === number ? restricted : b);
+    const bc = factorBoards.reduce((acc, b) => product(acc, b));
+    const localNs = factorBoards.map(b => b.N);
+    const localStride = new Array<number>(localNs.length);
+    localStride[localNs.length - 1] = 1;
+    for (let k = localNs.length - 2; k >= 0; k--) localStride[k] = localStride[k + 1] * localNs[k + 1];
+    const origIndex = new Array<number>(bc.N);
+    for (let local = 0; local < bc.N; local++) {
+        const tuple = localNs.map((n, k) => Math.floor(local / localStride[k]) % n);
+        tuple[number] = survivors[tuple[number]];
+        origIndex[local] = fullIndexOf(fpi, tuple);
+    }
+    return { bc, origIndex };
+}
+
+function evalProdSelector(
+    boards: BoardConfig[], fpi: FullProductIndex, psel: ProdSelector,
+): { bc: BoardConfig; origIndex: number[] } {
+    switch (psel.op) {
         case 'all':
-            return buildFromOriginalIndices(boards, fpi, universalOriginalIndices(fpi));
+            return fullProductResult(boards, fpi);
         case 'base': {
-            const { bc: restricted, survivors } = restrictBoardBySelector(boards[msel.number], msel.sel);
-            const factorBoards = boards.map((b, i) => i === msel.number ? restricted : b);
-            const bc = factorBoards.reduce((acc, b) => product(acc, b));
-            const localNs = factorBoards.map(b => b.N);
-            const localStride = new Array<number>(localNs.length);
-            localStride[localNs.length - 1] = 1;
-            for (let k = localNs.length - 2; k >= 0; k--) localStride[k] = localStride[k + 1] * localNs[k + 1];
-            const origIndex = new Array<number>(bc.N);
-            for (let local = 0; local < bc.N; local++) {
-                const tuple = localNs.map((n, k) => Math.floor(local / localStride[k]) % n);
-                tuple[msel.number] = survivors[tuple[msel.number]];
-                origIndex[local] = fullIndexOf(fpi, tuple);
-            }
-            return { bc, origIndex };
+            const { bc: restricted, survivors } = restrictBoardBySelector(boards[psel.number], psel.sel);
+            return combineRestrictedFactor(boards, fpi, psel.number, restricted, survivors);
+        }
+        case 'baseNE': {
+            const { bc: restricted, survivors } =
+                restrictBoardByNodeAndEdgeSelector(boards[psel.number], psel.nodeSel, psel.edgeSel);
+            return combineRestrictedFactor(boards, fpi, psel.number, restricted, survivors);
         }
         case 'union': {
-            const kept = new Set<number>();
-            for (const item of msel.items)
-                for (const idx of evalMultiSelector(boards, fpi, item).origIndex) kept.add(idx);
-            return buildFromOriginalIndices(boards, fpi, kept);
+            const nodes = new Set<number>();
+            const edges = new Set<string>();
+            for (const item of psel.items) {
+                const r = evalProdSelector(boards, fpi, item);
+                for (const idx of r.origIndex) nodes.add(idx);
+                for (const key of originalEdgeKeysOf(r.bc, r.origIndex)) edges.add(key);
+            }
+            return buildFromNodesAndEdges(boards, fpi, nodes, edges);
         }
         case 'inter': {
-            if (msel.items.length === 0) return buildFromOriginalIndices(boards, fpi, universalOriginalIndices(fpi));
-            let kept = new Set(evalMultiSelector(boards, fpi, msel.items[0]).origIndex);
-            for (let i = 1; i < msel.items.length; i++) {
-                const next = new Set(evalMultiSelector(boards, fpi, msel.items[i]).origIndex);
-                kept = new Set([...kept].filter(idx => next.has(idx)));
+            if (psel.items.length === 0) return fullProductResult(boards, fpi);
+            const results = psel.items.map(item => evalProdSelector(boards, fpi, item));
+            let nodes = new Set(results[0].origIndex);
+            let edges = originalEdgeKeysOf(results[0].bc, results[0].origIndex);
+            for (let i = 1; i < results.length; i++) {
+                const nextNodes = new Set(results[i].origIndex);
+                nodes = new Set([...nodes].filter(idx => nextNodes.has(idx)));
+                const nextEdges = originalEdgeKeysOf(results[i].bc, results[i].origIndex);
+                edges = new Set([...edges].filter(key => nextEdges.has(key)));
             }
-            return buildFromOriginalIndices(boards, fpi, kept);
+            return buildFromNodesAndEdges(boards, fpi, nodes, edges);
         }
         case 'diff': {
-            const a = new Set(evalMultiSelector(boards, fpi, msel.a).origIndex);
-            const b = new Set(evalMultiSelector(boards, fpi, msel.b).origIndex);
-            return buildFromOriginalIndices(boards, fpi, new Set([...a].filter(idx => !b.has(idx))));
+            const ra = evalProdSelector(boards, fpi, psel.a);
+            const rb = evalProdSelector(boards, fpi, psel.b);
+            const bNodes = new Set(rb.origIndex);
+            const nodes = new Set([...ra.origIndex].filter(idx => !bNodes.has(idx)));
+            const aEdges = originalEdgeKeysOf(ra.bc, ra.origIndex);
+            const edges = new Set([...aEdges].filter(key => {
+                const [aStr, bStr] = key.split(',');
+                return nodes.has(Number(aStr)) && nodes.has(Number(bStr));
+            }));
+            return buildFromNodesAndEdges(boards, fpi, nodes, edges);
         }
     }
 }
 
-// `multiProd(boards, msel)`: the N-ary Cartesian product of `boards` (an egr[]), restricted to
-// exactly the subgraph `msel` denotes - see evalMultiSelector's own doc comment for the full
+// `multiProd(boards, psel)`: the N-ary Cartesian product of `boards` (an egr[]), restricted to
+// exactly the subgraph `psel` denotes - see evalProdSelector's own doc comment for the full
 // algorithm. `boards` must be non-empty - an N-ary product of zero factors has no principled
 // definition here.
 BUILTIN_FUNCTIONS['multiProd'] = {
-    checkCall: fixedSignature([{ kind: 'array', elem: EGR_TYPE }, MSEL_TYPE], EGR_TYPE),
-    call: ([boardsVal, mselVal]) => {
+    checkCall: fixedSignature([{ kind: 'array', elem: EGR_TYPE }, PSEL_TYPE], EGR_TYPE),
+    call: ([boardsVal, pselVal]) => {
         const boards = (boardsVal as { value: ClegValue[] }).value.map(v => (v as { value: BoardConfig }).value);
         if (boards.length === 0) throw new Error(`cleg: multiProd: boards must be non-empty`);
         const fpi = makeFullProductIndex(boards);
-        const msel = (mselVal as { value: MultiSelector }).value;
-        return { kind: 'egr', value: evalMultiSelector(boards, fpi, msel).bc };
+        const psel = (pselVal as { value: ProdSelector }).value;
+        return { kind: 'egr', value: evalProdSelector(boards, fpi, psel).bc };
     },
 };
 

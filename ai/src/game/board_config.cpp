@@ -650,6 +650,30 @@ BoardConfig edge_induced_subgraph(const BoardConfig& bc, const std::vector<Board
     return make_bc(std::move(adj), bc.emb_dim, std::move(embed));
 }
 
+BoardConfig node_edge_induced_subgraph(
+    const BoardConfig& bc, const std::set<int>& nodes, const std::vector<BoardEdge>& edges)
+{
+    std::set<int> touched = nodes;
+    for (auto& e : edges) { touched.insert(e.n1); touched.insert(e.n2); }
+    std::vector<int> kept;
+    for (int i = 0; i < bc.N; i++) if (touched.count(i)) kept.push_back(i);
+    std::vector<int> new_idx(bc.N, -1);
+    for (size_t i = 0; i < kept.size(); i++) new_idx[kept[i]] = static_cast<int>(i);
+
+    std::vector<std::vector<unsigned>> embed;
+    embed.reserve(kept.size());
+    for (int i : kept) embed.push_back(bc.embed[i]);
+
+    auto adj = zero_adj(static_cast<int>(kept.size()));
+    for (auto& e : edges) {
+        int a = new_idx[e.n1], b = new_idx[e.n2];
+        adj[a][b] = 1;
+        adj[b][a] = 1;
+    }
+
+    return make_bc(std::move(adj), bc.emb_dim, std::move(embed));
+}
+
 BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier) {
     switch (modifier.kind) {
         case ModifierKind::Rectify:    return rectify(bc);

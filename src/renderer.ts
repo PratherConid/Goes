@@ -76,6 +76,7 @@ const _boardConfigNames = [
     'snubsqtri_4_4_4', 'trunc_trunc_cublat_3_3_3', 'truncated_24_cell',
     'truncated_centralized_rect_6_6', 'tetrahedron_centering_9', 'diamondCubic_10', 'decorated_rect_13_13_0.3',
     'spiked_rect_13_13_0.3', 'randConnBi_rect_13_13_0.1', 'randConnBishopOrtho_rect_13_13_0.1',
+    'spiked_tri_15_0.2', 'cross_rect_13_13_13_2_2_2',
     'rect_7_7_diag_ortho_3_0.5', 'rect_7_7_bishop_ortho_3_0.5', 'rect_6_6_knight_ortho_4_0.5', 'cuboid_5_5_5_diag_ortho_3_0.5', 'soccer_ball', 'heart_9.5', 'teardrop_24.5', 'racket_24.5_10_1.5',
 ];
 
@@ -1912,7 +1913,7 @@ export class Renderer {
                 + 'not be zero')}
             ${row('nil(TYPE)', 'An empty array of the given element type - e.g. nil(number) is an '
                 + 'empty number[] - needed anywhere an empty [...]/{...} literal can\'t infer its own '
-                + 'element type on its own, such as msUnion([]) or msInter([])')}
+                + 'element type on its own, such as psUnion([]) or psInter([])')}
             ${row('len(arr|set)', 'Number of elements in an array or set')}
             ${row('has(arr|set, e)',
                 'Whether an array or set contains e - only defined for number/string/bool/edge/simp/'
@@ -1966,22 +1967,27 @@ export class Renderer {
                 + 'text/value decides which; returns a simp{} either way, since (unlike '
                 + 'selectTriangle) the arity was never fixed at the type level to begin with')}
             ${row('selectQuad(X, egr)', 'Same as selectNode, but for a quad selector, returning a quad{}')}
-            ${row('multiProd([egr...], msel)',
+            ${row('multiProd([egr...], psel)',
                 'The N-ary Cartesian product of the given boards, restricted to the subgraph the '
-                + 'multiselector msel denotes - a fixed indexing over the full (unrestricted) product '
-                + 'space is used throughout, so msUnion/msInter/msDiff operands - built against '
-                + 'independently-restricted boards - combine meaningfully, and unused nodes are '
-                + 'dropped from the final result')}
-            ${row('msAll()', 'Multiselector: every node of the full product, unrestricted')}
-            ${row('msBase(num, X)',
-                'Multiselector: every full-product node whose num-th coordinate is kept by X - a node '
-                + 'or edge selector (sel or set; a node selector keeps the node-induced subgraph of '
-                + 'board num, an edge selector its edge-induced subgraph) - every other coordinate '
+                + 'product selector psel denotes - a fixed indexing over the full (unrestricted) '
+                + 'product space is used throughout, so psUnion/psInter/psDiff operands - built '
+                + 'against independently-restricted boards - combine meaningfully, and unused nodes '
+                + 'are dropped from the final result')}
+            ${row('psAll()', 'Product selector: every node of the full product, unrestricted')}
+            ${row('psBase(num, X)',
+                'Product selector: every full-product node whose num-th coordinate is kept by X - a '
+                + 'node or edge selector (sel or set; a node selector keeps the node-induced subgraph '
+                + 'of board num, an edge selector its edge-induced subgraph) - every other coordinate '
                 + 'left unrestricted')}
-            ${row('msUnion([msel...])', 'Multiselector union of zero or more operands (zero is the empty set)')}
-            ${row('msInter([msel...])',
-                'Multiselector intersection of zero or more operands (zero is the universal set - same as msAll())')}
-            ${row('msDiff(msel, msel)', 'Multiselector difference (left minus right)')}
+            ${row('psBaseNE(num, nodeX, edgeX)',
+                'Product selector: like psBase, but takes a node selector and an edge selector '
+                + 'instead of one selector of either kind - board num\'s own restriction is edgeX\'s '
+                + 'own edge-induced subgraph, plus whichever extra nodes nodeX selects (surviving '
+                + 'even with no kept incident edge) - every other coordinate left unrestricted')}
+            ${row('psUnion([psel...])', 'Product selector union of zero or more operands (zero is the empty set)')}
+            ${row('psInter([psel...])',
+                'Product selector intersection of zero or more operands (zero is the universal set - same as psAll())')}
+            ${row('psDiff(psel, psel)', 'Product selector difference (left minus right)')}
         `);
     }
 

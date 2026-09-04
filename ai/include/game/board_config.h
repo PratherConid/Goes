@@ -280,6 +280,15 @@ BoardConfig node_induced_subgraph(const BoardConfig& bc, const std::set<int>& no
 // edgeInducedSubgraph().
 BoardConfig edge_induced_subgraph(const BoardConfig& bc, const std::vector<BoardEdge>& edges);
 
+// Same as edge_induced_subgraph, but `nodes` also survives - unioned into the kept-node set before
+// compacting, same ascending-original-index order. Only `edges` ever contributes adjacency (exactly
+// like edge_induced_subgraph's own rule) - a node in `nodes` but not touched by any kept edge
+// survives as an isolated node. Used by game/cleg_eval.cpp's own `psBaseNE` (a ProdSelector variant,
+// not a BoardModifier - unlike node_induced_subgraph/edge_induced_subgraph, this has no separate
+// apply_modifier case of its own). Mirrors shared/boardConfig.ts's nodeEdgeInducedSubgraph().
+BoardConfig node_edge_induced_subgraph(
+    const BoardConfig& bc, const std::set<int>& nodes, const std::vector<BoardEdge>& edges);
+
 // One positional board-construction arg, tagged with its own kind - mirrors shared/boardConfig.ts's
 // BoardArgType/BoardArgEntry (see that TS type's own doc comment for the full rationale: exactly
 // one BoardArgEntry per positional arg, never a flattened/anonymous number list, since a variable-

@@ -45,19 +45,25 @@ import { findSimplices, findQuads } from './topology.js';
 //                               own result, uniformly at random
 //   (rrmp <num> SEL)        -- randomly removes a fixed portion of SEL's own result: num (a
 //                               nonnegative float) times SEL's own result size, rounded down
+//   (rpkn <num> SEL)        -- the pick-instead-of-remove counterpart of rrmn: randomly keeps
+//                               exactly num (a nonnegative integer) items from SEL's own result,
+//                               uniformly at random, dropping the rest
+//   (rpkp <num> SEL)        -- the pick-instead-of-remove counterpart of rrmp: randomly keeps a
+//                               fixed portion of SEL's own result: num (a nonnegative float) times
+//                               SEL's own result size, rounded down
 //
-// `union`/`inter`/`diff`/`compl`/`all`/`none`/`rrmn`/`rrmp` are polymorphic across every kind;
-// `more` is polymorphic across node/edge only (no adjacency notion is defined here for simplices/
-// quads); `conva`/`conve` convert between any two kinds, naming the RESULT (the "to") kind via
-// their own leading node/edge/simp-N/tri/quad token (the "from" kind is instead read off of SEL
-// itself, once SEL has been parsed - see below) - except simp <-> quad, which is rejected, and a
-// kind converted to itself, which is a no-op (SEL passes through unchanged, not wrapped in a
+// `union`/`inter`/`diff`/`compl`/`all`/`none`/`rrmn`/`rrmp`/`rpkn`/`rpkp` are polymorphic across
+// every kind; `more` is polymorphic across node/edge only (no adjacency notion is defined here for
+// simplices/quads); `conva`/`conve` convert between any two kinds, naming the RESULT (the "to")
+// kind via their own leading node/edge/simp-N/tri/quad token (the "from" kind is instead read off
+// of SEL itself, once SEL has been parsed - see below) - except simp <-> quad, which is rejected,
+// and a kind converted to itself, which is a no-op (SEL passes through unchanged, not wrapped in a
 // conva/conve node at all).
 //
 // Every Selector node (one monolithic type, below) carries its own `type` (which kind of set it
 // denotes). Type inference is bottom-up: parseSelExpr(c) takes no expected-kind parameter at all -
 // each case determines its own `type` from what it just parsed (an operand's own already-parsed
-// `type`, propagated up unchanged for union/inter/diff/compl/more/rrmn/rrmp; the explicit leading
+// `type`, propagated up unchanged for union/inter/diff/compl/more/rrmn/rrmp/rpkn/rpkp; the explicit leading
 // token for conva/conve's "to" kind; hardcoded 'node' for deg, since that's the only kind it's ever
 // valid for) rather than being told what `type` to parse as by its caller. Two consequences of this
 // follow directly from there being no operand (and therefore nothing to infer from) to fall back on:
@@ -189,7 +195,7 @@ function parseConversion(c: ParseCursor, op: 'conva' | 'conve'): Selector {
 // Parses one SEL, inferring its own `type` bottom-up rather than being told what to expect (see this
 // file's own top comment) - context-free, unlike the old parseSelExpr(c, type). Every case below
 // either propagates an operand's own already-parsed `type` unchanged (union/inter/diff/compl/rrmn/
-// rrmp - diff/union/inter also check their operands agree with each other), reads an explicit
+// rrmp/rpkn/rpkp - diff/union/inter also check their operands agree with each other), reads an explicit
 // leading token because nothing else could supply the kind (all/none's own kind; conva/conve's own
 // "to" kind, via parseConversion above), or is hardcoded to a single always-valid kind (deg: always
 // 'node'). `deg`/`more` reject a mismatched kind (deg implicitly, by always being 'node' regardless
@@ -265,6 +271,18 @@ function parseSelExpr(c: ParseCursor): Selector {
             const a = parseSelExpr(c);
             c.expect(')');
             return { op: 'rrmp', type: a.type, frac, a };
+        }
+        case 'rpkn': {
+            const count = nextNonnegInt(c, '(rpkn ...) count');
+            const a = parseSelExpr(c);
+            c.expect(')');
+            return { op: 'rpkn', type: a.type, count, a };
+        }
+        case 'rpkp': {
+            const frac = nextNonnegNumber(c, '(rpkp ...) portion');
+            const a = parseSelExpr(c);
+            c.expect(')');
+            return { op: 'rpkp', type: a.type, frac, a };
         }
         default:
             throw new Error(`selector: unknown selector operator '${op}'`);
@@ -366,6 +384,10 @@ export function formatSelector(sel: Selector): string {
             return `(rrmn ${sel.count} ${formatSelector(sel.a)})`;
         case 'rrmp':
             return `(rrmp ${sel.frac} ${formatSelector(sel.a)})`;
+        case 'rpkn':
+            return `(rpkn ${sel.count} ${formatSelector(sel.a)})`;
+        case 'rpkp':
+            return `(rpkp ${sel.frac} ${formatSelector(sel.a)})`;
         case 'raw':
             // No grammar production exists for embedding an already-materialized SelectedVals as
             // text (unlike every other op, which is built from other Selectors/literals this
@@ -412,9 +434,10 @@ function quadKey(s: BoardQuad): string {
 // than exist isn't meaningful) uniformly-randomly-chosen elements dropped, via a partial
 // Fisher-Yates shuffle (only the first `removeCount` positions need to be randomized to pick which
 // elements to drop). The rest of this file's set operations are pure and order-preserving; rrmn/rrmp
-// (the only Selector ops that use this) are neither - two evaluations of the same selector can
-// return different results, and the kept elements' relative order isn't preserved either. Exported
-// for shared/clegEval.ts's own `randRmN` builtin, which performs this exact operation on a cleg set.
+// (the only Selector ops that use this) and rpkn/rpkp (which use randomlyTake just below instead)
+// are neither - two evaluations of the same selector can return different results, and the kept
+// elements' relative order isn't preserved either. Exported for shared/clegEval.ts's own `randRmN`
+// builtin, which performs this exact operation on a cleg set.
 export function randomlyRemove<T>(items: T[], removeCount: number): T[] {
     const n = items.length;
     const toRemove = Math.min(Math.max(removeCount, 0), n);
@@ -569,6 +592,14 @@ export function selectNode(adj: number[][], pos: number[][], sel: Selector): Set
             const base = [...selectNode(adj, pos, sel.a)];
             return new Set(randomlyRemove(base, Math.floor(sel.frac * base.length)));
         }
+        case 'rpkn': {
+            const base = [...selectNode(adj, pos, sel.a)];
+            return new Set(randomlyTake(base, sel.count));
+        }
+        case 'rpkp': {
+            const base = [...selectNode(adj, pos, sel.a)];
+            return new Set(randomlyTake(base, Math.floor(sel.frac * base.length)));
+        }
         case 'raw':
             // sel.type !== 'node' was already rejected above, but that doesn't by itself guarantee
             // sel.items (a separately-tagged SelectedVals) agrees - a hand-built Selector could still
@@ -676,6 +707,14 @@ export function selectEdge(adj: number[][], pos: number[][], sel: Selector): Boa
             const base = selectEdge(adj, pos, sel.a);
             return randomlyRemove(base, Math.floor(sel.frac * base.length));
         }
+        case 'rpkn': {
+            const base = selectEdge(adj, pos, sel.a);
+            return randomlyTake(base, sel.count);
+        }
+        case 'rpkp': {
+            const base = selectEdge(adj, pos, sel.a);
+            return randomlyTake(base, Math.floor(sel.frac * base.length));
+        }
         case 'raw':
             if (sel.items.kind !== 'edge')
                 throw new Error(`selectEdge: 'raw' selector's own items must be edge-kind, got '${sel.items.kind}'`);
@@ -752,6 +791,14 @@ export function selectSimp(adj: number[][], pos: number[][], sel: Selector): Boa
             const base = selectSimp(adj, pos, sel.a);
             return randomlyRemove(base, Math.floor(sel.frac * base.length));
         }
+        case 'rpkn': {
+            const base = selectSimp(adj, pos, sel.a);
+            return randomlyTake(base, sel.count);
+        }
+        case 'rpkp': {
+            const base = selectSimp(adj, pos, sel.a);
+            return randomlyTake(base, Math.floor(sel.frac * base.length));
+        }
         case 'raw':
             if (sel.items.kind !== 'simp')
                 throw new Error(`selectSimp: 'raw' selector's own items must be simp-kind, got '${sel.items.kind}'`);
@@ -827,6 +874,14 @@ export function selectQuad(adj: number[][], pos: number[][], sel: Selector): Boa
         case 'rrmp': {
             const base = selectQuad(adj, pos, sel.a);
             return randomlyRemove(base, Math.floor(sel.frac * base.length));
+        }
+        case 'rpkn': {
+            const base = selectQuad(adj, pos, sel.a);
+            return randomlyTake(base, sel.count);
+        }
+        case 'rpkp': {
+            const base = selectQuad(adj, pos, sel.a);
+            return randomlyTake(base, Math.floor(sel.frac * base.length));
         }
         case 'raw':
             if (sel.items.kind !== 'quad')

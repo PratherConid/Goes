@@ -461,7 +461,8 @@ export type SelectedVals =
  * `(more [<num>] SEL)` /
  * `(all <node|edge|simp N|quad>)` / `(none <node|edge|simp N|quad>)` / `(deg <eq|gt|lt> <num>)` /
  * `(conva <node|edge|simp N|quad> SEL)` / `(conve <node|edge|simp N|quad> SEL)` /
- * `(rrmn <num> SEL)` / `(rrmp <num> SEL)`) and its own parsing (parseNodeSelector/
+ * `(rrmn <num> SEL)` / `(rrmp <num> SEL)` / `(rpkn <num> SEL)` / `(rpkp <num> SEL)`) and its own
+ * parsing (parseNodeSelector/
  * parseEdgeSelector/parseTriangleSelector/parseQuadSelector) and evaluation (selectNode/
  * selectEdge/selectSimp/selectQuad) functions. Every Selector carries its own `type` (which kind
  * it denotes) - inferred bottom-up by the one context-free parser (see shared/selector.ts's own
@@ -485,6 +486,10 @@ export type Selector =
     | { op: 'conva' | 'conve'; type: SelectorType; from: SelectorType; a: Selector }
     | { op: 'rrmn'; type: SelectorType; count: number; a: Selector }
     | { op: 'rrmp'; type: SelectorType; frac: number; a: Selector }
+    // The pick-instead-of-remove counterparts of rrmn/rrmp just above - same shape, but keeps
+    // exactly `count`/(portion of the size) elements instead of dropping them.
+    | { op: 'rpkn'; type: SelectorType; count: number; a: Selector }
+    | { op: 'rpkp'; type: SelectorType; frac: number; a: Selector }
     // Wraps an already-materialized SelectedVals directly, rather than computing a selection from
     // scratch - `type` must agree with `items.kind` (both name the same SelectorType; kept as two
     // fields rather than one, like every other variant here, so generic code can still read `.type`
