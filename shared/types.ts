@@ -461,6 +461,7 @@ export type SelectedVals =
  * `(more [<num>] SEL)` /
  * `(all <node|edge|simp N|quad>)` / `(none <node|edge|simp N|quad>)` / `(deg <eq|gt|lt> <num>)` /
  * `(conva <node|edge|simp N|quad> SEL)` / `(conve <node|edge|simp N|quad> SEL)` /
+ * `(convlt|conveq|convgt|convclt|convceq|convcgt <node|edge|simp N|quad> <num> SEL)` /
  * `(rrmn <num> SEL)` / `(rrmp <num> SEL)` / `(rpkn <num> SEL)` / `(rpkp <num> SEL)`) and its own
  * parsing (parseNodeSelector/
  * parseEdgeSelector/parseTriangleSelector/parseQuadSelector) and evaluation (selectNode/
@@ -484,6 +485,14 @@ export type Selector =
     | { op: 'all' | 'none'; type: SelectorType }
     | { op: 'deg'; type: 'node'; cmp: 'eq' | 'gt' | 'lt'; n: number }
     | { op: 'conva' | 'conve'; type: SelectorType; from: SelectorType; a: Selector }
+    // The threshold-counting generalization of conva/conve just above: keeps a "to" object iff the
+    // count of its associated "from" objects that ARE selected (convlt/conveq/convgt) - or that are
+    // NOT selected, the "c" variants (convclt/convceq/convcgt) - compares as lt/eq/gt to `n`. `conva`
+    // is exactly `convceq` with `n` 0 (zero NOT-selected associated - i.e. all of them are); `conve`
+    // is exactly `convgt` with `n` 0 (more than zero selected) - kept as separate ops here rather
+    // than folded into these anyway, since conva/conve's own same-kind-is-a-no-op shortcut doesn't
+    // generalize to an arbitrary `n` (see shared/selector.ts's own evaluators for why).
+    | { op: 'convlt' | 'conveq' | 'convgt' | 'convclt' | 'convceq' | 'convcgt'; type: SelectorType; from: SelectorType; n: number; a: Selector }
     | { op: 'rrmn'; type: SelectorType; count: number; a: Selector }
     | { op: 'rrmp'; type: SelectorType; frac: number; a: Selector }
     // The pick-instead-of-remove counterparts of rrmn/rrmp just above - same shape, but keeps

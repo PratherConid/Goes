@@ -1,0 +1,16 @@
+egr biborderedTriFractalDropB(number w, number form, number iter, number p, number h) {
+  egr base = modify(
+    ([
+      eis((("(rrmp " + p) + " (all edge))")),
+      triangleForm(form),
+      eis("(conve edge (conva tri (all node)))")
+    ] * iter),
+    triB(w)
+  );
+  sel border = mkSel("(conveq edge 1 (all tri))");
+  return multiProd(
+    [base, lineB(((2 * h) + 1))],
+    psUnion([psBase(0, border), psBase(1, {h})])
+  );
+}
+biborderedTriFractalDropB(3, 3, 3, 0.05, 3);

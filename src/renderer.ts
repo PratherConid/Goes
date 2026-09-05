@@ -77,7 +77,7 @@ const _boardConfigNames = [
     'truncated_centralized_rect_6_6', 'tetrahedron_centering_9', 'diamondCubic_10', 'decorated_rect_13_13_0.3',
     'spiked_rect_13_13_0.3', 'randConnBi_rect_13_13_0.1', 'randConnBishopOrtho_rect_13_13_0.1',
     'spiked_tri_15_0.2', 'cross_rect_13_13_13_2_2_2', 'cross_tri_rect_9_9_9_5_5',
-    'threeRing_5_10.5_7_12.5_9_14.5',
+    'threeRing_5_10.5_7_12.5_9_14.5', 'biborder_3_tri_3_fractaldrop_3_0.05',
     'rect_7_7_diag_ortho_3_0.5', 'rect_7_7_bishop_ortho_3_0.5', 'rect_6_6_knight_ortho_4_0.5', 'cuboid_5_5_5_diag_ortho_3_0.5', 'soccer_ball', 'heart_9.5', 'teardrop_24.5', 'racket_24.5_10_1.5',
 ];
 
@@ -1858,11 +1858,27 @@ export class Renderer {
             ${row('(conve &lt;node|edge|simp N|tri|quad&gt; SEL)',
                 'Same as conva, but a "to" object is selected iff AT LEAST ONE of its associated '
                 + '"from" objects is selected (vacuously false if it has none)')}
+            ${row('(convlt/conveq/convgt &lt;node|edge|simp N|tri|quad&gt; &lt;num&gt; SEL)',
+                'The threshold-counting generalization of conva/conve: a "to" object is selected iff '
+                + 'the COUNT of its associated "from" objects that are selected is &lt;/=/&gt; num (a '
+                + 'nonnegative integer). Same association rule and simp&lt;-&gt;quad restriction as '
+                + 'conva/conve, but no same-kind-is-a-no-op shortcut (an arbitrary threshold makes '
+                + 'that invalid in general)')}
+            ${row('(convclt/convceq/convcgt &lt;node|edge|simp N|tri|quad&gt; &lt;num&gt; SEL)',
+                'Same as convlt/conveq/convgt, but counts associated "from" objects that are NOT '
+                + 'selected instead ("c" for complement) - so (conva K SEL) is exactly '
+                + '(convceq K 0 SEL), and (conve K SEL) is exactly (convgt K 0 SEL)')}
             ${row('(rrmn &lt;num&gt; SEL)',
                 'Randomly removes exactly num (a nonnegative integer) items from SEL, uniformly at random')}
             ${row('(rrmp &lt;num&gt; SEL)',
                 'Randomly removes a portion of SEL: num (a nonnegative fraction) times SEL\'s own '
                 + 'size, rounded down')}
+            ${row('(rpkn &lt;num&gt; SEL)',
+                'The pick-instead-of-remove counterpart of rrmn: randomly keeps exactly num (a '
+                + 'nonnegative integer) items from SEL, uniformly at random, dropping the rest')}
+            ${row('(rpkp &lt;num&gt; SEL)',
+                'The pick-instead-of-remove counterpart of rrmp: randomly keeps a portion of SEL: num '
+                + '(a nonnegative fraction) times SEL\'s own size, rounded down')}
         `);
 
         this.commandReferenceLocalReplaceSelectorsPanel.innerHTML = table(`

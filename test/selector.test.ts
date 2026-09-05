@@ -188,6 +188,74 @@ test('conva is vacuously true for a node with no associated objects of the given
     assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(conve node (all tri))')), new Set());
 });
 
+test('convlt/conveq/convgt require a valid node|edge|simp N|tri|quad result token, reject simp ' +
+    '<-> quad, and require a nonnegative integer count', () => {
+    assert.throws(() => parseNodeSelector('(convlt (all node))'), /result kind must be 'node', 'edge', 'simp <n>', 'tri', or 'quad'/);
+    assert.throws(() => parseTriangleSelector('(convgt tri 0 (all quad))'), /no association defined between 'simp' and 'quad'/);
+    assert.throws(() => parseQuadSelector('(convceq quad 0 (all tri))'), /no association defined between 'simp' and 'quad'/);
+    assert.throws(() => parseNodeSelector('(convlt node -1 (all edge))'), /nonnegative integer/);
+    assert.throws(() => parseNodeSelector('(convlt node 1.5 (all edge))'), /nonnegative integer/);
+    assert.deepEqual(
+        parseEdgeSelector('(convgt edge 1 (deg eq 1))'),
+        { op: 'convgt', type: 'edge', from: 'node', n: 1, a: { op: 'deg', type: 'node', cmp: 'eq', n: 1 } });
+});
+
+test('convlt/conveq/convgt count exactly how many associated selected objects a "to" object has - ' +
+    'unlike conva/conve, converting a kind to itself is NOT a no-op', () => {
+    // (conva edge (deg eq 2)) = {(1,2)} only (see the conva/conve tests above). Associated edges per
+    // node: node 0 -> {(0,1)} (0 selected); node 1 -> {(0,1),(1,2)} (1 selected); node 2 ->
+    // {(1,2),(2,3)} (1 selected); node 3 -> {(2,3)} (0 selected).
+    const selEdges = '(conva edge (deg eq 2))';
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convlt node 1 ${selEdges})`)), new Set([0, 3]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(conveq node 1 ${selEdges})`)), new Set([1, 2]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convgt node 0 ${selEdges})`)), new Set([1, 2]));
+    // Same-kind (node -> node): a node's only associated node is itself, so this reduces to "is n
+    // selected" compared against a threshold - convlt(1) is the actual selected set's own complement,
+    // NOT the identity the way conva/conve's own same-kind shortcut would suggest.
+    const degSel = '(deg eq 2)'; // selects {1, 2}
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convlt node 1 ${degSel})`)), new Set([0, 3]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convgt node 0 ${degSel})`)), new Set([1, 2]));
+});
+
+test('convclt/convceq/convcgt count associated objects that are NOT selected instead', () => {
+    // (conve edge (deg eq 1)) = {(0,1), (2,3)} (all edges except (1,2)). NOT-selected-associated
+    // counts per node: node 0 -> {(0,1)} all selected -> 0 not-selected; node 1 -> {(0,1),(1,2)} ->
+    // (1,2) not selected -> 1; node 2 -> {(1,2),(2,3)} -> (1,2) not selected -> 1; node 3 ->
+    // {(2,3)} all selected -> 0.
+    const selEdges = '(conve edge (deg eq 1))';
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convclt node 1 ${selEdges})`)), new Set([0, 3]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convceq node 1 ${selEdges})`)), new Set([1, 2]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convcgt node 0 ${selEdges})`)), new Set([1, 2]));
+});
+
+test('(conva K SEL) is exactly (convceq K 0 SEL), and (conve K SEL) is exactly (convgt K 0 SEL)', () => {
+    for (const sel of ['(none edge)', '(all edge)', '(conva edge (deg eq 2))']) {
+        assert.deepEqual(
+            selectNode(adj, pos, parseNodeSelector(`(conva node ${sel})`)),
+            selectNode(adj, pos, parseNodeSelector(`(convceq node 0 ${sel})`)));
+        assert.deepEqual(
+            selectNode(adj, pos, parseNodeSelector(`(conve node ${sel})`)),
+            selectNode(adj, pos, parseNodeSelector(`(convgt node 0 ${sel})`)));
+    }
+});
+
+test('convlt/convclt are vacuously true (and convgt/convcgt vacuously false) for a node with no ' +
+    'associated objects of the given kind', () => {
+    // No triangles at all in this graph - 0 associated triangles for every node either way.
+    assert.deepEqual(
+        selectNode(adj, pos, parseNodeSelector('(convlt node 1 (all tri))')), new Set([0, 1, 2, 3]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(convgt node 0 (all tri))')), new Set());
+    assert.deepEqual(
+        selectNode(adj, pos, parseNodeSelector('(convclt node 1 (all tri))')), new Set([0, 1, 2, 3]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(convcgt node 0 (all tri))')), new Set());
+});
+
+test('convlt/.../convcgt round-trip through formatSelector', () => {
+    const text = '(convlt node 2 (conva edge (deg eq 2)))';
+    const sel = parseNodeSelector(text);
+    assert.equal(formatSelector(sel), text);
+});
+
 test('compl on an edge selector complements within all of the graph\'s edges', () => {
     // All edges: (0,1), (1,2), (2,3). conva(edge, deg eq 2) = {(1,2)}.
     const edges = selectEdge(adj, pos, parseEdgeSelector('(compl (conva edge (deg eq 2)))'));

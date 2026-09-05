@@ -120,6 +120,12 @@ static std::string selector_op_keyword(SelectorOp op) {
         case SelectorOp::Deg:   return "deg";
         case SelectorOp::Conva: return "conva";
         case SelectorOp::Conve: return "conve";
+        case SelectorOp::ConvLt:  return "convlt";
+        case SelectorOp::ConvEq:  return "conveq";
+        case SelectorOp::ConvGt:  return "convgt";
+        case SelectorOp::ConvClt: return "convclt";
+        case SelectorOp::ConvCeq: return "convceq";
+        case SelectorOp::ConvCgt: return "convcgt";
         case SelectorOp::Rrmn:  return "rrmn";
         case SelectorOp::Rrmp:  return "rrmp";
         case SelectorOp::Rpkn:  return "rpkn";
@@ -169,6 +175,26 @@ static Selector parse_conversion(ParseCursor& c, SelectorOp op) {
     if (a.type == to_type) return a; // same-kind conversion is a no-op
     Selector sel;
     sel.op = op; sel.type = to_type; sel.from = a.type;
+    sel.a = std::make_shared<Selector>(std::move(a));
+    return sel;
+}
+
+// Mirrors shared/selector.ts's parseConvCmp() - reads convlt/conveq/convgt/convclt/convceq/
+// convcgt's own leading kind token (the "to"/result kind, same as parse_conversion above), then the
+// threshold `<num>`, then the operand - unlike parse_conversion, there's no same-kind-is-a-no-op
+// shortcut (see conv_cmp_params()'s own doc comment below for why that doesn't generalize to an
+// arbitrary threshold), so every case builds a real node.
+static Selector parse_conv_cmp(ParseCursor& c, SelectorOp op, const std::string& op_name) {
+    SelectorType to_type = parse_kind_token(c, op_name, "result kind");
+    int n = next_nonneg_int(c, "(" + op_name + " ...) count");
+    Selector a = parse_sel_expr(c);
+    c.expect(")");
+    if ((is_simp_type(a.type) && to_type.kind == SelectorKind::Quad) ||
+        (a.type.kind == SelectorKind::Quad && is_simp_type(to_type)))
+        throw std::runtime_error(
+            "selector: (" + op_name + " ...) has no association defined between 'simp' and 'quad'");
+    Selector sel;
+    sel.op = op; sel.type = to_type; sel.from = a.type; sel.n = n;
     sel.a = std::make_shared<Selector>(std::move(a));
     return sel;
 }
@@ -261,6 +287,12 @@ static Selector parse_sel_expr(ParseCursor& c) {
     }
     if (op == "conva" || op == "conve")
         return parse_conversion(c, op == "conva" ? SelectorOp::Conva : SelectorOp::Conve);
+    if (op == "convlt") return parse_conv_cmp(c, SelectorOp::ConvLt, op);
+    if (op == "conveq") return parse_conv_cmp(c, SelectorOp::ConvEq, op);
+    if (op == "convgt") return parse_conv_cmp(c, SelectorOp::ConvGt, op);
+    if (op == "convclt") return parse_conv_cmp(c, SelectorOp::ConvClt, op);
+    if (op == "convceq") return parse_conv_cmp(c, SelectorOp::ConvCeq, op);
+    if (op == "convcgt") return parse_conv_cmp(c, SelectorOp::ConvCgt, op);
     if (op == "rrmn") {
         int count = next_nonneg_int(c, "(rrmn ...) count");
         Selector sel;
@@ -389,6 +421,12 @@ std::string format_selector(const Selector& sel) {
             // type instead, so it doesn't need spelling out here).
             return "(" + name + " " + format_selector_type(sel.type) + " " + format_selector(*sel.a) + ")";
         }
+        case SelectorOp::ConvLt: case SelectorOp::ConvEq: case SelectorOp::ConvGt:
+        case SelectorOp::ConvClt: case SelectorOp::ConvCeq: case SelectorOp::ConvCgt:
+            // Same shape as Conva/Conve just above, plus the threshold sel.n right after the kind
+            // token.
+            return "(" + selector_op_keyword(sel.op) + " " + format_selector_type(sel.type) + " " +
+                std::to_string(sel.n) + " " + format_selector(*sel.a) + ")";
         case SelectorOp::Rrmn: return "(rrmn " + std::to_string(sel.count) + " " + format_selector(*sel.a) + ")";
         case SelectorOp::Rrmp: return "(rrmp " + format_double(sel.frac) + " " + format_selector(*sel.a) + ")";
         case SelectorOp::Rpkn: return "(rpkn " + std::to_string(sel.count) + " " + format_selector(*sel.a) + ")";
@@ -410,6 +448,9 @@ bool Selector::operator==(const Selector& other) const {
     if (op == SelectorOp::Rrmn || op == SelectorOp::Rpkn) return count == other.count;
     if (op == SelectorOp::Rrmp || op == SelectorOp::Rpkp) return frac == other.frac;
     if (op == SelectorOp::Conva || op == SelectorOp::Conve) return from == other.from;
+    if (op == SelectorOp::ConvLt || op == SelectorOp::ConvEq || op == SelectorOp::ConvGt ||
+        op == SelectorOp::ConvClt || op == SelectorOp::ConvCeq || op == SelectorOp::ConvCgt)
+        return from == other.from && n == other.n;
     if (op == SelectorOp::More) return steps == other.steps;
     if (op == SelectorOp::Union || op == SelectorOp::Inter) return items == other.items;
     if (op == SelectorOp::Raw)
@@ -466,8 +507,8 @@ static std::vector<T> dedupe_by_key(const std::vector<T>& items, K (*key)(const 
 }
 
 // Mirrors shared/selector.ts's node member/key convention for edge/triangle/quad (a plain node
-// index is its own key; a single-element member list) - used wherever "node" is conva/conve's own
-// "from" or "to" kind in convert_objects below.
+// index is its own key; a single-element member list) - used wherever "node" is conva/conve/convlt/
+// .../convcgt's own "from" or "to" kind in convert_objects_cmp below.
 static std::vector<int> node_members(const int& n) { return { n }; }
 static int node_key(const int& n) { return n; }
 
@@ -483,28 +524,52 @@ static bool is_associated(const std::vector<int>& a, const std::vector<int>& b) 
     return std::all_of(small.begin(), small.end(), [&](int x) { return large_set.count(x) > 0; });
 }
 
-// Shared by every evaluator's own conva/conve case: `all_to`/`to_members` enumerate every object of
-// THIS evaluator's own kind (the "to" kind) in the whole graph; `all_from`/`from_members`/`from_key`
-// do the same for SEL's own declared source kind, and `selected_from_keys` is which of those SEL's
-// own operand selects. A "to" object is kept iff ALL (require_all, conva) or AT LEAST ONE (conve) of
-// its associated "from" objects (per is_associated above) are selected - vacuously true/false
-// (respectively) for a "to" object with no associated "from" objects at all, per ordinary
-// all_of/any_of semantics on an empty range. Mirrors shared/selector.ts's convertObjects().
+// Mirrors shared/selector.ts's convCmpParams() - maps any of Conva/Conve/ConvLt/ConvEq/ConvGt/
+// ConvClt/ConvCeq/ConvCgt to its own (cmp, complement, n) triple (`cmp` reuses DegCmp's own Eq/Gt/Lt
+// tags rather than a redundant new three-way enum - `n` here is unrelated to Deg's own `n` field
+// meaning, just the same tag values). Conva is exactly ConvCeq with n 0 (the count of NOT-selected
+// associated objects is zero - i.e. every one of them IS selected); Conve is exactly ConvGt with n 0
+// (the count of selected associated objects is more than zero). Shared by every evaluator's own
+// single case for all 8 of these ops below - Conva/Conve are genuinely just this function's own two
+// fixed-n special cases, not separately implemented.
+struct ConvCmpParams { DegCmp cmp; bool complement; int n; };
+static ConvCmpParams conv_cmp_params(const Selector& sel) {
+    switch (sel.op) {
+        case SelectorOp::Conva:   return { DegCmp::Eq, true, 0 };
+        case SelectorOp::Conve:   return { DegCmp::Gt, false, 0 };
+        case SelectorOp::ConvLt:  return { DegCmp::Lt, false, sel.n };
+        case SelectorOp::ConvEq:  return { DegCmp::Eq, false, sel.n };
+        case SelectorOp::ConvGt:  return { DegCmp::Gt, false, sel.n };
+        case SelectorOp::ConvClt: return { DegCmp::Lt, true, sel.n };
+        case SelectorOp::ConvCeq: return { DegCmp::Eq, true, sel.n };
+        case SelectorOp::ConvCgt: return { DegCmp::Gt, true, sel.n };
+        default: throw std::runtime_error("conv_cmp_params: unexpected op");
+    }
+}
+
+// Mirrors shared/selector.ts's convertObjectsCmp() - the sole implementation shared by every
+// evaluator's own single case for Conva/Conve/ConvLt/ConvEq/ConvGt/ConvClt/ConvCeq/ConvCgt (see
+// conv_cmp_params above): `all_to`/`to_members` enumerate every object of THIS evaluator's own kind
+// (the "to" kind) in the whole graph; `all_from`/`from_members`/`from_key` do the same for SEL's own
+// declared source kind, and `selected_from_keys` is which of those SEL's own operand selects. A "to"
+// object is kept iff the count of its associated "from" objects (per is_associated above) that ARE
+// selected (`complement` false) or are NOT (`complement` true) compares as `cmp` to `n`.
 template <typename F, typename T, typename K>
-static std::vector<T> convert_objects(
+static std::vector<T> convert_objects_cmp(
     const std::vector<T>& all_to, std::vector<int> (*to_members)(const T&),
     const std::vector<F>& all_from, std::vector<int> (*from_members)(const F&),
-    K (*from_key)(const F&), const std::set<K>& selected_from_keys, bool require_all)
+    K (*from_key)(const F&), const std::set<K>& selected_from_keys,
+    DegCmp cmp, bool complement, int n)
 {
     std::vector<T> out;
     for (auto& to : all_to) {
         auto to_m = to_members(to);
         std::vector<const F*> associated;
         for (auto& from : all_from) if (is_associated(to_m, from_members(from))) associated.push_back(&from);
-        auto is_selected = [&](const F* from) { return selected_from_keys.count(from_key(*from)) > 0; };
-        bool matches = require_all
-            ? std::all_of(associated.begin(), associated.end(), is_selected)
-            : std::any_of(associated.begin(), associated.end(), is_selected);
+        int selected_count = 0;
+        for (auto* from : associated) if (selected_from_keys.count(from_key(*from)) > 0) selected_count++;
+        int count = complement ? static_cast<int>(associated.size()) - selected_count : selected_count;
+        bool matches = cmp == DegCmp::Lt ? count < n : cmp == DegCmp::Eq ? count == n : count > n;
         if (matches) out.push_back(to);
     }
     return out;
@@ -584,38 +649,49 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
             }
             return out;
         }
-        case SelectorOp::Conva: case SelectorOp::Conve: {
-            bool require_all = sel.op == SelectorOp::Conva;
-            if (sel.from == SelectorType{SelectorKind::Node}) return select_node(adj, pos, *sel.a); // same-kind: no-op (defensive)
+        case SelectorOp::Conva: case SelectorOp::Conve:
+        case SelectorOp::ConvLt: case SelectorOp::ConvEq: case SelectorOp::ConvGt:
+        case SelectorOp::ConvClt: case SelectorOp::ConvCeq: case SelectorOp::ConvCgt: {
+            ConvCmpParams p = conv_cmp_params(sel);
             std::vector<int> to_nodes(N);
             for (int i = 0; i < N; i++) to_nodes[i] = i;
+            // Conva/Conve's own same-kind-is-a-no-op no longer needs a special-cased shortcut here -
+            // `sel.from == Node` still produces the right answer through the general formula (a
+            // node's only associated object is itself, so the count reduces to plain membership).
+            if (sel.from == SelectorType{SelectorKind::Node}) {
+                std::set<int> selected_keys;
+                for (int i : select_node(adj, pos, *sel.a)) selected_keys.insert(i);
+                auto result = convert_objects_cmp<int, int, int>(
+                    to_nodes, node_members, to_nodes, node_members, node_key, selected_keys, p.cmp, p.complement, p.n);
+                return std::set<int>(result.begin(), result.end());
+            }
             if (sel.from == SelectorType{SelectorKind::Edge}) {
                 auto all_from = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Edge}});
                 std::set<std::string> selected_keys;
                 for (auto& e : select_edge(adj, pos, *sel.a)) selected_keys.insert(edge_key(e));
-                auto result = convert_objects<BoardEdge, int, std::string>(
+                auto result = convert_objects_cmp<BoardEdge, int, std::string>(
                     to_nodes, node_members, all_from,
                     +[](const BoardEdge& e) -> std::vector<int> { return { e.n1, e.n2 }; },
-                    edge_key, selected_keys, require_all);
+                    edge_key, selected_keys, p.cmp, p.complement, p.n);
                 return std::set<int>(result.begin(), result.end());
             }
             if (is_simp_type(sel.from)) {
                 auto all_from = select_simp(adj, pos, Selector{SelectorOp::All, sel.from});
                 std::set<std::string> selected_keys;
                 for (auto& t : select_simp(adj, pos, *sel.a)) selected_keys.insert(simp_key(t));
-                auto result = convert_objects<BoardSimplex, int, std::string>(
+                auto result = convert_objects_cmp<BoardSimplex, int, std::string>(
                     to_nodes, node_members, all_from,
                     +[](const BoardSimplex& t) -> std::vector<int> { return t.nodes; },
-                    simp_key, selected_keys, require_all);
+                    simp_key, selected_keys, p.cmp, p.complement, p.n);
                 return std::set<int>(result.begin(), result.end());
             }
             auto all_from = select_quad(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
             std::set<std::string> selected_keys;
             for (auto& s : select_quad(adj, pos, *sel.a)) selected_keys.insert(quad_key(s));
-            auto result = convert_objects<BoardQuad, int, std::string>(
+            auto result = convert_objects_cmp<BoardQuad, int, std::string>(
                 to_nodes, node_members, all_from,
                 +[](const BoardQuad& s) -> std::vector<int> { return { s.n1, s.n2, s.n3, s.n4 }; },
-                quad_key, selected_keys, require_all);
+                quad_key, selected_keys, p.cmp, p.complement, p.n);
             return std::set<int>(result.begin(), result.end());
         }
         case SelectorOp::Rrmn: {
@@ -736,35 +812,42 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
         }
         case SelectorOp::None:
             return {};
-        case SelectorOp::Conva: case SelectorOp::Conve: {
-            bool require_all = sel.op == SelectorOp::Conva;
-            if (sel.from == SelectorType{SelectorKind::Edge}) return select_edge(adj, pos, *sel.a); // same-kind: no-op (defensive)
+        case SelectorOp::Conva: case SelectorOp::Conve:
+        case SelectorOp::ConvLt: case SelectorOp::ConvEq: case SelectorOp::ConvGt:
+        case SelectorOp::ConvClt: case SelectorOp::ConvCeq: case SelectorOp::ConvCgt: {
+            ConvCmpParams p = conv_cmp_params(sel);
             auto all_to = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Edge}});
             auto edge_members = +[](const BoardEdge& e) -> std::vector<int> { return { e.n1, e.n2 }; };
             if (sel.from == SelectorType{SelectorKind::Node}) {
                 std::set<int> selected_keys;
-                for (int n : select_node(adj, pos, *sel.a)) selected_keys.insert(n);
+                for (int i : select_node(adj, pos, *sel.a)) selected_keys.insert(i);
                 std::vector<int> all_from(N);
                 for (int i = 0; i < N; i++) all_from[i] = i;
-                return convert_objects<int, BoardEdge, int>(
-                    all_to, edge_members, all_from, node_members, node_key, selected_keys, require_all);
+                return convert_objects_cmp<int, BoardEdge, int>(
+                    all_to, edge_members, all_from, node_members, node_key, selected_keys, p.cmp, p.complement, p.n);
+            }
+            if (sel.from == SelectorType{SelectorKind::Edge}) {
+                std::set<std::string> selected_keys;
+                for (auto& e : select_edge(adj, pos, *sel.a)) selected_keys.insert(edge_key(e));
+                return convert_objects_cmp<BoardEdge, BoardEdge, std::string>(
+                    all_to, edge_members, all_to, edge_members, edge_key, selected_keys, p.cmp, p.complement, p.n);
             }
             if (is_simp_type(sel.from)) {
                 auto all_from = select_simp(adj, pos, Selector{SelectorOp::All, sel.from});
                 std::set<std::string> selected_keys;
                 for (auto& t : select_simp(adj, pos, *sel.a)) selected_keys.insert(simp_key(t));
-                return convert_objects<BoardSimplex, BoardEdge, std::string>(
+                return convert_objects_cmp<BoardSimplex, BoardEdge, std::string>(
                     all_to, edge_members, all_from,
                     +[](const BoardSimplex& t) -> std::vector<int> { return t.nodes; },
-                    simp_key, selected_keys, require_all);
+                    simp_key, selected_keys, p.cmp, p.complement, p.n);
             }
             auto all_from = select_quad(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
             std::set<std::string> selected_keys;
             for (auto& s : select_quad(adj, pos, *sel.a)) selected_keys.insert(quad_key(s));
-            return convert_objects<BoardQuad, BoardEdge, std::string>(
+            return convert_objects_cmp<BoardQuad, BoardEdge, std::string>(
                 all_to, edge_members, all_from,
                 +[](const BoardQuad& s) -> std::vector<int> { return { s.n1, s.n2, s.n3, s.n4 }; },
-                quad_key, selected_keys, require_all);
+                quad_key, selected_keys, p.cmp, p.complement, p.n);
         }
         case SelectorOp::Rrmn: {
             auto base = select_edge(adj, pos, *sel.a);
@@ -839,11 +922,14 @@ std::vector<BoardSimplex> select_simp(const std::vector<std::vector<int>>& adj,
             return find_simplices(adj, n);
         case SelectorOp::None:
             return {};
-        case SelectorOp::Conva: case SelectorOp::Conve: {
+        case SelectorOp::Conva: case SelectorOp::Conve:
+        case SelectorOp::ConvLt: case SelectorOp::ConvEq: case SelectorOp::ConvGt:
+        case SelectorOp::ConvClt: case SelectorOp::ConvCeq: case SelectorOp::ConvCgt: {
             if (sel.from == SelectorType{SelectorKind::Quad})
                 throw std::runtime_error("select_simp: no association is defined between 'simp' and 'quad'");
-            bool require_all = sel.op == SelectorOp::Conva;
-            if (sel.from == sel.type) return select_simp(adj, pos, *sel.a); // same-kind: no-op (defensive)
+            // Named p.n (via ConvCmpParams), not `n`, since `n` above is already this function's own
+            // simp arity.
+            ConvCmpParams p = conv_cmp_params(sel);
             auto all_to = select_simp(adj, pos, Selector{SelectorOp::All, sel.type});
             auto simp_members = +[](const BoardSimplex& t) -> std::vector<int> { return t.nodes; };
             if (sel.from == SelectorType{SelectorKind::Node}) {
@@ -851,25 +937,27 @@ std::vector<BoardSimplex> select_simp(const std::vector<std::vector<int>>& adj,
                 for (int n2 : select_node(adj, pos, *sel.a)) selected_keys.insert(n2);
                 std::vector<int> all_from(adj.size());
                 for (size_t i = 0; i < adj.size(); i++) all_from[i] = static_cast<int>(i);
-                return convert_objects<int, BoardSimplex, int>(
-                    all_to, simp_members, all_from, node_members, node_key, selected_keys, require_all);
+                return convert_objects_cmp<int, BoardSimplex, int>(
+                    all_to, simp_members, all_from, node_members, node_key, selected_keys, p.cmp, p.complement, p.n);
             }
             if (sel.from == SelectorType{SelectorKind::Edge}) {
                 auto all_from = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Edge}});
                 std::set<std::string> selected_keys;
                 for (auto& e : select_edge(adj, pos, *sel.a)) selected_keys.insert(edge_key(e));
-                return convert_objects<BoardEdge, BoardSimplex, std::string>(
+                return convert_objects_cmp<BoardEdge, BoardSimplex, std::string>(
                     all_to, simp_members, all_from,
                     +[](const BoardEdge& e) -> std::vector<int> { return { e.n1, e.n2 }; },
-                    edge_key, selected_keys, require_all);
+                    edge_key, selected_keys, p.cmp, p.complement, p.n);
             }
-            // sel.from is some other simp M (M != n, checked above) - the simp <-> simp conversion,
-            // via the same general containment rule as every other pair.
+            // sel.from is some simp M (possibly M === this function's own arity - unlike Conva/Conve
+            // in isolation, there's no same-kind shortcut needed here, see conv_cmp_params's own doc
+            // comment on why the general formula already gives the right answer), via the same
+            // general containment rule as every other pair.
             auto all_from = select_simp(adj, pos, Selector{SelectorOp::All, sel.from});
             std::set<std::string> selected_keys;
             for (auto& t : select_simp(adj, pos, *sel.a)) selected_keys.insert(simp_key(t));
-            return convert_objects<BoardSimplex, BoardSimplex, std::string>(
-                all_to, simp_members, all_from, simp_members, simp_key, selected_keys, require_all);
+            return convert_objects_cmp<BoardSimplex, BoardSimplex, std::string>(
+                all_to, simp_members, all_from, simp_members, simp_key, selected_keys, p.cmp, p.complement, p.n);
         }
         case SelectorOp::Rrmn: {
             auto base = select_simp(adj, pos, *sel.a);
@@ -955,29 +1043,36 @@ std::vector<BoardQuad> select_quad(const std::vector<std::vector<int>>& adj,
             return find_quads(adj);
         case SelectorOp::None:
             return {};
-        case SelectorOp::Conva: case SelectorOp::Conve: {
+        case SelectorOp::Conva: case SelectorOp::Conve:
+        case SelectorOp::ConvLt: case SelectorOp::ConvEq: case SelectorOp::ConvGt:
+        case SelectorOp::ConvClt: case SelectorOp::ConvCeq: case SelectorOp::ConvCgt: {
             if (is_simp_type(sel.from))
                 throw std::runtime_error("select_quad: no association is defined between 'simp' and 'quad'");
-            bool require_all = sel.op == SelectorOp::Conva;
-            if (sel.from == SelectorType{SelectorKind::Quad}) return select_quad(adj, pos, *sel.a); // same-kind: no-op (defensive)
+            ConvCmpParams p = conv_cmp_params(sel);
             auto all_to = select_quad(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
             auto quad_members = +[](const BoardQuad& s) -> std::vector<int> { return { s.n1, s.n2, s.n3, s.n4 }; };
             if (sel.from == SelectorType{SelectorKind::Node}) {
                 std::set<int> selected_keys;
-                for (int n : select_node(adj, pos, *sel.a)) selected_keys.insert(n);
+                for (int i : select_node(adj, pos, *sel.a)) selected_keys.insert(i);
                 std::vector<int> all_from(adj.size());
                 for (size_t i = 0; i < adj.size(); i++) all_from[i] = static_cast<int>(i);
-                return convert_objects<int, BoardQuad, int>(
-                    all_to, quad_members, all_from, node_members, node_key, selected_keys, require_all);
+                return convert_objects_cmp<int, BoardQuad, int>(
+                    all_to, quad_members, all_from, node_members, node_key, selected_keys, p.cmp, p.complement, p.n);
+            }
+            if (sel.from == SelectorType{SelectorKind::Quad}) {
+                std::set<std::string> selected_keys;
+                for (auto& s : select_quad(adj, pos, *sel.a)) selected_keys.insert(quad_key(s));
+                return convert_objects_cmp<BoardQuad, BoardQuad, std::string>(
+                    all_to, quad_members, all_to, quad_members, quad_key, selected_keys, p.cmp, p.complement, p.n);
             }
             // sel.from == SelectorType{SelectorKind::Edge}
             auto all_from = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Edge}});
             std::set<std::string> selected_keys;
             for (auto& e : select_edge(adj, pos, *sel.a)) selected_keys.insert(edge_key(e));
-            return convert_objects<BoardEdge, BoardQuad, std::string>(
+            return convert_objects_cmp<BoardEdge, BoardQuad, std::string>(
                 all_to, quad_members, all_from,
                 +[](const BoardEdge& e) -> std::vector<int> { return { e.n1, e.n2 }; },
-                edge_key, selected_keys, require_all);
+                edge_key, selected_keys, p.cmp, p.complement, p.n);
         }
         case SelectorOp::Rrmn: {
             auto base = select_quad(adj, pos, *sel.a);

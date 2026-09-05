@@ -1121,7 +1121,13 @@ export function triangularBoard(w: number): BoardConfig {
     const pos: number[][] = [];
     for (let i = 0; i < w; i++) {
         for (let j = 0; j <= i; j++) {
-            pos.push([j - i/2, rowDist * (i - (w-1)/2)]);
+            // x's own average over all rows is already exactly 0 (each row's j-i/2 is symmetric about
+            // 0), but y's plain row-index offset i-(w-1)/2 only makes the y-EXTENT symmetric, not the
+            // actual average - row i has i+1 points, so bigger (higher-i) rows outweigh smaller ones
+            // and pull the mean toward the base. Subtracting 2(w-1)/3 rather than (w-1)/2 recenters on
+            // that true average instead (the closed form of sum_i (i+1)*rowDist*(i-2(w-1)/3) / N,
+            // N = w(w+1)/2, working out to exactly 0 for every w).
+            pos.push([j - i/2, rowDist * (i - 2*(w-1)/3)]);
         }
     }
     const N = w * (w + 1) / 2;

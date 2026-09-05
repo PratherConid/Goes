@@ -41,6 +41,19 @@ import { findSimplices, findQuads } from './topology.js';
 //                               via the same general containment rule.
 //   (conve <node|edge|simp N|tri|quad> SEL) -- same as conva, but a "to" object is selected iff AT
 //                               LEAST ONE of its associated "from" objects is selected
+//   (convlt <node|edge|simp N|tri|quad> <num> SEL)  -- the threshold-counting generalization of
+//                               conva/conve: a "to" object is selected iff the COUNT of its
+//                               associated "from" objects that are selected is <(convlt)/=(conveq)/
+//                               >(convgt) <num> (a nonnegative integer)
+//   (conveq <node|edge|simp N|tri|quad> <num> SEL)  -- see convlt just above
+//   (convgt <node|edge|simp N|tri|quad> <num> SEL)  -- see convlt just above
+//   (convclt <node|edge|simp N|tri|quad> <num> SEL) -- same as convlt, but counts associated "from"
+//                               objects that are NOT selected instead ("c" for "complement") - so
+//                               e.g. (conva K 0 SEL) is exactly (convceq K 0 SEL) (zero NOT-selected
+//                               associated - i.e. every one of them is), and (conve K SEL) is exactly
+//                               (convgt K 0 SEL) (more than zero selected)
+//   (convceq <node|edge|simp N|tri|quad> <num> SEL) -- see convclt just above
+//   (convcgt <node|edge|simp N|tri|quad> <num> SEL) -- see convclt just above
 //   (rrmn <num> SEL)        -- randomly removes exactly num (a nonnegative integer) items from SEL's
 //                               own result, uniformly at random
 //   (rrmp <num> SEL)        -- randomly removes a fixed portion of SEL's own result: num (a
@@ -192,6 +205,42 @@ function parseConversion(c: ParseCursor, op: 'conva' | 'conve'): Selector {
     return a.type === toTok ? a : { op, type: toTok, from: a.type, a };
 }
 
+type ConvCmpOp = 'convlt' | 'conveq' | 'convgt' | 'convclt' | 'convceq' | 'convcgt';
+
+// Reads convlt/conveq/convgt/convclt/convceq/convcgt's own leading kind token (the "to"/result
+// kind, same as parseConversion above), then the threshold `<num>`, then the operand - unlike
+// parseConversion, there's no same-kind-is-a-no-op shortcut (see this file's own top comment on why
+// that doesn't generalize to an arbitrary threshold), so every case builds a real node.
+function parseConvCmp(c: ParseCursor, op: ConvCmpOp): Selector {
+    const toTok = parseSelectorTypeToken(c, `(${op} ...) result`);
+    const n = nextNonnegInt(c, `(${op} ...) count`);
+    const a = parseSelExpr(c);
+    c.expect(')');
+    if ((isSimpType(a.type) && toTok === 'quad') || (a.type === 'quad' && isSimpType(toTok)))
+        throw new Error(`selector: (${op} ...) has no association defined between 'simp' and 'quad'`);
+    return { op, type: toTok, from: a.type, n, a };
+}
+
+// Maps any of conva/conve/convlt/conveq/convgt/convclt/convceq/convcgt to its own (cmp, complement,
+// n) triple - see this file's own top comment for what each means. `conva` is exactly `convceq`
+// with n 0 (the count of NOT-selected associated objects is zero - i.e. every one of them IS
+// selected); `conve` is exactly `convgt` with n 0 (the count of selected associated objects is more
+// than zero). Shared by every evaluator's own single case for all 8 of these ops below - conva/conve
+// are genuinely just this function's own two fixed-n special cases, not separately implemented.
+function convCmpParams(sel: Extract<Selector, { op: 'conva' | 'conve' | ConvCmpOp }>):
+    { cmp: 'lt' | 'eq' | 'gt'; complement: boolean; n: number } {
+    switch (sel.op) {
+        case 'conva': return { cmp: 'eq', complement: true, n: 0 };
+        case 'conve': return { cmp: 'gt', complement: false, n: 0 };
+        case 'convlt': return { cmp: 'lt', complement: false, n: sel.n };
+        case 'conveq': return { cmp: 'eq', complement: false, n: sel.n };
+        case 'convgt': return { cmp: 'gt', complement: false, n: sel.n };
+        case 'convclt': return { cmp: 'lt', complement: true, n: sel.n };
+        case 'convceq': return { cmp: 'eq', complement: true, n: sel.n };
+        case 'convcgt': return { cmp: 'gt', complement: true, n: sel.n };
+    }
+}
+
 // Parses one SEL, inferring its own `type` bottom-up rather than being told what to expect (see this
 // file's own top comment) - context-free, unlike the old parseSelExpr(c, type). Every case below
 // either propagates an operand's own already-parsed `type` unchanged (union/inter/diff/compl/rrmn/
@@ -260,6 +309,8 @@ function parseSelExpr(c: ParseCursor): Selector {
         }
         case 'conva': case 'conve':
             return parseConversion(c, op);
+        case 'convlt': case 'conveq': case 'convgt': case 'convclt': case 'convceq': case 'convcgt':
+            return parseConvCmp(c, op);
         case 'rrmn': {
             const count = nextNonnegInt(c, '(rrmn ...) count');
             const a = parseSelExpr(c);
@@ -380,6 +431,9 @@ export function formatSelector(sel: Selector): string {
             // the explicit token now names (sel.from, the "to" kind's mirror, is read off sel.a's
             // own type instead, so it doesn't need spelling out here).
             return `(${sel.op} ${formatSelectorType(sel.type)} ${formatSelector(sel.a)})`;
+        case 'convlt': case 'conveq': case 'convgt': case 'convclt': case 'convceq': case 'convcgt':
+            // Same shape as conva/conve just above, plus the threshold `n` right after the kind token.
+            return `(${sel.op} ${formatSelectorType(sel.type)} ${sel.n} ${formatSelector(sel.a)})`;
         case 'rrmn':
             return `(rrmn ${sel.count} ${formatSelector(sel.a)})`;
         case 'rrmp':
@@ -475,23 +529,25 @@ function isAssociated(a: number[], b: number[]): boolean {
     return small.every(x => largeSet.has(x));
 }
 
-// Shared by every evaluator's own conva/conve case: `allTo`/`toMembers` enumerate every object of
-// THIS evaluator's own kind (the "to" kind) in the whole graph; `allFrom`/`fromMembers`/`fromKey` do
-// the same for SEL's own declared source kind, and `selectedFromKeys` is which of those SEL's own
-// operand selects. A "to" object is kept iff ALL (mode 'all', conva) or AT LEAST ONE (mode 'some',
-// conve) of its associated "from" objects (per isAssociated above) are selected - vacuously
-// true/false (respectively) for a "to" object with no associated "from" objects at all, per ordinary
-// `.every()`/`.some()` semantics on an empty array.
-function convertObjects<F, T>(
+// Shared by every evaluator's own single case for conva/conve/convlt/conveq/convgt/convclt/convceq/
+// convcgt (all 8 - see convCmpParams above): `allTo`/`toMembers` enumerate every object of THIS
+// evaluator's own kind (the "to" kind) in the whole graph; `allFrom`/`fromMembers`/`fromKey` do the
+// same for SEL's own declared source kind, and `selectedFromKeys` is which of those SEL's own
+// operand selects. A "to" object is kept iff the count of its associated "from" objects (per
+// isAssociated above) that ARE selected (`complement` false) or are NOT (`complement` true)
+// compares as `cmp` to `n` - conva/conve are just this function's own `n` 0 special cases
+// (convCmpParams maps them there), not a separately implemented all-or-some mode.
+function convertObjectsCmp<F, T>(
     allTo: T[], toMembers: (to: T) => number[],
     allFrom: F[], fromMembers: (from: F) => number[], fromKey: (from: F) => string | number,
-    selectedFromKeys: Set<string | number>, mode: 'all' | 'some',
+    selectedFromKeys: Set<string | number>, cmp: 'lt' | 'eq' | 'gt', complement: boolean, n: number,
 ): T[] {
     return allTo.filter(to => {
         const toM = toMembers(to);
         const associated = allFrom.filter(from => isAssociated(toM, fromMembers(from)));
-        const isSelected = (from: F) => selectedFromKeys.has(fromKey(from));
-        return mode === 'all' ? associated.every(isSelected) : associated.some(isSelected);
+        const selectedCount = associated.filter(from => selectedFromKeys.has(fromKey(from))).length;
+        const count = complement ? associated.length - selectedCount : selectedCount;
+        return cmp === 'lt' ? count < n : cmp === 'eq' ? count === n : count > n;
     });
 }
 
@@ -566,23 +622,30 @@ export function selectNode(adj: number[][], pos: number[][], sel: Selector): Set
             }
             return out;
         }
-        case 'conva': case 'conve': {
-            const mode = sel.op === 'conva' ? 'all' : 'some';
-            if (sel.from === 'node') return selectNode(adj, pos, sel.a); // same-kind: no-op (defensive)
+        case 'conva': case 'conve':
+        case 'convlt': case 'conveq': case 'convgt': case 'convclt': case 'convceq': case 'convcgt': {
+            const { cmp, complement, n } = convCmpParams(sel);
             const toNodes = Array.from({ length: N }, (_, i) => i);
+            // conva/conve's own same-kind-is-a-no-op no longer needs a special-cased shortcut here -
+            // `sel.from === 'node'` still produces the right answer through the general formula (a
+            // node's only associated object is itself, so the count reduces to plain membership).
+            if (sel.from === 'node') {
+                const selectedKeys = new Set<string | number>(selectNode(adj, pos, sel.a));
+                return new Set(convertObjectsCmp(toNodes, i => [i], toNodes, i => [i], i => i, selectedKeys, cmp, complement, n));
+            }
             if (sel.from === 'edge') {
                 const allFrom = selectEdge(adj, pos, { op: 'all', type: 'edge' });
                 const selectedKeys = new Set<string | number>(selectEdge(adj, pos, sel.a).map(edgeKey));
-                return new Set(convertObjects(toNodes, n => [n], allFrom, e => [e.n1, e.n2], edgeKey, selectedKeys, mode));
+                return new Set(convertObjectsCmp(toNodes, i => [i], allFrom, e => [e.n1, e.n2], edgeKey, selectedKeys, cmp, complement, n));
             }
             if (isSimpType(sel.from)) {
                 const allFrom = selectSimp(adj, pos, { op: 'all', type: sel.from });
                 const selectedKeys = new Set<string | number>(selectSimp(adj, pos, sel.a).map(simpKey));
-                return new Set(convertObjects(toNodes, n => [n], allFrom, t => t.nodes, simpKey, selectedKeys, mode));
+                return new Set(convertObjectsCmp(toNodes, i => [i], allFrom, t => t.nodes, simpKey, selectedKeys, cmp, complement, n));
             }
             const allFrom = selectQuad(adj, pos, { op: 'all', type: 'quad' });
             const selectedKeys = new Set<string | number>(selectQuad(adj, pos, sel.a).map(quadKey));
-            return new Set(convertObjects(toNodes, n => [n], allFrom, s => [s.n1, s.n2, s.n3, s.n4], quadKey, selectedKeys, mode));
+            return new Set(convertObjectsCmp(toNodes, i => [i], allFrom, s => [s.n1, s.n2, s.n3, s.n4], quadKey, selectedKeys, cmp, complement, n));
         }
         case 'rrmn': {
             const base = [...selectNode(adj, pos, sel.a)];
@@ -681,23 +744,27 @@ export function selectEdge(adj: number[][], pos: number[][], sel: Selector): Boa
         }
         case 'none':
             return [];
-        case 'conva': case 'conve': {
-            const mode = sel.op === 'conva' ? 'all' : 'some';
-            if (sel.from === 'edge') return selectEdge(adj, pos, sel.a); // same-kind: no-op (defensive)
+        case 'conva': case 'conve':
+        case 'convlt': case 'conveq': case 'convgt': case 'convclt': case 'convceq': case 'convcgt': {
+            const { cmp, complement, n } = convCmpParams(sel);
             const allEdges = selectEdge(adj, pos, { op: 'all', type: 'edge' });
             if (sel.from === 'node') {
                 const selectedKeys = new Set<string | number>(selectNode(adj, pos, sel.a));
                 const allNodes = Array.from({ length: N }, (_, i) => i);
-                return convertObjects(allEdges, e => [e.n1, e.n2], allNodes, n => [n], n => n, selectedKeys, mode);
+                return convertObjectsCmp(allEdges, e => [e.n1, e.n2], allNodes, i => [i], i => i, selectedKeys, cmp, complement, n);
+            }
+            if (sel.from === 'edge') {
+                const selectedKeys = new Set<string | number>(selectEdge(adj, pos, sel.a).map(edgeKey));
+                return convertObjectsCmp(allEdges, e => [e.n1, e.n2], allEdges, e => [e.n1, e.n2], edgeKey, selectedKeys, cmp, complement, n);
             }
             if (isSimpType(sel.from)) {
                 const allFrom = selectSimp(adj, pos, { op: 'all', type: sel.from });
                 const selectedKeys = new Set<string | number>(selectSimp(adj, pos, sel.a).map(simpKey));
-                return convertObjects(allEdges, e => [e.n1, e.n2], allFrom, t => t.nodes, simpKey, selectedKeys, mode);
+                return convertObjectsCmp(allEdges, e => [e.n1, e.n2], allFrom, t => t.nodes, simpKey, selectedKeys, cmp, complement, n);
             }
             const allFrom = selectQuad(adj, pos, { op: 'all', type: 'quad' });
             const selectedKeys = new Set<string | number>(selectQuad(adj, pos, sel.a).map(quadKey));
-            return convertObjects(allEdges, e => [e.n1, e.n2], allFrom, s => [s.n1, s.n2, s.n3, s.n4], quadKey, selectedKeys, mode);
+            return convertObjectsCmp(allEdges, e => [e.n1, e.n2], allFrom, s => [s.n1, s.n2, s.n3, s.n4], quadKey, selectedKeys, cmp, complement, n);
         }
         case 'rrmn': {
             const base = selectEdge(adj, pos, sel.a);
@@ -761,27 +828,30 @@ export function selectSimp(adj: number[][], pos: number[][], sel: Selector): Boa
             return findSimplices(adj, n);
         case 'none':
             return [];
-        case 'conva': case 'conve': {
+        case 'conva': case 'conve':
+        case 'convlt': case 'conveq': case 'convgt': case 'convclt': case 'convceq': case 'convcgt': {
             if (sel.from === 'quad')
                 throw new Error(`selectSimp: no association is defined between 'simp' and 'quad'`);
-            const mode = sel.op === 'conva' ? 'all' : 'some';
-            if (sel.from === sel.type) return selectSimp(adj, pos, sel.a); // same-kind: no-op (defensive)
+            // Named `threshold`, not `n`, since `n` above is already this function's own simp arity.
+            const { cmp, complement, n: threshold } = convCmpParams(sel);
             const allTo = selectSimp(adj, pos, { op: 'all', type: sel.type });
             if (sel.from === 'node') {
                 const selectedKeys = new Set<string | number>(selectNode(adj, pos, sel.a));
                 const allNodes = Array.from({ length: adj.length }, (_, i) => i);
-                return convertObjects(allTo, t => t.nodes, allNodes, n2 => [n2], n2 => n2, selectedKeys, mode);
+                return convertObjectsCmp(allTo, t => t.nodes, allNodes, n2 => [n2], n2 => n2, selectedKeys, cmp, complement, threshold);
             }
             if (sel.from === 'edge') {
                 const allFrom = selectEdge(adj, pos, { op: 'all', type: 'edge' });
                 const selectedKeys = new Set<string | number>(selectEdge(adj, pos, sel.a).map(edgeKey));
-                return convertObjects(allTo, t => t.nodes, allFrom, e => [e.n1, e.n2], edgeKey, selectedKeys, mode);
+                return convertObjectsCmp(allTo, t => t.nodes, allFrom, e => [e.n1, e.n2], edgeKey, selectedKeys, cmp, complement, threshold);
             }
-            // sel.from is some other simp M (M != n, checked above) - the new simp <-> simp
-            // conversion, via the same general containment rule as every other pair.
+            // sel.from is some simp M (possibly M === this function's own arity - unlike conva/conve
+            // in isolation, there's no same-kind shortcut needed here, see convCmpParams's own doc
+            // comment on why the general formula already gives the right answer), via the same
+            // general containment rule as every other pair.
             const allFrom = selectSimp(adj, pos, { op: 'all', type: sel.from });
             const selectedKeys = new Set<string | number>(selectSimp(adj, pos, sel.a).map(simpKey));
-            return convertObjects(allTo, t => t.nodes, allFrom, f => f.nodes, simpKey, selectedKeys, mode);
+            return convertObjectsCmp(allTo, t => t.nodes, allFrom, f => f.nodes, simpKey, selectedKeys, cmp, complement, threshold);
         }
         case 'rrmn': {
             const base = selectSimp(adj, pos, sel.a);
@@ -852,20 +922,25 @@ export function selectQuad(adj: number[][], pos: number[][], sel: Selector): Boa
             return findQuads(adj);
         case 'none':
             return [];
-        case 'conva': case 'conve': {
+        case 'conva': case 'conve':
+        case 'convlt': case 'conveq': case 'convgt': case 'convclt': case 'convceq': case 'convcgt': {
             if (isSimpType(sel.from))
                 throw new Error(`selectQuad: no association is defined between 'simp' and 'quad'`);
-            const mode = sel.op === 'conva' ? 'all' : 'some';
-            if (sel.from === 'quad') return selectQuad(adj, pos, sel.a); // same-kind: no-op (defensive)
+            const { cmp, complement, n } = convCmpParams(sel);
             const allQuad = selectQuad(adj, pos, { op: 'all', type: 'quad' });
             if (sel.from === 'node') {
                 const selectedKeys = new Set<string | number>(selectNode(adj, pos, sel.a));
                 const allNodes = Array.from({ length: adj.length }, (_, i) => i);
-                return convertObjects(allQuad, s => [s.n1, s.n2, s.n3, s.n4], allNodes, n => [n], n => n, selectedKeys, mode);
+                return convertObjectsCmp(allQuad, s => [s.n1, s.n2, s.n3, s.n4], allNodes, i => [i], i => i, selectedKeys, cmp, complement, n);
             }
+            if (sel.from === 'quad') {
+                const selectedKeys = new Set<string | number>(selectQuad(adj, pos, sel.a).map(quadKey));
+                return convertObjectsCmp(allQuad, s => [s.n1, s.n2, s.n3, s.n4], allQuad, s2 => [s2.n1, s2.n2, s2.n3, s2.n4], quadKey, selectedKeys, cmp, complement, n);
+            }
+            // sel.from === 'edge'
             const allFrom = selectEdge(adj, pos, { op: 'all', type: 'edge' });
             const selectedKeys = new Set<string | number>(selectEdge(adj, pos, sel.a).map(edgeKey));
-            return convertObjects(allQuad, s => [s.n1, s.n2, s.n3, s.n4], allFrom, e => [e.n1, e.n2], edgeKey, selectedKeys, mode);
+            return convertObjectsCmp(allQuad, s => [s.n1, s.n2, s.n3, s.n4], allFrom, e => [e.n1, e.n2], edgeKey, selectedKeys, cmp, complement, n);
         }
         case 'rrmn': {
             const base = selectQuad(adj, pos, sel.a);
