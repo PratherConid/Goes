@@ -1,0 +1,25 @@
+bool shellCond(number mi, number ma, number[] coords) {
+  number sum = 0;
+  number l = len(coords);
+  for (number i = 0; (i < l); i = (i + 1)) {
+    sum = (sum + (coords[i] * coords[i]));
+  }
+  return ((sum >= (mi * mi)) && (sum <= (ma * ma)));
+}
+bool threeRingCond(number ix, number ox, number iy, number oy, number iz, number oz, number[] coords) {
+  number x = coords[0];
+  number y = coords[1];
+  number z = coords[2];
+  bool cond1 = ((x == 0) && shellCond(ix, ox, [y, z]));
+  bool cond2 = ((y == 0) && shellCond(iy, oy, [x, z]));
+  bool cond3 = ((z == 0) && shellCond(iz, oz, [x, y]));
+  return ((cond1 || cond2) || cond3);
+}
+egr threeRingB(number ix, number ox, number iy, number oy, number iz, number oz) {
+  number ma = max(abs(ox), max(abs(oy), abs(oz)));
+  return subHcublatB(
+    ([[(-ma), ma]] * 3),
+    threeRingCond(ix, ox, iy, oy, iz, oz, #)
+  );
+}
+threeRingB(5, 10.5, 7, 12.5, 9, 14.5);

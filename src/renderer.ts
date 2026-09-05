@@ -76,7 +76,8 @@ const _boardConfigNames = [
     'snubsqtri_4_4_4', 'trunc_trunc_cublat_3_3_3', 'truncated_24_cell',
     'truncated_centralized_rect_6_6', 'tetrahedron_centering_9', 'diamondCubic_10', 'decorated_rect_13_13_0.3',
     'spiked_rect_13_13_0.3', 'randConnBi_rect_13_13_0.1', 'randConnBishopOrtho_rect_13_13_0.1',
-    'spiked_tri_15_0.2', 'cross_rect_13_13_13_2_2_2',
+    'spiked_tri_15_0.2', 'cross_rect_13_13_13_2_2_2', 'cross_tri_rect_9_9_9_5_5',
+    'threeRing_5_10.5_7_12.5_9_14.5',
     'rect_7_7_diag_ortho_3_0.5', 'rect_7_7_bishop_ortho_3_0.5', 'rect_6_6_knight_ortho_4_0.5', 'cuboid_5_5_5_diag_ortho_3_0.5', 'soccer_ball', 'heart_9.5', 'teardrop_24.5', 'racket_24.5_10_1.5',
 ];
 
@@ -1907,6 +1908,10 @@ export class Renderer {
             ${row('abs(x)', 'Absolute value of x')}
             ${row('sqrt(x)', 'Square root of x - x must be nonnegative')}
             ${row('pow(a, b)', 'a raised to the power b')}
+            ${row('sin(x)/cos(x)/tan(x)', 'Sine/cosine/tangent of x (radians)')}
+            ${row('cot(x)/sec(x)/csc(x)', 'Cotangent/secant/cosecant of x (radians)')}
+            ${row('max(a, b, ...)/max(number[])', 'The largest of one or more numbers, or of a nonempty number[]')}
+            ${row('min(a, b, ...)/min(number[])', 'The smallest of one or more numbers, or of a nonempty number[]')}
             ${row('range(stop)/range(start, stop)/range(start, stop, step)',
                 'A number[] with the same semantics as Python\'s range() - start defaults to 0, step '
                 + 'defaults to 1, stop is exclusive; every argument must be an integer and step must '

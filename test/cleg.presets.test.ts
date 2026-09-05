@@ -84,6 +84,7 @@ const BOARD_PRESET_GOLDEN: Record<string, { N: number; edges: number }> = {
     'star_5_es_6_prod_line_5.cleg': { N: 155, edges: 274 },
     'teardrop_24.5.cleg': { N: 233, edges: 426 },
     'tetrahedron_centering_9.cleg': { N: 341, edges: 704 },
+    'threeRing_5_10.5_7_12.5_9_14.5.cleg': { N: 1020, edges: 1838 },
     'trunc_trunc_cublat_3_3_3.cleg': { N: 420, edges: 810 },
     'truncated_24_cell.cleg': { N: 192, edges: 384 },
     'truncated_centralized_rect_6_6.cleg': { N: 320, edges: 480 },

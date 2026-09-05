@@ -1,0 +1,6 @@
+egr crossTriRectB(number w, number d, number h, number nt, number nr) {
+  psel ps0 = psBase(0, (("(rpkn " + nt) + " (all node))"));
+  psel ps1 = psBase(1, (("(rpkn " + nr) + " (all node))"));
+  return multiProd([triB(w), rectB(d, h)], psUnion([ps0, ps1]));
+}
+crossTriRectB(9, 9, 9, 5, 5);

@@ -894,6 +894,67 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             [](const std::vector<ClegValue>& args, UserFuncTable&) { return make_number(std::pow(args[0].number, args[1].number)); },
         };
 
+        // `sin`/`cos`/`tan`/`cot`/`sec`/`csc`: fixed-signature `number -> number` (radians). Mirrors
+        // shared/clegEval.ts's trigFn/BUILTIN_FUNCTIONS['sin'/'cos'/.../'csc'] - cot/sec/csc are each
+        // the reciprocal of tan/cos/sin, left unchecked for a zero denominator (matches pow's own
+        // unchecked division-like edge cases) rather than throwing the way sqrt's does.
+        auto trig_builtin = [](double (*f)(double)) {
+            return BuiltinFunction{
+                fixed_signature({NUMBER_TYPE}, NUMBER_TYPE),
+                [f](const std::vector<ClegValue>& args, UserFuncTable&) { return make_number(f(args[0].number)); },
+            };
+        };
+        m["sin"] = trig_builtin([](double x) { return std::sin(x); });
+        m["cos"] = trig_builtin([](double x) { return std::cos(x); });
+        m["tan"] = trig_builtin([](double x) { return std::tan(x); });
+        m["cot"] = trig_builtin([](double x) { return 1.0 / std::tan(x); });
+        m["sec"] = trig_builtin([](double x) { return 1.0 / std::cos(x); });
+        m["csc"] = trig_builtin([](double x) { return 1.0 / std::sin(x); });
+
+        // `max(a, b, ...)`/`min(a, b, ...)`: either one-or-more `number` arguments, or a single
+        // `number[]` argument. Mirrors shared/clegEval.ts's minMaxCheckCall/makeMinMax - the array
+        // form's own nonemptiness can't be checked in check_call (an array's length isn't known
+        // until evaluation), so a zero-argument call is rejected right away (neither shape accepts
+        // it) while a zero-length array is only caught in `call` below.
+        CheckCallFn min_max_check_call = [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
+            if (arg_types.size() == 1 && arg_types[0].kind == CTKind::Array &&
+                arg_types[0].elem && arg_types[0].elem->kind == CTKind::Number)
+                return NUMBER_TYPE;
+            bool all_number = !arg_types.empty();
+            for (auto& t : arg_types) if (t.kind != CTKind::Number) { all_number = false; break; }
+            if (all_number) return NUMBER_TYPE;
+            std::string joined;
+            for (size_t i = 0; i < arg_types.size(); i++) {
+                if (i) joined += ", ";
+                joined += type_to_string(arg_types[i]);
+            }
+            throw std::runtime_error(
+                "cleg: '" + callee + "' expects one or more number arguments, or a single number[] argument, got (" +
+                joined + ")");
+        };
+        // Builds max/min's own `call`, parameterized by `reduce` (std::max/std::min) and `name` (for
+        // the empty-array error message, since `call` itself isn't handed the callee name).
+        auto make_min_max = [min_max_check_call](std::string name, double (*reduce)(double, double)) {
+            return BuiltinFunction{
+                min_max_check_call,
+                [name, reduce](const std::vector<ClegValue>& args, UserFuncTable&) {
+                    std::vector<double> nums;
+                    if (args.size() == 1 && args[0].kind == CTKind::Array) {
+                        if (args[0].arr_v.empty())
+                            throw std::runtime_error("cleg: '" + name + "' requires a nonempty array, got an empty array");
+                        for (auto& v : args[0].arr_v) nums.push_back(v.number);
+                    } else {
+                        for (auto& v : args) nums.push_back(v.number);
+                    }
+                    double result = nums[0];
+                    for (size_t i = 1; i < nums.size(); i++) result = reduce(result, nums[i]);
+                    return make_number(result);
+                },
+            };
+        };
+        m["max"] = make_min_max("max", [](double a, double b) { return std::max(a, b); });
+        m["min"] = make_min_max("min", [](double a, double b) { return std::min(a, b); });
+
         // `range(stop)`/`range(start, stop)`/`range(start, stop, step)`: builds a number[] with the
         // same Python range() semantics as shared/clegEval.ts's own rangeCheckCall/
         // BUILTIN_FUNCTIONS['range'] - variable arity (1 to 3 args), every argument must be an

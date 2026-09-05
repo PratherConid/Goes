@@ -368,6 +368,61 @@ BUILTIN_FUNCTIONS['pow'] = {
     }),
 };
 
+// `sin`/`cos`/`tan`/`cot`/`sec`/`csc`: fixed-signature `number -> number` (radians), like abs/sqrt/
+// pow above - cot/sec/csc are each the reciprocal of tan/cos/sin respectively, built straight from
+// Math.tan/Math.cos/Math.sin rather than a separate identity; a zero denominator (e.g. csc(0)) is
+// left to produce Infinity, same as pow's own unchecked division-like edge cases (e.g. pow(0, -1)),
+// rather than singled out for a thrown error the way sqrt's negative-input case is.
+function trigFn(f: (x: number) => number): BuiltinFunction {
+    return {
+        checkCall: fixedSignature([NUMBER_TYPE], NUMBER_TYPE),
+        call: ([x]) => ({ kind: 'number', value: f((x as { value: number }).value) }),
+    };
+}
+BUILTIN_FUNCTIONS['sin'] = trigFn(Math.sin);
+BUILTIN_FUNCTIONS['cos'] = trigFn(Math.cos);
+BUILTIN_FUNCTIONS['tan'] = trigFn(Math.tan);
+BUILTIN_FUNCTIONS['cot'] = trigFn(x => 1 / Math.tan(x));
+BUILTIN_FUNCTIONS['sec'] = trigFn(x => 1 / Math.cos(x));
+BUILTIN_FUNCTIONS['csc'] = trigFn(x => 1 / Math.sin(x));
+
+// `max(a, b, ...)`/`min(a, b, ...)`: either one-or-more `number` arguments, or a single `number[]`
+// argument - two rather different call shapes sharing one result type (`number`), hence the
+// hand-written checkCall rather than fixedSignature(...). The array form's own nonemptiness can't
+// be checked here (an array's length isn't known until evaluation), so a zero-argument call is
+// rejected right away (neither shape accepts it), while a zero-*length* array is only caught at
+// evaluation time, in the `call` below.
+function minMaxCheckCall(callee: string, argTypes: ClegType[]): ClegType {
+    if (argTypes.length === 1 && argTypes[0].kind === 'array' && (argTypes[0] as { elem: ClegType }).elem.kind === 'number')
+        return NUMBER_TYPE;
+    if (argTypes.length >= 1 && argTypes.every(t => t.kind === 'number'))
+        return NUMBER_TYPE;
+    throw new Error(
+        `cleg: '${callee}' expects one or more number arguments, or a single number[] argument, got (` +
+        `${argTypes.map(typeToString).join(', ')})`);
+}
+// Builds max/min's own `call`, parameterized by `reduce` (Math.max/Math.min) and `name` (for the
+// empty-array error message, since `call` itself isn't handed the callee name).
+function makeMinMax(name: string, reduce: (a: number, b: number) => number): BuiltinFunction {
+    return {
+        checkCall: minMaxCheckCall,
+        call(args) {
+            let nums: number[];
+            if (args.length === 1 && args[0].kind === 'array') {
+                const arr = args[0] as { kind: 'array'; elem: ClegType; value: ClegValue[] };
+                if (arr.value.length === 0)
+                    throw new Error(`cleg: '${name}' requires a nonempty array, got an empty array`);
+                nums = arr.value.map(v => (v as { kind: 'number'; value: number }).value);
+            } else {
+                nums = args.map(v => (v as { kind: 'number'; value: number }).value);
+            }
+            return { kind: 'number', value: nums.reduce(reduce) };
+        },
+    };
+}
+BUILTIN_FUNCTIONS['max'] = makeMinMax('max', (a, b) => Math.max(a, b));
+BUILTIN_FUNCTIONS['min'] = makeMinMax('min', (a, b) => Math.min(a, b));
+
 // `range(stop)`/`range(start, stop)`/`range(start, stop, step)`: builds a number[] with the same
 // semantics as Python's range() - start defaults to 0, step defaults to 1, stop is exclusive.
 // Variable-arity (1 to 3 args) like mkFormSel/formModCheckCall above, rather than fixedSignature(
