@@ -1,0 +1,12 @@
+bool heartCond(number w, number[] coords) {
+  number x = coords[0];
+  number y = coords[1];
+  return ((pow((((x * x) + (y * y)) - (w * w)), 3) - (((((x * x) * y) * y) * y) * w)) <= 0);
+}
+egr heartB(number w) {
+  return subHcublatB(
+    [[((-1.5) * w), (1.5 * w)], [((-1.5) * w), (1.5 * w)]],
+    heartCond(w, #)
+  );
+}
+modify([nis("(conve node (all quad))")], heartB(9.5));

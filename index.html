@@ -1,0 +1,895 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Goes</title>
+  <style>
+    /* Color theme: default values are the 'default' theme (see src/renderer.ts's own
+       COLOR_THEMES/applyColorTheme, driven by the 'ctheme' command and Renderer.colorTheme's own
+       default) - every color used below is a var(--color-*) referencing one of these, so switching
+       themes just overwrites these custom properties on documentElement at runtime. Player stone
+       colors (STONE_MAP, shared/types.ts) and the SVG board colors (COLOR_GRID/COLOR_ILLEGAL/
+       COLOR_BOARD, src/renderer.ts) are handled separately - stone colors aren't themed at all, and
+       the board's own colors are applied via SVG attributes rather than CSS. --color-border is its
+       own variable (not folded into --color-accent, despite sharing 'wooden's own value)
+       specifically because --color-accent also backs several button/scrollbar-thumb BACKGROUNDS - a
+       theme wanting light buttons on a light background still needs a darker, independently-set
+       border to stay visible.
+       --color-ctrl-border is its own variable too (rather than reusing --color-border) - the main
+       board's own controls (#pass-btn's own group, .ply-nav-btn, #ply-num) want a border that reads
+       as dark in every theme, unlike --color-border, which panels/inputs/etc. want themed lighter
+       to match a light theme's own background. --color-panel-border/--color-ctrlbar-border are each
+       their own variable (rather than reusing --color-border/--color-ctrl-border) since #side-panel/
+       #ctrl-bar want their own OUTER border to disappear into whatever's behind them in 'wooden'
+       (--color-bg-panel/--color-bg-main respectively - #ctrl-bar has no background of its own, so
+       it's body's), not read as a themed accent border the way their own CHILDREN's borders do. */
+    :root {
+      --color-bg-main: #ffffff;
+      --color-bg-panel: #e4e4e4;
+      --color-bg-surface: #ffffff;
+      --color-bg-surface-hover: #e6e6e6;
+      --color-bg-cmdarea: #ffffff;
+      --color-bg-overlay: rgba(255, 255, 255, 0.5);
+      --color-accent: #ffffff;
+      --color-accent-hover: #e6e6e6;
+      --color-btn-disabled: #d9d9d9;
+      --color-border: #000;
+      --color-ctrl-border: #000;
+      --color-panel-border: #000;
+      --color-ctrlbar-border: #000;
+      --color-icon-filter: invert(1);
+      --color-text: #000;
+      --color-text-inverse: #000;
+      --color-text-muted: #000;
+      --color-text-placeholder: #000;
+      --color-divider: #ccc;
+      --color-heading: #000;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* Suppresses the double-tap-to-zoom gesture on rapid taps (mobile
+       browsers), without disabling pinch-zoom elsewhere on the page.
+       font-family: buttons don't inherit the page's font by default (a
+       browser UA-stylesheet quirk) - without this they'd render in
+       whatever system UI font the browser picks, not body's Calibri. */
+    button { touch-action: manipulation; font-family: inherit; }
+
+    /* ── side-panel layout modes (see #panel-mode-bar) ──────────────────
+       No class on <body> = "locked": today's default docked layout, flex
+       ratio set on #main-area/#side-panel below - no override needed here. */
+    body.panel-hidden #side-panel { display: none; }
+    body.panel-hidden #main-area  { flex: 1 1 100%; }
+    body.panel-full #main-area  { display: none; }
+    body.panel-full #side-panel { flex: 1 1 100%; }
+
+    /* #board-wrap's own padding (below) assumes #main-area is 2/3 of the
+       viewport width (200dvw/3), matching the locked layout's 2:1 flex
+       ratio - wrong once panel-hidden makes #main-area the full viewport
+       width, so swap in the correct estimate here. */
+    body.panel-hidden #board-wrap {
+      padding: calc(min(100dvh, 100dvw) / 30);
+    }
+
+    /* While a popup is showing (Renderer.popUp/renderPopup()), everything
+       except the popup itself is inert - #popup-overlay is a body-level
+       sibling of these three, so it (and its own buttons) are unaffected. */
+    body.popup-active #main-area,
+    body.popup-active #side-panel,
+    body.popup-active #panel-mode-bar {
+      pointer-events: none;
+    }
+    #popup-overlay {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--color-bg-overlay);
+      z-index: 3000;
+    }
+    #popup-overlay[hidden] { display: none; }
+    .popup-box {
+      background: var(--color-bg-panel);
+      color: var(--color-text);
+      padding: 20px;
+      border-radius: 8px;
+      max-width: 320px;
+      text-align: center;
+    }
+    .popup-box .btn-row { margin-top: 10px; }
+    /* Wide/left-aligned variant for the 'mod' command's edit-modifiers popup - the plain
+       max-width:320px/text-align:center above suits a short message, not a multi-entry list.
+       .popup-box otherwise never gets an explicit width (just max-width), so it's shrink-to-fit -
+       a shrink-to-fit parent can't resolve a child's width:100% (the textarea below) against its
+       own not-yet-determined width, so browsers fall back to the textarea's intrinsic size instead
+       of expanding it, defeating the wider max-width entirely. An explicit `width` here (capped by
+       max-width for narrow viewports) fixes that by giving the textarea's 100% something concrete
+       to resolve against. */
+    .popup-box.mod-edit-box { width: 480px; max-width: calc(100vw - 40px); text-align: left; }
+    /* Layered on top of .account-input (the chat textbox's own class - see #chat-input) for a
+       matching look; only the bits #chat-input itself also overrides (resize/font-family) plus
+       this popup's own sizing are added here. wrap="off" (set at the call site) disables soft-wrap,
+       so overflow-x here shows a horizontal scrollbar for a long line instead of wrapping it. */
+    .mod-edit-textarea {
+      display: block;
+      min-height: 120px;
+      margin-top: 6px;
+      font-family: inherit;
+      resize: vertical;
+      overflow-x: auto;
+    }
+    .mod-edit-error { color: var(--color-text); margin-top: 8px; font-size: 13px; }
+
+    /* Fixed top-right so it's reachable regardless of layout mode - even
+       when #side-panel is hidden/fullscreen and nothing else is on screen. */
+    #panel-mode-bar {
+      position: fixed;
+      top: 8px;
+      right: 8px;
+      z-index: 1000;
+      display: flex;
+      gap: 4px;
+    }
+    .panel-mode-btn {
+      width: 28px;
+      height: 28px;
+      border: none;
+      border-radius: 4px;
+      background: var(--color-accent);
+      color: var(--color-text-inverse);
+      font-size: 15px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      /* Without this, a click that drags even slightly (easy to do on a 28px button) selects the
+         icon as page content, which Chrome/Edge then paints in the OS accent color - yellow on a
+         system set to a yellow/gold accent. These are icon buttons, not selectable text/images. */
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    /* The nav icons (public/icons/*.svg) are baked white (fill="#fff") - fine against 'wooden's
+       own dark --color-accent button background, illegible against a light one (e.g. 'default's
+       white). Since they're plain <img src> (not inline SVG), CSS can't reach their own fill - a
+       per-theme filter is the smallest lever that can still recolor them: invert(1) flips a pure
+       white-on-transparent icon to black without touching the transparency. */
+    .panel-mode-btn img { filter: var(--color-icon-filter); }
+    /* Scoped to real pointers only - on touchscreens, :hover gets "stuck"
+       applied to whatever element the browser re-hit-tests at the last touch
+       point after a DOM change, which happens on every side-panel navigation
+       since its buttons are rebuilt from scratch (see childButtons() call
+       sites). */
+    @media (hover: hover) and (pointer: fine) {
+      .panel-mode-btn:hover { background: var(--color-accent-hover); }
+    }
+    /* The `hidden` attribute's UA-stylesheet display:none is normal-priority,
+       so it loses to .panel-mode-btn's own display:flex above (any
+       author-stylesheet rule beats UA-stylesheet ones, even at equal
+       specificity) unless re-asserted here at higher specificity. */
+    .panel-mode-btn[hidden] { display: none; }
+    /* Home/Back/Forward/Up's disabled state (Back/Forward at either end of
+       sidePanelBwFw's history, Up at Home) - Dock/Full/Hide never disable,
+       only hide, so this is otherwise unused by them. */
+    .panel-mode-btn:disabled { opacity: 0.5; cursor: default; }
+
+    body {
+      background: var(--color-bg-main);
+      color: var(--color-text);
+      font-family: Calibri, sans-serif;
+      font-size: 16px;
+      height: 100dvh;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* ── left: main area ─────────────────────────────── */
+    #main-area {
+      flex: 2 1 0;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    #board-wrap {
+      flex: 1 1 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: calc(min(100dvh, 200dvw / 3) / 30);
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    #main-canvas {
+      display: block;
+      cursor: pointer;
+      /* size set dynamically */
+      /* Stops the browser's own native panning from fighting a one-finger drag-to-orbit gesture
+         (see Renderer._onBoardPointerDown, src/renderer.ts), while still allowing a genuine
+         two-finger pinch to zoom the page natively - _onBoardPointerDown aborts its own tracking
+         as soon as a second pointer appears, so the two don't fight each other. */
+      touch-action: pinch-zoom;
+    }
+
+    /* control bar - two rows (top: turn indicator + pass/resign, bottom: ply
+       navigation), each sized identically to how the single row used to be. */
+    #ctrl-bar {
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      border: 1px solid var(--color-ctrlbar-border);
+      border-radius: 8px;
+      margin: 0 16px;
+      --u: max(16px, min(100dvw, 100dvh) / 25);
+    }
+    #ctrl-bar-top, #ctrl-bar-bottom {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: calc(var(--u) * 4 / 7);
+      padding: calc(var(--u) * 2 / 7) calc(var(--u) * 4 / 7);
+    }
+
+    #turn-stone {
+      width: calc(var(--u) * 8 / 7);
+      height: calc(var(--u) * 8 / 7);
+      border-radius: 50%;
+      /* --color-ctrl-border - same as #pass-btn's own group/.ply-nav-btn/#ply-num, and .hist-stone's
+         own equivalent border in the history panel - dark in every theme, unlike the lighter-themed
+         --color-border used elsewhere. */
+      border: 1px solid var(--color-ctrl-border);
+      flex-shrink: 0;
+    }
+
+    #pass-btn, #withdraw-btn, #wcd-btn, #reset-viewport-btn, #lock-rotation-btn, #resign-btn {
+      height: var(--u);
+      padding: 0 calc(var(--u) * 5 / 7);
+      border-radius: 4px;
+      border: 1px solid var(--color-ctrl-border);
+      background: var(--color-accent);
+      font-size: calc(var(--u) / 1.8);
+      color: var(--color-text-inverse);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #pass-btn:disabled, #withdraw-btn:disabled, #wcd-btn:disabled,
+    #reset-viewport-btn:disabled, #lock-rotation-btn:disabled, #resign-btn:disabled {
+      background: var(--color-btn-disabled);
+      cursor: default;
+    }
+    /* Fixed width (sized for "Unlock", the longer of its two labels) so toggling the label
+       doesn't shift the layout of the buttons after it. */
+    #lock-rotation-btn {
+      width: calc(var(--u) * 2.4);
+    }
+    /* Same gotcha as .panel-mode-btn[hidden] below: the hidden attribute's
+       UA-stylesheet display:none loses to this file's own #resign-btn
+       display:flex above (any author rule beats UA-stylesheet ones), so it
+       must be re-asserted here at higher specificity. */
+    #resign-btn[hidden] { display: none; }
+
+    .ply-nav-btn {
+      height: var(--u);
+      border: 1px solid var(--color-ctrl-border);
+      border-radius: 4px;
+      background: var(--color-accent);
+      color: var(--color-text-inverse);
+      font-size: calc(var(--u) / 1.8);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .ply-nav-btn:disabled { background: var(--color-btn-disabled); cursor: default; }
+    #bw-btn,   #fw-btn     { width: var(--u); }
+    #bw10-btn, #fw10-btn   { width: calc(var(--u) * 6 / 5); }
+    #bwend-btn, #fwend-btn { width: calc(var(--u) * 3 / 2); }
+
+    #ply-num {
+      position: absolute;
+      right: 16px;
+      height: var(--u);
+      padding: 0 calc(var(--u) * 4 / 7);
+      border-radius: 4px;
+      border: 1px solid var(--color-ctrl-border);
+      background: var(--color-accent);
+      color: var(--color-text-inverse);
+      font-size: calc(var(--u) / 1.8);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* command input */
+    #cmd-area {
+      background: var(--color-bg-cmdarea);
+      padding: 4px 8px;
+      flex-shrink: 0;
+    }
+
+    #cmd-output {
+      min-height: 1.2em;
+      color: var(--color-text-muted);
+      font-family: Consolas, monospace;
+      font-size: 15px;
+      white-space: pre-line;
+    }
+
+    #cmd-input {
+      width: 100%;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--color-text-inverse);
+      font-family: Consolas, monospace;
+      font-size: 15px;
+    }
+
+    /* ── right: side panel ───────────────────────────── */
+    #side-panel {
+      flex: 1 1 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--color-bg-panel);
+      border-left: 1px solid var(--color-panel-border);
+      min-width: 0;
+    }
+
+    #panel-title {
+      padding: 8px 10px 4px;
+      font-weight: bold;
+      font-size: 20px;
+      flex-shrink: 0;
+    }
+
+    .panel-child-btn {
+      display: block;
+      width: 100%;
+      padding: 8px 10px;
+      margin-top: 6px;
+      margin-bottom: 6px;
+      border: 1px solid var(--color-border);
+      border-radius: 6px;
+      background: var(--color-bg-surface);
+      color: var(--color-text);
+      cursor: pointer;
+      font-size: 16px;
+      text-align: left;
+    }
+    @media (hover: hover) and (pointer: fine) {
+      .panel-child-btn:hover { background: var(--color-bg-surface-hover); }
+    }
+    .panel-child-btn:disabled { opacity: 0.5; cursor: default; }
+
+    /* One-line truncation with a trailing ellipsis instead of wrapping -
+       used by the game-record list entries (turn list + [game ID] can run
+       long). */
+    .truncate-line {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .status-login-btn {
+      display: inline-block;
+      width: auto;
+      padding: 2px 10px;
+      margin-left: 6px;
+      border: 1px solid var(--color-border);
+      border-radius: 6px;
+      background: var(--color-bg-surface);
+      color: var(--color-text);
+      cursor: pointer;
+      font-size: 16px;
+    }
+    @media (hover: hover) and (pointer: fine) {
+      .status-login-btn:hover { background: var(--color-bg-surface-hover); }
+    }
+    /* Same convention as .panel-mode-btn:disabled - marks the mode a mode-select button pair
+       (e.g. the fading Clamp/Slice buttons) is already in. */
+    .status-login-btn:disabled { opacity: 0.5; cursor: default; }
+
+    /* One instance per former section of the old single command-reference table (see
+       Renderer._initCommandsPanel()) - #commands-panel itself is now just the hub of buttons
+       leading to these, like #game-records-panel. */
+    .commands-subpanel {
+      flex: 1 1 0;
+      padding: 10px 12px;
+      overflow-y: auto;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .commands-subpanel table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+    .commands-subpanel th {
+      text-align: left;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 8px 4px 2px;
+      border-bottom: 1px solid var(--color-divider);
+      color: var(--color-heading);
+    }
+    .commands-subpanel td { padding: 2px 6px 2px 4px; vertical-align: top; }
+    .commands-subpanel td:first-child {
+      font-family: Consolas, monospace;
+      color: var(--color-text);
+    }
+    .commands-subpanel td:last-child { color: var(--color-text); }
+
+    #home-panel, #history-panel, #status-panel, #current-game-setup-panel, #new-game-panel,
+    #game-records-panel, #commands-panel, #cleg-reference-panel, #game-preset-selection-panel, #board-preset-selection-panel,
+    #active-local-games-panel, #pending-games-panel, #active-online-games-panel,
+    #finished-online-games-panel, #account-panel, #configure-online-players-panel, #chat-panel,
+    #configure-viewport-panel {
+      flex: 1 1 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #history-boards {
+      flex: 1 1 0;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-auto-rows: 1fr;
+      gap: 6px;
+      padding: 6px;
+      overflow: hidden;
+    }
+
+    .history-entry {
+      background: var(--color-bg-main);
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px;
+      min-height: 0;
+      min-width: 0;
+      overflow: hidden;
+      container-type: size;
+    }
+
+    .history-entry-left {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+      padding-left: calc(100cqw / 15);
+    }
+
+    .hist-stone {
+      width: calc(max(min(100cqh / 4, 100cqw / 5), 16px));
+      height: calc(max(min(100cqh / 4, 100cqw / 5), 16px));
+      border-radius: 50%;
+      border: 1px solid var(--color-ctrl-border);
+      flex-shrink: 0;
+    }
+
+    .hist-ply {
+      font-size: calc(max(min(100cqh / 6, 100cqw / 8), 12px));
+    }
+
+    .hist-canvas-wrap {
+      flex: 1 1 0;
+      align-self: stretch;
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .hist-canvas {
+      display: block;
+    }
+
+    #history-nav {
+      display: grid;
+      grid-template-columns: repeat(4, max-content);
+      grid-template-rows: 1fr 1fr;
+      justify-content: space-around;
+      /* Slightly smaller than .panel-child-btn's 6px vertical stacking
+         margin (other side-panel button arrays), since four buttons share a
+         row here rather than one per row. */
+      gap: 4px;
+      /* Same 6px as #history-boards' own padding above, so the button area's
+         edges keep that same margin from the side panel's edges. */
+      padding: 6px;
+      flex-shrink: 0;
+    }
+
+    .nav-btn {
+      background: var(--color-bg-surface);
+      color: var(--color-text);
+      border: 1px solid var(--color-border);
+      border-radius: 6px;
+      padding: 4px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    @media (hover: hover) and (pointer: fine) {
+      .nav-btn:hover { background: var(--color-bg-surface-hover); }
+    }
+
+    #home-panel, #status-panel, #current-game-setup-panel, #new-game-panel, #game-records-panel,
+    #commands-panel, #cleg-reference-panel, #game-preset-selection-panel,
+    #board-preset-selection-panel, #active-local-games-panel, #pending-games-panel, #active-online-games-panel,
+    #finished-online-games-panel, #account-panel, #configure-online-players-panel, #configure-viewport-panel {
+      padding: 12px;
+      overflow-y: auto;
+      font-size: 14px;
+      line-height: 1.8;
+    }
+
+    /* Same thumb/track treatment as #chat-log's scrollbar, but matching #side-panel's own
+       background (var(--color-bg-panel)) - none of these sets its own. */
+    #commands-panel, #cleg-reference-panel, .commands-subpanel,
+    #home-panel, #status-panel, #current-game-setup-panel, #new-game-panel, #game-records-panel,
+    #game-preset-selection-panel, #board-preset-selection-panel, #active-local-games-panel,
+    #pending-games-panel, #active-online-games-panel, #finished-online-games-panel, #account-panel,
+    #configure-online-players-panel, #configure-viewport-panel {
+      scrollbar-width: thin;
+      scrollbar-color: var(--color-accent) var(--color-bg-panel);
+    }
+    #commands-panel::-webkit-scrollbar, #cleg-reference-panel::-webkit-scrollbar, .commands-subpanel::-webkit-scrollbar,
+    #home-panel::-webkit-scrollbar, #status-panel::-webkit-scrollbar,
+    #current-game-setup-panel::-webkit-scrollbar, #new-game-panel::-webkit-scrollbar,
+    #game-records-panel::-webkit-scrollbar, #game-preset-selection-panel::-webkit-scrollbar,
+    #board-preset-selection-panel::-webkit-scrollbar, #active-local-games-panel::-webkit-scrollbar,
+    #pending-games-panel::-webkit-scrollbar, #active-online-games-panel::-webkit-scrollbar,
+    #finished-online-games-panel::-webkit-scrollbar, #account-panel::-webkit-scrollbar,
+    #configure-online-players-panel::-webkit-scrollbar, #configure-viewport-panel::-webkit-scrollbar {
+      width: 10px;
+    }
+    #commands-panel::-webkit-scrollbar-track, #cleg-reference-panel::-webkit-scrollbar-track, .commands-subpanel::-webkit-scrollbar-track,
+    #home-panel::-webkit-scrollbar-track, #status-panel::-webkit-scrollbar-track,
+    #current-game-setup-panel::-webkit-scrollbar-track, #new-game-panel::-webkit-scrollbar-track,
+    #game-records-panel::-webkit-scrollbar-track, #game-preset-selection-panel::-webkit-scrollbar-track,
+    #board-preset-selection-panel::-webkit-scrollbar-track, #active-local-games-panel::-webkit-scrollbar-track,
+    #pending-games-panel::-webkit-scrollbar-track, #active-online-games-panel::-webkit-scrollbar-track,
+    #finished-online-games-panel::-webkit-scrollbar-track, #account-panel::-webkit-scrollbar-track,
+    #configure-online-players-panel::-webkit-scrollbar-track, #configure-viewport-panel::-webkit-scrollbar-track {
+      background: var(--color-bg-panel);
+    }
+    #commands-panel::-webkit-scrollbar-thumb, #cleg-reference-panel::-webkit-scrollbar-thumb, .commands-subpanel::-webkit-scrollbar-thumb,
+    #home-panel::-webkit-scrollbar-thumb, #status-panel::-webkit-scrollbar-thumb,
+    #current-game-setup-panel::-webkit-scrollbar-thumb, #new-game-panel::-webkit-scrollbar-thumb,
+    #game-records-panel::-webkit-scrollbar-thumb, #game-preset-selection-panel::-webkit-scrollbar-thumb,
+    #board-preset-selection-panel::-webkit-scrollbar-thumb, #active-local-games-panel::-webkit-scrollbar-thumb,
+    #pending-games-panel::-webkit-scrollbar-thumb, #active-online-games-panel::-webkit-scrollbar-thumb,
+    #finished-online-games-panel::-webkit-scrollbar-thumb, #account-panel::-webkit-scrollbar-thumb,
+    #configure-online-players-panel::-webkit-scrollbar-thumb, #configure-viewport-panel::-webkit-scrollbar-thumb {
+      background: var(--color-accent);
+      border-radius: 3px;
+    }
+
+    /* One bordered box per slot (Fixed Order mode) - a label line above a button row, and an
+       optional third line (the invite textbox) while that slot's Invite is open. */
+    .colp-slot {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      border: 1px solid var(--color-border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      margin: 6px 0;
+    }
+    .colp-slot-label {
+      font-size: 16px;
+    }
+
+    .colp-invite-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 0;
+    }
+    .colp-invite-row .account-input { flex: 1 1 0; }
+
+    /* Same font-size/border as .panel-child-btn (the Add Local/Add Engine/... buttons right
+       below it), but keeps the panel's own background rather than the buttons' var(--color-bg-surface), and a
+       smaller vertical padding since it holds one line of plain text, not a clickable button.
+       margin-top/bottom match .panel-child-btn's own (6px each) - the toggle button above and
+       the first button inside .btn-row below both carry that same 6px margin themselves
+       (#configure-online-players-panel is a flex column, so sibling margins don't collapse),
+       so matching it here keeps every gap in the stack equal instead of some being single (6px)
+       and others doubled (12px). */
+    .colp-list-line {
+      font-size: 16px;
+      border: 1px solid var(--color-border);
+      border-radius: 6px;
+      padding: 4px 10px;
+      margin-top: 6px;
+      margin-bottom: 6px;
+    }
+
+    .chat-game-info {
+      flex-shrink: 0;
+      padding: 12px 12px 0;
+      font-size: 14px;
+      line-height: 1.8;
+    }
+    #chat-log {
+      flex: 1 1 0;
+      overflow-y: auto;
+      box-sizing: border-box;
+      margin: 8px 12px;
+      padding: 12px;
+      font-size: 14px;
+      line-height: 1.6;
+      /* Same look as .account-input (the chat textbox) - not an input itself, just visually
+         matched to it. */
+      background: var(--color-bg-surface);
+      border: 1px solid var(--color-border);
+      border-radius: 3px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--color-accent) var(--color-bg-surface);
+    }
+    #chat-log::-webkit-scrollbar {
+      width: 10px;
+    }
+    #chat-log::-webkit-scrollbar-track {
+      background: var(--color-bg-surface);
+    }
+    #chat-log::-webkit-scrollbar-thumb {
+      background: var(--color-accent);
+      border-radius: 3px;
+    }
+    .chat-entry {
+      padding: 3px 0;
+    }
+    #chat-input-row {
+      flex-shrink: 0;
+      align-items: center;
+      padding: 8px 12px;
+    }
+    #chat-input-row button {
+      /* 1.5x .status-login-btn's normal height (2px 10px padding + 1px border around a 14px
+         line) - padding alone is scaled up so the button grows without distorting its text. */
+      padding-top: 7px;
+      padding-bottom: 7px;
+    }
+    #chat-input {
+      resize: vertical;
+      font-family: inherit;
+    }
+
+    .account-form {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      align-items: center;
+      gap: 8px 10px;
+      margin-bottom: 10px;
+    }
+    .account-name-line, .account-label {
+      font-size: 16px;
+    }
+
+    .account-input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 6px 8px;
+      border: 1px solid var(--color-border);
+      border-radius: 3px;
+      font-size: 14px;
+      /* 10% lighter than #side-panel's var(--color-bg-panel) background. */
+      background: var(--color-bg-surface);
+    }
+    /* Default browser placeholder gray doesn't have enough contrast against
+       the lighter var(--color-bg-surface) background above - match the input's own border
+       color instead (e.g. the "Username to invite" textbox's placeholder). */
+    .account-input::placeholder {
+      color: var(--color-text-placeholder);
+      opacity: 0.6;
+    }
+
+    .status-projmat-row {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin: 2px 0 2px 16px;
+    }
+    /* Read-only board-description display in the New Game panel - layered on .account-input for
+       the same look as the Configure Board popup's own edit textarea (.mod-edit-textarea), full
+       width (unindented, unlike .status-projmat-row's fields) and never soft-wraps - wrap="off"
+       (set at the call site) lets an overflowing line scroll horizontally instead of wrapping,
+       which would otherwise obscure cleg's own indentation. */
+    .board-descr-view {
+      display: block;
+      width: 100%;
+      margin: 2px 0;
+      box-sizing: border-box;
+      font-family: inherit;
+      resize: none;
+      overflow-x: auto;
+    }
+    .status-projmat-input {
+      width: 5.25em;
+      box-sizing: border-box;
+      padding: 2px 4px;
+      border: 1px solid var(--color-border);
+      border-radius: 3px;
+      font-size: 13px;
+      background: var(--color-bg-surface);
+    }
+    /* Same 4px gap as .status-projmat-row's own, but inline (the Focus line's 3 boxes sit next to
+       the "Focus:" label on one line, not stacked into their own row like a projmat row). */
+    #viewport-focus-row .status-projmat-input + .status-projmat-input {
+      margin-left: 4px;
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 8px;
+    }
+    .btn-row .panel-child-btn {
+      flex: 1 1 0;
+      width: auto;
+      text-align: center;
+    }
+    /* .status-login-btn's own margin-left: 6px (meant for sitting inline next to text, e.g. the
+       Log in/Chat/Send buttons) is wrong inside a button row - .btn-row's own gap already spaces
+       buttons apart. Stretched to fill the row the same way .panel-child-btn does above, and
+       given taller vertical padding (.status-login-btn's own 2px was sized for a small inline
+       button, not a full-width row button - it looked visibly shorter than .panel-child-btn
+       otherwise); also applied to the Confirm button in an invite row (.colp-invite-row) below. */
+    .btn-row .status-login-btn,
+    .colp-invite-row .status-login-btn {
+      padding: 4px 10px;
+    }
+    .btn-row .status-login-btn {
+      flex: 1 1 0;
+      width: auto;
+      margin-left: 0;
+      text-align: center;
+    }
+    /* Game/Board Preset Selection: buttons shrink to their own text width and wrap into a packed
+       "chip" layout - flex-direction: row + flex-wrap: wrap overrides the shared panel rule's
+       flex-direction: column (which stacks every item on its own line no matter how narrow it
+       is - column direction has no concept of two items sharing a line). align-content keeps
+       wrapped rows packed at the top instead of stretching to fill the panel's height; gap
+       spaces buttons both within and between rows, so each button's own margin is zeroed to
+       avoid stacking on top of it. */
+    #game-preset-selection-panel, #board-preset-selection-panel {
+      flex-direction: row;
+      flex-wrap: wrap;
+      align-content: flex-start;
+      gap: 8px;
+    }
+    #game-preset-selection-panel .panel-child-btn, #board-preset-selection-panel .panel-child-btn {
+      width: auto;
+      margin: 0;
+    }
+    #new-game-buttons {
+      flex-shrink: 0;
+      margin: 8px 0;
+    }
+    #current-game-setup-buttons {
+      flex-shrink: 0;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div id="main-area">
+    <div id="board-wrap">
+      <svg id="main-canvas"></svg>
+    </div>
+    <div id="ctrl-bar">
+      <div id="ctrl-bar-top">
+        <button id="pass-btn">Pass</button>
+        <button id="withdraw-btn">Withdraw</button>
+        <button id="wcd-btn">WCD</button>
+        <button id="resign-btn" hidden>Resign</button>
+        <button id="reset-viewport-btn">Reset View</button>
+        <button id="lock-rotation-btn">Lock</button>
+      </div>
+      <div id="ctrl-bar-bottom">
+        <!-- &#xFE0E; (VS15, "text presentation selector") after each triangle/bar glyph - without
+             it, Safari renders U+25C4/U+25BA/U+275A as colored emoji-style glyphs instead of the
+             plain monochrome character every other browser shows. -->
+        <button id="bwend-btn" class="ply-nav-btn">&#10074;&#xFE0E;&#9664;&#xFE0E;</button>
+        <button id="bw10-btn"  class="ply-nav-btn">&#9664;&#xFE0E;&#9664;&#xFE0E;</button>
+        <button id="bw-btn"    class="ply-nav-btn">&#9664;&#xFE0E;</button>
+        <div id="turn-stone"></div>
+        <button id="fw-btn"    class="ply-nav-btn">&#9654;&#xFE0E;</button>
+        <button id="fw10-btn"  class="ply-nav-btn">&#9654;&#xFE0E;&#9654;&#xFE0E;</button>
+        <button id="fwend-btn" class="ply-nav-btn">&#9654;&#xFE0E;&#10074;&#xFE0E;</button>
+        <span id="ply-num">0</span>
+      </div>
+    </div>
+    <div id="cmd-area">
+      <div id="cmd-output"></div>
+      <input id="cmd-input" type="text" spellcheck="false"
+             placeholder="type command and press Enter…" autocomplete="off" />
+    </div>
+  </div>
+
+  <div id="side-panel">
+    <div id="panel-title"></div>
+    <div id="home-panel" style="display:none"></div>
+    <div id="history-panel" style="display:none">
+      <div id="history-boards"></div>
+      <div id="history-nav">
+        <button class="nav-btn" data-action="prev" data-step="1">&#9650; 1</button>
+        <button class="nav-btn" data-action="prev" data-step="10">&#9650; 10</button>
+        <button class="nav-btn" data-action="prev" data-step="100">&#9650; 100</button>
+        <button class="nav-btn" data-action="start">&#9650;&#9650;</button>
+        <button class="nav-btn" data-action="next" data-step="1">&#9660; 1</button>
+        <button class="nav-btn" data-action="next" data-step="10">&#9660; 10</button>
+        <button class="nav-btn" data-action="next" data-step="100">&#9660; 100</button>
+        <button class="nav-btn" data-action="end">&#9660;&#9660;</button>
+      </div>
+    </div>
+    <div id="status-panel" style="display:none"></div>
+    <div id="chat-panel" style="display:none"></div>
+    <div id="configure-viewport-panel" style="display:none"></div>
+    <div id="commands-panel" style="display:none"></div>
+    <div id="cmdref-game-panel" class="commands-subpanel" style="display:none"></div>
+    <div id="cmdref-display-panel" class="commands-subpanel" style="display:none"></div>
+    <div id="cmdref-new-game-setup-panel" class="commands-subpanel" style="display:none"></div>
+    <div id="cmdref-game-presets-panel" class="commands-subpanel" style="display:none"></div>
+    <div id="cmdref-online-multiplayer-panel" class="commands-subpanel" style="display:none"></div>
+    <div id="cleg-reference-panel" style="display:none"></div>
+    <div id="cmdref-board-types-panel" class="commands-subpanel" style="display:none"></div>
+    <div id="cmdref-board-modifiers-panel" class="commands-subpanel" style="display:none"></div>
+    <div id="cmdref-selectors-panel" class="commands-subpanel" style="display:none"></div>
+    <div id="cmdref-local-replace-selectors-panel" class="commands-subpanel" style="display:none"></div>
+    <div id="cmdref-form-selectors-panel" class="commands-subpanel" style="display:none"></div>
+    <div id="cmdref-builtin-functions-panel" class="commands-subpanel" style="display:none"></div>
+    <div id="current-game-setup-panel" style="display:none">
+      <div id="current-game-setup-details"></div>
+      <div id="current-game-setup-buttons"></div>
+    </div>
+    <div id="new-game-panel" style="display:none">
+      <div id="new-game-setup-details"></div>
+      <div id="new-game-buttons"></div>
+    </div>
+    <div id="game-records-panel" style="display:none"></div>
+    <div id="game-preset-selection-panel" style="display:none"></div>
+    <div id="board-preset-selection-panel" style="display:none"></div>
+    <div id="active-local-games-panel" style="display:none"></div>
+    <div id="pending-games-panel" style="display:none"></div>
+    <div id="active-online-games-panel" style="display:none"></div>
+    <div id="finished-online-games-panel" style="display:none"></div>
+    <div id="account-panel" style="display:none"></div>
+    <div id="configure-online-players-panel" style="display:none"></div>
+  </div>
+
+  <div id="panel-mode-bar">
+    <button id="panel-home-btn" class="panel-mode-btn" title="Home">
+      <img src="/icons/home.svg" width="16" height="16" alt="">
+    </button>
+    <button id="panel-back-btn" class="panel-mode-btn" title="Back">
+      <img src="/icons/back.svg" width="16" height="16" alt="">
+    </button>
+    <button id="panel-forward-btn" class="panel-mode-btn" title="Forward">
+      <img src="/icons/forward.svg" width="16" height="16" alt="">
+    </button>
+    <button id="panel-up-btn" class="panel-mode-btn" title="Up">
+      <img src="/icons/up.svg" width="16" height="16" alt="">
+    </button>
+    <button id="panel-dock-btn" class="panel-mode-btn" title="Dock panel" hidden>&minus;</button>
+    <button id="panel-full-btn" class="panel-mode-btn" title="Full-screen panel">
+      <img src="/icons/full.svg" width="16" height="16" alt="">
+    </button>
+    <button id="panel-hide-btn" class="panel-mode-btn" title="Hide panel">
+      <img src="/icons/hide.svg" width="16" height="16" alt="">
+    </button>
+  </div>
+
+  <div id="popup-overlay" hidden></div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

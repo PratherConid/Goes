@@ -1,0 +1,16 @@
+egr diagNonDiagCuboidB(number w, number h, number l, number g, number p) {
+  egr b = hcubB(2, [w, h, l]);
+  quad{} s1 = selectQuad((("(rrmp " + p) + " (all quad))"), b);
+  quad{} s2 = (selectQuad("(all quad)", b) - s1);
+  return modify(
+    [
+      form(
+        g,
+        [mkFormSel("quadDiagForm", s1), mkFormSel("quadForm", s2)]
+      ),
+      scale(sqrt(2))
+    ],
+    b
+  );
+}
+diagNonDiagCuboidB(5, 5, 5, 3, 0.5);

@@ -1,0 +1,12 @@
+modify(
+  [
+    eis(
+      "(conve edge (inter (conva quad (deg gt 4)) (conve quad (deg eq 5))))"
+    ),
+    quadForm(
+      6,
+      "(inter (conve quad (deg eq 3)) (conve quad (deg eq 6)))"
+    )
+  ],
+  cublatB(4, 4, 4)
+);

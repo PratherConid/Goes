@@ -1,0 +1,175 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { setupDom, BOARD_PX } from './domSetup.ts';
+
+// Renderer's module-scope `const conn = new ServerConnection()` needs
+// WebSocket/location as globals at import time, so this must be dynamic and
+// happen after the first setupDom() call.
+setupDom();
+const { Renderer } = await import('../../src/renderer.ts');
+const { BoardState } = await import('../../shared/boardState.ts');
+const { rectangularBoard } = await import('../../shared/boardConfig.ts');
+
+// A fresh Renderer, mounted against a fresh jsdom document (setupDom() call)
+// so this test's event listeners don't accumulate on nodes from a previous
+// test - see domSetup.ts's setupDom() comment.
+function createRenderer(forcedPassOnly = false) {
+    setupDom();
+    const bc = rectangularBoard(3, 3);
+    const game = new BoardState(
+        2, 2,
+        [
+            { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
+            { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
+        ],
+        [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, forcedPassOnly, 'area',
+        [0, 0], 'situational', false, null, new Array(bc.N).fill(0), bc,
+    );
+    const renderer = new Renderer(game);
+    renderer.init();
+    return renderer;
+}
+
+function runCommand(text: string) {
+    const cmdInput = document.getElementById('cmd-input') as HTMLInputElement;
+    cmdInput.value = text;
+    cmdInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+}
+
+test('passBtn is enabled for a fresh local game with forcedPassOnly=false (regression: _isMyTurn bug fixed 2026-07-13)', () => {
+    createRenderer(false);
+    const passBtn = document.getElementById('pass-btn') as HTMLButtonElement;
+    assert.equal(passBtn.disabled, false);
+});
+
+test('passBtn is disabled when forcedPassOnly=true and legal moves exist', () => {
+    createRenderer(true);
+    const passBtn = document.getElementById('pass-btn') as HTMLButtonElement;
+    assert.equal(passBtn.disabled, true);
+});
+
+test('command input drives newCfg and the New Game panel via the real keydown listener', () => {
+    createRenderer();
+    // Navigate to the New Game node so newGameSetupHtml actually runs
+    // (it's gated on currentSidePanel === SidePanelContent.NewGame) - ns/np
+    // set newCfg, which that node (not Status) displays.
+    (document.querySelector('#home-panel button[data-child="newGame"]') as HTMLButtonElement).click();
+
+    runCommand('ns 3');
+    runCommand('np 3');
+
+    const newGameDetails = document.getElementById('new-game-setup-details') as HTMLDivElement;
+    assert.match(newGameDetails.innerHTML, /Type of stones:<\/b> 3/);
+    assert.match(newGameDetails.innerHTML, /Number of players:<\/b> 3/);
+});
+
+// Drives the 'board' command's edit-board popup: opens it (a no-arg 'board' command), types
+// `text` into its textarea and clicks Ok. Callers must not already have the popup open (opening it
+// a second time before the first is dismissed just re-queues, since _advancePopupQueue() only pulls
+// the next entry once currentPopup goes back to null).
+function runBoardEdit(text: string) {
+    runCommand('board');
+    const textarea = document.querySelector('#popup-overlay .mod-edit-textarea') as HTMLTextAreaElement;
+    textarea.value = text;
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    (document.querySelector('#popup-overlay .btn-row button') as HTMLButtonElement).click();
+}
+
+test("'board' opens a popup pre-filled with the current board description; Ok re-parses and " +
+    'adopts a well-formed edit, closing the popup', () => {
+    createRenderer();
+    (document.querySelector('#home-panel button[data-child="newGame"]') as HTMLButtonElement).click();
+
+    runBoardEdit('rectB(3, 3);');
+    assert.equal(document.getElementById('popup-overlay')!.hidden, true, 'Ok closes the popup on success');
+    const newGameDetails = document.getElementById('new-game-setup-details') as HTMLDivElement;
+    assert.match(newGameDetails.innerHTML, /Board description:<\/b>[\s\S]*rectB\(3, 3\);/);
+});
+
+test("'board' pre-fills its textarea from the new-game config's current board description", () => {
+    createRenderer();
+    runBoardEdit('rectB(3, 3);'); // adopt a non-default board first, then reopen to check the seed
+    runCommand('board');
+    const textarea = document.querySelector('#popup-overlay .mod-edit-textarea') as HTMLTextAreaElement;
+    assert.equal(textarea.value, 'rectB(3, 3);');
+});
+
+test('New Game panel lays out its buttons as 3 rows: Game/Board Preset, Configure Players/' +
+    'Configure Board, New Local/Online Game - and Configure Board opens the same popup ' +
+    "as the 'board' command", () => {
+    createRenderer();
+    (document.querySelector('#home-panel button[data-child="newGame"]') as HTMLButtonElement).click();
+
+    const rows = document.querySelectorAll('#new-game-buttons .btn-row');
+    assert.equal(rows.length, 3);
+    const rowText = (row: Element) => [...row.querySelectorAll('button')].map(b => b.textContent);
+    assert.deepEqual(rowText(rows[0]), ['Game Preset', 'Board Preset']);
+    assert.deepEqual(rowText(rows[1]), ['Configure Players', 'Configure Board']);
+    assert.deepEqual(rowText(rows[2]), ['New Local Game', 'New Online Game']);
+
+    const configureBoardBtn = [...rows[1].querySelectorAll('button')]
+        .find(b => b.textContent === 'Configure Board') as HTMLButtonElement;
+    configureBoardBtn.click();
+    assert.equal(document.getElementById('popup-overlay')!.hidden, false);
+    assert.ok(document.querySelector('#popup-overlay .mod-edit-textarea'));
+});
+
+test("'board' rejects a malformed edit: the popup stays open and shows the parse error above Ok", () => {
+    createRenderer();
+    runBoardEdit('blah();');
+
+    assert.equal(document.getElementById('popup-overlay')!.hidden, false, 'a bad edit keeps the popup open');
+    const error = document.querySelector('#popup-overlay .mod-edit-error') as HTMLDivElement;
+    assert.match(error.textContent ?? '', /call to undeclared function/);
+});
+
+test('_startNewGame catches a buildBoardFromCleg error and shows it in the command output bar', () => {
+    createRenderer();
+    const plyNum = document.getElementById('ply-num') as HTMLSpanElement;
+    const before = plyNum.textContent;
+
+    // 'prod(rectB(3, 3), lineB(0))' parses and typechecks fine (typecheckClegAsBoard never
+    // evaluates the program - see its own doc comment), but lineB(0) -> linearBoard(0)'s own
+    // assert throws once buildBoardFromCleg actually evaluates it - 'new' must catch that rather
+    // than letting it propagate uncaught, and report it via the command output bar.
+    runBoardEdit('prod(rectB(3, 3), lineB(0));');
+    runCommand('new');
+
+    const cmdOutput = document.getElementById('cmd-output') as HTMLDivElement;
+    assert.match(cmdOutput.textContent ?? '', /w must be positive/);
+    assert.equal(plyNum.textContent, before, 'no new game should have been started');
+});
+
+test('clicking the board places a stone at the clicked node', () => {
+    createRenderer();
+    const mainSvg = document.getElementById('main-canvas') as unknown as SVGSVGElement;
+    const plyNum = document.getElementById('ply-num') as HTMLSpanElement;
+    assert.equal(plyNum.textContent, '0/0');
+
+    // rectangularBoard(3,3)'s center node sits exactly at board center - see domSetup.ts's
+    // BOARD_PX comment. A plain click is now pointerdown+pointerup with no movement between them
+    // (see Renderer._onBoardPointerDown, src/renderer.ts) - mouse/touch events are no longer
+    // listened to directly, only the unified Pointer Events they both also generate in real
+    // browsers (see test/renderer/domSetup.ts's PointerEvent polyfill).
+    const clickOpts = { clientX: BOARD_PX / 2, clientY: BOARD_PX / 2, bubbles: true, pointerId: 1 };
+    mainSvg.dispatchEvent(new PointerEvent('pointerdown', clickOpts));
+    mainSvg.dispatchEvent(new PointerEvent('pointerup', clickOpts));
+
+    assert.equal(plyNum.textContent, '1/1');
+});
+
+test('sending a chat message in a local game updates the panel directly, no server round trip', () => {
+    createRenderer();
+    (document.querySelector('#home-panel button[data-child="status"]') as HTMLButtonElement).click();
+    document.querySelector<HTMLButtonElement>('#status-chat-btn')!.click();
+
+    const textarea = document.getElementById('chat-input') as HTMLTextAreaElement;
+    textarea.value = 'gg';
+    document.querySelector<HTMLButtonElement>('#chat-input-row button')!.click();
+
+    // Every slot in a fresh local game defaults to type 'local' (see Renderer's constructor) -
+    // _chatPlayerLabel renders that as (⌂), and _sendChat picks the lowest-numbered such slot
+    // as the sender.
+    assert.match(document.getElementById('chat-log')!.textContent ?? '', /\(⌂\): gg/);
+    assert.equal(textarea.value, '');
+});

@@ -1,0 +1,12 @@
+bool teardropCond(number w, number[] coords) {
+  number x = coords[0];
+  number y = coords[1];
+  return pow(x, 4) - pow(x, 3) * w + y * y * w * w <= 0;
+}
+egr teardropB(number w) {
+  return subHcublatB(
+    [[((-1.5) * w), (1.5 * w)], [((-1.5) * w), (1.5 * w)]],
+    teardropCond(w, #)
+  );
+}
+teardropB(24.5);

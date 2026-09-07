@@ -1,0 +1,175 @@
+/**
+ * Graph-topology utilities operating on plain N×N adjacency matrices (the same representation as
+ * `BoardConfig.adj`), independent of any board-specific geometry.
+ */
+import { assert, type BoardSimplex, makeBoardSimplex, type BoardQuad, makeBoardQuad } from './types.js';
+
+/** An all-zero N×N adjacency matrix - the usual starting point before filling in edges. */
+export function zeroAdj(N: number): number[][] {
+    return Array.from({ length: N }, () => new Array<number>(N).fill(0));
+}
+
+/** An adjacency-list view of a graph: `list[i]` is the set of `i`'s neighbors. */
+export type AdjacencyList = Set<number>[];
+
+/** Converts an N×N adjacency matrix into an adjacency list, each node's neighbors stored as a
+ * `Set` (not an array) so membership checks - the hot path for both findSimplices/findQuads
+ * below - are O(1) instead of O(degree). */
+export function toAdjacencyList(adj: number[][]): AdjacencyList {
+    const N = adj.length;
+    const list: AdjacencyList = Array.from({ length: N }, () => new Set<number>());
+    for (let i = 0; i < N; i++)
+        for (let j = 0; j < N; j++)
+            if (adj[i][j]) list[i].add(j);
+    return list;
+}
+
+/**
+ * Finds every n-simplex - n+1 distinct, pairwise-adjacent vertices (a clique) - in `adj`, each
+ * reported exactly once as a BoardSimplex (already ascending by construction - see
+ * makeBoardSimplex - since this always discovers a simplex's own members in increasing order to
+ * begin with, so canonicalizing it costs nothing extra). `n = 2` is the classic "triangle" case
+ * (3 mutually-adjacent vertices).
+ *
+ * Converts to an adjacency list first (see toAdjacencyList), then does an increasing-order DFS to
+ * depth n+1: at each level, `candidates` is the current chain's own common-neighbor set (already
+ * filtered to be > the chain's own last member), so extending the chain by picking `v` from
+ * `candidates` and re-filtering `candidates` itself down to `{x in candidates : x > v, adjList[v]
+ * has x}` for the next level is exactly "every vertex adjacent to the WHOLE chain so far, in
+ * increasing order" - fixing this increasing order (same trick findTriangles used to use directly
+ * for n=2) is what guarantees each simplex is found exactly once, with no separate deduplication
+ * pass needed.
+ */
+export function findSimplices(adj: number[][], n: number): BoardSimplex[] {
+    assert(Number.isInteger(n) && n >= 1, `findSimplices: n must be a positive integer, got ${n}`);
+    const N = adj.length;
+    const adjList = toAdjacencyList(adj);
+    const simplices: BoardSimplex[] = [];
+    const rec = (current: number[], candidates: number[]) => {
+        if (current.length === n + 1) { simplices.push(makeBoardSimplex(current)); return; }
+        for (const v of candidates) {
+            const nextCandidates = candidates.filter(x => x > v && adjList[v].has(x));
+            rec([...current, v], nextCandidates);
+        }
+    };
+    rec([], Array.from({ length: N }, (_, i) => i));
+    return simplices;
+}
+
+/**
+ * Finds every "quad" - 4 distinct vertices `a, b, c, d` forming a cycle `a-b-c-d-a` (all 4 cycle
+ * edges present) whose two diagonals `a-c` and `b-d` are BOTH absent (a proper induced 4-cycle, not
+ * merely 4 vertices of a denser subgraph that happens to contain one) - each reported exactly once
+ * as a BoardQuad, canonicalized via makeBoardQuad (see its own doc comment, shared/types.ts) from
+ * the `p-r-q-s-p` cycle order this function itself discovers it in - that canonicalization is a
+ * genuine relabeling (not necessarily `p, r, q, s` verbatim), unlike findSimplices' own free ride,
+ * since a quad's own discovery order isn't already the lexicographically-least one in general.
+ *
+ * Converts to an adjacency list first (see toAdjacencyList), then for every non-adjacent pair
+ * `(p, q)` with `p < q` (a candidate diagonal), finds their common neighbors and, for every pair of
+ * common neighbors `(r, s)` that are themselves non-adjacent (the other candidate diagonal), reports
+ * the quad `p-r-q-s-p`. A quad has exactly two diagonals, so this raw scan finds each one twice
+ * - once starting from each diagonal - which is resolved by only emitting when `(p, q)` is the
+ * lexicographically smaller of the two (`p < min(r, s)`; the two diagonals can never share a vertex,
+ * since all 4 quad vertices are distinct, so this comparison is never ambiguous).
+ */
+export function findQuads(adj: number[][]): BoardQuad[] {
+    const N = adj.length;
+    const adjList = toAdjacencyList(adj);
+    const quads: BoardQuad[] = [];
+    for (let p = 0; p < N; p++)
+        for (let q = p + 1; q < N; q++) {
+            if (adjList[p].has(q)) continue; // p-q would be an edge, not a diagonal
+            const common: number[] = [];
+            for (const x of adjList[p]) if (adjList[q].has(x)) common.push(x);
+            for (let i = 0; i < common.length; i++)
+                for (let j = i + 1; j < common.length; j++) {
+                    const r = Math.min(common[i], common[j]);
+                    const s = Math.max(common[i], common[j]);
+                    if (adjList[r].has(s)) continue; // r-s would be an edge, not a diagonal
+                    if (p < r) quads.push(makeBoardQuad(p, r, q, s));
+                }
+        }
+    return quads;
+}
+
+/**
+ * Union-Find: given `N` nodes and a list of pairs to merge, returns each node's equivalence-class
+ * index, compressed to a dense `0..M-1` range (`M` = number of distinct classes) in ascending order
+ * of each class's lowest original member. Internal to mergeBoards() (below) - resolves every merge
+ * instruction at once, so a chain like `(0,3)~(1,5)` and `(1,5)~(2,7)` correctly collapses `(0,3)`
+ * and `(2,7)` into the same node too, even though no single instruction names both directly.
+ */
+function unionFindClasses(N: number, pairs: [number, number][]): number[] {
+    const parent = Array.from({ length: N }, (_, i) => i);
+    function find(x: number): number {
+        while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+        return x;
+    }
+    for (const [a, b] of pairs) {
+        const pa = find(a), pb = find(b);
+        if (pa !== pb) parent[pa] = pb;
+    }
+    const roots = Array.from({ length: N }, (_, i) => find(i));
+    const uniqueRoots = [...new Set(roots)].sort((a, b) => a - b);
+    const rootToNew = new Map(uniqueRoots.map((r, i) => [r, i]));
+    return roots.map(r => rootToNew.get(r)!);
+}
+
+/**
+ * Combines a list of boards into one, additionally identifying every `([b1, i1], [b2, i2])` pair in
+ * `merges` (board index, that board's own local node index) as the same node - every merge is
+ * resolved in one batch via unionFindClasses(), not board-by-board, so callers never need to fold
+ * boards in one at a time just to keep every merge target "already placed": a merge between two
+ * boards that haven't been introduced to each other by any other merge is handled exactly like any
+ * other. The merged node keeps whichever input position is encountered first (callers are expected
+ * to only merge pairs whose positions already coincide, e.g. two recursive `sierpinskiSimplex`
+ * sub-copies sharing a corner). Returns the combined board plus, for each input board (in the same
+ * order as `boards`), a map from that board's own local indices to its final index in the combined
+ * board - needed by callers that must keep tracking specific nodes (like sierpinskiSimplex's own
+ * outer corners) across further merges. `pos` here is opaque per-node data (typically a real
+ * position, but never inspected as one) simply carried along through the same merge as `adj`.
+ *
+ * `labels` (optional per board) is address-string -> that board's own local node index (see
+ * shared/fractal.ts's own doc comment on addresses/`SubFlakeResult` for what an address is) -
+ * carried through the SAME remapping as `pos`/`adj` and combined into one map keyed the same way,
+ * used by fractal.ts's own node_edge_merge_flake_rec() to identify which merged node a given
+ * address now resolves to. A board that omits `labels` simply contributes nothing to the combined
+ * map (e.g. board_config.ts's own sierpinskiRec(), which has no use for addresses).
+ */
+export function mergeBoards(
+    boards: { pos: number[][]; adj: number[][]; labels?: Map<string, number> }[],
+    merges: [[number, number], [number, number]][],
+): { pos: number[][]; adj: number[][]; maps: number[][]; labels: Map<string, number> } {
+    const offset: number[] = new Array(boards.length).fill(0);
+    for (let i = 1; i < boards.length; i++) offset[i] = offset[i - 1] + boards[i - 1].pos.length;
+    const total = boards.reduce((s, b) => s + b.pos.length, 0);
+    const g = (b: number, local: number) => offset[b] + local;
+
+    const nodeToNew = unionFindClasses(total, merges.map(([[b1, i1], [b2, i2]]) => [g(b1, i1), g(b2, i2)]));
+    const newN = total === 0 ? 0 : Math.max(...nodeToNew) + 1;
+
+    const pos: number[][] = new Array(newN);
+    for (let b = 0; b < boards.length; b++)
+        for (let local = 0; local < boards[b].pos.length; local++)
+            pos[nodeToNew[g(b, local)]] = boards[b].pos[local];
+
+    const adj = zeroAdj(newN);
+    for (let b = 0; b < boards.length; b++) {
+        const board = boards[b];
+        for (let i = 0; i < board.pos.length; i++)
+            for (let j = 0; j < board.pos.length; j++)
+                if (board.adj[i][j]) adj[nodeToNew[g(b, i)]][nodeToNew[g(b, j)]] = 1;
+    }
+
+    const maps = boards.map((board, b) => board.pos.map((_, local) => nodeToNew[g(b, local)]));
+
+    const labels = new Map<string, number>();
+    for (let b = 0; b < boards.length; b++) {
+        const boardLabels = boards[b].labels;
+        if (!boardLabels) continue;
+        for (const [addr, local] of boardLabels) labels.set(addr, maps[b][local]);
+    }
+
+    return { pos, adj, maps, labels };
+}

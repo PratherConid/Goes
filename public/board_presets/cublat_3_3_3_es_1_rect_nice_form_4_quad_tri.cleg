@@ -1,0 +1,13 @@
+modify(
+  [
+    edgeSplit(1),
+    rectify(),
+    eis("(conve edge (all quad))"),
+    form(
+      4,
+      [mkFormSel("triForm"), mkFormSel("quadForm", "(conve quad (deg lt 6))")]
+    ),
+    scale(0.75)
+  ],
+  cublatB(3, 3, 3)
+);

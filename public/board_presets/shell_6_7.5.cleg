@@ -1,0 +1,18 @@
+bool shellCond(number mi, number ma, number[] coords) {
+  number sum = 0;
+  number l = len(coords);
+  for (number i = 0; (i < l); i = (i + 1)) {
+    sum = (sum + (coords[i] * coords[i]));
+  }
+  return ((sum >= (mi * mi)) && (sum <= (ma * ma)));
+}
+egr shellB(number r1, number r2, number dim) {
+  number mi = r1;
+  number ma = r2;
+  if ((r1 > r2)) {
+    mi = r2;
+    ma = r1;
+  }
+  return subHcublatB(([[(-ma), ma]] * dim), shellCond(mi, ma, #));
+}
+shellB(6, 7.5, 3);

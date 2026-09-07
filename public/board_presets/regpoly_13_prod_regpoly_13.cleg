@@ -1,0 +1,1 @@
+prod(regpolyB(13), regpolyB(13));

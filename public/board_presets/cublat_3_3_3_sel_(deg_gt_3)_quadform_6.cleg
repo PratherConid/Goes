@@ -1,0 +1,1 @@
+modify([nis("(deg gt 3)"), quadForm(6)], cublatB(3, 3, 3));

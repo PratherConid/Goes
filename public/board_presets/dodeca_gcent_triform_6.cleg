@@ -1,0 +1,1 @@
+modify([globalCentralize(), triangleForm(6)], dodecaB());

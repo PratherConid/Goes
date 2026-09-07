@@ -1,0 +1,1 @@
+prod(modify([edgeSplit(3)], twsqB(3, 3, 2)), lineB(4));

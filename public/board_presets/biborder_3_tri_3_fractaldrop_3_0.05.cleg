@@ -1,0 +1,18 @@
+egr biborder(number h, string seltype, egr b) {
+  sel border = mkSel((("(conveq edge 1 (all " + seltype) + "))"));
+  return multiProd(
+    [b, lineB(((2 * h) + 1))],
+    psUnion([psBase(0, border), psBase(1, {h})])
+  );
+}
+egr triFractalDropB(number w, number form, number iter, number p) {
+  return modify(
+    ([
+      eis((("(rrmp " + p) + " (all edge))")),
+      triangleForm(form),
+      eis("(conve edge (conva tri (all node)))")
+    ] * iter),
+    triB(w)
+  );
+}
+biborder(3, "tri", triFractalDropB(3, 3, 3, 0.05));

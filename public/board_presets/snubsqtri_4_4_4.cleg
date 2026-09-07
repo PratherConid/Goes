@@ -1,0 +1,1 @@
+modify([form(4, [mkFormSel("quadForm"), mkFormSel("triForm")])], snubsqB(4, 4));

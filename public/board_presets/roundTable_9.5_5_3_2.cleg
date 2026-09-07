@@ -1,0 +1,38 @@
+bool hcCond(number[] mins, number[] maxs, number numeq, number[] coords) {
+  number l = len(mins);
+  number rnumeq = 0;
+  for (number i = 0; (i < l); i = (i + 1)) {
+    if (((mins[i] > coords[i]) || (maxs[i] < coords[i]))) {
+      return false;
+    }
+    if (((mins[i] == coords[i]) || (maxs[i] == coords[i]))) {
+      rnumeq = (rnumeq + 1);
+    }
+  }
+  return (rnumeq >= numeq);
+}
+bool roundTableCond(number d, number h, number fd, number fw, number[] coords) {
+  number x = coords[0];
+  number y = coords[1];
+  number z = coords[2];
+  number sum = ((x * x) + (y * y));
+  if ((z == h)) {
+    return (sum <= (d * d));
+  }
+  if (((z < 0) || (z > h))) {
+    return false;
+  }
+  return hcCond(
+    [fd, fd, 0],
+    [(fd + fw), (fd + fw), h],
+    1,
+    [abs(x), abs(y), z]
+  );
+}
+egr roundTableB(number d, number h, number fd, number fw) {
+  return subHcublatB(
+    [[(-d), d], [(-d), d], [0, h]],
+    roundTableCond(d, h, fd, fw, #)
+  );
+}
+roundTableB(9.5, 5, 3, 2);
