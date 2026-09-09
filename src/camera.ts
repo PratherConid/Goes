@@ -3,9 +3,7 @@
 // game engine/C++ side has no rendering concept and never needs this.
 
 /** Applies a 3 x embDim projMat to a single embDim-length point, returning its 3D (x, y, z)
- * projection - moved here from shared/types.ts, since projection (unlike a board's own natural-
- * dimension geometry) is purely a rendering concern: nothing in shared/, server/, or the C++ AI
- * engine ever needs a projMat, only src/renderer.ts. */
+ * projection. */
 export function projectPoint(projMat: number[][], p: number[]): number[] {
     return [
         p.reduce((s, v, k) => s + projMat[0][k] * v, 0),
@@ -20,12 +18,9 @@ export function projectPoint(projMat: number[][], p: number[]): number[] {
  * halved-again magnitude, e.g. embDim=8 gives `[[1, 0, 0, 1/2, 0, 0, 1/4, 0], [0, 1, 0, 0, 1/2, 0,
  * 0, 1/4], [0, 0, 1, 0, 0, 1/2, 0, 0]]`. Dim `d` contributes magnitude `2^-floor(d/3)` to axis
  * `d % 3` (x, y, or z), which also reproduces the d=0/1/2 identity part with no separate case
- * needed, since `2^-floor(d/3)` equals 1 for d=0/1/2. Previously, shared/boardConfig.ts baked one
- * of several hand-picked projMats (this same formula for higher-dimensional/product boards, or a
- * fixed 2D/3D identity otherwise - all three coincide exactly with what this one formula already
- * computes for embDim 1/2/3) into every BoardConfig at construction time; there is no longer any
- * board-shape-specific projMat anywhere - every board, regardless of how it was built, gets exactly
- * this one, computed here instead, once per game.
+ * needed, since `2^-floor(d/3)` equals 1 for d=0/1/2. There is no board-shape-specific projMat
+ * anywhere - every board, regardless of how it was built, gets exactly this one, computed once per
+ * game.
  */
 export function defaultProjMat(embDim: number): number[][] {
     const rows = [new Array<number>(embDim).fill(0), new Array<number>(embDim).fill(0), new Array<number>(embDim).fill(0)];
@@ -91,11 +86,9 @@ export interface Viewport {
 }
 
 // A fresh object per call (not a shared constant) - each ActiveGame needs its own independent
-// Viewport, since the status panel's fading editor (Renderer._renderStatusPanel) mutates fadecfg's
-// fields in place; sharing one instance across games would leak one game's fade settings into
-// every other game. embDim is the board's own Embedding.embDim - projMat is built fresh here,
-// client-side, at the one moment a Viewport is ever constructed (a game starting), rather than
-// baked into the board's own construction (see projectPoint/defaultProjMat's own doc comments).
+// Viewport, since the viewport editor mutates fadecfg's fields in place; sharing one instance
+// across games would leak one game's fade settings into every other game. embDim is the board's
+// own Embedding.embDim, which projMat is sized to.
 export function defaultViewport(embDim: number): Viewport {
     return {
         projMat: defaultProjMat(embDim),

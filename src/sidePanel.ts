@@ -1,7 +1,5 @@
 // Side-panel content nodes, navigable as a tree (see SidePanelHierarchy) -
-// Home/Up buttons plus one full-width button per child. Replaces the old flat
-// Renderer.activeTab: 'history'|'status'|'commands' switch with a hierarchy
-// that isn't hardcoded to one flat level.
+// Home/Up buttons plus one full-width button per child.
 
 import type { BoardView, PlayerInfo, TurnInfo, ColorGen } from '@shared/types.js';
 import type { GameConfig } from '@shared/gameConfig.js';
@@ -229,10 +227,44 @@ export interface SidePanelElements {
     configureViewportPanel:  HTMLDivElement;
 }
 
-// Rebuilds the nav chrome (title, Up-button disabled state) and toggles
-// which content panel is visible - same "just rebuild, no diffing"
-// convention as _renderHistoryPanel/_initCommandsPanel in renderer.ts. Does
-// NOT render any children buttons - each node with a nonempty children list
+// The content panel each node shows, plus the `display` value it needs while visible - 'flex' for
+// the panels whose own layout is a flex column/row (see index.html), 'block' for the rest. Every
+// other panel is hidden outright (see renderSidePanelChrome below).
+const SidePanelDisplay: Record<SidePanelContent, [keyof SidePanelElements, 'block' | 'flex']> = {
+    [SidePanelContent.Home]:                [ 'homePanel',                              'block' ],
+    [SidePanelContent.History]:             [ 'historyPanel',                           'flex'  ],
+    [SidePanelContent.Status]:              [ 'statusPanel',                            'block' ],
+    [SidePanelContent.Chat]:                [ 'chatPanel',                              'flex'  ],
+    [SidePanelContent.CommandReference]:    [ 'commandsPanel',                          'block' ],
+    [SidePanelContent.CommandReferenceGame]:              [ 'commandReferenceGamePanel',              'block' ],
+    [SidePanelContent.CommandReferenceDisplay]:           [ 'commandReferenceDisplayPanel',           'block' ],
+    [SidePanelContent.CommandReferenceNewGameSetup]:      [ 'commandReferenceNewGameSetupPanel',      'block' ],
+    [SidePanelContent.CommandReferenceGamePresets]:       [ 'commandReferenceGamePresetsPanel',       'block' ],
+    [SidePanelContent.CommandReferenceOnlineMultiplayer]: [ 'commandReferenceOnlineMultiplayerPanel', 'block' ],
+    [SidePanelContent.ClegReference]:                     [ 'clegReferencePanel',                     'block' ],
+    [SidePanelContent.CommandReferenceBoardTypes]:        [ 'commandReferenceBoardTypesPanel',        'block' ],
+    [SidePanelContent.CommandReferenceBoardModifiers]:    [ 'commandReferenceBoardModifiersPanel',    'block' ],
+    [SidePanelContent.CommandReferenceSelectors]:         [ 'commandReferenceSelectorsPanel',         'block' ],
+    [SidePanelContent.CommandReferenceLocalReplaceSelectors]:
+        [ 'commandReferenceLocalReplaceSelectorsPanel', 'block' ],
+    [SidePanelContent.CommandReferenceFormSelectors]:     [ 'commandReferenceFormSelectorsPanel',     'block' ],
+    [SidePanelContent.CommandReferenceBuiltinFunctions]:  [ 'commandReferenceBuiltinFunctionsPanel',  'block' ],
+    [SidePanelContent.CurrentGameSetup]:    [ 'currentGameSetupPanel',                  'block' ],
+    [SidePanelContent.NewGame]:             [ 'newGamePanel',                           'block' ],
+    [SidePanelContent.GameRecords]:         [ 'gameRecordsPanel',                       'block' ],
+    [SidePanelContent.GamePresetSelection]: [ 'gamePresetSelectionPanel',               'flex'  ],
+    [SidePanelContent.BoardPresetSelection]:[ 'boardPresetSelectionPanel',              'flex'  ],
+    [SidePanelContent.ActiveLocalGames]:    [ 'activeLocalGamesPanel',                  'block' ],
+    [SidePanelContent.PendingGames]:        [ 'pendingGamesPanel',                      'block' ],
+    [SidePanelContent.ActiveOnlineGames]:   [ 'activeOnlineGamesPanel',                 'block' ],
+    [SidePanelContent.FinishedOnlineGames]: [ 'finishedOnlineGamesPanel',               'block' ],
+    [SidePanelContent.Account]:             [ 'accountPanel',                           'block' ],
+    [SidePanelContent.ConfigureOnlinePlayers]: [ 'configureOnlinePlayersPanel',         'flex'  ],
+    [SidePanelContent.ConfigureViewport]:   [ 'configureViewportPanel',                 'block' ],
+};
+
+// Rebuilds the nav chrome (title, Up-button disabled state) and toggles which content panel is
+// visible. Does NOT render any children buttons - each node with a nonempty children list
 // (Home/CurrentGameSetup/NewGame/GameRecords/CommandReference/ClegReference) does that itself, via
 // childButtons() below, into its own panel/container (see Renderer._refreshSidePanel()).
 export function renderSidePanelChrome(current: SidePanelContent, els: SidePanelElements): void {
@@ -241,48 +273,9 @@ export function renderSidePanelChrome(current: SidePanelContent, els: SidePanelE
     els.titleEl.textContent = SidePanelTitle[current];
     els.upBtn.disabled = parent === null;
 
-    els.homePanel.style.display                = current === SidePanelContent.Home                ? 'block' : 'none';
-    els.historyPanel.style.display             = current === SidePanelContent.History             ? 'flex'  : 'none';
-    els.statusPanel.style.display              = current === SidePanelContent.Status              ? 'block' : 'none';
-    els.chatPanel.style.display                 = current === SidePanelContent.Chat                ? 'flex'  : 'none';
-    els.commandsPanel.style.display            = current === SidePanelContent.CommandReference    ? 'block' : 'none';
-    els.commandReferenceGamePanel.style.display =
-        current === SidePanelContent.CommandReferenceGame ? 'block' : 'none';
-    els.commandReferenceDisplayPanel.style.display =
-        current === SidePanelContent.CommandReferenceDisplay ? 'block' : 'none';
-    els.commandReferenceNewGameSetupPanel.style.display =
-        current === SidePanelContent.CommandReferenceNewGameSetup ? 'block' : 'none';
-    els.commandReferenceGamePresetsPanel.style.display =
-        current === SidePanelContent.CommandReferenceGamePresets ? 'block' : 'none';
-    els.commandReferenceOnlineMultiplayerPanel.style.display =
-        current === SidePanelContent.CommandReferenceOnlineMultiplayer ? 'block' : 'none';
-    els.clegReferencePanel.style.display =
-        current === SidePanelContent.ClegReference ? 'block' : 'none';
-    els.commandReferenceBoardTypesPanel.style.display =
-        current === SidePanelContent.CommandReferenceBoardTypes ? 'block' : 'none';
-    els.commandReferenceBoardModifiersPanel.style.display =
-        current === SidePanelContent.CommandReferenceBoardModifiers ? 'block' : 'none';
-    els.commandReferenceSelectorsPanel.style.display =
-        current === SidePanelContent.CommandReferenceSelectors ? 'block' : 'none';
-    els.commandReferenceLocalReplaceSelectorsPanel.style.display =
-        current === SidePanelContent.CommandReferenceLocalReplaceSelectors ? 'block' : 'none';
-    els.commandReferenceFormSelectorsPanel.style.display =
-        current === SidePanelContent.CommandReferenceFormSelectors ? 'block' : 'none';
-    els.commandReferenceBuiltinFunctionsPanel.style.display =
-        current === SidePanelContent.CommandReferenceBuiltinFunctions ? 'block' : 'none';
-    els.currentGameSetupPanel.style.display    = current === SidePanelContent.CurrentGameSetup    ? 'block' : 'none';
-    els.newGamePanel.style.display             = current === SidePanelContent.NewGame             ? 'block' : 'none';
-    els.gameRecordsPanel.style.display         = current === SidePanelContent.GameRecords         ? 'block' : 'none';
-    els.gamePresetSelectionPanel.style.display = current === SidePanelContent.GamePresetSelection ? 'flex' : 'none';
-    els.boardPresetSelectionPanel.style.display =
-        current === SidePanelContent.BoardPresetSelection ? 'flex' : 'none';
-    els.activeLocalGamesPanel.style.display    = current === SidePanelContent.ActiveLocalGames    ? 'block' : 'none';
-    els.pendingGamesPanel.style.display        = current === SidePanelContent.PendingGames        ? 'block' : 'none';
-    els.activeOnlineGamesPanel.style.display   = current === SidePanelContent.ActiveOnlineGames   ? 'block' : 'none';
-    els.finishedOnlineGamesPanel.style.display = current === SidePanelContent.FinishedOnlineGames ? 'block' : 'none';
-    els.accountPanel.style.display             = current === SidePanelContent.Account             ? 'block' : 'none';
-    els.configureOnlinePlayersPanel.style.display = current === SidePanelContent.ConfigureOnlinePlayers ? 'flex' : 'none';
-    els.configureViewportPanel.style.display   = current === SidePanelContent.ConfigureViewport   ? 'block' : 'none';
+    for (const [node, [key, shown]] of Object.entries(SidePanelDisplay) as
+            [SidePanelContent, [keyof SidePanelElements, 'block' | 'flex']][])
+        els[key].style.display = node === current ? shown : 'none';
 }
 
 // Builds one full-width nav button per entry in `children` (dataset.child =
@@ -388,22 +381,26 @@ export const fmtTurnList = (
             return `${stoneIcons}&nbsp;${fmtPlayerString(players, player)}${crownSuffix}${protSuffix}${friendSuffix}`;
         })
         .join('&nbsp;'.repeat(5));
-// Renders e.g. "⬤ P1:5  P2:2   ⬤ P2:3" (two spaces between players,
-// three between stones), each stone's circle followed by every player
-// who has a finite placement limit for that color - see
-// GameConfig.playerStonePlaceLimit's doc comment in types.ts. A player
-// with no limit (null/unlimited) is omitted from that stone's entry,
-// and a stone nobody has a limit on at all is omitted entirely.
-export const fmtPlaceLimit = (limit: (number | null)[][], colorGen: ColorGen) =>
-    limit
+// Renders a [stone-1][player-1] grid as e.g. "⬤ P1:5  P2:2   ⬤ P2:3" (two spaces between
+// players, three between stones): each stone's circle followed by whichever of its players
+// `entry` maps to a value string - a player it returns null for is omitted from that stone's
+// entry, and a stone with no surviving entry at all is omitted entirely.
+export const fmtPlayerStoneGrid = <T>(
+    grid: T[][], colorGen: ColorGen, entry: (v: T, player: number) => string | null,
+) =>
+    grid
         .map((row, i) => {
             const entries = row
-                .map((lim, j) => lim !== null ? `P${j + 1}:${lim}` : null)
+                .map((v, j) => entry(v, j + 1))
                 .filter((s): s is string => s !== null);
             return entries.length > 0 ? `${coloredStoneCircle(i + 1, colorGen)}&nbsp;${entries.join('&nbsp;&nbsp;')}` : null;
         })
         .filter((s): s is string => s !== null)
         .join('&nbsp;&nbsp;&nbsp;');
+// Every player who has a finite placement limit for a stone color - see
+// GameConfig.playerStonePlaceLimit's doc comment in types.ts.
+export const fmtPlaceLimit = (limit: (number | null)[][], colorGen: ColorGen) =>
+    fmtPlayerStoneGrid(limit, colorGen, (lim, p) => lim !== null ? `P${p}:${lim}` : null);
 // Renders e.g. "⬤ 5   ⬤ ∞" (three spaces between stones), each
 // stone's circle followed by its total-across-all-players placement
 // limit ('∞' for null/unlimited) - see GameConfig.globalStonePlaceLimit's
