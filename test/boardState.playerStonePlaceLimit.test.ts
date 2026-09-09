@@ -6,19 +6,18 @@
 // that turn (see shared/boardState.ts).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BoardState } from '../shared/boardState.ts';
 import { rectangularBoard } from '../shared/boardConfig.ts';
+import { makeBoardState, allStonesTurns, soloStoneTurns } from './boardStateHelpers.ts';
 
 // 5x5 empty board; player 1 alone moves every turn (turnList has a single
 // entry), offered both stones each turn, so captures/liberties never come
 // into play - isolating the placement-count-limit mechanism from the rest of
 // the rules. Node indices used below (0, 4, 20) are the board's far corners,
-// so placements never interact via adjacency either.
+// so placements never interact via adjacency either. Player 2 exists (and so
+// gets their own row in every count/limit below) but never gets a turn.
 function emptyGame(playerStonePlaceLimit: (number | null)[][]) {
-    const bc = rectangularBoard(5, 5);
-    const turnList = [{ player: 1, stones: [1, 1], protected: [0, 0], friendly: [0, 0] }];
-    return new BoardState(2, 2, turnList, playerStonePlaceLimit, [null, null], { 1: new Set([1]), 2: new Set([2]) },
-        false, 'area', [0, 0], 'situational', false, null, new Array(bc.N).fill(0), bc);
+    return makeBoardState(
+        rectangularBoard(5, 5), allStonesTurns(1, 2), { numPlayers: 2, playerStonePlaceLimit });
 }
 
 test(
@@ -70,13 +69,7 @@ test('HistoryEntry.playerStonePlaceCnt is cumulative across plies and correctly 
 });
 
 test('a pass leaves playerStonePlaceCnt unchanged', () => {
-    const bc = rectangularBoard(1, 1);
-    const turnList = [
-        { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
-        { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
-    ];
-    const bs = new BoardState(2, 2, turnList, [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) },
-        false, 'area', [0, 0], 'situational', false, null, new Array(bc.N).fill(0), bc);
+    const bs = makeBoardState(rectangularBoard(1, 1), soloStoneTurns(2));
     bs.makeMove(null);
     bs.makeMove(null);
     assert.deepEqual(bs.playerStonePlaceCnt(), [[0, 0], [0, 0]], 'passes never increment the count');

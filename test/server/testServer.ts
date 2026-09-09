@@ -16,6 +16,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
+import { before, after } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import { WebSocket } from 'ws';
 
@@ -50,6 +51,21 @@ export async function startTestServer(dataDir?: string): Promise<TestServer> {
     };
 }
 
+// Registers node:test before/after hooks that start one startTestServer() for the whole file and
+// close it afterwards, and returns a handle to it. The handle's fields are only filled in once the
+// before hook has run, so read them from inside a test, never at module top level.
+export function useTestServer(): { url: string; dataDir: string } {
+    const handle = { url: '', dataDir: '' };
+    let server: TestServer;
+    before(async () => {
+        server = await startTestServer();
+        handle.url = server.url;
+        handle.dataDir = server.dataDir;
+    });
+    after(async () => { await server.close(); });
+    return handle;
+}
+
 // Spawns server/src/index.ts as a real child process (via tsx, resolved from
 // server/node_modules) pointed at `dataDir`, waits for it to report the
 // assigned ephemeral port, and returns a handle to stop it. Use this (not
@@ -79,6 +95,23 @@ export function startTestServerProcess(dataDir: string): Promise<{ url: string; 
             if (code !== 0 && code !== null) reject(new Error(`server process exited early with code ${code}`));
         });
     });
+}
+
+// Runs `beforeRestart` against a freshly spawned server process on its own temp data dir, then
+// stops it and runs `afterRestart` against a second process on that same dir. Killing the process
+// destroys every live connection (and the server's whole in-memory user/game state) structurally,
+// which is the only way a client-side test can prove a user is genuinely offline or that data
+// really came off disk - there's no acknowledgment a test could otherwise wait on.
+export async function withRestartedServer(
+    prefix: string,
+    beforeRestart: (url: string) => Promise<void>,
+    afterRestart: (url: string) => Promise<void>,
+): Promise<void> {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    const first = await startTestServerProcess(dataDir);
+    try { await beforeRestart(first.url); } finally { await first.stop(); }
+    const second = await startTestServerProcess(dataDir);
+    try { await afterRestart(second.url); } finally { await second.stop(); }
 }
 
 export interface TestClient {
@@ -141,4 +174,12 @@ export function connect(url: string): Promise<TestClient> {
             close: () => new Promise<void>(res => { ws.once('close', () => res()); ws.close(); }),
         }));
     });
+}
+
+// Opens a connection and registers `name` on it. REGISTER auto-logs-in that connection, so the
+// returned client is ready to issue authenticated requests.
+export async function registerAndLogin(url: string, name: string, password = 'pw'): Promise<TestClient> {
+    const client = await connect(url);
+    await client.req('REGISTER', { name, password });
+    return client;
 }

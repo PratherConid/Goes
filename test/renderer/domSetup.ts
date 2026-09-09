@@ -18,7 +18,7 @@ const gamePresetsDir = path.join(__dirname, '..', '..', 'public', 'game_presets'
 const boardConfigDir = path.join(__dirname, '..', '..', 'public', 'board_presets');
 
 // src/renderer.ts's _loadPresets()/_loadBoardConfigs() call fetch('/game_presets/<name>.json')/
-// fetch('/board_presets/<name>.json') at startup. There's no real HTTP server in this environment,
+// fetch('/board_presets/<name>.cleg') at startup. There's no real HTTP server in this environment,
 // and Node's global fetch rejects relative URLs outright, so route just those two paths to the
 // real files on disk instead - lets tests exercise real preset data rather than the fetch always
 // failing (caught, but noisy - see _loadPresets()/_loadBoardConfigs()'s per-entry try/catch).
@@ -26,15 +26,16 @@ const boardConfigDir = path.join(__dirname, '..', '..', 'public', 'board_presets
 function installFetchMock(): void {
     const mockFetch = (async (input: unknown) => {
         const url = typeof input === 'string' ? input : String(input);
-        const gameMatch = url.match(/^\/game_presets\/([\w.-]+\.json)$/);
+        const gameMatch = url.match(/^\/game_presets\/([^/]+\.json)$/);
         if (gameMatch) {
             const body = await fs.promises.readFile(path.join(gamePresetsDir, gameMatch[1]), 'utf8');
             return { ok: true, status: 200, json: async () => JSON.parse(body) };
         }
-        const boardMatch = url.match(/^\/board_presets\/([\w.-]+\.json)$/);
+        // Board presets are plain cleg source text, read back via .text() rather than .json().
+        const boardMatch = url.match(/^\/board_presets\/([^/]+\.cleg)$/);
         if (boardMatch) {
             const body = await fs.promises.readFile(path.join(boardConfigDir, boardMatch[1]), 'utf8');
-            return { ok: true, status: 200, json: async () => JSON.parse(body) };
+            return { ok: true, status: 200, text: async () => body };
         }
         throw new TypeError(`domSetup's fetch mock has no route for: ${url}`);
     }) as typeof fetch;
@@ -181,4 +182,20 @@ export function setupDom(): void {
 
     (globalThis as any).WebSocket = FakeWebSocket;
     installFetchMock();
+}
+
+// A plain click is pointerdown+pointerup with no movement between them (see
+// Renderer._onBoardPointerDown, src/renderer.ts) - mouse/touch events aren't listened to directly,
+// only the unified Pointer Events real browsers also generate from them (see the PointerEvent
+// polyfill in setupDom above).
+export function clickAt(target: SVGSVGElement, clientX: number, clientY: number): void {
+    const opts = { clientX, clientY, bubbles: true, pointerId: 1 };
+    target.dispatchEvent(new PointerEvent('pointerdown', opts));
+    target.dispatchEvent(new PointerEvent('pointerup', opts));
+}
+
+// Clicks the exact center of the board, which for an odd x odd rectangular board is a node - see
+// BOARD_PX above.
+export function clickBoardCenter(target: SVGSVGElement): void {
+    clickAt(target, BOARD_PX / 2, BOARD_PX / 2);
 }

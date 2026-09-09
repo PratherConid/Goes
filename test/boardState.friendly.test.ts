@@ -4,8 +4,8 @@
 // than an occupied neighbor (see groupLiberty in shared/boardState.ts).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BoardState } from '../shared/boardState.ts';
 import { rectangularBoard } from '../shared/boardConfig.ts';
+import { makeBoardState } from './boardStateHelpers.ts';
 
 // 3x3 board: black (1) is a lone stone at the center (4), completely
 // surrounded by white (2) at 1, 3, 5, 7 - normally zero liberties. White
@@ -25,10 +25,7 @@ test('a friendly color is not counted as blocking a neighboring group\'s liberti
         { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 1] },  // white (stone 2) friendly
         { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
     ];
-    const bs = new BoardState(
-        2, 2, turnList, [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) },
-        false, 'area', [0, 0], 'situational', false, null, board, bc,
-    );
+    const bs = makeBoardState(bc, turnList, { board });
 
     assert.deepEqual(bs.legalMovesData().passCapture, new Set(),
         'black has real liberties via its friendly white neighbors, so it is not an early-capture target');
@@ -43,10 +40,7 @@ test('without friendly, the same lone stone is captured as soon as its neighbor 
         { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },  // white not friendly
         { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
     ];
-    const bs = new BoardState(
-        2, 2, turnList, [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) },
-        false, 'area', [0, 0], 'situational', false, null, board, bc,
-    );
+    const bs = makeBoardState(bc, turnList, { board });
 
     assert.deepEqual(bs.legalMovesData().passCapture, new Set([4]),
         'black is genuinely at zero liberties and is an early-capture target');
@@ -73,10 +67,7 @@ test('a friendly mover cannot capture an opponent group by filling its last libe
         { player: 1, stones: [1, 0], protected: [0, 0], friendly: [1, 0] },  // black (stone 1) friendly
         { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
     ];
-    const bs = new BoardState(
-        2, 2, turnList, [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) },
-        false, 'area', [0, 0], 'situational', false, null, board, bc,
-    );
+    const bs = makeBoardState(bc, turnList, { board });
 
     assert.deepEqual(bs.legalMovesData().captures[1][1], new Set(),
         'legal (black still has other empty neighbors to move into), but captures nothing');
@@ -91,10 +82,7 @@ test('without friendly, the same move captures the opponent as expected', () => 
         { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
         { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
     ];
-    const bs = new BoardState(
-        2, 2, turnList, [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) },
-        false, 'area', [0, 0], 'situational', false, null, board, bc,
-    );
+    const bs = makeBoardState(bc, turnList, { board });
 
     assert.deepEqual(bs.legalMovesData().captures[1][1], new Set([4]));
     assert.equal(bs.makeMove(1), true);

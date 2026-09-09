@@ -6,14 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { diamondCubicBoard } from '../shared/boardConfig.ts';
-
-function edgeCount(adj: number[][]): number {
-    return adj.flat().reduce((s, v) => s + v, 0) / 2;
-}
-
-function degrees(adj: number[][]): number[] {
-    return adj.map(row => row.reduce((s, v) => s + v, 0));
-}
+import { edgeCount, degrees, degreeSequence, assertConnected } from './graphHelpers.ts';
 
 // C(w+1, 3) = (w-1)*w*(w+1)/6 - the number of up-tetrahedra (barycentric points summing to
 // (w - 1) - 1 = w - 2, each with 4 coordinates), each contributing exactly one hub and 4 edges.
@@ -38,8 +31,7 @@ test('w=2 is a bare 4-armed star: the whole tetrahedron centered with no survivi
     const bc = diamondCubicBoard(2);
     assert.equal(bc.N, 5); // 4 original corners + 1 hub
     assert.equal(edgeCount(bc.adj), 4);
-    const deg = degrees(bc.adj);
-    assert.deepEqual([...deg].sort((a, b) => a - b), [1, 1, 1, 1, 4]);
+    assert.deepEqual(degreeSequence(bc.adj), [1, 1, 1, 1, 4]);
 });
 
 test('every node has degree <= 4 (true diamond coordination, never more) across a range of w', () => {
@@ -82,15 +74,7 @@ test('every edge (hub-to-corner bond) has unit length - not the underlying unit 
 });
 
 test('the board is connected', () => {
-    const bc = diamondCubicBoard(9);
-    const seen = new Set<number>([0]);
-    const queue = [0];
-    while (queue.length > 0) {
-        const cur = queue.pop()!;
-        for (let j = 0; j < bc.N; j++)
-            if (bc.adj[cur][j] && !seen.has(j)) { seen.add(j); queue.push(j); }
-    }
-    assert.equal(seen.size, bc.N);
+    assertConnected(diamondCubicBoard(9).adj);
 });
 
 test('rejects a non-positive/non-integer w', () => {

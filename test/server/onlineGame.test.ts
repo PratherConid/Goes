@@ -1,62 +1,37 @@
-import * as fs from 'node:fs';
-import * as os from 'node:os';
-import * as path from 'node:path';
-import { test, before, after } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    startTestServer, startTestServerProcess, connect, waitForEvents, type TestServer, type TestClient,
+    useTestServer, withRestartedServer, connect, registerAndLogin, waitForEvents,
 } from './testServer.ts';
-let server: TestServer;
 
-before(async () => { server = await startTestServer(); });
-after(async () => { await server.close(); });
+const server = useTestServer();
 
-// A 2-player, both-slots-claimed-later game where nobody ever has a legal
-// PLACE move (1x1 board), so both players simply pass to a deterministic
-// finish - avoids capture/liberty topology entirely, same approach used in
-// test/boardState.finishedGame.test.ts. Player setup is no longer part of
-// the config itself - see fixedRequest() below, sent as a separate
-// onlinePlayerRequest field (see server/src/onlineGameManager.ts's
-// OnlinePlayerRequest-based createGame()).
-function passOnlyConfig() {
+// The wire (JSON) shape of a `numPlayers`-player GameConfig, as game/create takes it: one stone
+// color per player, each player offered only their own, nothing protected or friendly.
+function gameConfig(boardDescr: string, numPlayers: number, allowSuicide: boolean) {
+    const zeros = new Array(numPlayers).fill(0);
     return {
-        boardDescr: 'rectB(1, 1);', numStones: 2, numPlayers: 2,
-        turnList: [
-            { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
-            { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
-        ],
-        stoneToPlayerMap: { 1: [1], 2: [2] },
-        forcedPassOnly: false, scoreRule: 'area', allowSuicide: false,
+        boardDescr, numStones: numPlayers, numPlayers,
+        turnList: Array.from({ length: numPlayers }, (_, i) => ({
+            player: i + 1,
+            stones: zeros.map((_, k) => (k === i ? 1 : 0)),
+            protected: zeros, friendly: zeros,
+        })),
+        stoneToPlayerMap: Object.fromEntries(Array.from({ length: numPlayers }, (_, i) => [i + 1, [i + 1]])),
+        forcedPassOnly: false, scoreRule: 'area', allowSuicide,
     };
 }
+
+// A 1x1 board gives nobody a legal PLACE move ever, so both players simply pass to a deterministic
+// finish - avoids capture/liberty topology entirely, same approach used in
+// test/boardState.finishedGame.test.ts.
+const passOnlyConfig = () => gameConfig('rectB(1, 1);', 2, false);
 
 // Unlike passOnlyConfig, real placements are legal (allowSuicide sidesteps liberty/capture
 // bookkeeping entirely, so any empty cell is always a legal placement) - needed for the withdraw
 // tests below, which need several distinct real moves (not just passes) to withdraw between.
-function realTwoPlayerConfig() {
-    return {
-        boardDescr: 'rectB(3, 3);', numStones: 2, numPlayers: 2,
-        turnList: [
-            { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
-            { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
-        ],
-        stoneToPlayerMap: { 1: [1], 2: [2] },
-        forcedPassOnly: false, scoreRule: 'area', allowSuicide: true,
-    };
-}
-
-function realThreePlayerConfig() {
-    return {
-        boardDescr: 'rectB(5, 5);', numStones: 3, numPlayers: 3,
-        turnList: [
-            { player: 1, stones: [1, 0, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },
-            { player: 2, stones: [0, 1, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },
-            { player: 3, stones: [0, 0, 1], protected: [0, 0, 0], friendly: [0, 0, 0] },
-        ],
-        stoneToPlayerMap: { 1: [1], 2: [2], 3: [3] },
-        forcedPassOnly: false, scoreRule: 'area', allowSuicide: true,
-    };
-}
+const realTwoPlayerConfig = () => gameConfig('rectB(3, 3);', 2, true);
+const realThreePlayerConfig = () => gameConfig('rectB(5, 5);', 3, true);
 
 // Builds a fixed-order OnlinePlayerRequest wire payload from [slot, {type, name}] entries.
 function fixedRequest(entries: [number, { type: string; name: string }][]) {
@@ -67,15 +42,9 @@ function fixedRequest(entries: [number, { type: string; name: string }][]) {
     };
 }
 
-async function registerAndLogin(name: string): Promise<TestClient> {
-    const client = await connect(server.url);
-    await client.req('REGISTER', { name, password: 'pw' });
-    return client;
-}
-
 test('game/create + game/join broadcast byte-identical config to both observers (no personalized broadcasts)', async () => {
-    const alice = await registerAndLogin('alice');
-    const bob = await registerAndLogin('bob');
+    const alice = await registerAndLogin(server.url, 'alice');
+    const bob = await registerAndLogin(server.url, 'bob');
 
     const aliceStart = new Promise(resolve => alice.onEvent('game/start', resolve));
     const bobStart = new Promise(resolve => bob.onEvent('game/start', resolve));
@@ -98,8 +67,8 @@ test('game/create + game/join broadcast byte-identical config to both observers 
 });
 
 test('alternating passes reach a natural finish, both observers see both moves', async () => {
-    const alice = await registerAndLogin('carol');
-    const bob = await registerAndLogin('dave');
+    const alice = await registerAndLogin(server.url, 'carol');
+    const bob = await registerAndLogin(server.url, 'dave');
 
     const { id } = await alice.req<{ id: string }>('game/create', {
         config: passOnlyConfig(), onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }]]),
@@ -134,8 +103,8 @@ test('alternating passes reach a natural finish, both observers see both moves',
 });
 
 test('game/resign ends a 2-player game and broadcasts the resigned slot to both observers', async () => {
-    const alice = await registerAndLogin('erin');
-    const bob = await registerAndLogin('frank');
+    const alice = await registerAndLogin(server.url, 'erin');
+    const bob = await registerAndLogin(server.url, 'frank');
 
     // Both slots pre-claimed -> starts immediately ('playing').
     const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
@@ -159,8 +128,8 @@ test('game/resign ends a 2-player game and broadcasts the resigned slot to both 
 });
 
 test('game/sendchat broadcasts to both observers, is seeded via game/subscribe, and rejects non-players', async () => {
-    const alice = await registerAndLogin('tina');
-    const bob = await registerAndLogin('ursula');
+    const alice = await registerAndLogin(server.url, 'tina');
+    const bob = await registerAndLogin(server.url, 'ursula');
 
     const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
         config: passOnlyConfig(),
@@ -183,7 +152,7 @@ test('game/sendchat broadcasts to both observers, is seeded via game/subscribe, 
     assert.deepEqual(state.state.chat, [{ player: 1, time: chatMsg.time, content: 'hello' }]);
 
     // A connection that owns no slot in the game (pure non-player) is rejected.
-    const carol = await registerAndLogin('victor');
+    const carol = await registerAndLogin(server.url, 'victor');
     await assert.rejects(carol.req('game/sendchat', { id, content: 'nope' }));
 
     await alice.close();
@@ -192,8 +161,8 @@ test('game/sendchat broadcasts to both observers, is seeded via game/subscribe, 
 });
 
 test('game/sendchat is rejected once the game has finished', async () => {
-    const alice = await registerAndLogin('wendy');
-    const bob = await registerAndLogin('xavier');
+    const alice = await registerAndLogin(server.url, 'wendy');
+    const bob = await registerAndLogin(server.url, 'xavier');
 
     const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
         config: passOnlyConfig(),
@@ -213,8 +182,8 @@ test('game/sendchat is rejected once the game has finished', async () => {
 });
 
 test("a finished game's chat is included in a fresh LOGIN response", async () => {
-    const alice = await registerAndLogin('yolanda');
-    const bob = await registerAndLogin('zach');
+    const alice = await registerAndLogin(server.url, 'yolanda');
+    const bob = await registerAndLogin(server.url, 'zach');
 
     const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
         config: passOnlyConfig(),
@@ -239,44 +208,32 @@ test("a finished game's chat is included in a fresh LOGIN response", async () =>
 });
 
 test('a finished game survives a real server restart and shows up in a fresh LOGIN', async () => {
-    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'goes-test-restart-'));
-    const first = await startTestServerProcess(dataDir);
-    let stopped = false;
-    try {
-        const alice = await connect(first.url);
-        await alice.req('REGISTER', { name: 'grace', password: 'pw' });
-        const bob = await connect(first.url);
-        await bob.req('REGISTER', { name: 'henry', password: 'pw' });
+    let gameId = '';
+    await withRestartedServer('goes-test-restart-', async url => {
+        const alice = await registerAndLogin(url, 'grace');
+        const bob = await registerAndLogin(url, 'henry');
 
         const { id } = await alice.req<{ id: string }>('game/create', {
             config: passOnlyConfig(),
             onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'client', name: 'henry' }]]),
         });
+        gameId = id;
         await alice.req('game/move', { id, moveIndex: null, clientIdx: 0 });
         await bob.req('game/move', { id, moveIndex: null, clientIdx: 1 });
 
         await alice.close();
         await bob.close();
-        await first.stop();
-        stopped = true;
-
-        const second = await startTestServerProcess(dataDir);
-        try {
-            const graceAgain = await connect(second.url);
-            const login = await graceAgain.req<{ finishedGames: { id: string; finishedGame: unknown }[] }>(
-                'LOGIN', { name: 'grace', password: 'pw' });
-            assert.ok(login.finishedGames.some(g => g.id === id), 'finished game should survive the restart');
-            await graceAgain.close();
-        } finally {
-            await second.stop();
-        }
-    } finally {
-        if (!stopped) await first.stop();
-    }
+    }, async url => {
+        const graceAgain = await connect(url);
+        const login = await graceAgain.req<{ finishedGames: { id: string; finishedGame: unknown }[] }>(
+            'LOGIN', { name: 'grace', password: 'pw' });
+        assert.ok(login.finishedGames.some(g => g.id === gameId), 'finished game should survive the restart');
+        await graceAgain.close();
+    });
 });
 
 test('game/create rejects an invited username that does not exist', async () => {
-    const alice = await registerAndLogin('ivan');
+    const alice = await registerAndLogin(server.url, 'ivan');
     await assert.rejects(
         alice.req('game/create', {
             config: passOnlyConfig(),
@@ -289,99 +246,67 @@ test('game/create rejects an invited username that does not exist', async () => 
     await alice.close();
 });
 
-// Regression tests for the offline-invitee rejection in wsServer.ts's
-// game/create handler. These need a genuinely offline account - i.e. no live
-// WebSocket connection anywhere in userToWs for that name - which the
-// client-only protocol here can't prove deterministically: there's no
-// LOGOUT acknowledgment, so a connection's own close() resolving only
-// reflects what that client observed, never what the server has processed
-// (its 'close' handler, which clears userToWs, runs on a separate event from
-// a separate socket object). A real process restart sidesteps this rather
-// than racing it: killing the server process destroys every live connection
-// (and userToWs itself) structurally, so there is no ordering to prove -
-// same startTestServerProcess() + dedicated temp dataDir pattern as the
-// restart test above (an isolated dir, not any real/shared store).
+// Regression test for the offline-invitee rejection in wsServer.ts's game/create handler. The
+// accounts are registered before the restart purely so they exist on disk but hold no connection
+// afterwards - see withRestartedServer on why a restart is the only way to prove that.
 test('game/create rejects invited usernames that are offline, proven via a real process restart', async () => {
-    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'goes-test-offline-invite-'));
-    const first = await startTestServerProcess(dataDir);
-    let stopped = false;
-    try {
+    await withRestartedServer('goes-test-offline-invite-', async url => {
         for (const name of ['xavier', 'zoe', 'amir']) {
-            const c = await connect(first.url);
-            await c.req('REGISTER', { name, password: 'pw' });
+            const c = await registerAndLogin(url, name);
             await c.close();
         }
-        await first.stop();
-        stopped = true;
+    }, async url => {
+        const alice = await registerAndLogin(url, 'walter');
 
-        const second = await startTestServerProcess(dataDir);
-        try {
-            const alice = await connect(second.url);
-            await alice.req('REGISTER', { name: 'walter', password: 'pw' });
+        await assert.rejects(
+            alice.req('game/create', {
+                config: passOnlyConfig(),
+                onlinePlayerRequest: fixedRequest([
+                    [1, { type: 'local', name: '' }], [2, { type: 'pendingInvitedOnline', name: 'xavier' }],
+                ]),
+            }),
+            (e: any) => {
+                assert.equal(e.message, 'Cannot create game. User xavier is offline.');
+                assert.equal(e.statusCode, 409);
+                return true;
+            },
+        );
 
-            await assert.rejects(
-                alice.req('game/create', {
-                    config: passOnlyConfig(),
-                    onlinePlayerRequest: fixedRequest([
-                        [1, { type: 'local', name: '' }], [2, { type: 'pendingInvitedOnline', name: 'xavier' }],
-                    ]),
-                }),
-                (e: any) => {
-                    assert.equal(e.message, 'Cannot create game. User xavier is offline.');
-                    assert.equal(e.statusCode, 409);
-                    return true;
-                },
-            );
+        await assert.rejects(
+            alice.req('game/create', {
+                config: realThreePlayerConfig(),
+                onlinePlayerRequest: fixedRequest([
+                    [1, { type: 'local', name: '' }],
+                    [2, { type: 'pendingInvitedOnline', name: 'zoe' }],
+                    [3, { type: 'pendingInvitedOnline', name: 'amir' }],
+                ]),
+            }),
+            (e: any) => {
+                assert.match(e.message, /^Cannot create game\. Users .* are offline\.$/);
+                assert.match(e.message, /zoe/);
+                assert.match(e.message, /amir/);
+                assert.equal(e.statusCode, 409);
+                return true;
+            },
+        );
 
-            const threePlayerConfig = {
-                ...passOnlyConfig(), numPlayers: 3, numStones: 3,
-                turnList: [
-                    { player: 1, stones: [1, 0, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },
-                    { player: 2, stones: [0, 1, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },
-                    { player: 3, stones: [0, 0, 1], protected: [0, 0, 0], friendly: [0, 0, 0] },
-                ],
-                stoneToPlayerMap: { 1: [1], 2: [2], 3: [3] },
-            };
-            await assert.rejects(
-                alice.req('game/create', {
-                    config: threePlayerConfig,
-                    onlinePlayerRequest: fixedRequest([
-                        [1, { type: 'local', name: '' }],
-                        [2, { type: 'pendingInvitedOnline', name: 'zoe' }],
-                        [3, { type: 'pendingInvitedOnline', name: 'amir' }],
-                    ]),
-                }),
-                (e: any) => {
-                    assert.match(e.message, /^Cannot create game\. Users .* are offline\.$/);
-                    assert.match(e.message, /zoe/);
-                    assert.match(e.message, /amir/);
-                    assert.equal(e.statusCode, 409);
-                    return true;
-                },
-            );
+        // No game (and thus no invite) should have actually been created for
+        // the rejected xavier invite above - confirm by logging back in as
+        // xavier and checking no invite arrived.
+        const xavierAgain = await connect(url);
+        const xavierInvites: unknown[] = [];
+        xavierAgain.onEvent('game/invite', m => xavierInvites.push(m));
+        await xavierAgain.req('LOGIN', { name: 'xavier', password: 'pw' });
+        await new Promise(r => setImmediate(r));
+        assert.equal(xavierInvites.length, 0);
 
-            // No game (and thus no invite) should have actually been created for
-            // the rejected xavier invite above - confirm by logging back in as
-            // xavier and checking no invite arrived.
-            const xavierAgain = await connect(second.url);
-            const xavierInvites: unknown[] = [];
-            xavierAgain.onEvent('game/invite', m => xavierInvites.push(m));
-            await xavierAgain.req('LOGIN', { name: 'xavier', password: 'pw' });
-            await new Promise(r => setImmediate(r));
-            assert.equal(xavierInvites.length, 0);
-
-            await alice.close();
-            await xavierAgain.close();
-        } finally {
-            await second.stop();
-        }
-    } finally {
-        if (!stopped) await first.stop();
-    }
+        await alice.close();
+        await xavierAgain.close();
+    });
 });
 
 test('game/create ignores a stale invite left in the inactive list (fixed vs random)', async () => {
-    const alice = await registerAndLogin('nadia');
+    const alice = await registerAndLogin(server.url, 'nadia');
     // onlinePlayerRequest carries a 'pendingInvitedOnline' entry for a
     // nonexistent user in fixedOrder, but fixed:false means only randomOrder
     // is actually used - the leftover fixedOrder entry (e.g. from an earlier
@@ -399,8 +324,8 @@ test('game/create ignores a stale invite left in the inactive list (fixed vs ran
 });
 
 test('invite + accept starts the game and notifies both observers', async () => {
-    const alice = await registerAndLogin('julia');
-    const bob = await registerAndLogin('kevin');
+    const alice = await registerAndLogin(server.url, 'julia');
+    const bob = await registerAndLogin(server.url, 'kevin');
 
     const bobInvite = new Promise<any>(resolve => bob.onEvent('game/invite', resolve));
     const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
@@ -428,8 +353,8 @@ test('invite + accept starts the game and notifies both observers', async () => 
 });
 
 test('invite + refuse cancels the game and notifies everyone involved', async () => {
-    const alice = await registerAndLogin('laura');
-    const bob = await registerAndLogin('mike');
+    const alice = await registerAndLogin(server.url, 'laura');
+    const bob = await registerAndLogin(server.url, 'mike');
 
     const bobInvite = new Promise<any>(resolve => bob.onEvent('game/invite', resolve));
     const { id } = await alice.req<{ id: string }>('game/create', {
@@ -461,9 +386,9 @@ test(
     'a decline notifies every other invitee immediately, but the game stays open until everyone '
     + 'has responded, and a too-late accept is rejected with a specific message',
     async () => {
-    const alice = await registerAndLogin('olga');
-    const bob = await registerAndLogin('peter');
-    const carol = await registerAndLogin('quinn');
+    const alice = await registerAndLogin(server.url, 'olga');
+    const bob = await registerAndLogin(server.url, 'peter');
+    const carol = await registerAndLogin(server.url, 'quinn');
 
     const bobInvite = new Promise<any>(resolve => bob.onEvent('game/invite', resolve));
     const carolInvite = new Promise<any>(resolve => carol.onEvent('game/invite', resolve));
@@ -520,8 +445,8 @@ test(
 });
 
 test('inviting the same user into two slots resolves both from one response, with only one invite popup', async () => {
-    const alice = await registerAndLogin('rachel');
-    const bob = await registerAndLogin('sam');
+    const alice = await registerAndLogin(server.url, 'rachel');
+    const bob = await registerAndLogin(server.url, 'sam');
 
     const bobInvites: any[] = [];
     const firstBobInvite = new Promise<any>(resolve =>
@@ -549,9 +474,9 @@ test('inviting the same user into two slots resolves both from one response, wit
 });
 
 test('a withdraw request applies once every remaining player agrees, broadcasting game/withdraw to everyone', async () => {
-    const alice = await registerAndLogin('aaron');
-    const bob = await registerAndLogin('bella');
-    const carol = await registerAndLogin('cindy');
+    const alice = await registerAndLogin(server.url, 'aaron');
+    const bob = await registerAndLogin(server.url, 'bella');
+    const carol = await registerAndLogin(server.url, 'cindy');
 
     const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
         config: realThreePlayerConfig(),
@@ -568,7 +493,7 @@ test('a withdraw request applies once every remaining player agrees, broadcastin
     await bob.req('game/move', { id, moveIndex: 2, clientIdx: 1 });
     await carol.req('game/move', { id, moveIndex: 4, clientIdx: 2 });
     await alice.req('game/move', { id, moveIndex: 10, clientIdx: 3 });
-    // alice's last move is at ply index 3 - the Withdraw button auto-detects it, so this withdraws
+    // alice's last move is at ply index 3 - a toPly-less request auto-detects it, so this withdraws
     // just that one move (numWithdrawn: 1).
 
     const bobProposed = new Promise<any>(resolve => bob.onEvent('game/withdraw-proposed', resolve));
@@ -603,9 +528,9 @@ test('a withdraw request applies once every remaining player agrees, broadcastin
 });
 
 test('a decline notifies everyone else, leaves the game unmodified, and a too-late accept gets a specific error', async () => {
-    const alice = await registerAndLogin('dexter');
-    const bob = await registerAndLogin('elena');
-    const carol = await registerAndLogin('felix');
+    const alice = await registerAndLogin(server.url, 'dexter');
+    const bob = await registerAndLogin(server.url, 'elena');
+    const carol = await registerAndLogin(server.url, 'felix');
 
     const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
         config: realThreePlayerConfig(),
@@ -656,8 +581,8 @@ test('a decline notifies everyone else, leaves the game unmodified, and a too-la
 });
 
 test('requesting withdrawal with no prior moves gets a specific error', async () => {
-    const alice = await registerAndLogin('gabriel');
-    const bob = await registerAndLogin('hannah');
+    const alice = await registerAndLogin(server.url, 'gabriel');
+    const bob = await registerAndLogin(server.url, 'hannah');
     const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
         config: realTwoPlayerConfig(),
         onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'client', name: 'hannah' }]]),
@@ -678,8 +603,8 @@ test('requesting withdrawal with no prior moves gets a specific error', async ()
 });
 
 test('a second withdraw request while one is already pending is rejected', async () => {
-    const alice = await registerAndLogin('isabel');
-    const bob = await registerAndLogin('jasper');
+    const alice = await registerAndLogin(server.url, 'isabel');
+    const bob = await registerAndLogin(server.url, 'jasper');
     const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
         config: realTwoPlayerConfig(),
         onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'client', name: 'jasper' }]]),
@@ -704,8 +629,8 @@ test('a second withdraw request while one is already pending is rejected', async
 });
 
 test('game/move and game/resign are rejected while a withdraw vote is pending, and the lock lifts once resolved', async () => {
-    const alice = await registerAndLogin('kara');
-    const bob = await registerAndLogin('liam');
+    const alice = await registerAndLogin(server.url, 'kara');
+    const bob = await registerAndLogin(server.url, 'liam');
     const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
         config: realTwoPlayerConfig(),
         onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'client', name: 'liam' }]]),

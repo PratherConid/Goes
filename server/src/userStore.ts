@@ -3,9 +3,8 @@
 // are never stored or logged in readable form - only a per-user salt and the
 // scrypt hash of (password, salt).
 //
-// Stateless module: every function takes the state it needs as an argument.
-// Loading (loadUserStore) is the caller's job (see wsServer.ts's attachWebSocket,
-// the one place server/src wires real arguments into these stores).
+// Stateless module: every function takes the state it needs as an argument, and calling
+// loadUserStore() to produce that state is the caller's job.
 
 import { scrypt, randomBytes, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';

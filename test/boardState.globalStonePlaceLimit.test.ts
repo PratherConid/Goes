@@ -6,8 +6,8 @@
 // every player (see calculateLegalMoves in shared/boardState.ts).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BoardState } from '../shared/boardState.ts';
 import { rectangularBoard } from '../shared/boardConfig.ts';
+import { makeBoardState, allStonesTurns } from './boardStateHelpers.ts';
 
 // 5x5 empty board; players 1 and 2 alternate turns, both offered both stones
 // each turn, so captures/liberties never come into play - isolating the
@@ -15,13 +15,8 @@ import { rectangularBoard } from '../shared/boardConfig.ts';
 // used below (0, 4) are the board's far corners, so placements never interact
 // via adjacency either.
 function emptyGame(playerStonePlaceLimit: (number | null)[][], globalStonePlaceLimit: (number | null)[]) {
-    const bc = rectangularBoard(5, 5);
-    const turnList = [
-        { player: 1, stones: [1, 1], protected: [0, 0], friendly: [0, 0] },
-        { player: 2, stones: [1, 1], protected: [0, 0], friendly: [0, 0] },
-    ];
-    return new BoardState(2, 2, turnList, playerStonePlaceLimit, globalStonePlaceLimit, { 1: new Set([1]), 2: new Set([2]) },
-        false, 'area', [0, 0], 'situational', false, null, new Array(bc.N).fill(0), bc);
+    return makeBoardState(
+        rectangularBoard(5, 5), allStonesTurns(2), { playerStonePlaceLimit, globalStonePlaceLimit });
 }
 
 test(

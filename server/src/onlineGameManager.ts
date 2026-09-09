@@ -3,11 +3,12 @@ import { buildBoardFromCleg, typecheckClegAsBoard } from '@shared/clegEval.js';
 import { PlayerInfo, OnlinePlayerRequest, makeId } from '@shared/types.js';
 import type { OnlineStateResponse, PendingGame, ReplayMove, ChatMessage } from '@shared/types.js';
 import { GameConfig, FinishedGame } from '@shared/gameConfig.js';
+import { httpError } from './httpError.js';
 import { recordFinishedGame, getFinishedGames } from './gameRecordStore.js';
 import type { GameRecordStoreState } from './gameRecordStore.js';
 
 // Server-side pending game: extends PendingGame with a set of all connected
-// usernames (creator + joiners). Used by getObservers for broadcasting.
+// usernames (creator + joiners), used for broadcasting.
 interface ServerPendingGame extends PendingGame {
     observers: Set<string>;
     // Whether this game's initial player batch was assigned via fixedOrder
@@ -37,7 +38,6 @@ interface ServerPendingGame extends PendingGame {
 interface WithdrawRequest {
     moveIndex: number;              // ply to withdraw to (situations index right before this move)
     numWithdrawn: number;           // moveInfos().length - moveIndex at request time, for the popup text
-    requestedBy: string;
     unresponded: Map<string, number[]>;   // username -> owned slots, mirrors unrespondedInvited
     refused: Set<string>;
 }
@@ -92,12 +92,18 @@ export class OnlineGameManager {
         this.activeGames.delete(game.id);
         game.engineSessions.clear();   // ephemeral AI session IDs have no value once the game is over
         this.finishedGames.set(game.id, game);
-        const finishedGame = new FinishedGame(
+        void recordFinishedGame(
+            this.gameRecordState, game.id, this._snapshotFinished(game), game.observers, game.chat,
+        ).catch(e => console.error('[onlineGameManager] failed to record finished game', game.id, e));
+    }
+
+    // The replay-only projection of a game (config + moves + resignations) that both persistence
+    // and the login-time finished-game payload hand out.
+    private _snapshotFinished(game: OnlineGame): FinishedGame {
+        return new FinishedGame(
             game.config, game.boardState.moveInfos().map(m => ({ pos: m.pos, stone: m.stone })),
             new Map(game.boardState.resigns),
         );
-        void recordFinishedGame(this.gameRecordState, game.id, finishedGame, game.observers, game.chat).catch(e =>
-            console.error('[onlineGameManager] failed to record finished game', game.id, e));
     }
 
     // Resolves `request` (fixedOrder copied as-is, or randomOrder assigned to
@@ -108,7 +114,7 @@ export class OnlineGameManager {
         try {
             typecheckClegAsBoard(config.boardDescr);
         } catch (e) {
-            throw Object.assign(new Error(e instanceof Error ? e.message : String(e)), { statusCode: 400 });
+            throw httpError(400, e instanceof Error ? e.message : String(e));
         }
         let id: string;
         do { id = makeId(12); } while (this.pendingGames.has(id) || this.activeGames.has(id));
@@ -118,7 +124,7 @@ export class OnlineGameManager {
         try {
             resolved = request.resolve(config.numPlayers);
         } catch (e: any) {
-            throw Object.assign(new Error(e.message), { statusCode: 400 });
+            throw httpError(400, e.message);
         }
         const normalize = (pi: PlayerInfo) => pi.type === 'local' ? new PlayerInfo('client', pi.name) : pi;
         serverConfig.players = new Map([...resolved].map(([slot, pi]) => [slot, normalize(pi)]));
@@ -128,31 +134,27 @@ export class OnlineGameManager {
             if (pi.type === 'pendingInvitedOnline')
                 unrespondedInvited.set(pi.name, [...(unrespondedInvited.get(pi.name) ?? []), slot]);
 
+        const pending: ServerPendingGame = {
+            id, config: serverConfig, observers: new Set(), fixed: request.fixed,
+            refused: new Set(), unrespondedInvited,
+        };
         if (this._readyToStart(serverConfig)) {
             // All slots pre-assigned and confirmed — start immediately.
-            const pending: ServerPendingGame = {
-                id, config: serverConfig, observers: new Set(), fixed: request.fixed,
-                refused: new Set(), unrespondedInvited,
-            };
             this._startGame(pending);
             return { id, status: 'playing' };
         }
-        this.pendingGames.set(id, {
-            id, config: serverConfig, observers: new Set(), fixed: request.fixed,
-            refused: new Set(), unrespondedInvited,
-        });
+        this.pendingGames.set(id, pending);
         return { id, status: 'waiting' };
     }
 
     joinGame(id: string, playerName: string): { position: number; status: 'waiting' | 'playing' } {
         const pending = this.pendingGames.get(id);
         if (!pending) {
-            if (this.activeGames.has(id)) throw Object.assign(new Error('Game already started'), { statusCode: 409 });
-            throw Object.assign(new Error('Game not found'), { statusCode: 404 });
+            if (this.activeGames.has(id)) throw httpError(409, 'Game already started');
+            throw httpError(404, 'Game not found');
         }
         const slots = this._pendingSlots(pending.config);
-        if (slots.length === 0)
-            throw Object.assign(new Error('Game is full'), { statusCode: 409 });
+        if (slots.length === 0) throw httpError(409, 'Game is full');
         // Fixed games fill the lowest-numbered empty slot (deterministic);
         // random-order games keep picking randomly for later joiners too, so
         // the whole random-mode experience stays consistent (see
@@ -189,8 +191,8 @@ export class OnlineGameManager {
     //
     // Once `refused` is non-empty, a further accept can no longer actually seat anyone (the game
     // is doomed regardless) - it throws instead, so the caller gets a specific message rather than
-    // silently joining a dead game. No `notify`/pushes are attached to that throw - notification
-    // already happened on the first decline, so a late accept never needs to trigger it again.
+    // silently joining a dead game. No `notify` is attached to that throw - notification already
+    // happened on the first decline, so a late accept never needs to trigger it again.
     //
     // config.players is intentionally never mutated for a decline/too-late accept - the slot
     // simply stays 'pendingInvitedOnline' forever, which is harmless since the pending game itself
@@ -198,9 +200,9 @@ export class OnlineGameManager {
     respondToInvite(id: string, userName: string, accept: boolean):
         { status: 'waiting' | 'playing' } | { status: 'declined'; notify?: string[] } {
         const pending = this.pendingGames.get(id);
-        if (!pending) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
+        if (!pending) throw httpError(404, 'Game not found');
         const slots = pending.unrespondedInvited.get(userName);
-        if (!slots) throw Object.assign(new Error('No pending invite for you in this game'), { statusCode: 403 });
+        if (!slots) throw httpError(403, 'No pending invite for you in this game');
         pending.unrespondedInvited.delete(userName);
 
         if (accept && pending.refused.size === 0) {
@@ -218,9 +220,7 @@ export class OnlineGameManager {
         if (pending.unrespondedInvited.size === 0) this.pendingGames.delete(id);
 
         if (accept)  // only reachable here when the game was already refused
-            throw Object.assign(
-                new Error(`Game ${id} already refused by another invited player`), { statusCode: 409 },
-            );
+            throw httpError(409, `Game ${id} already refused by another invited player`);
 
         if (!isFirstDecline) return { status: 'declined' };
         const notify = [...new Set([...pending.observers, ...[...pending.config.players.values()].map(pi => pi.name)])]
@@ -296,36 +296,30 @@ export class OnlineGameManager {
 
     getConfig(id: string): GameConfig {
         const game = this._findGame(id);
-        if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
+        if (!game) throw httpError(404, 'Game not found');
         return game.config;
     }
 
-    // Returns {id, finishedGame} for every finished game `userName` observed - sent
-    // to the client at login so it can populate its own finishedGames without
-    // having watched those games live.
+    // Returns {id, finishedGame, chat} for every finished game `userName` observed - sent to the
+    // client at login so it can populate its own finishedGames without having watched those games
+    // live.
     getFinishedGamesFor(userName: string): { id: string; finishedGame: FinishedGame; chat: ChatMessage[] }[] {
         const result: { id: string; finishedGame: FinishedGame; chat: ChatMessage[] }[] = [];
         for (const id of getFinishedGames(this.gameRecordState, userName)) {
             const game = this.finishedGames.get(id);
             if (!game) continue;   // shouldn't happen, but don't crash on a bookkeeping mismatch
-            result.push({
-                id, chat: game.chat, finishedGame: new FinishedGame(
-                    game.config, game.boardState.moveInfos().map(m => ({ pos: m.pos, stone: m.stone })),
-                    new Map(game.boardState.resigns),
-                ),
-            });
+            result.push({ id, chat: game.chat, finishedGame: this._snapshotFinished(game) });
         }
         return result;
     }
 
 
     getState(id: string): OnlineStateResponse {
-        const pending = this.pendingGames.get(id);
-        if (pending) {
+        if (this.pendingGames.has(id)) {
             return { status: 'waiting', moves: [], winners: [], resignedPlayers: [], chat: [] };
         }
         const game = this.activeGames.get(id) ?? this.finishedGames.get(id);
-        if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
+        if (!game) throw httpError(404, 'Game not found');
         const v = game.boardState.getView();
         return {
             status: v.gameOver ? 'finished' : 'playing',
@@ -340,18 +334,22 @@ export class OnlineGameManager {
         return this.finishedGames.has(id) || (this.activeGames.get(id)?.boardState.gameOver() ?? false);
     }
 
-    applyMove(id: string, positions: number[], moveIndex: number | null, stone: number | null, clientIdx: number): void {
+    // The active game `id`, or a 404/409 explaining why it can't be acted on right now. A pending
+    // withdrawal vote locks the game against moves/resignations/further withdraw requests, each of
+    // which wants its own message for that case; chatting stays allowed and doesn't come through here.
+    private _requirePlayable(id: string, withdrawLockMessage: string): OnlineGame {
         const game = this.activeGames.get(id);
-        if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
-        if (game.boardState.gameOver()) throw Object.assign(new Error('Game is not in progress'), { statusCode: 409 });
-        if (game.withdrawRequest)
-            throw Object.assign(new Error('A withdrawal request is in progress'), { statusCode: 409 });
-        if (game.boardState.getView().plyCount !== clientIdx)
-            throw Object.assign(new Error('Move index mismatch'), { statusCode: 409 });
-        if (!positions.includes(game.boardState.nextTurn.player))
-            throw Object.assign(new Error('Not your turn'), { statusCode: 403 });
-        if (!game.boardState.makeMove(moveIndex, stone ?? undefined))
-            throw Object.assign(new Error('Illegal move'), { statusCode: 400 });
+        if (!game) throw httpError(404, 'Game not found');
+        if (game.boardState.gameOver()) throw httpError(409, 'Game is not in progress');
+        if (game.withdrawRequest) throw httpError(409, withdrawLockMessage);
+        return game;
+    }
+
+    applyMove(id: string, positions: number[], moveIndex: number | null, stone: number | null, clientIdx: number): void {
+        const game = this._requirePlayable(id, 'A withdrawal request is in progress');
+        if (game.boardState.getView().plyCount !== clientIdx) throw httpError(409, 'Move index mismatch');
+        if (!positions.includes(game.boardState.nextTurn.player)) throw httpError(403, 'Not your turn');
+        if (!game.boardState.makeMove(moveIndex, stone ?? undefined)) throw httpError(400, 'Illegal move');
         game.boardState.advanceResigned();
         this._maybeFinish(game);
     }
@@ -404,11 +402,7 @@ export class OnlineGameManager {
     // Resigns the next slot among `positions` in the turn order (skipping already-resigned slots).
     // Returns the slot that was resigned.
     resign(id: string, positions: number[]): number {
-        const game = this.activeGames.get(id);
-        if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
-        if (game.boardState.gameOver()) throw Object.assign(new Error('Game is not in progress'), { statusCode: 409 });
-        if (game.withdrawRequest)
-            throw Object.assign(new Error('A withdrawal request is in progress'), { statusCode: 409 });
+        const game = this._requirePlayable(id, 'A withdrawal request is in progress');
         const { turnList } = game.config;
         const posSet = new Set(positions);
         const resignedSet = new Set(game.boardState.resignedPlayers);
@@ -418,7 +412,7 @@ export class OnlineGameManager {
             const candidate = turnList[(startIdx + i) % turnList.length].player;
             if (posSet.has(candidate) && !resignedSet.has(candidate)) { slot = candidate; break; }
         }
-        if (slot === null) throw Object.assign(new Error('No resignable slot'), { statusCode: 409 });
+        if (slot === null) throw httpError(409, 'No resignable slot');
         game.boardState.resign(slot);
         game.boardState.advanceResigned();
         this._maybeFinish(game);
@@ -426,27 +420,23 @@ export class OnlineGameManager {
     }
 
     // Finds userName's last move (scanning moveInfos() backwards for a ply whose mover is one of
-    // userName's slots) when toPly is omitted (the Withdraw button); otherwise validates the
-    // explicit toPly (the WCD button - not required to be a move userName made). Builds
-    // `unresponded` from every 'client'-type slot except userName and any slot(s) already fully
-    // resigned - mirrors createGame()'s unrespondedInvited construction. Applies immediately (no
-    // voting needed) if that leaves nobody to ask.
+    // userName's slots) when toPly is omitted; otherwise validates the explicit toPly, which is
+    // not required to be a move userName made. Builds `unresponded` from every 'client'-type slot
+    // except userName and any slot(s) already fully resigned - mirrors createGame()'s
+    // unrespondedInvited construction. Applies immediately (no voting needed) if that leaves
+    // nobody to ask.
     requestWithdraw(id: string, userName: string, toPly?: number):
         | { status: 'applied'; toPly: number; numWithdrawn: number }
         | { status: 'pending'; numWithdrawn: number; notify: string[] } {
-        const game = this.activeGames.get(id);
-        if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
-        if (game.withdrawRequest)
-            throw Object.assign(
-                new Error('Cannot start withdrawal request: another withdrawal request in progress'),
-                { statusCode: 409 },
-            );
+        const game = this._requirePlayable(
+            id, 'Cannot start withdrawal request: another withdrawal request in progress',
+        );
 
         const moves = game.boardState.moveInfos();
         let moveIndex: number;
         if (toPly !== undefined) {
             if (!Number.isInteger(toPly) || toPly < 0 || toPly >= moves.length)
-                throw Object.assign(new Error('Invalid withdraw target'), { statusCode: 400 });
+                throw httpError(400, 'Invalid withdraw target');
             moveIndex = toPly;
         } else {
             const { turnList } = game.config;
@@ -456,9 +446,7 @@ export class OnlineGameManager {
                 if (positions.includes(turnList[i % turnList.length].player)) { found = i; break; }
             }
             if (found === null)
-                throw Object.assign(
-                    new Error('Cannot withdraw your move when you have not made any moves'), { statusCode: 409 },
-                );
+                throw httpError(409, 'Cannot withdraw your move when you have not made any moves');
             moveIndex = found;
         }
 
@@ -471,13 +459,17 @@ export class OnlineGameManager {
         }
 
         if (unresponded.size === 0) {
-            game.boardState.withdrawTo(moveIndex);
-            game.boardState.advanceResigned();
-            this._maybeFinish(game);
+            this._applyWithdraw(game, moveIndex);
             return { status: 'applied', toPly: moveIndex, numWithdrawn };
         }
-        game.withdrawRequest = { moveIndex, numWithdrawn, requestedBy: userName, unresponded, refused: new Set() };
+        game.withdrawRequest = { moveIndex, numWithdrawn, unresponded, refused: new Set() };
         return { status: 'pending', numWithdrawn, notify: [...unresponded.keys()] };
+    }
+
+    private _applyWithdraw(game: OnlineGame, moveIndex: number): void {
+        game.boardState.withdrawTo(moveIndex);
+        game.boardState.advanceResigned();
+        this._maybeFinish(game);
     }
 
     // The withdraw-vote counterpart to respondToInvite() - same first-decline-notifies-everyone /
@@ -487,23 +479,18 @@ export class OnlineGameManager {
         | { status: 'applied'; toPly: number; numWithdrawn: number }
         | { status: 'declined'; notify?: string[] } {
         const game = this.activeGames.get(id);
-        if (!game) throw Object.assign(new Error('Game not found'), { statusCode: 404 });
+        if (!game) throw httpError(404, 'Game not found');
         const wr = game.withdrawRequest;
-        if (!wr) throw Object.assign(new Error('No withdrawal request in progress'), { statusCode: 404 });
+        if (!wr) throw httpError(404, 'No withdrawal request in progress');
         const slots = wr.unresponded.get(userName);
-        if (!slots)
-            throw Object.assign(
-                new Error('No pending withdrawal request for you to respond to'), { statusCode: 403 },
-            );
+        if (!slots) throw httpError(403, 'No pending withdrawal request for you to respond to');
         wr.unresponded.delete(userName);
 
         if (accept && wr.refused.size === 0) {
             if (wr.unresponded.size === 0) {
-                game.boardState.withdrawTo(wr.moveIndex);
-                game.boardState.advanceResigned();
                 const { moveIndex, numWithdrawn } = wr;
                 game.withdrawRequest = null;
-                this._maybeFinish(game);
+                this._applyWithdraw(game, moveIndex);
                 return { status: 'applied', toPly: moveIndex, numWithdrawn };
             }
             return { status: 'waiting' };
@@ -514,29 +501,26 @@ export class OnlineGameManager {
         if (wr.unresponded.size === 0) game.withdrawRequest = null;
 
         if (accept)  // only reachable when some other voter already declined
-            throw Object.assign(
-                new Error(`Withdrawal request for game ${id} already declined`), { statusCode: 409 },
-            );
+            throw httpError(409, `Withdrawal request for game ${id} already declined`);
 
         if (!isFirstDecline) return { status: 'declined' };
         const notify = [...game.observers].filter(name => name !== userName);
         return { status: 'declined', notify };
     }
 
-    // In-progress-only, like applyMove/resign - but _maybeFinish() moves a game out of
-    // activeGames the instant it's over, so activeGames.get(id) alone can't tell "finished" apart
-    // from "never existed"; check finishedGames too, for a more specific error message.
-    // `player` is already authorized by the caller (wsServer.ts's 'game/sendchat' case, via the
-    // same requirePositions() move/resign use).
+    // In-progress-only, like applyMove/resign, except that a pending withdrawal vote doesn't block
+    // chatting. `player` is assumed to be authorized by the caller.
     sendChat(id: string, player: number, content: string): ChatMessage {
         const game = this.activeGames.get(id);
         if (!game) {
+            // _maybeFinish() moves a game out of activeGames the instant it's over, so
+            // activeGames.get(id) alone can't tell "finished" apart from "never existed".
             if (this.finishedGames.has(id))
-                throw Object.assign(new Error('Cannot send messages in a finished game'), { statusCode: 409 });
-            throw Object.assign(new Error('Game not found'), { statusCode: 404 });
+                throw httpError(409, 'Cannot send messages in a finished game');
+            throw httpError(404, 'Game not found');
         }
         const trimmed = content.trim().slice(0, MAX_CHAT_LENGTH);
-        if (!trimmed) throw Object.assign(new Error('Chat message cannot be empty'), { statusCode: 400 });
+        if (!trimmed) throw httpError(400, 'Chat message cannot be empty');
         const msg: ChatMessage = { player, time: Date.now(), content: trimmed };
         game.chat.push(msg);
         return msg;

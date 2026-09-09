@@ -8,35 +8,19 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { BoardState, MoveType } from '../shared/boardState.ts';
 import { rectangularBoard } from '../shared/boardConfig.ts';
-import { FinishedGame, GameConfig } from '../shared/gameConfig.ts';
-import { parseCleg } from '../shared/clegParser.ts';
+import { FinishedGame } from '../shared/gameConfig.ts';
+import { makeBoardState, makeGameConfig, allStonesTurns } from './boardStateHelpers.ts';
 
 function twoPlayerGame() {
-    const bc = rectangularBoard(5, 5);
-    const turnList = [
-        { player: 1, stones: [1, 1], protected: [0, 0], friendly: [0, 0] },
-        { player: 2, stones: [1, 1], protected: [0, 0], friendly: [0, 0] },
-    ];
-    return new BoardState(2, 2, turnList, [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) },
-        false, 'area', [0, 0], 'situational', false, null, new Array(bc.N).fill(0), bc);
+    return makeBoardState(rectangularBoard(5, 5), allStonesTurns(2));
 }
 
 // 3 players so a single resignation doesn't immediately end the game (leaves 2 active), letting
 // tests exercise resignation bookkeeping without the game being over throughout.
 function threePlayerGame() {
     const bc = rectangularBoard(5, 5);
-    const turnList = [
-        { player: 1, stones: [1, 1, 1], protected: [0, 0, 0], friendly: [0, 0, 0] },
-        { player: 2, stones: [1, 1, 1], protected: [0, 0, 0], friendly: [0, 0, 0] },
-        { player: 3, stones: [1, 1, 1], protected: [0, 0, 0], friendly: [0, 0, 0] },
-    ];
-    const bs = new BoardState(
-        3, 3, turnList,
-        [[null, null, null], [null, null, null], [null, null, null]], [null, null, null],
-        { 1: new Set([1]), 2: new Set([2]), 3: new Set([3]) }, false, 'area', [0, 0, 0],
-        'situational', false, null, new Array(bc.N).fill(0), bc,
-    );
-    return { bc, bs, turnList };
+    const turnList = allStonesTurns(3);
+    return { bc, bs: makeBoardState(bc, turnList), turnList };
 }
 
 test('withdrawTo() rewinds board/moveInfos/situations to the position right before targetPly', () => {
@@ -106,12 +90,7 @@ test('a resignation recorded after targetPly is re-keyed onto targetPly, and adv
     assert.equal(bs.gameOver(), false);
     assert.equal(bs.nextTurn.player, 1);
 
-    const config = new GameConfig(
-        parseCleg('rectB(5, 5);'), 3, 3, turnList,
-        [[null, null, null], [null, null, null], [null, null, null]], [null, null, null],
-        { 1: new Set([1]), 2: new Set([2]), 3: new Set([3]) }, false, 'area', [0, 0, 0],
-        'situational', false, null,
-    );
+    const config = makeGameConfig('rectB(5, 5);', turnList);
     const fg = new FinishedGame(config, bs.moveInfos().map(m => ({ pos: m.pos, stone: m.stone })), new Map(bs.resigns));
     const reconstructed = BoardState.fromFinishedGame(fg, bc);
 

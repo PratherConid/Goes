@@ -11,15 +11,17 @@ import {
 } from '../shared/selector.ts';
 import { simpType } from '../shared/types.ts';
 
-// 0-1-2-3: node 0/3 have degree 1, node 1/2 have degree 2. Edges (0,1), (1,2), (2,3). No
-// triangles/quads.
-const adj = [
-    [0, 1, 0, 0],
-    [1, 0, 1, 0],
-    [0, 1, 0, 1],
-    [0, 0, 1, 0],
-];
-const pos = [[0], [1], [2], [3]]; // unused by the current grammar, still required by the API
+// An n-node path 0-1-...-(n-1): the two endpoints have degree 1, every interior node degree 2, and
+// there are no triangles or quads anywhere. `pos` is unused by the current grammar but still
+// required by the select* API.
+function pathGraph(n: number): { adj: number[][]; pos: number[][] } {
+    const adj = Array.from({ length: n }, () => new Array(n).fill(0));
+    for (let i = 0; i + 1 < n; i++) { adj[i][i + 1] = 1; adj[i + 1][i] = 1; }
+    return { adj, pos: adj.map((_, i) => [i]) };
+}
+
+// The default fixture: 0-1-2-3, with edges (0,1), (1,2), (2,3).
+const { adj, pos } = pathGraph(4);
 
 test('parseNodeSelector/parseEdgeSelector reject malformed input (grammar errors)', () => {
     assert.throws(() => parseNodeSelector(''), /empty input/);
@@ -264,15 +266,7 @@ test('compl on an edge selector complements within all of the graph\'s edges', (
 
 test('more expands a node selector to one-edge-away neighbors, keeping the original selection ' +
     'and nothing farther', () => {
-    // 5-node path 0-1-2-3-4: endpoints 0/4 have degree 1, nodes 1-3 have degree 2.
-    const path5Adj = [
-        [0, 1, 0, 0, 0],
-        [1, 0, 1, 0, 0],
-        [0, 1, 0, 1, 0],
-        [0, 0, 1, 0, 1],
-        [0, 0, 0, 1, 0],
-    ];
-    const path5Pos = [[0], [1], [2], [3], [4]];
+    const { adj: path5Adj, pos: path5Pos } = pathGraph(5);
     // (deg eq 1) selects the two endpoints {0, 4}; more adds their neighbors {1, 3}, but not node 2
     // (two edges away from both endpoints).
     const nodes = selectNode(path5Adj, path5Pos, parseNodeSelector('(more (deg eq 1))'));
@@ -309,15 +303,7 @@ test('more on an already-all selector is a no-op, and formatSelector round-trips
 });
 
 test('more takes an optional leading step count, repeating the one-step expansion that many times', () => {
-    // Same 5-node path as above: 0-1-2-3-4.
-    const path5Adj = [
-        [0, 1, 0, 0, 0],
-        [1, 0, 1, 0, 0],
-        [0, 1, 0, 1, 0],
-        [0, 0, 1, 0, 1],
-        [0, 0, 0, 1, 0],
-    ];
-    const path5Pos = [[0], [1], [2], [3], [4]];
+    const { adj: path5Adj, pos: path5Pos } = pathGraph(5);
     // (deg eq 1) selects the endpoints {0, 4}. 1 step (the default, already covered above) reaches
     // {0,1,3,4}; 2 steps also reaches node 2 (two edges from either endpoint) - the whole path.
     assert.deepEqual(
@@ -332,16 +318,7 @@ test('more takes an optional leading step count, repeating the one-step expansio
 });
 
 test('more\'s optional step count also works over edge selectors, and rejects a malformed count', () => {
-    // A 6-node path 0-1-2-3-4-5: only the two endpoints 0/5 have degree 1.
-    const path6Adj = [
-        [0, 1, 0, 0, 0, 0],
-        [1, 0, 1, 0, 0, 0],
-        [0, 1, 0, 1, 0, 0],
-        [0, 0, 1, 0, 1, 0],
-        [0, 0, 0, 1, 0, 1],
-        [0, 0, 0, 0, 1, 0],
-    ];
-    const path6Pos = path6Adj.map((_, i) => [i]);
+    const { adj: path6Adj, pos: path6Pos } = pathGraph(6);
     // conve(node, deg eq 1) selects every edge touching either endpoint: (0,1) and (4,5) only. 1 step
     // adds every edge touching THOSE edges' own nodes - (1,2) and (3,4) - but not the middle edge
     // (2,3), which is 2 hops from either endpoint; a 2nd step reaches it. This is what proves the

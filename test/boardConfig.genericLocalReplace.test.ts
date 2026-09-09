@@ -13,16 +13,9 @@ import {
     genericLocalReplace, simpCentralize, simpCentering, triCentralize, triCentering, quadCentralize,
     quadCentering, quadOctarize, triangularBoard, rectangularBoard, tetrahedronBoard, applyModifier,
 } from '../shared/boardConfig.ts';
-import { Embedding, type BoardConfig, type LocalReplaceSelector } from '../shared/types.ts';
+import type { LocalReplaceSelector } from '../shared/types.ts';
 import { parseTriangleSelector } from '../shared/selector.ts';
-
-function edgeCount(adj: number[][]): number {
-    return adj.flat().reduce((s, v) => s + v, 0) / 2;
-}
-
-function degree(adj: number[][], i: number): number {
-    return adj[i].reduce((s, v) => s + v, 0);
-}
+import { edgeCount, degree, boardFromEdges } from './graphHelpers.ts';
 
 test('genericLocalReplace with a single SimpCentralize n=2 selector is identical to triCentralize', () => {
     const bc = triangularBoard(2);
@@ -94,13 +87,7 @@ test('quadOctarize replaces a quad with a real octahedron: 12 edges total, two a
 
 test('quadOctarize accepts a restricting sel, unlike before this refactor', () => {
     // Two quads sharing an edge: 0-1-2-3 and 1-4-5-2 (cycle order), sharing edge (1, 2).
-    const N = 6;
-    const adj: number[][] = Array.from({ length: N }, () => new Array(N).fill(0));
-    const edge = (i: number, j: number) => { adj[i][j] = 1; adj[j][i] = 1; };
-    edge(0, 1); edge(1, 2); edge(2, 3); edge(3, 0);
-    edge(1, 4); edge(4, 5); edge(5, 2);
-    const emb = new Embedding(2, adj.map((_, i): [number, number] => [i, 0]));
-    const bc: BoardConfig = { N, adj, emb };
+    const bc = boardFromEdges(6, [[0, 1], [1, 2], [2, 3], [3, 0], [1, 4], [4, 5], [5, 2]]);
 
     const restrictedSel = { op: 'all' as const, type: 'quad' as const };
     const result = quadOctarize(bc, restrictedSel);
@@ -156,13 +143,7 @@ test('simpCentering generalizes beyond triangles: n=3 on a K4 tetrahedron drops 
 
 test('a shared edge consumed only by Centering-kind selectors is genuinely dropped, even when two faces share it', () => {
     // Two triangles sharing edge (1, 2): {0,1,2} and {1,2,3}.
-    const N = 4;
-    const adj: number[][] = Array.from({ length: N }, () => new Array(N).fill(0));
-    const edge = (i: number, j: number) => { adj[i][j] = 1; adj[j][i] = 1; };
-    edge(0, 1); edge(1, 2); edge(2, 0);
-    edge(1, 3); edge(3, 2);
-    const emb = new Embedding(2, adj.map((_, i): [number, number] => [i, 0]));
-    const bc: BoardConfig = { N, adj, emb };
+    const bc = boardFromEdges(4, [[0, 1], [1, 2], [2, 0], [1, 3], [3, 2]]);
 
     const result = simpCentering(bc, 2);
     // Both triangles get their own hub; the shared edge (1, 2) is consumed by both but re-added by
@@ -174,12 +155,7 @@ test('a shared edge consumed only by Centering-kind selectors is genuinely dropp
 test('a mixed selectors list adds one independent local replacement per face - unlike genericForm, nothing glues', () => {
     // Triangle 0-1-2 and quad (cycle) 1-3-4-2 share edge (1,2).
     const N = 5;
-    const adj: number[][] = Array.from({ length: N }, () => new Array(N).fill(0));
-    const edge = (i: number, j: number) => { adj[i][j] = 1; adj[j][i] = 1; };
-    edge(0, 1); edge(1, 2); edge(2, 0);
-    edge(1, 3); edge(3, 4); edge(4, 2);
-    const emb = new Embedding(2, adj.map((_, i): [number, number] => [i, 0]));
-    const bc: BoardConfig = { N, adj, emb };
+    const bc = boardFromEdges(N, [[0, 1], [1, 2], [2, 0], [1, 3], [3, 4], [4, 2]]);
 
     const selectors: LocalReplaceSelector[] = [{ kind: 'SimpCentralize', n: 2 }, { kind: 'QuadCentralize' }];
     const both = genericLocalReplace(bc, selectors);
@@ -243,16 +219,7 @@ test('triCentering is exactly simpCentering(bc, 2, sel)', () => {
 test('sel restricts triCentralize to only the selected triangles - an unselected one gets no hub', () => {
     // Bowtie: triangles {0,1,2} and {2,3,4} sharing only vertex 2, plus a pendant node 5 on node 0
     // alone, making node 0 the graph's unique degree-3 node.
-    const adj = [
-        [0, 1, 1, 0, 0, 1],
-        [1, 0, 1, 0, 0, 0],
-        [1, 1, 0, 1, 1, 0],
-        [0, 0, 1, 0, 1, 0],
-        [0, 0, 1, 1, 0, 0],
-        [1, 0, 0, 0, 0, 0],
-    ];
-    const emb = new Embedding(2, adj.map((_, i): [number, number] => [i, 0]));
-    const bc: BoardConfig = { N: 6, adj, emb };
+    const bc = boardFromEdges(6, [[0, 1], [0, 2], [0, 5], [1, 2], [2, 3], [2, 4], [3, 4]]);
     // Selects only the triangle containing the degree-3 node (0) - triangle {0,1,2}, not {2,3,4}.
     const sel = parseTriangleSelector('(conve tri (deg eq 3))');
     const result = triCentralize(bc, sel);

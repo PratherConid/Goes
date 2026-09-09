@@ -1,11 +1,8 @@
-import { test, before, after } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { startTestServer, connect, type TestServer } from './testServer.ts';
+import { useTestServer, connect, registerAndLogin } from './testServer.ts';
 
-let server: TestServer;
-
-before(async () => { server = await startTestServer(); });
-after(async () => { await server.close(); });
+const server = useTestServer();
 
 test('register then login round-trips', async () => {
     const client = await connect(server.url);
@@ -27,8 +24,7 @@ test('register then login round-trips', async () => {
 });
 
 test('login rejects a wrong password', async () => {
-    const client = await connect(server.url);
-    await client.req('REGISTER', { name: 'bob', password: 'correct-horse' });
+    const client = await registerAndLogin(server.url, 'bob', 'correct-horse');
     await client.close();
 
     const client2 = await connect(server.url);
@@ -40,8 +36,7 @@ test('login rejects a wrong password', async () => {
 });
 
 test('registering an existing name is rejected', async () => {
-    const client = await connect(server.url);
-    await client.req('REGISTER', { name: 'carol', password: 'pw1' });
+    const client = await registerAndLogin(server.url, 'carol', 'pw1');
     await assert.rejects(
         client.req('REGISTER', { name: 'carol', password: 'pw2' }),
         (e: any) => e.statusCode === 409,
@@ -50,8 +45,7 @@ test('registering an existing name is rejected', async () => {
 });
 
 test('logging in from a second connection while already logged in is rejected', async () => {
-    const client = await connect(server.url);
-    await client.req('REGISTER', { name: 'dave', password: 'pw' });
+    const client = await registerAndLogin(server.url, 'dave');
 
     const client2 = await connect(server.url);
     await assert.rejects(
@@ -63,8 +57,7 @@ test('logging in from a second connection while already logged in is rejected', 
 });
 
 test('flogin takes over the existing connection, which receives auth/kicked before closing', async () => {
-    const client = await connect(server.url);
-    await client.req('REGISTER', { name: 'erin', password: 'pw' });
+    const client = await registerAndLogin(server.url, 'erin');
 
     const kicked = new Promise<{ name: string }>(resolve => client.onEvent('auth/kicked', resolve));
 
