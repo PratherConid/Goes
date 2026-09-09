@@ -1524,6 +1524,34 @@ function parseHcublatBounds(boundsVal: ClegValue): { lo: number[]; dims: number[
     return { lo, dims };
 }
 
+// Full-lattice flat index -> per-dimension local coordinates (0..dims[i]-1) - shared by
+// buildSubHcublat/buildSubHcublatCustomAdj's own point-enumeration loops below.
+function coordsFromFlatIndex(n: number, dims: number[]): number[] {
+    const coords = new Array<number>(dims.length);
+    for (let i = 0; i < dims.length; i++) { coords[i] = n % dims[i]; n = Math.floor(n / dims[i]); }
+    return coords;
+}
+
+// Recenters `pos` in place, per dimension, so its own bounding box (over exactly the surviving
+// nodes, NOT `bounds` itself) is centered at the origin - shared by buildSubHcublat/
+// buildSubHcublatCustomAdj's own final step, since `cond`/`adjFn` may keep a shape nowhere near
+// centered within the hyperrectangle they were given. No-op when `pos` is empty.
+function recenterPositions(pos: number[][], k: number): void {
+    const N = pos.length;
+    if (N === 0) return;
+    const mid = new Array<number>(k);
+    for (let i = 0; i < k; i++) {
+        let minC = pos[0][i];
+        let maxC = pos[0][i];
+        for (let j = 1; j < N; j++) {
+            if (pos[j][i] < minC) minC = pos[j][i];
+            if (pos[j][i] > maxC) maxC = pos[j][i];
+        }
+        mid[i] = (minC + maxC) / 2;
+    }
+    for (const p of pos) for (let i = 0; i < k; i++) p[i] -= mid[i];
+}
+
 // The general construction shared by `subHcublatB(bounds, cond)`/`subHcublatB(bounds, cond, econd)`
 // - a "sub-region" of an N-dimensional hypercubical lattice. `bounds` (see parseHcublatBounds
 // above) describes the bounding hyperrectangle; `cond` decides which lattice points inside it
@@ -1558,11 +1586,6 @@ function buildSubHcublat(
     strides[0] = 1;
     for (let i = 1; i < k; i++) strides[i] = strides[i - 1] * dims[i - 1];
     const fullN = dims.reduce((p, d) => p * d, 1);
-    const localCoordsOf = (n: number): number[] => {
-        const coords = new Array<number>(k);
-        for (let i = 0; i < k; i++) { coords[i] = n % dims[i]; n = Math.floor(n / dims[i]); }
-        return coords;
-    };
 
     // Only surviving (cond-kept) nodes get a board index (compacted, in ascending
     // full-lattice-index order) - boardIdxOf maps a full-lattice index to that compacted index,
@@ -1571,7 +1594,7 @@ function buildSubHcublat(
     const survivingLocal: number[][] = [];
     const pos: number[][] = [];
     for (let n = 0; n < fullN; n++) {
-        const local = localCoordsOf(n);
+        const local = coordsFromFlatIndex(n, dims);
         const point = local.map((c, i) => c + lo[i]);
         const pointArg: ClegValue = {
             kind: 'array', elem: NUMBER_TYPE, value: point.map(v => ({ kind: 'number', value: v })),
@@ -1605,23 +1628,7 @@ function buildSubHcublat(
         }
     }
 
-    // Re-center: subtract each dimension's own midpoint - (min + max) / 2, computed from the
-    // SURVIVING nodes' own coordinates (not `bounds` itself) - so the shape sits roughly around
-    // the origin regardless of where within `bounds` `cond` happened to keep it. No-op (and no
-    // division-by-zero-shaped issue) when N === 0 - there's nothing to center.
-    if (N > 0) {
-        const mid = new Array<number>(k);
-        for (let i = 0; i < k; i++) {
-            let minC = pos[0][i];
-            let maxC = pos[0][i];
-            for (let j = 1; j < N; j++) {
-                if (pos[j][i] < minC) minC = pos[j][i];
-                if (pos[j][i] > maxC) maxC = pos[j][i];
-            }
-            mid[i] = (minC + maxC) / 2;
-        }
-        for (const p of pos) for (let i = 0; i < k; i++) p[i] -= mid[i];
-    }
+    recenterPositions(pos, k);
     return { kind: 'egr', value: make(new Embedding(k, pos), adj) };
 }
 
@@ -1664,11 +1671,6 @@ function buildSubHcublatCustomAdj(
     const fn = funcs[cond.name];
 
     const fullN = dims.reduce((p, d) => p * d, 1);
-    const localCoordsOf = (n: number): number[] => {
-        const coords = new Array<number>(k);
-        for (let i = 0; i < k; i++) { coords[i] = n % dims[i]; n = Math.floor(n / dims[i]); }
-        return coords;
-    };
 
     // Surviving nodes, keyed by their own absolute coordinates (joined into a string) rather than
     // by full-lattice index - `adjFn` names neighbors by coordinate, which (unlike a structural
@@ -1676,7 +1678,7 @@ function buildSubHcublatCustomAdj(
     const boardIdxOfPoint = new Map<string, number>();
     const pos: number[][] = [];
     for (let n = 0; n < fullN; n++) {
-        const local = localCoordsOf(n);
+        const local = coordsFromFlatIndex(n, dims);
         const point = local.map((c, i) => c + lo[i]);
         const pointArg: ClegValue = {
             kind: 'array', elem: NUMBER_TYPE, value: point.map(v => ({ kind: 'number', value: v })),
@@ -1698,19 +1700,7 @@ function buildSubHcublatCustomAdj(
         }
     }
 
-    if (N > 0) {
-        const mid = new Array<number>(k);
-        for (let i = 0; i < k; i++) {
-            let minC = pos[0][i];
-            let maxC = pos[0][i];
-            for (let j = 1; j < N; j++) {
-                if (pos[j][i] < minC) minC = pos[j][i];
-                if (pos[j][i] > maxC) maxC = pos[j][i];
-            }
-            mid[i] = (minC + maxC) / 2;
-        }
-        for (const p of pos) for (let i = 0; i < k; i++) p[i] -= mid[i];
-    }
+    recenterPositions(pos, k);
     return { kind: 'egr', value: make(new Embedding(k, pos), adj) };
 }
 

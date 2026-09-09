@@ -311,20 +311,13 @@ export function nodeInducedSubgraph(bc: BoardConfig, nodes: Set<number>): BoardC
     return make(new Embedding(bc.emb.embDim, pos), adj);
 }
 
-/**
- * The subgraph induced by `edges`: keeps only the given edges, and only the nodes touched by at
- * least one of them - compacted to a fresh 0..k-1 index range, in ascending original-index order,
- * positions/embDim otherwise untouched. Unlike nodeInducedSubgraph (which keeps every
- * original edge between two surviving nodes, since it starts from a node selection), this keeps
- * exactly the given edges themselves - the standard graph-theory distinction between a node-induced
- * and an edge-induced subgraph - so a node with no kept incident edge doesn't survive at all, even
- * if it's adjacent to other surviving nodes via a non-kept edge. `edges` is typically
- * `selectEdge(bc.adj, bc.emb.pos, sel)`'s own result (see applyModifier's own EdgeInducedSubgraph
- * case) but is taken directly here - a plain BoardEdge[], not a Selector - so any already-computed
- * edge list can be used, not just one selector's own result.
- */
-export function edgeInducedSubgraph(bc: BoardConfig, edges: BoardEdge[]): BoardConfig {
-    const touched = new Set<number>();
+// Shared by edgeInducedSubgraph/nodeEdgeInducedSubgraph below - both keep exactly `edges` (plus
+// whatever `initiallyTouched` already seeds `touched` with) and every node either touches, compacted
+// to a fresh 0..k-1 index range in ascending original-index order; positions/embDim untouched. Only
+// `edges` ever contributes adjacency - a node reachable solely via `initiallyTouched` (not itself
+// incident to any kept edge) survives as an isolated node.
+function inducedSubgraphFromEdges(bc: BoardConfig, initiallyTouched: Set<number>, edges: BoardEdge[]): BoardConfig {
+    const touched = initiallyTouched;
     for (const e of edges) { touched.add(e.n1); touched.add(e.n2); }
     const kept: number[] = [];
     for (let i = 0; i < bc.N; i++) if (touched.has(i)) kept.push(i);
@@ -342,32 +335,31 @@ export function edgeInducedSubgraph(bc: BoardConfig, edges: BoardEdge[]): BoardC
 }
 
 /**
+ * The subgraph induced by `edges`: keeps only the given edges, and only the nodes touched by at
+ * least one of them - compacted to a fresh 0..k-1 index range, in ascending original-index order,
+ * positions/embDim otherwise untouched (see inducedSubgraphFromEdges above). Unlike
+ * nodeInducedSubgraph (which keeps every original edge between two surviving nodes, since it starts
+ * from a node selection), this keeps exactly the given edges themselves - the standard graph-theory
+ * distinction between a node-induced and an edge-induced subgraph - so a node with no kept incident
+ * edge doesn't survive at all, even if it's adjacent to other surviving nodes via a non-kept edge.
+ * `edges` is typically `selectEdge(bc.adj, bc.emb.pos, sel)`'s own result (see applyModifier's own
+ * EdgeInducedSubgraph case) but is taken directly here - a plain BoardEdge[], not a Selector - so any
+ * already-computed edge list can be used, not just one selector's own result.
+ */
+export function edgeInducedSubgraph(bc: BoardConfig, edges: BoardEdge[]): BoardConfig {
+    return inducedSubgraphFromEdges(bc, new Set<number>(), edges);
+}
+
+/**
  * Same as edgeInducedSubgraph, but `nodes` also survives - unioned into the kept-node set before
- * compacting, same ascending-original-index order. Only `edges` ever contributes adjacency (exactly
- * like edgeInducedSubgraph's own rule) - a node that's in `nodes` but not touched by any kept edge
- * survives as an isolated node, not connected to anything else that survives, even a neighbor it was
- * adjacent to in `bc`. Used by shared/clegEval.ts's own `psBaseNE` (a ProdSelector variant, not a
- * BoardModifier - unlike nodeInducedSubgraph/edgeInducedSubgraph, this has no separate
- * `applyModifier` case of its own).
+ * compacting, same ascending-original-index order; only `edges` still ever contributes adjacency.
+ * Used by shared/clegEval.ts's own `psBaseNE` (a ProdSelector variant, not a BoardModifier - unlike
+ * nodeInducedSubgraph/edgeInducedSubgraph, this has no separate `applyModifier` case of its own).
  */
 export function nodeEdgeInducedSubgraph(
     bc: BoardConfig, nodes: Set<number>, edges: BoardEdge[],
 ): BoardConfig {
-    const touched = new Set<number>(nodes);
-    for (const e of edges) { touched.add(e.n1); touched.add(e.n2); }
-    const kept: number[] = [];
-    for (let i = 0; i < bc.N; i++) if (touched.has(i)) kept.push(i);
-    const newIdx = new Map<number, number>(kept.map((orig, idx) => [orig, idx]));
-
-    const pos = kept.map(i => bc.emb.pos[i]);
-    const adj = zeroAdj(kept.length);
-    for (const e of edges) {
-        const a = newIdx.get(e.n1)!, b = newIdx.get(e.n2)!;
-        adj[a][b] = 1;
-        adj[b][a] = 1;
-    }
-
-    return make(new Embedding(bc.emb.embDim, pos), adj);
+    return inducedSubgraphFromEdges(bc, new Set<number>(nodes), edges);
 }
 
 /**
@@ -1534,6 +1526,76 @@ export function reg24CellBoard(): BoardConfig {
     return make(new Embedding(4, pos), adj);
 }
 
+// Shared by reg120CellBoard/reg600CellBoard below - both build their own raw (pre-scale) vertex set
+// as every sign-flipped variant of a small number of permutation families (some restricted to EVEN
+// permutations only - see each function's own doc comment for which, and why), then connect every
+// pair at exactly the resulting point set's own minimal nonzero pairwise distance.
+function permsOf(arr: number[]): number[][] {
+    if (arr.length <= 1) return [arr.slice()];
+    const out: number[][] = [];
+    for (let i = 0; i < arr.length; i++) {
+        const rest = arr.slice(0, i).concat(arr.slice(i + 1));
+        for (const p of permsOf(rest)) out.push([arr[i], ...p]);
+    }
+    return out;
+}
+function evenPermsOf(arr: number[]): number[][] {
+    // Permute an index array (rather than arr's own values directly) so parity is well-defined
+    // even when arr has repeated magnitudes - not needed by the families this is actually called
+    // with below (all 4 values distinct in each), but keeps the helper correct in general.
+    const idxPerms = permsOf(arr.map((_, i) => i));
+    return idxPerms
+        .filter(p => {
+            let inversions = 0;
+            for (let i = 0; i < p.length; i++)
+                for (let j = i + 1; j < p.length; j++)
+                    if (p[i] > p[j]) inversions++;
+            return inversions % 2 === 0;
+        })
+        .map(p => p.map(i => arr[i]));
+}
+function signVariants(v: number[]): number[][] {
+    const nonzero: number[] = [];
+    v.forEach((x, i) => { if (x !== 0) nonzero.push(i); });
+    const k = nonzero.length;
+    const out: number[][] = [];
+    for (let mask = 0; mask < (1 << k); mask++) {
+        const w = v.slice();
+        for (let b = 0; b < k; b++) if (mask & (1 << b)) w[nonzero[b]] = -w[nonzero[b]];
+        out.push(w);
+    }
+    return out;
+}
+
+// The deduplicated (by rounded-coordinate key) union of every sign variant of every permutation in
+// each of `permGroups` - shared by reg120CellBoard/reg600CellBoard's own raw vertex construction.
+function signedPermutationVertices(permGroups: number[][][]): number[][] {
+    const raw: number[][] = [];
+    const seen = new Set<string>();
+    for (const perms of permGroups)
+        for (const p of perms)
+            for (const s of signVariants(p)) {
+                const key = s.map(x => x.toFixed(2)).join(',');
+                if (!seen.has(key)) { seen.add(key); raw.push(s); }
+            }
+    return raw;
+}
+
+// Connects every pair of `raw` vertices whose squared distance matches `edgeDist2` (within a small
+// numeric tolerance) - shared by reg120CellBoard/reg600CellBoard's own adjacency construction (see
+// each function's own doc comment for its own edgeDist2 derivation).
+function adjacencyAtDistance(raw: number[][], edgeDist2: number): number[][] {
+    const N = raw.length;
+    const adj = zeroAdj(N);
+    const EPS = 1e-6;
+    for (let a = 0; a < N; a++)
+        for (let b = a + 1; b < N; b++) {
+            const d2 = raw[a].reduce((s, x, k) => s + (x - raw[b][k]) ** 2, 0);
+            if (Math.abs(d2 - edgeDist2) < EPS) { adj[a][b] = 1; adj[b][a] = 1; }
+        }
+    return adj;
+}
+
 /**
  * The 120-cell (hecatonicosachoron): the regular 4-dimensional polytope with 600 vertices, 1200
  * unit-length edges, 720 pentagonal faces and 120 dodecahedral cells - dual to the 600-cell. Raw
@@ -1566,72 +1628,17 @@ export function reg120CellBoard(): BoardConfig {
     const SQRT5 = Math.sqrt(5);
     const edgeScale = 1 / (3 - Math.sqrt(5));
 
-    const permsOf = (arr: number[]): number[][] => {
-        if (arr.length <= 1) return [arr.slice()];
-        const out: number[][] = [];
-        for (let i = 0; i < arr.length; i++) {
-            const rest = arr.slice(0, i).concat(arr.slice(i + 1));
-            for (const p of permsOf(rest)) out.push([arr[i], ...p]);
-        }
-        return out;
-    };
-    const evenPermsOf = (arr: number[]): number[][] => {
-        // Permute an index array (rather than arr's own values directly) so parity is well-defined
-        // even when arr has repeated magnitudes - not needed by the 3 families this is actually
-        // called with (all 4 values distinct there), but keeps the helper correct in general.
-        const idxPerms = permsOf(arr.map((_, i) => i));
-        return idxPerms
-            .filter(p => {
-                let inversions = 0;
-                for (let i = 0; i < p.length; i++)
-                    for (let j = i + 1; j < p.length; j++)
-                        if (p[i] > p[j]) inversions++;
-                return inversions % 2 === 0;
-            })
-            .map(p => p.map(i => arr[i]));
-    };
-    const signVariants = (v: number[]): number[][] => {
-        const nonzero: number[] = [];
-        v.forEach((x, i) => { if (x !== 0) nonzero.push(i); });
-        const k = nonzero.length;
-        const out: number[][] = [];
-        for (let mask = 0; mask < (1 << k); mask++) {
-            const w = v.slice();
-            for (let b = 0; b < k; b++) if (mask & (1 << b)) w[nonzero[b]] = -w[nonzero[b]];
-            out.push(w);
-        }
-        return out;
-    };
-
-    const raw: number[][] = [];
-    const seen = new Set<string>();
-    const addPerms = (perms: number[][]) => {
-        for (const p of perms)
-            for (const s of signVariants(p)) {
-                const key = s.map(x => x.toFixed(2)).join(',');
-                if (!seen.has(key)) { seen.add(key); raw.push(s); }
-            }
-    };
-    addPerms(permsOf([0, 0, 2, 2]));
-    addPerms(permsOf([PHI, PHI, PHI, IPHI2]));
-    addPerms(permsOf([1, 1, 1, SQRT5]));
-    addPerms(permsOf([IPHI, IPHI, IPHI, PHI2]));
-    addPerms(evenPermsOf([0, IPHI, PHI, SQRT5]));
-    addPerms(evenPermsOf([0, IPHI2, 1, PHI2]));
-    addPerms(evenPermsOf([IPHI, 1, PHI, 2]));
-
-    const N = raw.length;
+    const raw = signedPermutationVertices([
+        permsOf([0, 0, 2, 2]),
+        permsOf([PHI, PHI, PHI, IPHI2]),
+        permsOf([1, 1, 1, SQRT5]),
+        permsOf([IPHI, IPHI, IPHI, PHI2]),
+        evenPermsOf([0, IPHI, PHI, SQRT5]),
+        evenPermsOf([0, IPHI2, 1, PHI2]),
+        evenPermsOf([IPHI, 1, PHI, 2]),
+    ]);
     const pos = raw.map(v => v.map(x => x * edgeScale));
-
-    const adj = zeroAdj(N);
-    const edgeDist2 = (3 - Math.sqrt(5)) ** 2;
-    const EPS = 1e-6;
-    for (let a = 0; a < N; a++)
-        for (let b = a + 1; b < N; b++) {
-            const d2 = raw[a].reduce((s, x, k) => s + (x - raw[b][k]) ** 2, 0);
-            if (Math.abs(d2 - edgeDist2) < EPS) { adj[a][b] = 1; adj[b][a] = 1; }
-        }
-
+    const adj = adjacencyAtDistance(raw, (3 - Math.sqrt(5)) ** 2);
     return make(new Embedding(4, pos), adj);
 }
 
@@ -1657,65 +1664,13 @@ export function reg600CellBoard(): BoardConfig {
     const IPHI = 1 / PHI;
     const edgeScale = PHI / 2;
 
-    const permsOf = (arr: number[]): number[][] => {
-        if (arr.length <= 1) return [arr.slice()];
-        const out: number[][] = [];
-        for (let i = 0; i < arr.length; i++) {
-            const rest = arr.slice(0, i).concat(arr.slice(i + 1));
-            for (const p of permsOf(rest)) out.push([arr[i], ...p]);
-        }
-        return out;
-    };
-    const evenPermsOf = (arr: number[]): number[][] => {
-        const idxPerms = permsOf(arr.map((_, i) => i));
-        return idxPerms
-            .filter(p => {
-                let inversions = 0;
-                for (let i = 0; i < p.length; i++)
-                    for (let j = i + 1; j < p.length; j++)
-                        if (p[i] > p[j]) inversions++;
-                return inversions % 2 === 0;
-            })
-            .map(p => p.map(i => arr[i]));
-    };
-    const signVariants = (v: number[]): number[][] => {
-        const nonzero: number[] = [];
-        v.forEach((x, i) => { if (x !== 0) nonzero.push(i); });
-        const k = nonzero.length;
-        const out: number[][] = [];
-        for (let mask = 0; mask < (1 << k); mask++) {
-            const w = v.slice();
-            for (let b = 0; b < k; b++) if (mask & (1 << b)) w[nonzero[b]] = -w[nonzero[b]];
-            out.push(w);
-        }
-        return out;
-    };
-
-    const raw: number[][] = [];
-    const seen = new Set<string>();
-    const addPerms = (perms: number[][]) => {
-        for (const p of perms)
-            for (const s of signVariants(p)) {
-                const key = s.map(x => x.toFixed(2)).join(',');
-                if (!seen.has(key)) { seen.add(key); raw.push(s); }
-            }
-    };
-    addPerms(permsOf([0, 0, 0, 2]));
-    addPerms(permsOf([1, 1, 1, 1]));
-    addPerms(evenPermsOf([PHI, 1, IPHI, 0]));
-
-    const N = raw.length;
+    const raw = signedPermutationVertices([
+        permsOf([0, 0, 0, 2]),
+        permsOf([1, 1, 1, 1]),
+        evenPermsOf([PHI, 1, IPHI, 0]),
+    ]);
     const pos = raw.map(v => v.map(x => x * edgeScale));
-
-    const adj = zeroAdj(N);
-    const edgeDist2 = (2 / PHI) ** 2;
-    const EPS = 1e-6;
-    for (let a = 0; a < N; a++)
-        for (let b = a + 1; b < N; b++) {
-            const d2 = raw[a].reduce((s, x, k) => s + (x - raw[b][k]) ** 2, 0);
-            if (Math.abs(d2 - edgeDist2) < EPS) { adj[a][b] = 1; adj[b][a] = 1; }
-        }
-
+    const adj = adjacencyAtDistance(raw, (2 / PHI) ** 2);
     return make(new Embedding(4, pos), adj);
 }
 
@@ -1907,6 +1862,32 @@ export function mengerSpongeFlake(order: number, dim: number, indicator: number[
     return make(new Embedding(dim, built.pos), built.adj);
 }
 
+// The 6 axial hex directions, shared by triangularHexBoard/hexBoard/trihexBoard below.
+const AXIAL_DIRS: [number, number][] = [[1,0],[1,-1],[0,-1],[-1,0],[-1,1],[0,1]];
+
+// Builds a triangular-lattice board from an explicit list of axial (q, r) coordinates - the shared
+// tail of triangularHexBoard/hexBoard/trihexBoard below, once each has decided which axial points
+// survive (differently per function - directly by hex-distance for triangularHexBoard, or via a
+// coarser erased-sublattice "centers" set for hexBoard/trihexBoard - see each function's own doc
+// comment). Two surviving points are connected iff axially adjacent (AXIAL_DIRS); positions use the
+// same rowDist row spacing as `triangularBoard`.
+function triangularLatticeBoard(coords: [number, number][]): BoardConfig {
+    const rowDist = Math.sqrt(3) / 2;
+    const N = coords.length;
+    const idx = new Map<string, number>();
+    coords.forEach(([q, r], i) => idx.set(`${q},${r}`, i));
+    const pos = coords.map(([q, r]) => [q + r / 2, rowDist * r]);
+    const adj = zeroAdj(N);
+    for (let i = 0; i < N; i++) {
+        const [q, r] = coords[i];
+        for (const [dq, dr] of AXIAL_DIRS) {
+            const ni = idx.get(`${q+dq},${r+dr}`);
+            if (ni !== undefined) adj[i][ni] = 1;
+        }
+    }
+    return make(pos, adj);
+}
+
 /**
  * A triangular-lattice board arranged in a hexagon shape, with `d` layers of triangles surrounding
  * the central point (side length d+1, in hex terms) - the shape used by boards like Havannah/Y.
@@ -1917,25 +1898,11 @@ export function mengerSpongeFlake(order: number, dim: number, indicator: number[
  */
 export function triangularHexBoard(d: number): BoardConfig {
     assert(d >= 0, `d must be non-negative, got d=${d}`);
-    const rowDist = Math.sqrt(3) / 2;
     const coords: [number, number][] = [];
     for (let q = -d; q <= d; q++)
         for (let r = Math.max(-d, -d - q); r <= Math.min(d, d - q); r++)
             coords.push([q, r]);
-    const N = coords.length;
-    const idx = new Map<string, number>();
-    coords.forEach(([q, r], i) => idx.set(`${q},${r}`, i));
-    const pos = coords.map(([q, r]) => [q + r / 2, rowDist * r]);
-    const adj = zeroAdj(N);
-    const dirs: [number, number][] = [[1,0],[1,-1],[0,-1],[-1,0],[-1,1],[0,1]];
-    for (let i = 0; i < N; i++) {
-        const [q, r] = coords[i];
-        for (const [dq, dr] of dirs) {
-            const ni = idx.get(`${q+dq},${r+dr}`);
-            if (ni !== undefined) adj[i][ni] = 1;
-        }
-    }
-    return make(pos, adj);
+    return triangularLatticeBoard(coords);
 }
 
 /**
@@ -1958,9 +1925,6 @@ export function triangularHexBoard(d: number): BoardConfig {
  */
 export function hexBoard(d: number): BoardConfig {
     assert(d >= 0, `d must be non-negative, got d=${d}`);
-    const rowDist = Math.sqrt(3) / 2;
-    const dirs: [number, number][] = [[1,0],[1,-1],[0,-1],[-1,0],[-1,1],[0,1]];
-
     const centers: [number, number][] = [];
     for (let a = -d; a <= d; a++)
         for (let b = Math.max(-d, -d - a); b <= Math.min(d, d - a); b++)
@@ -1968,22 +1932,9 @@ export function hexBoard(d: number): BoardConfig {
 
     const vertices = new Map<string, [number, number]>();
     for (const [q, r] of centers)
-        for (const [dq, dr] of dirs)
+        for (const [dq, dr] of AXIAL_DIRS)
             vertices.set(`${q+dq},${r+dr}`, [q + dq, r + dr]);
-    const coords = [...vertices.values()];
-    const N = coords.length;
-    const idx = new Map<string, number>();
-    coords.forEach(([q, r], i) => idx.set(`${q},${r}`, i));
-    const pos = coords.map(([q, r]) => [q + r / 2, rowDist * r]);
-    const adj = zeroAdj(N);
-    for (let i = 0; i < N; i++) {
-        const [q, r] = coords[i];
-        for (const [dq, dr] of dirs) {
-            const ni = idx.get(`${q+dq},${r+dr}`);
-            if (ni !== undefined) adj[i][ni] = 1;
-        }
-    }
-    return make(pos, adj);
+    return triangularLatticeBoard([...vertices.values()]);
 }
 
 /**
@@ -2003,9 +1954,6 @@ export function hexBoard(d: number): BoardConfig {
  */
 export function trihexBoard(d: number): BoardConfig {
     assert(d >= 0, `d must be non-negative, got d=${d}`);
-    const rowDist = Math.sqrt(3) / 2;
-    const dirs: [number, number][] = [[1,0],[1,-1],[0,-1],[-1,0],[-1,1],[0,1]];
-
     const centers: [number, number][] = [];
     for (let a = -d; a <= d; a++)
         for (let b = Math.max(-d, -d - a); b <= Math.min(d, d - a); b++)
@@ -2013,22 +1961,9 @@ export function trihexBoard(d: number): BoardConfig {
 
     const vertices = new Map<string, [number, number]>();
     for (const [q, r] of centers)
-        for (const [dq, dr] of dirs)
+        for (const [dq, dr] of AXIAL_DIRS)
             vertices.set(`${q+dq},${r+dr}`, [q + dq, r + dr]);
-    const coords = [...vertices.values()];
-    const N = coords.length;
-    const idx = new Map<string, number>();
-    coords.forEach(([q, r], i) => idx.set(`${q},${r}`, i));
-    const pos = coords.map(([q, r]) => [q + r / 2, rowDist * r]);
-    const adj = zeroAdj(N);
-    for (let i = 0; i < N; i++) {
-        const [q, r] = coords[i];
-        for (const [dq, dr] of dirs) {
-            const ni = idx.get(`${q+dq},${r+dr}`);
-            if (ni !== undefined) adj[i][ni] = 1;
-        }
-    }
-    return make(pos, adj);
+    return triangularLatticeBoard([...vertices.values()]);
 }
 
 /**
