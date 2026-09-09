@@ -3,8 +3,8 @@
 // (each gets its full point value, not a split share) or for none at all.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BoardState } from '../shared/boardState.ts';
 import { rectangularBoard } from '../shared/boardConfig.ts';
+import { makeBoardState, soloStoneTurns } from './boardStateHelpers.ts';
 
 test('a stone mapped to multiple players adds its full point value to each, not split', () => {
     // Each group is separated by an empty buffer cell so it keeps a real
@@ -12,16 +12,11 @@ test('a stone mapped to multiple players adds its full point value to each, not 
     // that end the game are even made.
     const bc = rectangularBoard(8, 1);
     const board = [1, 1, 1, 0, 2, 2, 2, 0];   // 3 stone1, 3 stone2
-    const turnList = [
-        { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
-        { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
-    ];
-    // stone1 scores only for player 1; stone2 scores for both players 2 and 3.
-    const stoneToPlayerMap = { 1: new Set([1]), 2: new Set([2, 3]) };
-    const bs = new BoardState(
-        2, 3, turnList, [[null, null, null], [null, null, null]], [null, null], stoneToPlayerMap,
-        false, 'stone', [0, 0, 0], 'situational', false, null, board, bc,
-    );
+    // stone1 scores only for player 1; stone2 scores for both players 2 and 3 (who never gets a turn).
+    const bs = makeBoardState(bc, soloStoneTurns(2), {
+        numPlayers: 3, scoreRule: 'stone', board,
+        stoneToPlayerMap: { 1: new Set([1]), 2: new Set([2, 3]) },
+    });
 
     assert.equal(bs.makeMove(null), true);
     assert.equal(bs.makeMove(null), true);
@@ -35,16 +30,12 @@ test('a stone mapped to multiple players adds its full point value to each, not 
 test('a stone mapped to an empty set scores for no one', () => {
     const bc = rectangularBoard(6, 1);
     const board = [1, 1, 0, 3, 3, 0];   // 2 stone1, 2 stone3
-    const turnList = [
-        { player: 1, stones: [1, 0, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },
-        { player: 2, stones: [0, 1, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },
-    ];
     // stone2 never appears on the board; stone3 does, but maps to no players.
-    const stoneToPlayerMap = { 1: new Set([1]), 2: new Set([2]), 3: new Set<number>() };
-    const bs = new BoardState(
-        3, 2, turnList, [[null, null], [null, null], [null, null]], [null, null, null], stoneToPlayerMap,
-        false, 'stone', [0, 0], 'situational', false, null, board, bc,
-    );
+    // 3 stone colors but only 2 players, so only the first two of the three solo-stone turns.
+    const bs = makeBoardState(bc, soloStoneTurns(3).slice(0, 2), {
+        numPlayers: 2, scoreRule: 'stone', board,
+        stoneToPlayerMap: { 1: new Set([1]), 2: new Set([2]), 3: new Set<number>() },
+    });
 
     assert.equal(bs.makeMove(null), true);
     assert.equal(bs.makeMove(null), true);

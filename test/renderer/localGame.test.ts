@@ -1,18 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { setupDom, BOARD_PX } from './domSetup.ts';
+import { setupDom, clickBoardCenter } from './domSetup.ts';
 
-// Renderer's module-scope `const conn = new ServerConnection()` needs
-// WebSocket/location as globals at import time, so this must be dynamic and
-// happen after the first setupDom() call.
+// Importing src/renderer.ts must be dynamic, and must follow a setupDom() call - see domSetup.ts.
 setupDom();
 const { Renderer } = await import('../../src/renderer.ts');
 const { BoardState } = await import('../../shared/boardState.ts');
 const { rectangularBoard } = await import('../../shared/boardConfig.ts');
 
-// A fresh Renderer, mounted against a fresh jsdom document (setupDom() call)
-// so this test's event listeners don't accumulate on nodes from a previous
-// test - see domSetup.ts's setupDom() comment.
+// Fresh renderer mounted against a fresh jsdom document per call (see domSetup.ts's setupDom()
+// comment on why this must happen every time).
 function createRenderer(forcedPassOnly = false) {
     setupDom();
     const bc = rectangularBoard(3, 3);
@@ -146,14 +143,7 @@ test('clicking the board places a stone at the clicked node', () => {
     const plyNum = document.getElementById('ply-num') as HTMLSpanElement;
     assert.equal(plyNum.textContent, '0/0');
 
-    // rectangularBoard(3,3)'s center node sits exactly at board center - see domSetup.ts's
-    // BOARD_PX comment. A plain click is now pointerdown+pointerup with no movement between them
-    // (see Renderer._onBoardPointerDown, src/renderer.ts) - mouse/touch events are no longer
-    // listened to directly, only the unified Pointer Events they both also generate in real
-    // browsers (see test/renderer/domSetup.ts's PointerEvent polyfill).
-    const clickOpts = { clientX: BOARD_PX / 2, clientY: BOARD_PX / 2, bubbles: true, pointerId: 1 };
-    mainSvg.dispatchEvent(new PointerEvent('pointerdown', clickOpts));
-    mainSvg.dispatchEvent(new PointerEvent('pointerup', clickOpts));
+    clickBoardCenter(mainSvg);
 
     assert.equal(plyNum.textContent, '1/1');
 });

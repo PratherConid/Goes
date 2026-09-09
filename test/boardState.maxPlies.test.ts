@@ -9,9 +9,9 @@
 // makeMove/gameOver/allPassed).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BoardState } from '../shared/boardState.ts';
 import { rectangularBoard } from '../shared/boardConfig.ts';
 import { MoveType } from '../shared/types.ts';
+import { makeBoardState, allStonesTurns } from './boardStateHelpers.ts';
 
 // 5x5 empty board. `twoPlayerTurns` picks between a single-player turnList
 // (so a lone PLACE move can be isolated from the consecutive-pass mechanism,
@@ -19,15 +19,8 @@ import { MoveType } from '../shared/types.ts';
 // turnList (so a single PASS's consecutivePasses=1 stays below
 // turnList.length=2, isolating maxPlies as the sole cause of game-over).
 function game(maxPlies: number | null, twoPlayerTurns: boolean) {
-    const bc = rectangularBoard(5, 5);
-    const turnList = twoPlayerTurns
-        ? [
-            { player: 1, stones: [1, 1], protected: [0, 0], friendly: [0, 0] },
-            { player: 2, stones: [1, 1], protected: [0, 0], friendly: [0, 0] },
-        ]
-        : [{ player: 1, stones: [1, 1], protected: [0, 0], friendly: [0, 0] }];
-    return new BoardState(2, 2, turnList, [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) },
-        false, 'area', [0, 0], 'situational', false, maxPlies, new Array(bc.N).fill(0), bc);
+    return makeBoardState(
+        rectangularBoard(5, 5), allStonesTurns(twoPlayerTurns ? 2 : 1, 2), { numPlayers: 2, maxPlies });
 }
 
 test('maxPlies: null means unlimited - the game never auto-ends from ply count alone', () => {

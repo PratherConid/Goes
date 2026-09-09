@@ -9,6 +9,7 @@ import {
     sierpinskiSimplex, PrescribedBoard, PrescribedBoardMap, PrescribedBoardFns,
 } from '../shared/boardConfig.ts';
 import { BoardArgType, numArg } from '../shared/types.ts';
+import { degrees } from './graphHelpers.ts';
 
 const EPS = 1e-9;
 function dist(a: number[], b: number[]): number {
@@ -80,9 +81,9 @@ test('for n>=2: exactly dim+1 outer-corner nodes have degree dim, every glued no
     for (const dim of [1, 2, 3, 4]) {
         for (const n of [2, 3]) {
             const bc = sierpinskiSimplex(dim, n);
-            const degrees = bc.adj.map(row => row.reduce((s, v) => s + v, 0));
-            const cornerCount = degrees.filter(d => d === dim).length;
-            const gluedCount = degrees.filter(d => d === 2 * dim).length;
+            const deg = degrees(bc.adj);
+            const cornerCount = deg.filter(d => d === dim).length;
+            const gluedCount = deg.filter(d => d === 2 * dim).length;
             assert.equal(cornerCount, dim + 1, `dim=${dim} n=${n}`);
             assert.equal(gluedCount, bc.N - (dim + 1), `dim=${dim} n=${n}`);
         }

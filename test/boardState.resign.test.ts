@@ -7,17 +7,11 @@
 // un-resigned).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BoardState } from '../shared/boardState.ts';
 import { rectangularBoard } from '../shared/boardConfig.ts';
+import { makeBoardState, allStonesTurns, soloStoneTurns } from './boardStateHelpers.ts';
 
 function twoPlayerGame() {
-    const bc = rectangularBoard(5, 5);
-    const turnList = [
-        { player: 1, stones: [1, 1], protected: [0, 0], friendly: [0, 0] },
-        { player: 2, stones: [1, 1], protected: [0, 0], friendly: [0, 0] },
-    ];
-    return new BoardState(2, 2, turnList, [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) },
-        false, 'area', [0, 0], 'situational', false, null, new Array(bc.N).fill(0), bc);
+    return makeBoardState(rectangularBoard(5, 5), allStonesTurns(2));
 }
 
 test('resigning before any move is made ends the game via the _noMove sentinel', () => {
@@ -45,18 +39,7 @@ test('resigning after real moves have been made ends the game via the last real 
 });
 
 test('resigning with more than one non-resigned player left does not end the game', () => {
-    const bc = rectangularBoard(5, 5);
-    const turnList = [
-        { player: 1, stones: [1, 0, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },
-        { player: 2, stones: [0, 1, 0], protected: [0, 0, 0], friendly: [0, 0, 0] },
-        { player: 3, stones: [0, 0, 1], protected: [0, 0, 0], friendly: [0, 0, 0] },
-    ];
-    const bs = new BoardState(
-        3, 3, turnList,
-        [[null, null, null], [null, null, null], [null, null, null]], [null, null, null],
-        { 1: new Set([1]), 2: new Set([2]), 3: new Set([3]) }, false, 'area', [0, 0, 0],
-        'situational', false, null, new Array(bc.N).fill(0), bc,
-    );
+    const bs = makeBoardState(rectangularBoard(5, 5), soloStoneTurns(3));
 
     bs.resign(1);
     assert.equal(bs.gameOver(), false, '2 non-resigned players remain');

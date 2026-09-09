@@ -3,9 +3,8 @@
 // a username -> finished game IDs index and as the raw record list
 // OnlineGameManager reconstructs its finishedGames map from.
 //
-// Stateless module: every function takes the state it needs as an argument.
-// Loading (loadGameRecordStore) is the caller's job (see wsServer.ts's
-// attachWebSocket, the one place server/src wires real arguments into these stores).
+// Stateless module: every function takes the state it needs as an argument, and calling
+// loadGameRecordStore() to produce that state is the caller's job.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -55,7 +54,8 @@ export function loadGameRecordStore(dataDir: string): GameRecordStoreState {
                 const observers = new Set<string>(raw.observers);
                 loadedRecords.push({
                     id: raw.id, finishedGame: FinishedGame.fromJSON(raw.finishedGame), observers,
-                    chat: raw.chat as ChatMessage[],
+                    // A record written before chat existed has no `chat` field at all.
+                    chat: (raw.chat ?? []) as ChatMessage[],
                 });
                 addToIndex(finishedGamesByUser, raw.id, observers);
             } catch {

@@ -3,6 +3,7 @@
 
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
+import { httpError } from './httpError.js';
 
 interface ManagedEngine {
     proc: ChildProcess;
@@ -28,8 +29,7 @@ class EngineManager {
     async getOrCreate(key: string): Promise<string> {
         const existing = this.engines.get(key);
         if (existing) return existing.url;
-        if (!this._aiExe)
-            throw Object.assign(new Error('Engine binary not found'), { statusCode: 503 });
+        if (!this._aiExe) throw httpError(503, 'Engine binary not found');
 
         const port = this._nextPort++;
         const url  = `http://localhost:${port}`;
@@ -55,10 +55,7 @@ class EngineManager {
             } catch {}
         }
         proc.kill();
-        throw Object.assign(
-            new Error(`Engine process for "${key}" failed to start`),
-            { statusCode: 503 },
-        );
+        throw httpError(503, `Engine process for "${key}" failed to start`);
     }
 
     release(key: string): void {
@@ -68,7 +65,7 @@ class EngineManager {
         this.engines.delete(key);
     }
 
-    // Kill all engines whose key starts with `prefix` (used on ws disconnect).
+    // Kill every engine whose key starts with `prefix`.
     releasePrefix(prefix: string): void {
         for (const key of [...this.engines.keys()])
             if (key.startsWith(prefix)) this.release(key);
@@ -91,7 +88,7 @@ export async function aiMove(url: string, body: unknown): Promise<unknown> {
             body: JSON.stringify(body),
         });
     } catch {
-        throw Object.assign(new Error('AI engine unavailable'), { statusCode: 503 });
+        throw httpError(503, 'AI engine unavailable');
     }
     if (!resp.ok) {
         // The engine's own /move handler (ai/src/server.cpp) responds with
@@ -104,7 +101,7 @@ export async function aiMove(url: string, body: unknown): Promise<unknown> {
             const data = await resp.json() as { error?: string };
             if (data?.error) message = data.error;
         } catch {}
-        throw Object.assign(new Error(message), { statusCode: resp.status });
+        throw httpError(resp.status, message);
     }
     return resp.json();
 }

@@ -4,7 +4,7 @@
 // clicked location - not merely offered that turn (see src/renderer.ts).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { setupDom, BOARD_PX } from './domSetup.ts';
+import { setupDom, BOARD_PX, clickAt, clickBoardCenter } from './domSetup.ts';
 
 setupDom();
 const { Renderer } = await import('../../src/renderer.ts');
@@ -20,33 +20,24 @@ function createRenderer(game: InstanceType<typeof BoardState>) {
     return renderer;
 }
 
-// A plain click is now pointerdown+pointerup with no movement between them (see
-// Renderer._onBoardPointerDown, src/renderer.ts) - mouse/touch events are no longer listened to
-// directly, only the unified Pointer Events they both also generate in real browsers (see
-// test/renderer/domSetup.ts's PointerEvent polyfill).
-function clickAt(mainSvg: SVGSVGElement, clientX: number, clientY: number) {
-    const opts = { clientX, clientY, bubbles: true, pointerId: 1 };
-    mainSvg.dispatchEvent(new PointerEvent('pointerdown', opts));
-    mainSvg.dispatchEvent(new PointerEvent('pointerup', opts));
-}
-
-function clickCenter(mainSvg: SVGSVGElement) {
-    clickAt(mainSvg, BOARD_PX / 2, BOARD_PX / 2);
-}
-
-test('two stones both legal at the clicked location: opens the popup with both', () => {
+// Every turn offers BOTH stones, so any legal empty cell has two candidates - the situation the
+// selection popup exists for.
+function bothStonesOfferedGame() {
     const bc = rectangularBoard(3, 3);
-    const game = new BoardState(2, 2, [
+    return new BoardState(2, 2, [
         { player: 1, stones: [1, 1], protected: [0, 0], friendly: [0, 0] },
         { player: 2, stones: [1, 1], protected: [0, 0], friendly: [0, 0] },
     ],
     [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', [0, 0],
     'situational', false, null, new Array(bc.N).fill(0), bc);
-    const renderer: any = createRenderer(game);
+}
+
+test('two stones both legal at the clicked location: opens the popup with both', () => {
+    const renderer: any = createRenderer(bothStonesOfferedGame());
     const mainSvg = document.getElementById('main-canvas') as unknown as SVGSVGElement;
     const plyNum = document.getElementById('ply-num') as HTMLSpanElement;
 
-    clickCenter(mainSvg);
+    clickBoardCenter(mainSvg);
 
     assert.equal(renderer.selectingStone, true, 'should enter selection mode rather than place immediately');
     assert.equal(plyNum.textContent, '0/0', 'no move should have been made yet');
@@ -55,18 +46,11 @@ test('two stones both legal at the clicked location: opens the popup with both',
 });
 
 test('clicking a popup circle places a move with that specific stone', () => {
-    const bc = rectangularBoard(3, 3);
-    const game = new BoardState(2, 2, [
-        { player: 1, stones: [1, 1], protected: [0, 0], friendly: [0, 0] },
-        { player: 2, stones: [1, 1], protected: [0, 0], friendly: [0, 0] },
-    ],
-    [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', [0, 0],
-    'situational', false, null, new Array(bc.N).fill(0), bc);
-    const renderer: any = createRenderer(game);
+    const renderer: any = createRenderer(bothStonesOfferedGame());
     const mainSvg = document.getElementById('main-canvas') as unknown as SVGSVGElement;
     const plyNum = document.getElementById('ply-num') as HTMLSpanElement;
 
-    clickCenter(mainSvg);
+    clickBoardCenter(mainSvg);
     const v = renderer._active.bs.getView();
     const circles = renderer._stonePopupCircles(v);
     assert.equal(circles[0].r, BOARD_PX / 24, 'popup circle radius is 1/24 of the board width');
@@ -81,19 +65,12 @@ test('clicking a popup circle places a move with that specific stone', () => {
 });
 
 test('clicking the board away from the popup circles cancels selection without committing a move', () => {
-    const bc = rectangularBoard(3, 3);
-    const game = new BoardState(2, 2, [
-        { player: 1, stones: [1, 1], protected: [0, 0], friendly: [0, 0] },
-        { player: 2, stones: [1, 1], protected: [0, 0], friendly: [0, 0] },
-    ],
-    [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', [0, 0],
-    'situational', false, null, new Array(bc.N).fill(0), bc);
-    const renderer: any = createRenderer(game);
+    const renderer: any = createRenderer(bothStonesOfferedGame());
     const mainSvg = document.getElementById('main-canvas') as unknown as SVGSVGElement;
     const plyNum = document.getElementById('ply-num') as HTMLSpanElement;
     const passBtn = document.getElementById('pass-btn') as HTMLButtonElement;
 
-    clickCenter(mainSvg);
+    clickBoardCenter(mainSvg);
     assert.equal(renderer.selectingStone, true);
     assert.equal(passBtn.disabled, true, 'Pass is disabled while a stone-selection popup is open');
 
@@ -104,7 +81,7 @@ test('clicking the board away from the popup circles cancels selection without c
     assert.equal(plyNum.textContent, '0/0', 'cancelling must not have committed a move');
 
     // Board should be clickable again - clicking the same cell should re-open the popup there.
-    clickCenter(mainSvg);
+    clickBoardCenter(mainSvg);
     assert.equal(renderer.selectingStone, true, 'board should be clickable again after cancel');
 });
 
@@ -134,7 +111,7 @@ test('clicking a location illegal for every offered stone does nothing (no popup
     const mainSvg = document.getElementById('main-canvas') as unknown as SVGSVGElement;
     const plyNum = document.getElementById('ply-num') as HTMLSpanElement;
 
-    clickCenter(mainSvg);
+    clickBoardCenter(mainSvg);
     assert.equal(renderer.selectingStone, false, 'should not open the popup for an all-illegal location');
     assert.equal(plyNum.textContent, '0/0', 'no move should have been made');
 });
@@ -151,7 +128,7 @@ test('exactly one offered stone legal at the clicked location: auto-placed, no p
     const mainSvg = document.getElementById('main-canvas') as unknown as SVGSVGElement;
     const plyNum = document.getElementById('ply-num') as HTMLSpanElement;
 
-    clickCenter(mainSvg);
+    clickBoardCenter(mainSvg);
     assert.equal(renderer.selectingStone, false, 'should not open the popup when only one stone is legal here');
     assert.equal(plyNum.textContent, '1/1', 'the single legal stone should be auto-placed');
     assert.equal(renderer._active.bs.moveInfos()[0].stone, 1);

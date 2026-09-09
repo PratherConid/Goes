@@ -8,30 +8,9 @@ import assert from 'node:assert/strict';
 import {
     genericForm, triangleForm, quadForm, quadDiagForm, triangularBoard, rectangularBoard, applyModifier,
 } from '../shared/boardConfig.ts';
-import { Embedding, type BoardConfig, type FormSelector, type Selector } from '../shared/types.ts';
+import type { FormSelector, Selector } from '../shared/types.ts';
 import { parseTriangleSelector, parseQuadSelector } from '../shared/selector.ts';
-
-function edgeCount(adj: number[][]): number {
-    return adj.flat().reduce((s, v) => s + v, 0) / 2;
-}
-
-function assertSymmetricNoSelfLoops(adj: number[][]) {
-    for (let i = 0; i < adj.length; i++) {
-        assert.equal(adj[i][i], 0, `self-loop at ${i}`);
-        for (let j = 0; j < adj.length; j++) assert.equal(adj[i][j], adj[j][i], `asymmetric at ${i},${j}`);
-    }
-}
-
-function assertConnected(adj: number[][]) {
-    const N = adj.length;
-    const seen = new Set([0]);
-    const stack = [0];
-    while (stack.length) {
-        const v = stack.pop()!;
-        for (let j = 0; j < N; j++) if (adj[v][j] && !seen.has(j)) { seen.add(j); stack.push(j); }
-    }
-    assert.equal(seen.size, N, 'graph should stay fully connected');
-}
+import { edgeCount, assertSymmetricNoSelfLoops, assertConnected, boardFromEdges } from './graphHelpers.ts';
 
 test('genericForm with a single TriForm selector is identical to triangleForm', () => {
     const bc = triangularBoard(2);
@@ -46,12 +25,7 @@ test('genericForm with a single QuadForm selector is identical to quadForm', () 
 test('a triangle and a quad sharing an edge glue seamlessly across kinds', () => {
     // Triangle 0-1-2 and quad (cycle) 1-3-4-2 share edge (1,2).
     const N = 5;
-    const adj: number[][] = Array.from({ length: N }, () => new Array(N).fill(0));
-    const edge = (i: number, j: number) => { adj[i][j] = 1; adj[j][i] = 1; };
-    edge(0, 1); edge(1, 2); edge(2, 0);
-    edge(1, 3); edge(3, 4); edge(4, 2);
-    const emb = new Embedding(2, adj.map((_, i): [number, number] => [i, 0]));
-    const bc: BoardConfig = { N, adj, emb };
+    const bc = boardFromEdges(N, [[0, 1], [1, 2], [2, 0], [1, 3], [3, 4], [4, 2]]);
 
     const triOnly = genericForm(bc, 3, [{ kind: 'TriForm', sel: parseTriangleSelector('(all tri)') }]);
     const quadOnly = genericForm(bc, 3, [{ kind: 'QuadForm', sel: parseQuadSelector('(all quad)') }]);
@@ -98,12 +72,7 @@ test('applyModifier("QuadDiagForm", ...) matches calling quadDiagForm directly',
 test('two quadDiagForm quads sharing an edge glue seamlessly', () => {
     // Two quads (0-1-2-3 and 1-4-5-2) sharing edge (1,2).
     const N = 6;
-    const adj: number[][] = Array.from({ length: N }, () => new Array(N).fill(0));
-    const edge = (i: number, j: number) => { adj[i][j] = 1; adj[j][i] = 1; };
-    edge(0, 1); edge(1, 2); edge(2, 3); edge(3, 0);
-    edge(1, 4); edge(4, 5); edge(5, 2);
-    const emb = new Embedding(2, adj.map((_, i): [number, number] => [i, 0]));
-    const bc: BoardConfig = { N, adj, emb };
+    const bc = boardFromEdges(N, [[0, 1], [1, 2], [2, 3], [3, 0], [1, 4], [4, 5], [5, 2]]);
 
     const quad1: Selector =
         { op: 'raw', type: 'quad', items: { kind: 'quad', value: [{ n1: 0, n2: 1, n3: 2, n4: 3 }] } };

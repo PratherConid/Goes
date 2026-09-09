@@ -12,6 +12,7 @@ import { parseCleg } from '../shared/clegParser.ts';
 import { buildBoardFromCleg } from '../shared/clegEval.ts';
 import { GameConfig } from '../shared/gameConfig.ts';
 import { loadFont, BUNDLED_FONT_NAMES } from '../shared/glyphRaster.ts';
+import { edgeCount } from './graphHelpers.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const boardPresetsDir = path.join(__dirname, '..', 'public', 'board_presets');
@@ -27,10 +28,9 @@ for (const name of BUNDLED_FONT_NAMES) {
 
 // shared/selector.ts's randomlyRemove()/randomlyTake() are the Math.random() call sites any preset
 // can reach (via a (rrmp ...)/(rrmn ...)/(rpkp ...)/(rpkn ...) selector, or the randRmN/randRmP/
-// randTakeN/randTakeP cleg builtins) - seeded here so the handful of presets using them
-// (fractaldrop-built ones, nice_drop, rrmp) evaluate to the exact same board every run, the same
-// substitute-a-seeded-PRNG technique used earlier this session to verify randomized presets
-// structurally.
+// randTakeN/randTakeP cleg builtins) - substituting a seeded PRNG for the duration makes the
+// handful of presets using them (fractaldrop-built ones, nice_drop, rrmp) evaluate to the exact
+// same board every run.
 function mulberry32(seed: number): () => number {
     return () => {
         seed |= 0;
@@ -41,18 +41,10 @@ function mulberry32(seed: number): () => number {
     };
 }
 
-function edgeCount(adj: number[][]): number {
-    let count = 0;
-    for (let i = 0; i < adj.length; i++)
-        for (let j = i + 1; j < adj.length; j++)
-            if (adj[i]![j]) count++;
-    return count;
-}
-
 // Golden N/edge-count values, one per public/board_presets/*.cleg file that DOESN'T use any of
-// RANDOM_BUILTIN_NAMES below - captured from buildBoardFromCleg()'s current, verified-correct
-// behavior (cross-checked this session against an independent C++ port's own evaluation of the same
-// files). A failure here means either a real regression or a deliberate preset-content change -
+// RANDOM_BUILTIN_NAMES below - captured from buildBoardFromCleg()'s verified-correct behavior,
+// cross-checked against the independent C++ port's own evaluation of the same files.
+// A failure here means either a real regression or a deliberate preset-content change -
 // update the golden value in the latter case, don't delete the assertion; add a new entry (and
 // re-run to capture its own golden value) for a new preset file. A preset that uses randomness gets
 // no entry here at all - see this file's own top comment on why.

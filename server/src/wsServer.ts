@@ -4,6 +4,7 @@ import { OnlineGameManager } from './onlineGameManager.js';
 import { OnlinePlayerRequest } from '@shared/types.js';
 import { GameConfig } from '@shared/gameConfig.js';
 import { engineManager, aiMove } from './engineManager.js';
+import { httpError } from './httpError.js';
 import { loadUserStore, registerUser, verifyLogin, userExists } from './userStore.js';
 import { loadGameRecordStore } from './gameRecordStore.js';
 
@@ -35,24 +36,27 @@ interface ReqMessage {
     [k: string]: unknown;
 }
 
-// Result of handling a request: list of (data + optional broadcast) pairs, plus
-// an optional game ID to trigger server-engine advancement after the ack.
+// An event sent to every observer of a game (see broadcastEvent). The payload is the same for all
+// of them - usernames are the single point of reference, so the client figures out which slot (if
+// any) is its own by comparing PlayerInfo.name to its own userName.
 interface BroadcastMsg {
     id: string; type: string;
-    payload: object;   // same to every observer - usernames are the single point of
-                        // reference now, so the client figures out which slot (if any)
-                        // is its own by comparing PlayerInfo.name to its own userName.
+    payload: object;
 }
-// Personalized events sent directly to specific usernames (not a game's
-// observer set - see broadcastEvent) - e.g. an invite going to someone who
-// isn't a participant yet. handleRequest itself never calls send()
-// directly (the sole pre-existing exception is FLOGIN's auth/kicked, a
-// narrow single-recipient case tightly coupled to also closing that
-// connection); every case instead returns data that the one dispatch site
-// below actually sends, after the request's own ack - `pushes` extends that
-// same convention to arbitrary multi-recipient notifications.
+// An event sent directly to one username, who need not be an observer of the game - e.g. an
+// invite going to someone who isn't a participant yet.
 interface PersonalizedPush { to: string; type: string; payload: object; }
-interface Handled { results: { data: unknown; broadcast?: BroadcastMsg }[]; engineGame?: string; pushes?: PersonalizedPush[]; }
+
+// What handleRequest returns: the requester's own ack data, plus any events to send after it.
+// Handlers never call send() themselves (the one exception is FLOGIN's auth/kicked, a
+// single-recipient case tightly coupled to also closing that connection) - the single dispatch
+// site below is what actually delivers all of this.
+interface Handled {
+    data: unknown;
+    broadcast?: BroadcastMsg;
+    pushes?: PersonalizedPush[];
+    engineGame?: string;   // game to advance serverEngine turns for, after the ack
+}
 
 function send(ws: WebSocket, obj: unknown) {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
@@ -90,15 +94,18 @@ export function attachWebSocket(server: Server, dataDir: string): void {
         userToWs.set(name, ws);
     }
 
-    // The positions this connection owns in game `id`, or throw 403 if none.
-    // Requires the connection to be logged in (a username is the only identity
-    // getPositions understands now).
-    function requirePositions(id: string, ws: WebSocket): number[] {
+    // The name this connection is logged in as, or throw 401 - a username is the only identity
+    // anything below understands.
+    function requireUser(ws: WebSocket): string {
         const userName = wsToUser.get(ws);
-        if (!userName) throw Object.assign(new Error('Not logged in'), { statusCode: 401 });
-        const positions = onlineGameManager.getPositions(id, userName);
-        if (!positions.length)
-            throw Object.assign(new Error('You are not a player in this game'), { statusCode: 403 });
+        if (!userName) throw httpError(401, 'Not logged in');
+        return userName;
+    }
+
+    // The positions this connection owns in game `id`, or throw 403 if none.
+    function requirePositions(id: string, ws: WebSocket): number[] {
+        const positions = onlineGameManager.getPositions(id, requireUser(ws));
+        if (!positions.length) throw httpError(403, 'You are not a player in this game');
         return positions;
     }
 
@@ -115,6 +122,16 @@ export function attachWebSocket(server: Server, dataDir: string): void {
     // Build a game/pending-games or game/start broadcast carrying the game's config as-is.
     function buildBroadcast(id: string, type: string): BroadcastMsg {
         return { id, type, payload: { config: onlineGameManager.getConfig(id) } };
+    }
+
+    // The ack+broadcast shape shared by every request that can start a game (create/join/
+    // invite-accept): which event to broadcast, and whether to hand the game to the server engine.
+    function startOrWait(id: string, status: 'waiting' | 'playing', data: unknown): Handled {
+        return {
+            data,
+            broadcast: buildBroadcast(id, status === 'playing' ? 'game/start' : 'game/pending-games'),
+            engineGame: status === 'playing' ? id : undefined,
+        };
     }
 
     // Advances serverEngine turns until a human slot or game over.
@@ -146,67 +163,67 @@ export function attachWebSocket(server: Server, dataDir: string): void {
         }
     }
 
-    // JSON-safe {id, finishedGame} list for a successful REGISTER/LOGIN/FLOGIN response,
-    // so the client can populate its own finishedGames without having watched them live.
-    function buildFinishedGamesPayload(name: string): { id: string; finishedGame: unknown; chat: unknown }[] {
-        return onlineGameManager.getFinishedGamesFor(name)
-            .map(({ id, finishedGame, chat }) => ({ id, finishedGame: finishedGame.toJSON(), chat }));
+    // The ack data shared by REGISTER/LOGIN/FLOGIN: the confirmed name plus a JSON-safe version of
+    // onlineGameManager.getFinishedGamesFor()'s records.
+    function buildAuthResponse(name: string): object {
+        return {
+            name,
+            finishedGames: onlineGameManager.getFinishedGamesFor(name)
+                .map(({ id, finishedGame, chat }) => ({ id, finishedGame: finishedGame.toJSON(), chat })),
+        };
     }
 
-    // Dispatch one request; returns the ack data (+ optional broadcast), or throws { statusCode }.
+    // Reads name/password off an auth request, rejecting a request missing either.
+    function authCredentials(msg: ReqMessage): { name: string; password: string } {
+        const name = msg['name'] as string, password = msg['password'] as string;
+        if (!name || !password) throw httpError(400, 'name and password are required');
+        return { name, password };
+    }
+
+    // Dispatch one request; returns the ack data (+ optional broadcast/pushes), or throws { statusCode }.
     async function handleRequest(ws: WebSocket, msg: ReqMessage): Promise<Handled> {
         switch (msg.type) {
             case 'ai/move': {
                 const body  = msg['body'] as Record<string, unknown>;
                 const gameId = body['game_id'] as string | undefined;
-                if (!gameId)
-                    throw Object.assign(new Error('game_id is required for ai/move'), { statusCode: 400 });
+                if (!gameId) throw httpError(400, 'game_id is required for ai/move');
                 const wsId = _wsIds.get(ws)!;
                 const url  = await engineManager.getOrCreate(`local:${wsId}:${gameId}`);
                 const { game_id: _gid, ...engineBody } = body;
-                return { results: [{ data: await aiMove(url, engineBody) }] };
+                return { data: await aiMove(url, engineBody) };
             }
             case 'ai/health':
-                return { results: [{ data: { status: engineManager.ready ? 'ok' : 'unavailable' } }] };
+                return { data: { status: engineManager.ready ? 'ok' : 'unavailable' } };
             case 'REGISTER': {
-                const name = msg['name'] as string, password = msg['password'] as string;
-                if (!name || !password)
-                    throw Object.assign(new Error('name and password are required'), { statusCode: 400 });
+                const { name, password } = authCredentials(msg);
                 const result = await registerUser(userStoreState, name, password);
-                if (!result.ok) throw Object.assign(new Error(result.error), { statusCode: 409 });
+                if (!result.ok) throw httpError(409, result.error);
                 setLogin(ws, name);  // auto-login after successful registration
-                return { results: [{ data: { name, finishedGames: buildFinishedGamesPayload(name) } }] };
+                return { data: buildAuthResponse(name) };
             }
             case 'LOGIN': {
-                const name = msg['name'] as string, password = msg['password'] as string;
-                if (!name || !password)
-                    throw Object.assign(new Error('name and password are required'), { statusCode: 400 });
+                const { name, password } = authCredentials(msg);
                 if (!await verifyLogin(userStoreState, name, password))
-                    throw Object.assign(new Error('Invalid username or password'), { statusCode: 401 });
+                    throw httpError(401, 'Invalid username or password');
                 if (userToWs.has(name) && userToWs.get(name) !== ws)
-                    throw Object.assign(
-                        new Error('Already logged in elsewhere - use flogin to take over'), { statusCode: 409 },
-                    );
+                    throw httpError(409, 'Already logged in elsewhere - use flogin to take over');
                 setLogin(ws, name);
-                return { results: [{ data: { name, finishedGames: buildFinishedGamesPayload(name) } }] };
+                return { data: buildAuthResponse(name) };
             }
             case 'FLOGIN': {
-                const name = msg['name'] as string, password = msg['password'] as string;
-                if (!name || !password)
-                    throw Object.assign(new Error('name and password are required'), { statusCode: 400 });
+                const { name, password } = authCredentials(msg);
                 if (!await verifyLogin(userStoreState, name, password))
-                    throw Object.assign(new Error('Invalid username or password'), { statusCode: 401 });
+                    throw httpError(401, 'Invalid username or password');
                 const existing = userToWs.get(name);
                 if (existing && existing !== ws) {
                     send(existing, { kind: 'event', type: 'auth/kicked', name });
                     existing.close();
                 }
                 setLogin(ws, name);
-                return { results: [{ data: { name, finishedGames: buildFinishedGamesPayload(name) } }] };
+                return { data: buildAuthResponse(name) };
             }
             case 'game/create': {
-                const userName = wsToUser.get(ws);
-                if (!userName) throw Object.assign(new Error('Not logged in'), { statusCode: 401 });
+                const userName = requireUser(ws);
                 const config = GameConfig.fromJSON(msg['config'] as any);
                 const request = OnlinePlayerRequest.fromJSON(msg['onlinePlayerRequest'] as any);
                 // The server, not the client, decides the name for slots this connection
@@ -228,7 +245,7 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                 for (const pi of activeEntries) {
                     if (pi.type !== 'pendingInvitedOnline') continue;
                     if (!userExists(userStoreState, pi.name))
-                        throw Object.assign(new Error(`Invited user "${pi.name}" does not exist`), { statusCode: 400 });
+                        throw httpError(400, `Invited user "${pi.name}" does not exist`);
                     if (!userToWs.has(pi.name)) offlineInvited.add(pi.name);
                 }
                 if (offlineInvited.size > 0) {
@@ -236,7 +253,7 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                     const label = names.length === 1
                         ? `User ${names[0]} is offline.`
                         : `Users ${names.join(', ')} are offline.`;
-                    throw Object.assign(new Error(`Cannot create game. ${label}`), { statusCode: 409 });
+                    throw httpError(409, `Cannot create game. ${label}`);
                 }
                 const result = onlineGameManager.createGame(config, request);
                 // Slot ownership already follows from pi.name (set above); just mark the
@@ -244,7 +261,7 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                 onlineGameManager.addObserver(result.id, userName);
                 // Personally notify each invited user (if currently connected) - they
                 // aren't observers yet (see OnlineGameManager.respondToInvite's doc
-                // comment), so the regular observer-set broadcast below won't reach
+                // comment), so the regular observer-set broadcast won't reach
                 // them. Deduped by username - a user invited into multiple slots
                 // (respondToInvite() resolves all of them at once) should still only
                 // get a single invite popup.
@@ -254,25 +271,18 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                         .map(pi => pi.name)
                 )].map(name => ({ to: name, type: 'game/invite', payload: { id: result.id, from: userName } }));
                 return {
-                    results: [{
-                        data: { id: result.id, status: result.status },
-                        broadcast: buildBroadcast(
-                            result.id, result.status === 'playing' ? 'game/start' : 'game/pending-games',
-                        ),
-                    }],
-                    engineGame: result.status === 'playing' ? result.id : undefined,
+                    ...startOrWait(result.id, result.status, { id: result.id, status: result.status }),
                     pushes,
                 };
             }
             case 'game/invite-respond': {
-                const userName = wsToUser.get(ws);
-                if (!userName) throw Object.assign(new Error('Not logged in'), { statusCode: 401 });
+                const userName = requireUser(ws);
                 const id = msg['id'] as string;
                 const accept = msg['accept'] as boolean;
                 const result = onlineGameManager.respondToInvite(id, userName, accept);
                 if (result.status === 'declined') {
                     return {
-                        results: [{ data: { status: result.status } }],
+                        data: { status: result.status },
                         pushes: (result.notify ?? []).map(name => ({
                             to: name,
                             type: 'game/invite-failed',
@@ -280,31 +290,14 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                         })),
                     };
                 }
-                return {
-                    results: [{
-                        data: { status: result.status },
-                        broadcast: buildBroadcast(
-                            id, result.status === 'playing' ? 'game/start' : 'game/pending-games',
-                        ),
-                    }],
-                    engineGame: result.status === 'playing' ? id : undefined,
-                };
+                return startOrWait(id, result.status, { status: result.status });
             }
             case 'game/join': {
-                const userName = wsToUser.get(ws);
-                if (!userName) throw Object.assign(new Error('Not logged in'), { statusCode: 401 });
+                const userName = requireUser(ws);
                 const id = msg['id'] as string;
                 const result = onlineGameManager.joinGame(id, userName);
                 onlineGameManager.addObserver(id, userName);
-                return {
-                    results: [{
-                        data: { position: result.position },
-                        broadcast: buildBroadcast(
-                            id, result.status === 'playing' ? 'game/start' : 'game/pending-games',
-                        ),
-                    }],
-                    engineGame: result.status === 'playing' ? id : undefined,
-                };
+                return startOrWait(id, result.status, { position: result.position });
             }
             case 'game/move': {
                 const id = msg['id'] as string;
@@ -313,7 +306,8 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                 const stone = (msg['stone'] as number | null) ?? null;
                 onlineGameManager.applyMove(id, positions, moveIndex, stone, msg['clientIdx'] as number);
                 return {
-                    results: [{ data: { ok: true }, broadcast: { id, type: 'game/move', payload: { moveIndex, stone } } }],
+                    data: { ok: true },
+                    broadcast: { id, type: 'game/move', payload: { moveIndex, stone } },
                     engineGame: id,
                 };
             }
@@ -322,31 +316,29 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                 const positions = requirePositions(id, ws);
                 const slot = onlineGameManager.resign(id, positions);
                 return {
-                    results: [{ data: { ok: true }, broadcast: { id, type: 'game/resign', payload: { slots: [slot] } } }],
+                    data: { ok: true },
+                    broadcast: { id, type: 'game/resign', payload: { slots: [slot] } },
                     engineGame: id,
                 };
             }
             case 'game/withdraw-request': {
-                const userName = wsToUser.get(ws);
-                if (!userName) throw Object.assign(new Error('Not logged in'), { statusCode: 401 });
+                const userName = requireUser(ws);
                 const id = msg['id'] as string;
                 requirePositions(id, ws);
                 const toPly = typeof msg['toPly'] === 'number' ? msg['toPly'] as number : undefined;
                 const result = onlineGameManager.requestWithdraw(id, userName, toPly);
                 if (result.status === 'applied') {
                     return {
-                        results: [{
-                            data: { status: 'applied', numWithdrawn: result.numWithdrawn },
-                            broadcast: {
-                                id, type: 'game/withdraw',
-                                payload: { toPly: result.toPly, numWithdrawn: result.numWithdrawn },
-                            },
-                        }],
+                        data: { status: 'applied', numWithdrawn: result.numWithdrawn },
+                        broadcast: {
+                            id, type: 'game/withdraw',
+                            payload: { toPly: result.toPly, numWithdrawn: result.numWithdrawn },
+                        },
                         engineGame: id,
                     };
                 }
                 return {
-                    results: [{ data: { status: 'pending', numWithdrawn: result.numWithdrawn } }],
+                    data: { status: 'pending', numWithdrawn: result.numWithdrawn },
                     pushes: result.notify.map(name => ({
                         to: name, type: 'game/withdraw-proposed',
                         payload: { id, from: userName, numWithdrawn: result.numWithdrawn },
@@ -354,58 +346,48 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                 };
             }
             case 'game/withdraw-respond': {
-                const userName = wsToUser.get(ws);
-                if (!userName) throw Object.assign(new Error('Not logged in'), { statusCode: 401 });
+                const userName = requireUser(ws);
                 const id = msg['id'] as string;
                 const accept = msg['accept'] as boolean;
                 const result = onlineGameManager.respondToWithdraw(id, userName, accept);
                 if (result.status === 'applied') {
                     return {
-                        results: [{
-                            data: { status: 'applied' },
-                            broadcast: {
-                                id, type: 'game/withdraw',
-                                payload: { toPly: result.toPly, numWithdrawn: result.numWithdrawn },
-                            },
-                        }],
+                        data: { status: 'applied' },
+                        broadcast: {
+                            id, type: 'game/withdraw',
+                            payload: { toPly: result.toPly, numWithdrawn: result.numWithdrawn },
+                        },
                         engineGame: id,
                     };
                 }
                 if (result.status === 'declined') {
                     return {
-                        results: [{ data: { status: 'declined' } }],
+                        data: { status: 'declined' },
                         pushes: (result.notify ?? []).map(name => ({
                             to: name, type: 'game/withdraw-failed',
                             payload: { id, message: `Withdrawal request for game ${id} was declined` },
                         })),
                     };
                 }
-                return { results: [{ data: { status: 'waiting' } }] };
+                return { data: { status: 'waiting' } };
             }
             case 'game/sendchat': {
                 const id = msg['id'] as string;
                 const content = (msg['content'] as string) ?? '';
-                const positions = requirePositions(id, ws);   // already throws 403 if empty
-                const player = positions[0];
+                const player = requirePositions(id, ws)[0];
                 const chatMsg = onlineGameManager.sendChat(id, player, content);
-                return {
-                    results: [{ data: { ok: true }, broadcast: { id, type: 'game/chatmessage', payload: chatMsg } }],
-                };
+                return { data: { ok: true }, broadcast: { id, type: 'game/chatmessage', payload: chatMsg } };
             }
             case 'game/subscribe': {
                 // Re-bind this connection after a reconnect; reply with full state + personalised config for catchup.
-                const userName = wsToUser.get(ws);
-                if (!userName) throw Object.assign(new Error('Not logged in'), { statusCode: 401 });
+                const userName = requireUser(ws);
                 const id = msg['id'] as string;
                 const position = msg['position'] as number;
-                if (!onlineGameManager.acceptJoin(id, userName, position))
-                    throw Object.assign(new Error('Not your slot'), { statusCode: 403 });
-                return {
-                    results: [{ data: { state: onlineGameManager.getState(id), config: onlineGameManager.getConfig(id) } }],
-                };
+                if (!onlineGameManager.acceptJoin(id, userName, position)) throw httpError(403, 'Not your slot');
+                return { data: { state: onlineGameManager.getState(id), config: onlineGameManager.getConfig(id) } };
             }
             default:
-                throw Object.assign(new Error(`Unknown request type: ${msg.type}`), { statusCode: 400 });
+                throw httpError(400, `Unknown request type: ${msg.type}`);
         }
     }
 
@@ -425,11 +407,9 @@ export function attachWebSocket(server: Server, dataDir: string): void {
             if (msg?.kind !== 'req' || typeof msg.reqId !== 'number') return;
 
             handleRequest(ws, msg)
-                .then(({ results, engineGame, pushes }) => {
-                    send(ws, { kind: 'res', reqId: msg.reqId, ok: true, data: results[0].data });
-                    for (const { broadcast } of results) {
-                        if (broadcast) broadcastEvent(broadcast.id, broadcast.type, broadcast.payload);
-                    }
+                .then(({ data, broadcast, pushes, engineGame }) => {
+                    send(ws, { kind: 'res', reqId: msg.reqId, ok: true, data });
+                    if (broadcast) broadcastEvent(broadcast.id, broadcast.type, broadcast.payload);
                     for (const { to, type, payload } of pushes ?? []) {
                         const targetWs = userToWs.get(to);
                         if (targetWs) send(targetWs, { kind: 'event', type, ...payload });
@@ -437,14 +417,6 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                     if (engineGame) void advanceServerEngine(engineGame);
                 })
                 .catch((e: any) => {
-                    // A thrown error can still carry `pushes` (see e.g.
-                    // OnlineGameManager.respondToInvite()'s already-refused-game
-                    // branch) - forward them exactly like the success path above,
-                    // before sending the error response to the original requester.
-                    for (const { to, type, payload } of e?.pushes ?? []) {
-                        const targetWs = userToWs.get(to);
-                        if (targetWs) send(targetWs, { kind: 'event', type, ...payload });
-                    }
                     send(ws, {
                         kind: 'res', reqId: msg.reqId, ok: false,
                         error: e?.message ?? 'Internal error',

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { BoardState } from '../shared/boardState.ts';
 import { rectangularBoard } from '../shared/boardConfig.ts';
 import type { KoRule } from '../shared/types.ts';
+import { makeBoardState } from './boardStateHelpers.ts';
 
 // A minimal ko shape on a 5x5 board (row-major index = row*5+col): Black at
 // the ko point (12) is in atari with its only liberty at 13; White flanks 12
@@ -30,10 +31,7 @@ function setupKo(koRule: KoRule): BoardState {
         { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
         { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
     ];
-    const bs = new BoardState(
-        2, 2, turnList, [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) },
-        false, 'area', [0, 0], koRule, false, null, koSetupBoard(bc), bc,
-    );
+    const bs = makeBoardState(bc, turnList, { koRule, board: koSetupBoard(bc) });
     assert.equal(bs.makeMove(13), true, 'White captures the Black ko stone at 12');
     return bs;
 }

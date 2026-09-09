@@ -10,8 +10,8 @@ import { loadFont, BUNDLED_FONT_NAMES } from '@shared/glyphRaster.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Loads every bundled font (public/fonts/<name>.ttf) and registers it with shared/glyphRaster.ts's
-// own loadFont() - the server evaluates cleg programs too (see onlineGameManager.ts's own
-// buildBoardFromCleg calls), so it needs strB(...) to work here just as much as the renderer does.
+// own loadFont() - the server evaluates cleg programs itself, so strB(...) has to work here just as
+// much as it does in the renderer.
 function loadBundledFonts(publicDir: string): void {
     for (const name of BUNDLED_FONT_NAMES) {
         const buf = readFileSync(path.join(publicDir, 'fonts', `${name}.ttf`));
@@ -22,17 +22,13 @@ function loadBundledFonts(publicDir: string): void {
     }
 }
 
-// Builds the Express+WebSocket app against `dataDir` (attachWebSocket is the
-// one place that turns dataDir into live user/game-record/online-game state)
-// and, iff `autoStart`, starts listening on `port` and wires up
-// graceful-shutdown signal handlers. When `autoStart` is false, the returned
-// http.Server is fully built but not yet listening - the caller decides
-// if/when to server.listen() themselves (e.g. a test choosing its own port).
+// Builds the Express+WebSocket app against `dataDir` and, iff `autoStart`, starts listening on
+// `port` and wires up graceful-shutdown signal handlers. When `autoStart` is false, the returned
+// http.Server is fully built but not yet listening - the caller decides if/when to server.listen()
+// themselves, e.g. to choose its own port.
 export async function startServer(port: number, dataDir: string, autoStart: boolean): Promise<http.Server> {
     // ── AI engine initialisation ──────────────────────────────────────────
-    // No shared engine process is pre-spawned. Instead, EngineManager spawns
-    // one goes_server process per game on demand. We only resolve the binary
-    // path here.
+    // Only the binary path is resolved here; EngineManager does the spawning.
     const projectRoot = path.resolve(__dirname, '../..');
     loadBundledFonts(path.join(projectRoot, 'public'));
 
@@ -68,8 +64,7 @@ export async function startServer(port: number, dataDir: string, autoStart: bool
 }
 
 // Only parse argv and run when this file is executed directly
-// (`tsx src/index.ts <port> <dataDir> <autoStart>`), not when a test imports
-// this module purely to call startServer() itself.
+// (`tsx src/index.ts <port> <dataDir> <autoStart>`), not when it's imported for startServer().
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const [portArg, dataDirArg, autoStartArg] = process.argv.slice(2);
     if (portArg === undefined || dataDirArg === undefined || autoStartArg === undefined) {

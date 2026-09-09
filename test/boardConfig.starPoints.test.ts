@@ -3,15 +3,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { computeStarPoints } from '../shared/boardConfig.ts';
-import { GameConfig } from '../shared/gameConfig.ts';
-import { parseCleg } from '../shared/clegParser.ts';
+import type { GameConfig } from '../shared/gameConfig.ts';
+import { makeGameConfig, soloStoneTurns } from './boardStateHelpers.ts';
 
+// computeStarPoints only reads boardDescr; the rest of the config is neutral filler.
 function mkConfig(boardDescr: string): GameConfig {
-    return new GameConfig(parseCleg(boardDescr), 2, 2, [
-        { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
-        { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
-    ], [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', [0, 0],
-    'situational', false, null);
+    return makeGameConfig(boardDescr, soloStoneTurns(2));
 }
 
 test('9x9 rect board has 5 star points (4 corners at the 3-3 point + center)', () => {
