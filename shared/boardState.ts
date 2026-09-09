@@ -1,4 +1,4 @@
-import { MoveType, STONE_MAP, assert } from './types.js';
+import { MoveType, assert } from './types.js';
 import { NO_MOVE } from './types.js';
 import type {
     MoveInfo, Situation, HistoryEntry, BoardView, ScoreData, ScoreRule, KoRule, TurnInfo, ReplayMove,
@@ -330,8 +330,9 @@ export class BoardState {
     koRule: KoRule;
     allowSuicide: boolean;
     maxPlies: number | null; // max plies before the game auto-ends (see makeMove); null = unlimited
-    // the turnList entry for the upcoming ply - nextTurn.stones lists the offered stone colors (see
-    // STONE_MAP), nextTurn.player is the player whose turn is next
+    // the turnList entry for the upcoming ply - nextTurn.stones lists the offered stone colors
+    // (rendered via a ColorGen, see src/renderer.ts), nextTurn.player is the player whose turn is
+    // next
     nextTurn:     TurnInfo;
     board:        number[];
     emb:          Embedding; // natural-dim node positions - see Embedding
@@ -941,4 +942,4 @@ export class BoardState {
     }
 }
 
-export { MoveType, STONE_MAP };
+export { MoveType };

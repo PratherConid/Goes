@@ -1,6 +1,6 @@
-import { BoardState, MoveType, STONE_MAP } from '@shared/boardState.js';
+import { BoardState, MoveType } from '@shared/boardState.js';
 import {
-    PlayerInfo, OnlinePlayerRequest, makeId,
+    PlayerInfo, OnlinePlayerRequest, makeId, ColorGen,
 } from '@shared/types.js';
 import { GameConfig, FinishedGame } from '@shared/gameConfig.js';
 import type {
@@ -87,8 +87,8 @@ const _boardConfigNames = [
 // setAttribute, so switching themes must reassign the module-level COLOR_GRID/COLOR_ILLEGAL/
 // COLOR_BOARD variables below) plus the surrounding UI chrome, which index.html defines entirely
 // as CSS custom properties (--color-*) on :root - switching a theme just overwrites those on
-// document.documentElement.style. Player stone colors (STONE_MAP, shared/types.ts) are deliberately
-// NOT themed - they're shared game data, not purely visual chrome.
+// document.documentElement.style. Player stone colors (colorGen, a ColorGen - shared/types.ts) are
+// deliberately NOT themed - they're shared game data, not purely visual chrome.
 interface ColorTheme {
     grid: string;
     illegal: string;
@@ -408,6 +408,7 @@ function drawBoardFull(
     config: GameConfig,
     boardW: number, boardH: number,
     legalMoves: (Set<number> | null)[][] | null,
+    colorGen: ColorGen,
     territoryOwner: number[] | null = null,
     showNodes = false,
     dim = false,
@@ -510,7 +511,7 @@ function drawBoardFull(
         if (stone > 0) {
             items.push({
                 kind: 'stone', depth,
-                args: [screenX(x * scale), screenY(y * scale), stone_r * scale, STONE_MAP[stone].color, '#333', alpha],
+                args: [screenX(x * scale), screenY(y * scale), stone_r * scale, colorGen.getTuned(stone), '#333', alpha],
             });
         } else if (legalMoves !== null && legalMoves.every(row => row[i] === null)) {
             items.push({
@@ -533,7 +534,7 @@ function drawBoardFull(
                 kind: 'territorySquare', depth: z,
                 args: [
                     screenX(x * scale), screenY(y * scale), side * scale,
-                    STONE_MAP[owner]?.color ?? '#888', alphaOf(z),
+                    colorGen.getTuned(owner), alphaOf(z),
                 ],
             });
         }
@@ -650,6 +651,9 @@ export class Renderer {
     showIllegalMoves = false;
     showNodes = false;
     colorTheme = 'default';
+    // Assigns each stone color, one ColorGen per Renderer so numbering starts fresh each session -
+    // see shared/types.ts's own doc comment for the enumeration itself.
+    colorGen = new ColorGen();
     // True while a click on a multi-stone turn is waiting for the player to
     // pick which offered stone to place (see _onBoardClick/_renderMainBoard).
     selectingStone = false;
@@ -1422,9 +1426,9 @@ export class Renderer {
             if (this.currentSidePanel === SidePanelContent.History) this._renderHistoryPanel(v);
             if (this.currentSidePanel === SidePanelContent.Status) this._renderStatus(v);
             if (this.currentSidePanel === SidePanelContent.CurrentGameSetup)
-                this.currentGameSetupDetails.innerHTML = currentGameSetupHtml(v, this._active.config.players);
+                this.currentGameSetupDetails.innerHTML = currentGameSetupHtml(v, this._active.config.players, this.colorGen);
             if (this.currentSidePanel === SidePanelContent.NewGame)
-                this.newGameSetupDetails.innerHTML = newGameSetupHtml(this.newCfg);
+                this.newGameSetupDetails.innerHTML = newGameSetupHtml(this.newCfg, this.colorGen);
             if (this.currentSidePanel === SidePanelContent.ActiveLocalGames) this._renderActiveLocalGames();
             if (this.currentSidePanel === SidePanelContent.PendingGames) this._renderPendingGames();
             if (this.currentSidePanel === SidePanelContent.ActiveOnlineGames) this._renderActiveOnlineGames();
@@ -1495,6 +1499,7 @@ export class Renderer {
         drawBoardFull(this.mainSvg, v, this._active.bs.adj, v.situations[this._active.displayPlyNum].board,
                       this._active.config, size, size,
                       this.showIllegalMoves ? v.history[this._active.displayPlyNum].legalMoves.captures : null,
+                      this.colorGen,
                       this.showTerritory ? v.history[this._active.displayPlyNum].score.territoryOwner : null,
                       this.showNodes,
                       this.selectingStone, this._active.viewport, () => this.nextGradientId++);
@@ -1505,7 +1510,7 @@ export class Renderer {
                 c.setAttribute('cx', String(x));
                 c.setAttribute('cy', String(y));
                 c.setAttribute('r', String(r));
-                c.setAttribute('fill', STONE_MAP[stone].color);
+                c.setAttribute('fill', this.colorGen.getTuned(stone));
                 c.setAttribute('stroke', '#333');
                 c.setAttribute('stroke-width', '1');
                 popup.appendChild(c);
@@ -1542,7 +1547,7 @@ export class Renderer {
         for (let s = 0; s < v.nextTurn.stones.length; s++) if (v.nextTurn.stones[s]) offeredStones.push(s + 1);
         this.turnStone.style.background = offeredStones.length === 0 ? 'transparent' : `conic-gradient(${
             offeredStones.map((stone, i) =>
-                `${STONE_MAP[stone].color} ${i / offeredStones.length * 100}% ${(i + 1) / offeredStones.length * 100}%`,
+                `${this.colorGen.getTuned(stone)} ${i / offeredStones.length * 100}% ${(i + 1) / offeredStones.length * 100}%`,
             ).join(', ')
         })`;
         this.plyNum.textContent = `${dpn}/${v.plyCount}`;
@@ -1605,7 +1610,7 @@ export class Renderer {
             // A pass/nomove has no chosen stone (see MoveInfo) - show a hollow
             // circle (same border, no fill) rather than guessing a color.
             const heStone = v.moveInfos[he.plyCount - 1]?.stone;
-            circle.style.background = heStone != null ? (STONE_MAP[heStone]?.color ?? '#888') : 'transparent';
+            circle.style.background = heStone != null ? this.colorGen.getTuned(heStone) : 'transparent';
             plyLabel.textContent = String(he.plyCount);
 
             // size svg after layout - square, so the board's margin (baked
@@ -1626,7 +1631,7 @@ export class Renderer {
                 svg.appendChild(bg);
                 drawBoardFull(
                     svg, v, this._active.bs.adj, he.board, this._active.config, size, size, null,
-                    null, false, false, this._active.viewport, () => this.nextGradientId++,
+                    this.colorGen, null, false, false, this._active.viewport, () => this.nextGradientId++,
                 );
             });
         }
@@ -2073,7 +2078,7 @@ export class Renderer {
     // ellipsis rather than wrapping (see the 'truncate-line' CSS class) since
     // a long turn list would otherwise push the game ID off-screen.
     private _fmtGameRecordLabel(id: string, config: GameConfig, winners: number[] | null = null): string {
-        return `${fmtTurnList(config.turnList, config.players, winners)}${'&emsp;'.repeat(2)}[${id}]`;
+        return `${fmtTurnList(config.turnList, config.players, this.colorGen, winners)}${'&emsp;'.repeat(2)}[${id}]`;
     }
 
     private _renderActiveLocalGames() {
@@ -2177,7 +2182,7 @@ export class Renderer {
         info.className = 'chat-game-info';
         info.innerHTML = `
             <div><b>Game ID:</b> ${this.activeIdx.slice(2)}</div>
-            <div><b>Turn list:</b> ${fmtTurnList(this._active.config.turnList, this._active.config.players)}</div>
+            <div><b>Turn list:</b> ${fmtTurnList(this._active.config.turnList, this._active.config.players, this.colorGen)}</div>
         `;
         this.chatPanel.appendChild(info);
 
@@ -2741,16 +2746,20 @@ export class Renderer {
                 : `Game over, tied: ${winnerNames.join(', ')}`;
         }
         else if (lm.moveType === MoveType.PLACE)
-            lastMoveStr = `${coloredStoneCircle(lm.stone!)}@${lm.pos}†${lm.captures.length}`;
+            lastMoveStr = `${coloredStoneCircle(lm.stone!, this.colorGen)}@${lm.pos}†${lm.captures.length}`;
         else if (lm.moveType === MoveType.PASS)     lastMoveStr = 'Pass';
 
-        // Renders e.g. "⬤ 3   ⬤ 5" with each circle colored by its stone type.
-        // Uses &nbsp; since this is inserted as innerHTML, where plain runs of
-        // spaces would otherwise collapse to a single space.
+        // Renders e.g. "⬤ 3   ⬤ 5" with each circle colored by its stone type. The
+        // circle-to-count gap uses &nbsp; (this is inserted as innerHTML, where a plain space would
+        // otherwise be fine on its own, but a non-breaking one keeps a circle from ever being
+        // separated from its own count across a line break) - the gap BETWEEN stone types is three
+        // &nbsp; (for the same wide visual gap as before) plus one trailing plain space, so that gap
+        // still has exactly one breakable point, letting a long line wrap between whole
+        // circle+count groups rather than only overflowing.
         const fmtCounts = (counts: Record<number, number>) =>
             Object.entries(counts)
-                .map(([s, c]) => `${coloredStoneCircle(Number(s))}&nbsp;${c}`)
-                .join('&nbsp;&nbsp;&nbsp;');
+                .map(([s, c]) => `${coloredStoneCircle(Number(s), this.colorGen)}&nbsp;${c}`)
+                .join('&nbsp;&nbsp;&nbsp; ');
         const stoneLine     = fmtCounts(v.score.stoneCount);
         const territoryLine = fmtCounts(v.score.territory);
         // Renders e.g. "P1:0  P2:3" (two spaces between players) - one entry
@@ -2777,7 +2786,7 @@ export class Renderer {
                     const entries = row
                         .map((c, j) => c > 0 ? `P${j + 1}:${c}` : null)
                         .filter((s): s is string => s !== null);
-                    return entries.length > 0 ? `${coloredStoneCircle(i + 1)}&nbsp;${entries.join('&nbsp;&nbsp;')}` : null;
+                    return entries.length > 0 ? `${coloredStoneCircle(i + 1, this.colorGen)}&nbsp;${entries.join('&nbsp;&nbsp;')}` : null;
                 })
                 .filter((s): s is string => s !== null)
                 .join('&nbsp;&nbsp;&nbsp;');
@@ -2787,8 +2796,8 @@ export class Renderer {
         this.statusPanel.innerHTML = `
             ${nameLine}
             <div><b>Game ID:</b> ${this.activeIdx.slice(2)}</div>
-            <div><b>Turn list:</b> ${fmtTurnList(this._active.config.turnList, this._active.config.players)}</div>
-            <div><b>To move:</b> ${fmtTurnList([v.turnList[v.plyCount % v.turnList.length]], this._active.config.players)}</div>
+            <div><b>Turn list:</b> ${fmtTurnList(this._active.config.turnList, this._active.config.players, this.colorGen)}</div>
+            <div><b>To move:</b> ${fmtTurnList([v.turnList[v.plyCount % v.turnList.length]], this._active.config.players, this.colorGen)}</div>
             <div><b>Last move:</b> ${lastMoveStr}</div>
             <div><b>Stones:</b> ${stoneLine}</div>
             <div><b>Territory:</b> ${territoryLine}</div>
@@ -3481,7 +3490,7 @@ export class Renderer {
         }
         else if (cmd === 'ns') {
             const n = Number(parts[1]);
-            if (!parts[1] || !Number.isInteger(n) || n < 1 || n > 8) { this._setCmdOutput('Usage: ns <n>  (1–8)'); return; }
+            if (!parts[1] || !Number.isInteger(n) || n < 1) { this._setCmdOutput('Usage: ns <n>  (n ≥ 1)'); return; }
             const oldTurnList = this.newCfg.turnList;
             const oldPlayerStonePlaceLimit = this.newCfg.playerStonePlaceLimit;
             const oldGlobalStonePlaceLimit = this.newCfg.globalStonePlaceLimit;

@@ -9,7 +9,7 @@
        COLOR_THEMES/applyColorTheme, driven by the 'ctheme' command and Renderer.colorTheme's own
        default) - every color used below is a var(--color-*) referencing one of these, so switching
        themes just overwrites these custom properties on documentElement at runtime. Player stone
-       colors (STONE_MAP, shared/types.ts) and the SVG board colors (COLOR_GRID/COLOR_ILLEGAL/
+       colors (a ColorGen, shared/types.ts) and the SVG board colors (COLOR_GRID/COLOR_ILLEGAL/
        COLOR_BOARD, src/renderer.ts) are handled separately - stone colors aren't themed at all, and
        the board's own colors are applied via SVG attributes rather than CSS. --color-border is its
        own variable (not folded into --color-accent, despite sharing 'wooden's own value)

@@ -108,18 +108,135 @@ export const enum MoveType {
     PASS   = 2,
 }
 
-export interface StoneInfo { name: string; color: string; }
+/**
+ * Enumerates an unbounded sequence of visually-spread-out colors on the RGB color cube (viewed as
+ * [0,1]^3) - the stone-color palette, one instance per Renderer (see src/renderer.ts), with no fixed
+ * cap on how many distinct stone colors a game can use. Colors are drawn from an increasingly fine
+ * grid over the cube: `pow` 0 is the cube's own 8 corners (each of r/g/b integer - 0 or 1), `pow` 1
+ * adds every half-integer grid point (each of r/g/b a multiple of 1/2) EXCEPT the corners already
+ * covered at `pow` 0, `pow` 2 adds every quarter-integer point except ones already covered at `pow`
+ * 0/1, and so on - each level only ever contributes points that genuinely need its own finer
+ * denominator, so nothing is ever generated twice. `rptr`/`gptr`/`bptr` point into that level's own
+ * grid (each ranging 0..2^pow, standing for the fraction ptr/2^pow) and advance like an odometer -
+ * `bptr` fastest, carrying into `gptr`, carrying into `rptr`, carrying into `pow` (which resets all
+ * three pointers and moves to the next, finer grid).
+ *
+ * The cube's 8 corners, in the odometer's own natural (rptr-outer/gptr-middle/bptr-inner) order,
+ * don't come out in the human-friendly black/white/red/green/blue/cyan/magenta/yellow order most
+ * players expect - so rather than deriving them mechanically, the constructor seeds `colorCache`
+ * with those 8 pure colors directly, in that order, and starts the odometer at `pow` 1,
+ * `rptr`=`gptr`=`bptr`=0 - i.e. `pow` 0 is skipped entirely, since its own 8 points are already
+ * accounted for. This works out even without special-casing anything: `pow` 1's own (0,0,0) point is
+ * exactly one of the already-covered corners, so the ordinary already-covered check below (every
+ * coordinate even) skips right past it on the very first `next()` call, the same way it skips every
+ * other already-covered point at every later `pow` transition.
+ */
+export class ColorGen {
+    idx: number;
+    pow: number;
+    rptr: number;
+    gptr: number;
+    bptr: number;
+    colorCache: Map<number, string>;
 
-export const STONE_MAP: Record<number, StoneInfo> = {
-    1: { name: 'black',   color: '#1a1a1a' },
-    2: { name: 'white',   color: '#ffffff' },
-    3: { name: 'red',     color: '#b91e1e' },
-    4: { name: 'green',   color: '#1eb91e' },
-    5: { name: 'blue',    color: '#1e1eb9' },
-    6: { name: 'cyan',    color: '#1eb9b9' },
-    7: { name: 'magenta', color: '#b91eb9' },
-    8: { name: 'yellow',  color: '#b9b91e' },
-};
+    constructor() {
+        this.colorCache = new Map<number, string>([
+            [1, '#000000'], // black
+            [2, '#ffffff'], // white
+            [3, '#ff0000'], // red
+            [4, '#00ff00'], // green
+            [5, '#0000ff'], // blue
+            [6, '#00ffff'], // cyan
+            [7, '#ff00ff'], // magenta
+            [8, '#ffff00'], // yellow
+        ]);
+        this.idx = 9;
+        this.pow = 1;
+        this.rptr = 0;
+        this.gptr = 0;
+        this.bptr = 0;
+    }
+
+    // Advances the pointer odometer by one grid step - bptr fastest, carrying into gptr, carrying
+    // into rptr, carrying into pow (which starts the next, finer grid over from (0,0,0)).
+    private advancePointer(): void {
+        const max = 1 << this.pow; // 2^pow - the largest valid ptr value at this pow
+        this.bptr++;
+        if (this.bptr > max) {
+            this.bptr = 0;
+            this.gptr++;
+            if (this.gptr > max) {
+                this.gptr = 0;
+                this.rptr++;
+                if (this.rptr > max) {
+                    this.rptr = 0;
+                    this.pow++;
+                }
+            }
+        }
+    }
+
+    // True iff the current pointer position was already enumerated at some earlier (coarser) pow
+    // level - exactly when every coordinate is representable with half the current denominator,
+    // i.e. every one of rptr/gptr/bptr is even (pow 0 never has anything earlier to duplicate).
+    private alreadyEnumerated(): boolean {
+        return this.pow >= 1 && this.rptr % 2 === 0 && this.gptr % 2 === 0 && this.bptr % 2 === 0;
+    }
+
+    private colorAtPointer(): string {
+        const denom = 1 << this.pow;
+        const toByte = (ptr: number) => Math.round(ptr / denom * 255);
+        const hex = (n: number) => n.toString(16).padStart(2, '0');
+        return `#${hex(toByte(this.rptr))}${hex(toByte(this.gptr))}${hex(toByte(this.bptr))}`;
+    }
+
+    /** Generates the next not-yet-seen color, caches it under the current `idx`, advances `idx` and
+     * the pointer odometer, and returns the color. */
+    next(): string {
+        while (this.alreadyEnumerated()) this.advancePointer();
+        const color = this.colorAtPointer();
+        this.colorCache.set(this.idx, color);
+        this.idx++;
+        this.advancePointer();
+        return color;
+    }
+
+    /** Returns the `index`-th color (1-based - stone colors are numbered from 1, never 0) - from
+     * the cache if already generated, otherwise calling next() just enough times to reach it. */
+    get(index: number): string {
+        const cached = this.colorCache.get(index);
+        if (cached !== undefined) return cached;
+        while (this.idx <= index) this.next();
+        return this.colorCache.get(index)!;
+    }
+
+    /** Like get() above, but dimmed/desaturated the same way STONE_MAP's own fixed 8 colors used to
+     * be (see this class's own top comment on why get() itself deals in pure, fully-saturated
+     * colors instead): color 1 (black) is STONE_MAP's own exact `#1a1a1a` rather than pure black -
+     * dimColor()'s general formula would give `#1e1e1e` instead, close but not identical, so this
+     * one value is hardcoded rather than derived; color 2 (white) is left as pure `#ffffff`, since
+     * STONE_MAP's own white was never dimmed either; every other color is dimColor()'s general
+     * transform applied to get()'s own pure color - reproducing STONE_MAP's colors 3-8 exactly,
+     * and extending the same treatment to every color beyond 8 too. */
+    getTuned(index: number): string {
+        if (index === 1) return '#1a1a1a';
+        if (index === 2) return this.get(2);
+        return dimColor(this.get(index));
+    }
+}
+
+// Dims and desaturates a pure "#rrggbb" color the way STONE_MAP's own colors 3-8 were dimmed
+// relative to their fully-saturated equivalents: each channel is remapped from the full 0-255 range
+// into the narrower 30-185 range - raising the black point (0 -> 30) desaturates, lowering the white
+// point (255 -> 185) darkens, and doing both via one linear remap is what makes STONE_MAP's colors
+// both dimmer AND less saturated than a pure reference color, at once, from a single transform.
+function dimColor(hex: string): string {
+    const FLOOR = 30, CEIL = 185;
+    const channel = (i: number) => parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16);
+    const dimmed = (v: number) => Math.round(FLOOR + v * (CEIL - FLOOR) / 255);
+    const hex2 = (n: number) => n.toString(16).padStart(2, '0');
+    return `#${hex2(dimmed(channel(0)))}${hex2(dimmed(channel(1)))}${hex2(dimmed(channel(2)))}`;
+}
 
 export interface MoveInfo {
     moveType: MoveType;

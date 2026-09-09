@@ -3,10 +3,9 @@
 // Renderer.activeTab: 'history'|'status'|'commands' switch with a hierarchy
 // that isn't hardcoded to one flat level.
 
-import type { BoardView, PlayerInfo, TurnInfo } from '@shared/types.js';
+import type { BoardView, PlayerInfo, TurnInfo, ColorGen } from '@shared/types.js';
 import type { GameConfig } from '@shared/gameConfig.js';
 import { unparseCleg } from '@shared/clegParser.js';
-import { STONE_MAP } from '@shared/boardState.js';
 
 // Minimal HTML-escaping for text embedded in an innerHTML template - needed for cleg source text
 // (unparseCleg), which can contain '<'/'>' (comparison operators) or '&' that would otherwise be
@@ -333,8 +332,8 @@ export function renderGamePresetSelection(
 // shaped fields.
 
 // Renders e.g. "⬤"/"●" colored by stone type p.
-export const coloredStoneCircle = (p: number) => `<span style="color:${STONE_MAP[p]?.color ?? '#888'}">⬤</span>`;
-export const coloredStoneDot    = (p: number) => `<span style="color:${STONE_MAP[p]?.color ?? '#888'}">●</span>`;
+export const coloredStoneCircle = (p: number, colorGen: ColorGen) => `<span style="color:${colorGen.getTuned(p)}">⬤</span>`;
+export const coloredStoneDot    = (p: number, colorGen: ColorGen) => `<span style="color:${colorGen.getTuned(p)}">●</span>`;
 
 // Renders a single player's identity for use in a stone-circle line: a
 // name for a human ('client') player, ⌂ for a local-only slot, ⚙ for a
@@ -351,9 +350,9 @@ export const fmtPlayerString = (players: Map<number, PlayerInfo>, playerNum: num
 // circle colored by its stone type, followed by every player it scores
 // for; just the bare stone circle when it's mapped to no players
 // (scores for no one).
-export const fmtMap = (map: Record<number, Set<number>>, players: Map<number, PlayerInfo>) =>
+export const fmtMap = (map: Record<number, Set<number>>, players: Map<number, PlayerInfo>, colorGen: ColorGen) =>
     Object.entries(map)
-        .map(([s, ps]) => `${coloredStoneCircle(Number(s))}${
+        .map(([s, ps]) => `${coloredStoneCircle(Number(s), colorGen)}${
             ps.size > 0 ? `&nbsp;${[...ps].map(p => fmtPlayerString(players, p)).join(' ')}` : ''
         }`)
         .join('&nbsp;'.repeat(5));
@@ -365,25 +364,25 @@ export const fmtMap = (map: Record<number, Set<number>>, players: Map<number, Pl
 // rather than stoneToPlayerMap (scoring). winners (finished-game record entries only -
 // null everywhere else) marks each winning player with ♚.
 export const fmtTurnList = (
-    turnList: TurnInfo[], players: Map<number, PlayerInfo>, winners: number[] | null = null,
+    turnList: TurnInfo[], players: Map<number, PlayerInfo>, colorGen: ColorGen, winners: number[] | null = null,
 ) =>
     turnList
         .map(({ player, stones, protected: prot, friendly }) => {
             const offeredStones = stones
                 .map((s, i) => s === 1 ? i + 1 : -1)
                 .filter(s => s >= 0);
-            const stoneIcons = offeredStones.map(coloredStoneCircle).join('');
+            const stoneIcons = offeredStones.map(s => coloredStoneCircle(s, colorGen)).join('');
             const protectedStones = prot
                 .map((p, i) => p === 1 ? i + 1 : -1)
                 .filter(s => s >= 0);
             const protSuffix = protectedStones.length > 0
-                ? `&nbsp;🔒${protectedStones.map(coloredStoneDot).join('')}`
+                ? `&nbsp;🔒${protectedStones.map(s => coloredStoneDot(s, colorGen)).join('')}`
                 : '';
             const friendlyStones = friendly
                 .map((f, i) => f === 1 ? i + 1 : -1)
                 .filter(s => s >= 0);
             const friendSuffix = friendlyStones.length > 0
-                ? `&nbsp;🤝${friendlyStones.map(coloredStoneDot).join('')}`
+                ? `&nbsp;🤝${friendlyStones.map(s => coloredStoneDot(s, colorGen)).join('')}`
                 : '';
             const crownSuffix = winners?.includes(player) ? ' &#9818;' : '';
             return `${stoneIcons}&nbsp;${fmtPlayerString(players, player)}${crownSuffix}${protSuffix}${friendSuffix}`;
@@ -395,13 +394,13 @@ export const fmtTurnList = (
 // GameConfig.playerStonePlaceLimit's doc comment in types.ts. A player
 // with no limit (null/unlimited) is omitted from that stone's entry,
 // and a stone nobody has a limit on at all is omitted entirely.
-export const fmtPlaceLimit = (limit: (number | null)[][]) =>
+export const fmtPlaceLimit = (limit: (number | null)[][], colorGen: ColorGen) =>
     limit
         .map((row, i) => {
             const entries = row
                 .map((lim, j) => lim !== null ? `P${j + 1}:${lim}` : null)
                 .filter((s): s is string => s !== null);
-            return entries.length > 0 ? `${coloredStoneCircle(i + 1)}&nbsp;${entries.join('&nbsp;&nbsp;')}` : null;
+            return entries.length > 0 ? `${coloredStoneCircle(i + 1, colorGen)}&nbsp;${entries.join('&nbsp;&nbsp;')}` : null;
         })
         .filter((s): s is string => s !== null)
         .join('&nbsp;&nbsp;&nbsp;');
@@ -409,9 +408,9 @@ export const fmtPlaceLimit = (limit: (number | null)[][]) =>
 // stone's circle followed by its total-across-all-players placement
 // limit ('∞' for null/unlimited) - see GameConfig.globalStonePlaceLimit's
 // doc comment in types.ts.
-export const fmtGlobalLimit = (limit: (number | null)[]) =>
+export const fmtGlobalLimit = (limit: (number | null)[], colorGen: ColorGen) =>
     limit
-        .map((lim, i) => `${coloredStoneCircle(i + 1)}&nbsp;${lim === null ? '∞' : lim}`)
+        .map((lim, i) => `${coloredStoneCircle(i + 1, colorGen)}&nbsp;${lim === null ? '∞' : lim}`)
         .join('&nbsp;&nbsp;&nbsp;');
 
 // Pure: HTML for the "Current Game Info" side-panel node's content - the
@@ -421,14 +420,14 @@ export const fmtGlobalLimit = (limit: (number | null)[]) =>
 // plus players (player identity has no BoardView representation, since it's
 // UI-session info rather than board/rules state). Caller assigns the result
 // to a container's innerHTML.
-export function currentGameSetupHtml(v: BoardView, players: Map<number, PlayerInfo>): string {
+export function currentGameSetupHtml(v: BoardView, players: Map<number, PlayerInfo>, colorGen: ColorGen): string {
     return `
         <div><b>Type of stones:</b> ${v.numStones}</div>
         <div><b>Number of players:</b> ${v.numPlayers}</div>
-        <div><b>Turn list:</b> ${fmtTurnList(v.turnList, players)}</div>
-        <div><b>Stone to player map:</b> ${fmtMap(v.stoneToPlayerMap, players)}</div>
-        <div><b>Player stone placement limit:</b> ${fmtPlaceLimit(v.playerStonePlaceLimit)}</div>
-        <div><b>Global stone placement limit:</b> ${fmtGlobalLimit(v.globalStonePlaceLimit)}</div>
+        <div><b>Turn list:</b> ${fmtTurnList(v.turnList, players, colorGen)}</div>
+        <div><b>Stone to player map:</b> ${fmtMap(v.stoneToPlayerMap, players, colorGen)}</div>
+        <div><b>Player stone placement limit:</b> ${fmtPlaceLimit(v.playerStonePlaceLimit, colorGen)}</div>
+        <div><b>Global stone placement limit:</b> ${fmtGlobalLimit(v.globalStonePlaceLimit, colorGen)}</div>
         <div><b>Forced pass only:</b> ${v.forcedPassOnly}</div>
         <div><b>Allow suicide:</b> ${v.allowSuicide}</div>
         <div><b>Score rule:</b> ${v.scoreRule}</div>
@@ -443,7 +442,7 @@ export function currentGameSetupHtml(v: BoardView, players: Map<number, PlayerIn
 // mutate) - the preset-selection/Start-new-game buttons live in
 // #new-game-buttons, built separately by Renderer._refreshSidePanel(), not
 // part of this HTML. Caller assigns the result to a container's innerHTML.
-export function newGameSetupHtml(cfg: GameConfig): string {
+export function newGameSetupHtml(cfg: GameConfig, colorGen: ColorGen): string {
     const boardDescrText = unparseCleg(cfg.boardDescr);
     // Sized to the actual line count (capped, same rationale as the Configure Board popup's own
     // fixed rows="12") rather than a fixed height - most board descriptions are only 1-3 lines.
@@ -453,10 +452,10 @@ export function newGameSetupHtml(cfg: GameConfig): string {
         <textarea class="account-input board-descr-view" readonly wrap="off" rows="${boardDescrRows}">${escapeHtml(boardDescrText)}</textarea>
         <div><b>Type of stones:</b> ${cfg.numStones}</div>
         <div><b>Number of players:</b> ${cfg.numPlayers}</div>
-        <div><b>Turn list:</b> ${fmtTurnList(cfg.turnList, cfg.players)}</div>
-        <div><b>Stone to player map:</b> ${fmtMap(cfg.stoneToPlayerMap, cfg.players)}</div>
-        <div><b>Player stone placement limit:</b> ${fmtPlaceLimit(cfg.playerStonePlaceLimit)}</div>
-        <div><b>Global stone placement limit:</b> ${fmtGlobalLimit(cfg.globalStonePlaceLimit)}</div>
+        <div><b>Turn list:</b> ${fmtTurnList(cfg.turnList, cfg.players, colorGen)}</div>
+        <div><b>Stone to player map:</b> ${fmtMap(cfg.stoneToPlayerMap, cfg.players, colorGen)}</div>
+        <div><b>Player stone placement limit:</b> ${fmtPlaceLimit(cfg.playerStonePlaceLimit, colorGen)}</div>
+        <div><b>Global stone placement limit:</b> ${fmtGlobalLimit(cfg.globalStonePlaceLimit, colorGen)}</div>
         <div><b>Forced pass only:</b> ${cfg.forcedPassOnly}</div>
         <div><b>Allow suicide:</b> ${cfg.allowSuicide}</div>
         <div><b>Score rule:</b> ${cfg.scoreRule}</div>
