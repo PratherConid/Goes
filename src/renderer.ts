@@ -54,8 +54,9 @@ const _presetDescriptions = new Map([
     ['10_friend_go',       "Like 10_coin_go, but the 'coin' stone is also friendly (doesn't block anyone's liberties)"],
 ]);
 
-// Filename stems (under public/board_presets/) of the board-only (boardType/boardArgs/
-// boardModifiers) presets loaded at startup into Renderer.boardConfigs - see _loadBoardConfigs().
+// Filename stems (under public/board_presets/) of the board-only (`boardDescr` cleg program, no
+// other GameConfig fields) presets loaded at startup into Renderer.boardConfigs - see
+// _loadBoardConfigs().
 // The "Select Board Preset" side panel (renderGamePresetSelection, sidePanel.ts) displays these raw
 // names directly (underscores replaced with spaces), not a separate description - there's no
 // human-readable text shown anywhere for these beyond the name itself.

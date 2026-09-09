@@ -443,7 +443,7 @@ export class OnlinePlayerRequest {
  * string enum (rather than the numeric-backed convention `PrescribedBoard` uses, shared/
  * boardConfig.ts) so that it reads the same way as `BoardModifier`'s own string-literal `kind`
  * tags wherever a `BoardArgEntry` (below) ends up serialized to JSON (e.g.
- * `public/board_presets/*.json`) - see `parseBoardArgToken`.
+ * a serialized `GameConfig`) - see `parseBoardArgToken`.
  */
 export enum BoardArgType { Number = 'Number', CommaSeparatedNumbers = 'CommaSeparatedNumbers', ZeroOneList = 'ZeroOneList' }
 
