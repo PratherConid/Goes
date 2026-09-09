@@ -43,8 +43,6 @@
       --color-text-inverse: #000;
       --color-text-muted: #000;
       --color-text-placeholder: #000;
-      --color-divider: #ccc;
-      --color-heading: #000;
     }
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -99,8 +97,8 @@
       text-align: center;
     }
     .popup-box .btn-row { margin-top: 10px; }
-    /* Wide/left-aligned variant for the 'mod' command's edit-modifiers popup - the plain
-       max-width:320px/text-align:center above suits a short message, not a multi-entry list.
+    /* Wide/left-aligned variant for the 'board' command's board-description popup - the plain
+       max-width:320px/text-align:center above suits a short message, not a multi-line program.
        .popup-box otherwise never gets an explicit width (just max-width), so it's shrink-to-fit -
        a shrink-to-fit parent can't resolve a child's width:100% (the textarea below) against its
        own not-yet-determined width, so browsers fall back to the textarea's intrinsic size instead
@@ -268,7 +266,7 @@
     #lock-rotation-btn {
       width: calc(var(--u) * 2.4);
     }
-    /* Same gotcha as .panel-mode-btn[hidden] below: the hidden attribute's
+    /* Same gotcha as .panel-mode-btn[hidden] above: the hidden attribute's
        UA-stylesheet display:none loses to this file's own #resign-btn
        display:flex above (any author rule beats UA-stylesheet ones), so it
        must be re-asserted here at higher specificity. */
@@ -407,15 +405,6 @@
       line-height: 1.6;
     }
     .commands-subpanel table { border-collapse: collapse; width: 100%; table-layout: fixed; }
-    .commands-subpanel th {
-      text-align: left;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      padding: 8px 4px 2px;
-      border-bottom: 1px solid var(--color-divider);
-      color: var(--color-heading);
-    }
     .commands-subpanel td { padding: 2px 6px 2px 4px; vertical-align: top; }
     .commands-subpanel td:first-child {
       font-family: Consolas, monospace;

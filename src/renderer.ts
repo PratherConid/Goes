@@ -15,7 +15,7 @@ import { ServerConnection, type RequestHandle } from './serverConnection.js';
 import {
     SidePanelContent, SidePanelHierarchy, SidePanelBwFw, renderSidePanelChrome, sidePanelParent, childButtons,
     renderGamePresetSelection, currentGameSetupHtml, newGameSetupHtml,
-    coloredStoneCircle, fmtTurnList,
+    coloredStoneCircle, fmtTurnList, fmtPlayerStoneGrid,
 } from './sidePanel.js';
 import {
     type Viewport, QUAT_IDENTITY, defaultViewport, computeAlpha, computePerspectiveScale,
@@ -128,20 +128,16 @@ const COLOR_THEMES: Record<string, ColorTheme> = {
             '--color-text-inverse': '#fff',
             '--color-text-muted': '#aaa',
             '--color-text-placeholder': '#533d29',
-            '--color-divider': '#8a6830',
-            '--color-heading': '#1a0a00',
         },
     },
     // Minimal white/black theme: every background var is white, every text var is black; the two
     // hover vars (--color-accent-hover backs .panel-mode-btn's hover, --color-bg-surface-hover
     // backs .panel-child-btn/.status-login-btn/.nav-btn's hover - both are buttons whose own
     // background is now white) get a light gray, a conventional hover shade for a white button.
-    // --color-border/--color-divider aren't a background or text color (borders and a table-header
-    // rule, respectively) - kept visible against the new white backgrounds (--color-border black -
-    // it's what frames every side-panel button/input, and wants to read clearly rather than recede
-    // - --color-divider a lighter gray, for its own more minor dividing-line role), now that
-    // --color-border (unlike --color-accent, which still backs several buttons' own white
-    // background) is free to be a real border color.
+    // --color-border isn't a background or text color, so it stays black and visible against the
+    // new white backgrounds - it frames every side-panel button/input and wants to read clearly
+    // rather than recede, which it's free to do now that --color-accent (not it) is what backs
+    // those buttons' own white background.
     default: {
         grid: '#000000',
         illegal: '#ba9347',
@@ -167,8 +163,6 @@ const COLOR_THEMES: Record<string, ColorTheme> = {
             '--color-text-inverse': '#000',
             '--color-text-muted': '#000',
             '--color-text-placeholder': '#000',
-            '--color-divider': '#ccc',
-            '--color-heading': '#000',
         },
     },
 };
@@ -194,7 +188,7 @@ function applyColorTheme(theme: ColorTheme): void {
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 // Cumulative pixel movement below which a mainSvg mousedown->mouseup is treated as a plain click
-// (place a stone) rather than a camera-orbit drag - see Renderer._onBoardMouseDown().
+// (place a stone) rather than a camera-orbit drag - see Renderer._onBoardPointerDown().
 const DRAG_THRESHOLD_PX = 4;
 
 // Stone radius as a fraction of cell (pixels per board-coordinate unit) - see boardLayout()'s
@@ -213,10 +207,10 @@ const STONE_RADIUS_FACTOR = 0.42;
 //
 // viewport.quat rotates each node's projected (x, y, z) point before the scale is applied below,
 // so the board is sized/positioned around its actual on-screen (rotated) extent - see
-// src/camera.ts. Also returns `pos` (the already-rotated points, x/y used here, z still unused
-// downstream), `rotMat` (the 3x3 matrix itself, reused for ad-hoc points like star points), and
-// `dmax` (see computeAlpha()'s own doc comment) so callers never need to redo this projection or
-// dmax computation themselves.
+// src/camera.ts. Also returns `pos` (the already-rotated points; z is each point's depth, used for
+// fading/perspective/painter's-algorithm sorting), `rotMat` (the 3x3 matrix itself, reused for
+// ad-hoc points like star points), and `dmax` (see computeAlpha()'s own doc comment) so callers
+// never need to redo this projection or dmax computation themselves.
 //
 // Returns:
 //   originX, originY - screen pixel for board coordinate (0, 0), i.e. w/2, h/2:
@@ -260,11 +254,8 @@ function boardLayout(view: BoardView, w: number, h: number, viewport: Viewport) 
 // margin. Render-area-independent (see boardLayout()'s own doc comment) - no w×h needed.
 function computeInitialScale(view: BoardView): number {
     const viewport = defaultViewport(view.emb.embDim);
-    const rawPos = view.emb.pos.map(p => projectPoint(viewport.projMat, p));
-    const dmax = rawPos.length > 0 ? Math.max(...rawPos.map(p => Math.hypot(p[0], p[1], p[2]))) : 0;
-    const focusPos = rawPos.map(p => p.map((v, k) => v - viewport.focus[k] * dmax));
-    const rotMat = quatToMat3(quatConjugate(viewport.quat));
-    const pos = focusPos.map(p => projectPoint(rotMat, p));
+    // Only pos/dmax are wanted here, and neither depends on the render box, so any w x h will do.
+    const { pos, dmax } = boardLayout(view, 1, 1, viewport);
 
     let maxExtent = 0;
     for (const [x, y, z] of pos) {
@@ -420,10 +411,8 @@ function drawBoardFull(
     const alphaOf = (depth: number) => computeAlpha(depth, dmax, viewport.fadecfg);
     const scaleOf = (depth: number) => computePerspectiveScale(depth, viewport, dmax);
 
-    // grid lines and stones/illegal markers are both dimmed together while
-    // selecting a stone, so the whole board reads as "not interactive" - the
-    // territory overlay is included in the same group, matching how the
-    // canvas version's globalAlpha stayed set across all three sections.
+    // Grid lines, stones/illegal markers and the territory overlay all share one dimmed group
+    // while selecting a stone, so the whole board reads as "not interactive".
     const g = document.createElementNS(SVG_NS, 'g');
     if (dim) g.setAttribute('opacity', '0.5');
     parent.appendChild(g);
@@ -732,13 +721,15 @@ export class Renderer {
     finishedGames = new Map<string, ActiveGame>();
     activeIdx: string = '';   // always set before first render (constructor initializes)
 
-    private get _active(): ActiveGame {
-        return (this.activeGames.get(this.activeIdx) ?? this.finishedGames.get(this.activeIdx))!;
-    }
-
     // Finds a game (active or finished) by key.
     private _findGame(key: string): ActiveGame | undefined {
         return this.activeGames.get(key) ?? this.finishedGames.get(key);
+    }
+
+    // The game activeIdx names - always exists (the constructor registers one, and activeIdx only
+    // ever moves between registered games).
+    private get _active(): ActiveGame {
+        return this._findGame(this.activeIdx)!;
     }
 
     // Moves `key` from activeGames to finishedGames the moment its BoardState
@@ -841,79 +832,69 @@ export class Renderer {
             initCfg.players.set(slot, new PlayerInfo('local', ''));
         // Start with a default local game so there is always an active game.
         this._registerGame('L_' + makeId(12), game, initCfg);
-        this.mainSvg      = document.getElementById('main-canvas')    as unknown as SVGSVGElement;
-        this.histBoards   = document.getElementById('history-boards') as HTMLDivElement;
-        this.passBtn       = document.getElementById('pass-btn')        as HTMLButtonElement;
-        this.resignBtn    = document.getElementById('resign-btn')      as HTMLButtonElement;
-        this.withdrawBtn  = document.getElementById('withdraw-btn')    as HTMLButtonElement;
-        this.wcdBtn       = document.getElementById('wcd-btn')         as HTMLButtonElement;
-        this.resetViewportBtn = document.getElementById('reset-viewport-btn') as HTMLButtonElement;
-        this.lockRotationBtn  = document.getElementById('lock-rotation-btn')  as HTMLButtonElement;
-        this.bwEndBtn     = document.getElementById('bwend-btn')      as HTMLButtonElement;
-        this.bw10Btn      = document.getElementById('bw10-btn')       as HTMLButtonElement;
-        this.bwBtn        = document.getElementById('bw-btn')         as HTMLButtonElement;
-        this.fwBtn        = document.getElementById('fw-btn')         as HTMLButtonElement;
-        this.fw10Btn      = document.getElementById('fw10-btn')       as HTMLButtonElement;
-        this.fwEndBtn     = document.getElementById('fwend-btn')      as HTMLButtonElement;
-        this.turnStone    = document.getElementById('turn-stone')     as HTMLDivElement;
-        this.plyNum       = document.getElementById('ply-num')        as HTMLSpanElement;
-        this.cmdInput     = document.getElementById('cmd-input')      as HTMLInputElement;
-        this.cmdOutput    = document.getElementById('cmd-output')     as HTMLDivElement;
-        this.statusPanel   = document.getElementById('status-panel')    as HTMLDivElement;
-        this.chatPanel     = document.getElementById('chat-panel')      as HTMLDivElement;
-        this.configureViewportPanel = document.getElementById('configure-viewport-panel') as HTMLDivElement;
-        this.commandsPanel = document.getElementById('commands-panel')  as HTMLDivElement;
-        this.commandReferenceGamePanel =
-            document.getElementById('cmdref-game-panel') as HTMLDivElement;
-        this.commandReferenceDisplayPanel =
-            document.getElementById('cmdref-display-panel') as HTMLDivElement;
-        this.commandReferenceNewGameSetupPanel =
-            document.getElementById('cmdref-new-game-setup-panel') as HTMLDivElement;
-        this.commandReferenceGamePresetsPanel =
-            document.getElementById('cmdref-game-presets-panel') as HTMLDivElement;
-        this.commandReferenceOnlineMultiplayerPanel =
-            document.getElementById('cmdref-online-multiplayer-panel') as HTMLDivElement;
-        this.clegReferencePanel =
-            document.getElementById('cleg-reference-panel') as HTMLDivElement;
-        this.commandReferenceBoardTypesPanel =
-            document.getElementById('cmdref-board-types-panel') as HTMLDivElement;
-        this.commandReferenceBoardModifiersPanel =
-            document.getElementById('cmdref-board-modifiers-panel') as HTMLDivElement;
-        this.commandReferenceSelectorsPanel =
-            document.getElementById('cmdref-selectors-panel') as HTMLDivElement;
-        this.commandReferenceLocalReplaceSelectorsPanel =
-            document.getElementById('cmdref-local-replace-selectors-panel') as HTMLDivElement;
-        this.commandReferenceFormSelectorsPanel =
-            document.getElementById('cmdref-form-selectors-panel') as HTMLDivElement;
-        this.commandReferenceBuiltinFunctionsPanel =
-            document.getElementById('cmdref-builtin-functions-panel') as HTMLDivElement;
-        this.historyPanel  = document.getElementById('history-panel')   as HTMLDivElement;
-        this.panelDockBtn = document.getElementById('panel-dock-btn') as HTMLButtonElement;
-        this.panelFullBtn = document.getElementById('panel-full-btn') as HTMLButtonElement;
-        this.panelHideBtn = document.getElementById('panel-hide-btn') as HTMLButtonElement;
-        this.panelHomeBtn    = document.getElementById('panel-home-btn')  as HTMLButtonElement;
-        this.panelBackBtn    = document.getElementById('panel-back-btn')    as HTMLButtonElement;
-        this.panelForwardBtn = document.getElementById('panel-forward-btn') as HTMLButtonElement;
-        this.panelUpBtn      = document.getElementById('panel-up-btn')    as HTMLButtonElement;
-        this.panelTitleEl    = document.getElementById('panel-title')     as HTMLDivElement;
-        this.homePanel       = document.getElementById('home-panel')      as HTMLDivElement;
-        this.currentGameSetupPanel   = document.getElementById('current-game-setup-panel')   as HTMLDivElement;
-        this.currentGameSetupDetails = document.getElementById('current-game-setup-details') as HTMLDivElement;
-        this.currentGameSetupButtons = document.getElementById('current-game-setup-buttons') as HTMLDivElement;
-        this.newGamePanel          = document.getElementById('new-game-panel')           as HTMLDivElement;
-        this.newGameSetupDetails   = document.getElementById('new-game-setup-details')   as HTMLDivElement;
-        this.newGameButtons        = document.getElementById('new-game-buttons')         as HTMLDivElement;
-        this.gameRecordsPanel      = document.getElementById('game-records-panel')       as HTMLDivElement;
-        this.gamePresetSelectionPanel = document.getElementById('game-preset-selection-panel') as HTMLDivElement;
-        this.boardPresetSelectionPanel =
-            document.getElementById('board-preset-selection-panel') as HTMLDivElement;
-        this.activeLocalGamesPanel    = document.getElementById('active-local-games-panel')    as HTMLDivElement;
-        this.pendingGamesPanel        = document.getElementById('pending-games-panel')         as HTMLDivElement;
-        this.activeOnlineGamesPanel   = document.getElementById('active-online-games-panel')   as HTMLDivElement;
-        this.finishedOnlineGamesPanel = document.getElementById('finished-online-games-panel') as HTMLDivElement;
-        this.accountPanel = document.getElementById('account-panel') as HTMLDivElement;
-        this.configureOnlinePlayersPanel = document.getElementById('configure-online-players-panel') as HTMLDivElement;
-        this.popupOverlay = document.getElementById('popup-overlay') as HTMLDivElement;
+        // index.html guarantees every id below exists, so each lookup is asserted non-null.
+        const div = (id: string) => document.getElementById(id) as HTMLDivElement;
+        const btn = (id: string) => document.getElementById(id) as HTMLButtonElement;
+        this.mainSvg      = document.getElementById('main-canvas') as unknown as SVGSVGElement;
+        this.histBoards   = div('history-boards');
+        this.passBtn      = btn('pass-btn');
+        this.resignBtn    = btn('resign-btn');
+        this.withdrawBtn  = btn('withdraw-btn');
+        this.wcdBtn       = btn('wcd-btn');
+        this.resetViewportBtn = btn('reset-viewport-btn');
+        this.lockRotationBtn  = btn('lock-rotation-btn');
+        this.bwEndBtn     = btn('bwend-btn');
+        this.bw10Btn      = btn('bw10-btn');
+        this.bwBtn        = btn('bw-btn');
+        this.fwBtn        = btn('fw-btn');
+        this.fw10Btn      = btn('fw10-btn');
+        this.fwEndBtn     = btn('fwend-btn');
+        this.turnStone    = div('turn-stone');
+        this.plyNum       = document.getElementById('ply-num')   as HTMLSpanElement;
+        this.cmdInput     = document.getElementById('cmd-input') as HTMLInputElement;
+        this.cmdOutput    = div('cmd-output');
+        this.statusPanel  = div('status-panel');
+        this.chatPanel    = div('chat-panel');
+        this.configureViewportPanel = div('configure-viewport-panel');
+        this.commandsPanel = div('commands-panel');
+        this.commandReferenceGamePanel              = div('cmdref-game-panel');
+        this.commandReferenceDisplayPanel           = div('cmdref-display-panel');
+        this.commandReferenceNewGameSetupPanel      = div('cmdref-new-game-setup-panel');
+        this.commandReferenceGamePresetsPanel       = div('cmdref-game-presets-panel');
+        this.commandReferenceOnlineMultiplayerPanel = div('cmdref-online-multiplayer-panel');
+        this.clegReferencePanel                     = div('cleg-reference-panel');
+        this.commandReferenceBoardTypesPanel        = div('cmdref-board-types-panel');
+        this.commandReferenceBoardModifiersPanel    = div('cmdref-board-modifiers-panel');
+        this.commandReferenceSelectorsPanel         = div('cmdref-selectors-panel');
+        this.commandReferenceLocalReplaceSelectorsPanel = div('cmdref-local-replace-selectors-panel');
+        this.commandReferenceFormSelectorsPanel     = div('cmdref-form-selectors-panel');
+        this.commandReferenceBuiltinFunctionsPanel  = div('cmdref-builtin-functions-panel');
+        this.historyPanel = div('history-panel');
+        this.panelDockBtn = btn('panel-dock-btn');
+        this.panelFullBtn = btn('panel-full-btn');
+        this.panelHideBtn = btn('panel-hide-btn');
+        this.panelHomeBtn    = btn('panel-home-btn');
+        this.panelBackBtn    = btn('panel-back-btn');
+        this.panelForwardBtn = btn('panel-forward-btn');
+        this.panelUpBtn      = btn('panel-up-btn');
+        this.panelTitleEl    = div('panel-title');
+        this.homePanel       = div('home-panel');
+        this.currentGameSetupPanel   = div('current-game-setup-panel');
+        this.currentGameSetupDetails = div('current-game-setup-details');
+        this.currentGameSetupButtons = div('current-game-setup-buttons');
+        this.newGamePanel          = div('new-game-panel');
+        this.newGameSetupDetails   = div('new-game-setup-details');
+        this.newGameButtons        = div('new-game-buttons');
+        this.gameRecordsPanel      = div('game-records-panel');
+        this.gamePresetSelectionPanel  = div('game-preset-selection-panel');
+        this.boardPresetSelectionPanel = div('board-preset-selection-panel');
+        this.activeLocalGamesPanel    = div('active-local-games-panel');
+        this.pendingGamesPanel        = div('pending-games-panel');
+        this.activeOnlineGamesPanel   = div('active-online-games-panel');
+        this.finishedOnlineGamesPanel = div('finished-online-games-panel');
+        this.accountPanel = div('account-panel');
+        this.configureOnlinePlayersPanel = div('configure-online-players-panel');
+        this.popupOverlay = div('popup-overlay');
     }
 
     // A docked ('locked') panel isn't usable at 1/3 width on a narrow
@@ -1103,14 +1084,21 @@ export class Renderer {
         this._render();
     }
 
+    // Gets the side panel out of the way whenever the board becomes the thing to look at (a game
+    // just started, or the user switched to one): docked normally, hidden on a screen too narrow
+    // for a docked panel (see _screenIsSmall()). Same choice init() makes for the initial panelMode.
+    private _dockOrHidePanel() {
+        this.panelMode = this._screenIsSmall() ? 'hidden' : 'locked';
+        this._applyPanelMode();
+    }
+
     // Jumps to the Account (login) panel, making the side panel visible
-    // first if it's currently hidden - 'full' on a narrow screen (docking
-    // isn't usable there, but here we specifically need the panel visible
-    // so the user can see the login form, unlike the hide-on-narrow-screen
-    // fallback used elsewhere - see _buildStartLocalGameBtn/
-    // _buildStartOnlineGameBtn) or 'locked' otherwise. Left alone if the
-    // panel is already visible in some mode. _navigateSidePanel() itself
-    // never touches panelMode, so this must happen first.
+    // first if it's currently hidden - 'full' on a narrow screen, where the
+    // login form still has to be readable and docking isn't usable (unlike
+    // _dockOrHidePanel() above, which hides the panel there instead), or
+    // 'locked' otherwise. Left alone if the panel is already visible in some
+    // mode. _navigateSidePanel() itself never touches panelMode, so this must
+    // happen first.
     private _goToLoginPanel() {
         if (this.panelMode === 'hidden') {
             this.panelMode = this._screenIsSmall() ? 'full' : 'locked';
@@ -1190,7 +1178,7 @@ export class Renderer {
         // Camera roll (left/right) and scale (up/down, same 1.02 multiply/divide as the status
         // panel's own Scale textbox - see src/camera.ts) - global so they work regardless of which
         // side-panel node is focused, but skipped while a text input (cmdInput, the projMat cell
-        // editor, etc.) has focus, or while any popup (e.g. the 'mod' command's edit-modifiers
+        // editor, etc.) has focus, or while any popup (e.g. the 'board' command's board-description
         // textarea) is showing, so they don't hijack arrow-key input meant for those instead.
         document.addEventListener('keydown', e => {
             if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
@@ -1234,9 +1222,6 @@ export class Renderer {
             if (v.passEnabled && !v.gameOver) this._tryMakeMove(null);
         });
         this.resignBtn.addEventListener('click', () => { void this._resign(); });
-        // Same underlying logic as the 'w 1'/'wcd' commands - see
-        // _withdrawMove/_withdrawToCurrentDisplay, shared with _parseCommand's
-        // 'w'/'wcd' branches so the guards live in exactly one place.
         this.withdrawBtn.addEventListener('click', () => { this._withdrawMove(1); this._render(); });
         this.wcdBtn.addEventListener('click', () => { this._withdrawToCurrentDisplay(); this._render(); });
         this.resetViewportBtn.addEventListener('click', () => {
@@ -1429,9 +1414,11 @@ export class Renderer {
                 this.currentGameSetupDetails.innerHTML = currentGameSetupHtml(v, this._active.config.players, this.colorGen);
             if (this.currentSidePanel === SidePanelContent.NewGame)
                 this.newGameSetupDetails.innerHTML = newGameSetupHtml(this.newCfg, this.colorGen);
-            if (this.currentSidePanel === SidePanelContent.ActiveLocalGames) this._renderActiveLocalGames();
+            if (this.currentSidePanel === SidePanelContent.ActiveLocalGames)
+                this._renderActiveGames(this.activeLocalGamesPanel, 'L_');
             if (this.currentSidePanel === SidePanelContent.PendingGames) this._renderPendingGames();
-            if (this.currentSidePanel === SidePanelContent.ActiveOnlineGames) this._renderActiveOnlineGames();
+            if (this.currentSidePanel === SidePanelContent.ActiveOnlineGames)
+                this._renderActiveGames(this.activeOnlineGamesPanel, 'O_');
             if (this.currentSidePanel === SidePanelContent.FinishedOnlineGames) this._renderFinishedOnlineGames();
             if (this.currentSidePanel === SidePanelContent.GamePresetSelection)
                 renderGamePresetSelection(
@@ -2037,10 +2024,8 @@ export class Renderer {
         `);
     }
 
-    // Makes `id` the active game and cancels any in-flight engine request for
-    // the previous one - the same switching logic as the 'swl'/'swo'/'swf'
-    // commands (_parseCommand), reused by the clickable game-record buttons
-    // below. Caller is responsible for re-rendering afterward.
+    // Makes `id` the active game, stopping any in-flight engine request/self-play run on the
+    // previous one. Caller is responsible for re-rendering afterward.
     private _switchToGame(id: string) {
         this.engineManager.cancel();
         this._cancelSelfPlay();
@@ -2048,14 +2033,12 @@ export class Renderer {
     }
 
     // Builds one full-width, clickable button per game id into el - clicking
-    // one switches to that game, then does the same two mode changes as the
-    // "Start New Local Game" button: dock/hide the panel (docking isn't usable on a
-    // narrow screen - see _screenIsSmall()'s doc comment) and jump to Status
-    // so the switched-to game's state is what the player sees immediately
-    // (_navigateSidePanel() triggers its own _render()). Shared by the three
-    // ActiveLocalGames/ActiveOnlineGames/FinishedOnlineGames side-panel nodes
-    // below (PendingGames is the one Game-Records child that ISN'T
-    // clickable - a pending game has no board state yet to switch to).
+    // one switches to that game, then gets the panel out of the way and jumps
+    // to Status so the switched-to game's state is what the player sees
+    // immediately. Shared by the three ActiveLocalGames/ActiveOnlineGames/
+    // FinishedOnlineGames side-panel nodes below (PendingGames is the one
+    // Game-Records child that ISN'T clickable - a pending game has no board
+    // state yet to switch to).
     private _renderGameButtons(el: HTMLDivElement, ids: string[], label: (id: string) => string) {
         el.innerHTML = '';
         for (const id of ids) {
@@ -2064,8 +2047,7 @@ export class Renderer {
             btn.innerHTML = label(id);
             btn.addEventListener('click', () => {
                 this._switchToGame(id);
-                this.panelMode = this._screenIsSmall() ? 'hidden' : 'locked';
-                this._applyPanelMode();
+                this._dockOrHidePanel();
                 this._navigateSidePanel(SidePanelContent.Status);
             });
             el.appendChild(btn);
@@ -2081,15 +2063,11 @@ export class Renderer {
         return `${fmtTurnList(config.turnList, config.players, this.colorGen, winners)}${'&emsp;'.repeat(2)}[${id}]`;
     }
 
-    private _renderActiveLocalGames() {
-        const ids = [...this.activeGames.keys()].filter(k => k.startsWith('L_'));
-        this._renderGameButtons(this.activeLocalGamesPanel, ids,
-            id => this._fmtGameRecordLabel(id.slice(2), this.activeGames.get(id)!.config));
-    }
-
-    private _renderActiveOnlineGames() {
-        const ids = [...this.activeGames.keys()].filter(k => k.startsWith('O_'));
-        this._renderGameButtons(this.activeOnlineGamesPanel, ids,
+    // The Active Local Games / Active Online Games nodes - the same listing over whichever
+    // activeGames key prefix ('L_' or 'O_') the node covers.
+    private _renderActiveGames(el: HTMLDivElement, prefix: 'L_' | 'O_') {
+        const ids = [...this.activeGames.keys()].filter(k => k.startsWith(prefix));
+        this._renderGameButtons(el, ids,
             id => this._fmtGameRecordLabel(id.slice(2), this.activeGames.get(id)!.config));
     }
 
@@ -2102,10 +2080,10 @@ export class Renderer {
     }
 
     // Builds the Account side-panel node's content: a username/password
-    // login form (reusing _login(), same as the 'login' command) if signed
-    // out, or a "Username: <name>" line plus a Log Out button if signed in.
-    // See the call site in _refreshSidePanel() for why this is only invoked
-    // on navigation/login-state-change, not on every _render().
+    // login form if signed out, or a "Username: <name>" line plus a Log Out
+    // button if signed in. See the call site in _refreshSidePanel() for why
+    // this is only invoked on navigation/login-state-change, not on every
+    // _render().
     private _renderAccountPanel() {
         this.accountPanel.innerHTML = '';
         if (this.userName) {
@@ -2150,14 +2128,16 @@ export class Renderer {
         loginBtn.className = 'panel-child-btn';
         loginBtn.textContent = 'Log in';
         loginBtn.addEventListener('click', () => {
-            void this._login(userInput.value, passInput.value).then(() => this._renderAccountPanel());
+            void this._authenticate('LOGIN', userInput.value, passInput.value)
+                .then(() => this._renderAccountPanel());
         });
 
         const registerBtn = document.createElement('button');
         registerBtn.className = 'panel-child-btn';
         registerBtn.textContent = 'Register';
         registerBtn.addEventListener('click', () => {
-            void this._register(userInput.value, passInput.value).then(() => this._renderAccountPanel());
+            void this._authenticate('REGISTER', userInput.value, passInput.value)
+                .then(() => this._renderAccountPanel());
         });
 
         const btnRow = document.createElement('div');
@@ -2219,10 +2199,6 @@ export class Renderer {
         this._refreshChatLog();
     }
 
-    // Rebuilds just #chat-log's contents from this._active.chat - safe to call often (local send,
-    // incoming game/chatmessage broadcast) since it never touches #chat-input-row/the textarea,
-    // unlike _renderChatPanel() above. No-ops if the Chat panel hasn't been navigated to yet this
-    // session (no #chat-log in the DOM).
     // Chat-specific player label - unlike fmtPlayerString (sidePanel.ts), drops the "(Pn)" slot
     // suffix and wraps just the name/symbol in parens, e.g. "(alice)"/"(⌂)"/"(⚙)".
     private _chatPlayerLabel(playerNum: number): string {
@@ -2233,6 +2209,10 @@ export class Renderer {
         return `(${pi.name})`;
     }
 
+    // Rebuilds just #chat-log's contents from this._active.chat - safe to call often (local send,
+    // incoming game/chatmessage broadcast) since it never touches #chat-input-row/the textarea,
+    // unlike _renderChatPanel() above. No-ops if the Chat panel hasn't been navigated to yet this
+    // session (no #chat-log in the DOM).
     private _refreshChatLog(): void {
         const log = this.chatPanel.querySelector<HTMLDivElement>('#chat-log');
         if (!log) return;
@@ -2295,11 +2275,7 @@ export class Renderer {
             // in which case the game (and this panel-mode switch/navigate)
             // only happen once the user actually answers Yes.
             this._startNewGame(() => {
-                // Docking isn't usable on a narrow screen (see _screenIsSmall()'s
-                // doc comment) - fall back to hiding the panel instead, same
-                // choice init() makes for the initial panelMode.
-                this.panelMode = this._screenIsSmall() ? 'hidden' : 'locked';
-                this._applyPanelMode();
+                this._dockOrHidePanel();
                 // Jump to Status so the newly-started game's state is what the
                 // player sees immediately - _navigateSidePanel() already
                 // triggers its own _render(), so no separate call needed here.
@@ -2326,8 +2302,7 @@ export class Renderer {
         btn.className = 'panel-child-btn';
         btn.textContent = 'New Online Game';
         btn.addEventListener('click', () => {
-            this.panelMode = this._screenIsSmall() ? 'hidden' : 'locked';
-            this._applyPanelMode();
+            this._dockOrHidePanel();
             void this._createOnlineGame().then(success => {
                 if (success) this._navigateSidePanel(SidePanelContent.PendingGames);
             });
@@ -2352,9 +2327,9 @@ export class Renderer {
     // tfpro/sol/soe/adde/addl commands mutate (_parseCommand), reusing each
     // command's exact mutation body as a button's click handler, plus a new
     // "Clear" action (delete a fixed slot's assignment) with no command
-    // equivalent. Unlike _renderAccountPanel(), this holds no persistent
-    // text-input state, so it's safe to rebuild on every _render() (see the
-    // call site there) as well as after each of its own button clicks.
+    // equivalent. Unlike _renderAccountPanel(), its one text input is
+    // field-backed (inviteInputValue), so it's safe to rebuild on every
+    // _render() as well as after each of its own button clicks.
     private _renderConfigureOnlinePlayers() {
         const req = this.onlinePlayerRequest;
         // A slot number left over from before numPlayers shrank no longer
@@ -2457,7 +2432,7 @@ export class Renderer {
             const listLine = document.createElement('div');
             listLine.className = 'colp-list-line';
             listLine.innerHTML = `<b>List of Players:</b> ${req.randomOrder
-                .map(pi => pi.type === 'local' ? 'Local' : pi.type === 'serverEngine' ? 'Engine' : `${pi.name} (invited)`)
+                .map(fmtStatus)
                 .join('&nbsp;'.repeat(3))}`;
             this.configureOnlinePlayersPanel.appendChild(listLine);
 
@@ -2493,8 +2468,8 @@ export class Renderer {
     // body.popup-active class that disables the rest of the UI (see
     // index.html) - same "clear innerHTML, rebuild via createElement"
     // convention as every other panel. Safe to call unconditionally on every
-    // _render() (see the call site there): unlike _renderConfigureOnlinePlayers(),
-    // there's no persistent text-input state here to lose.
+    // _render(): the only text a popup holds (the edit-board textarea) is
+    // field-backed in _boardDescrText, so a rebuild can't lose it.
     renderPopup() {
         this.popUp = this.currentPopup !== null;
         document.body.classList.toggle('popup-active', this.popUp);
@@ -2507,54 +2482,41 @@ export class Renderer {
         const text = document.createElement('div');
         const btnRow = document.createElement('div');
         btnRow.className = 'btn-row';
+        const mkBtn = (label: string, onClick: () => void) => {
+            const b = document.createElement('button');
+            b.className = 'panel-child-btn';
+            b.textContent = label;
+            b.addEventListener('click', onClick);
+            return b;
+        };
 
         if (this.currentPopup.kind === 'invite') {
             const { id, from } = this.currentPopup;
             text.textContent = `${from} is inviting you to game ${id}`;
-            const acceptBtn = document.createElement('button');
-            acceptBtn.className = 'panel-child-btn';
-            acceptBtn.textContent = 'Accept';
-            acceptBtn.addEventListener('click', () => void this._respondToInvite(id, true));
-            const refuseBtn = document.createElement('button');
-            refuseBtn.className = 'panel-child-btn';
-            refuseBtn.textContent = 'Refuse';
-            refuseBtn.addEventListener('click', () => void this._respondToInvite(id, false));
-            btnRow.append(acceptBtn, refuseBtn);
+            btnRow.append(
+                mkBtn('Accept', () => void this._respondToInvite(id, true)),
+                mkBtn('Refuse', () => void this._respondToInvite(id, false)),
+            );
         } else if (this.currentPopup.kind === 'withdraw-request') {
             const { id, from, numWithdrawn } = this.currentPopup;
             text.textContent = `${from} wants to withdraw ${numWithdrawn} move(s). Agree?`;
-            const agreeBtn = document.createElement('button');
-            agreeBtn.className = 'panel-child-btn';
-            agreeBtn.textContent = 'Agree';
-            agreeBtn.addEventListener('click', () => void this._respondToWithdraw(id, true));
-            const declineBtn = document.createElement('button');
-            declineBtn.className = 'panel-child-btn';
-            declineBtn.textContent = 'Decline';
-            declineBtn.addEventListener('click', () => void this._respondToWithdraw(id, false));
-            btnRow.append(agreeBtn, declineBtn);
+            btnRow.append(
+                mkBtn('Agree',   () => void this._respondToWithdraw(id, true)),
+                mkBtn('Decline', () => void this._respondToWithdraw(id, false)),
+            );
         } else if (this.currentPopup.kind === 'confirm') {
             const { message, onYes, onNo } = this.currentPopup;
             text.textContent = message;
-            const yesBtn = document.createElement('button');
-            yesBtn.className = 'panel-child-btn';
-            yesBtn.textContent = 'Yes';
-            yesBtn.addEventListener('click', () => { onYes(); this._dismissPopup(); });
-            const noBtn = document.createElement('button');
-            noBtn.className = 'panel-child-btn';
-            noBtn.textContent = 'No';
-            noBtn.addEventListener('click', () => { onNo(); this._dismissPopup(); });
-            btnRow.append(yesBtn, noBtn);
+            btnRow.append(
+                mkBtn('Yes', () => { onYes(); this._dismissPopup(); }),
+                mkBtn('No',  () => { onNo();  this._dismissPopup(); }),
+            );
         } else if (this.currentPopup.kind === 'login-prompt') {
             text.textContent = 'Please log in to play online games';
-            const loginBtn = document.createElement('button');
-            loginBtn.className = 'panel-child-btn';
-            loginBtn.textContent = 'Login now';
-            loginBtn.addEventListener('click', () => { this._goToLoginPanel(); this._dismissPopup(); });
-            const laterBtn = document.createElement('button');
-            laterBtn.className = 'panel-child-btn';
-            laterBtn.textContent = 'Later';
-            laterBtn.addEventListener('click', () => this._dismissPopup());
-            btnRow.append(loginBtn, laterBtn);
+            btnRow.append(
+                mkBtn('Login now', () => { this._goToLoginPanel(); this._dismissPopup(); }),
+                mkBtn('Later',     () => this._dismissPopup()),
+            );
         } else if (this.currentPopup.kind === 'edit-board') {
             // Own layout (label/textarea/error stacked above the Ok button) rather than the shared
             // text+btnRow pair every other popup kind uses below - appends directly and returns.
@@ -2579,25 +2541,16 @@ export class Renderer {
                 errorDiv.textContent = this._boardDescrError;
                 box.appendChild(errorDiv);
             }
-            const okBtn = document.createElement('button');
-            okBtn.className = 'panel-child-btn';
-            okBtn.textContent = 'Ok';
-            okBtn.addEventListener('click', () => this._applyBoardEdit());
-            const cancelBtn = document.createElement('button');
-            cancelBtn.className = 'panel-child-btn';
-            cancelBtn.textContent = 'Cancel';
-            cancelBtn.addEventListener('click', () => this._dismissPopup());
-            btnRow.append(okBtn, cancelBtn);
+            btnRow.append(
+                mkBtn('Ok',     () => this._applyBoardEdit()),
+                mkBtn('Cancel', () => this._dismissPopup()),
+            );
             box.appendChild(btnRow);
             this.popupOverlay.appendChild(box);
             return;
         } else {
             text.textContent = this.currentPopup.message;
-            const okBtn = document.createElement('button');
-            okBtn.className = 'panel-child-btn';
-            okBtn.textContent = 'Ok';
-            okBtn.addEventListener('click', () => this._dismissPopup());
-            btnRow.appendChild(okBtn);
+            btnRow.appendChild(mkBtn('Ok', () => this._dismissPopup()));
         }
         box.append(text, btnRow);
         this.popupOverlay.appendChild(box);
@@ -2772,24 +2725,11 @@ export class Renderer {
             ? Object.entries(randomEvaled).map(([p, w]) => `P${p} ${(w as number).toFixed(1)}`).join(' | ')
             : 'None';
 
-        // Renders e.g. "⬤ P1:5  P2:2   ⬤ P2:1" (two spaces between players,
-        // three between stones), each stone's circle followed by the number
-        // placed so far by every player who has placed at least one - mirrors
-        // fmtPlaceLimit's layout, but showing actual running counts
-        // (BoardState.playerStonePlaceCnt()) rather than the configured
-        // limit. A player with a zero count for a stone is omitted from that
-        // stone's entry, and a stone nobody has placed at all is omitted
-        // entirely.
+        // The running per-stone, per-player placement counts - same grid layout as fmtPlaceLimit's
+        // configured limits (see fmtPlayerStoneGrid), omitting any player who hasn't placed that
+        // stone at all.
         const fmtPlaceCnt = (cnt: number[][]) =>
-            cnt
-                .map((row, i) => {
-                    const entries = row
-                        .map((c, j) => c > 0 ? `P${j + 1}:${c}` : null)
-                        .filter((s): s is string => s !== null);
-                    return entries.length > 0 ? `${coloredStoneCircle(i + 1, this.colorGen)}&nbsp;${entries.join('&nbsp;&nbsp;')}` : null;
-                })
-                .filter((s): s is string => s !== null)
-                .join('&nbsp;&nbsp;&nbsp;');
+            fmtPlayerStoneGrid(cnt, this.colorGen, (c, p) => c > 0 ? `P${p}:${c}` : null);
         const nameLine = this.userName
             ? `<div><b>Your Name:</b> ${this.userName}</div>`
             : `<div><b>Please login to play online games</b> <span id="status-login-btn-slot"></span></div>`;
@@ -2806,7 +2746,7 @@ export class Renderer {
             <div><b>Stones placed:</b> ${fmtPlaceCnt(v.history[v.history.length - 1].playerStonePlaceCnt)}</div>
             <div><b>Game chat:</b> <button id="status-chat-btn" class="status-login-btn">View Chat</button></div>
             <div><b>AI engine:</b> ${this.aiEngineReady ? 'ready' : 'unavailable'}</div>
-            <div><b>Engine sims per move:</b> ${this.emNumSims ?? 'default'}</div>
+            <div><b>Engine sims per move:</b> ${this.emNumSims}</div>
             <div><b>Engine temperature:</b> ${this.emTemperature}</div>
             <div><b>Self play:</b> ${this.selfPlay}</div>
             <div><b>Auto forced:</b> ${this.autoForced}</div>
@@ -2839,7 +2779,7 @@ export class Renderer {
     // The projection matrix / fading / focus / scale / distance / aperture editors, reached via
     // Status's own "Viewport: Configure" button (_renderStatus above) - split out of Status itself
     // since this content doesn't fit "one line per field" the rest of Status uses, and dominated the
-    // panel. Assumes an active game exists (guaranteed here - see _render()'s own doc comment).
+    // panel.
     private _renderConfigureViewport() {
         this.configureViewportPanel.innerHTML = `
             <div><b>Projection matrix:</b></div>
@@ -3253,29 +3193,31 @@ export class Renderer {
         this.activeIdx = id;
     }
 
-    // Withdraws n real moves (see BoardState.withdrawMove) - shared by the
-    // 'w' command and the Withdraw button, so the online/finished-game
-    // guards live in exactly one place.
-    private _withdrawMove(n: number) {
+    // Shared guard for both withdraw entry points: a finished game can't withdraw at all, and an
+    // online one goes through the server-side proposal instead (toPly names the target ply, or
+    // "my own last move" when omitted). Otherwise drops any engine session, so the caller's own
+    // local withdrawal starts clean. Returns true iff the caller should withdraw locally.
+    private _beginWithdraw(toPly?: number): boolean {
         if (this.finishedGames.has(this.activeIdx)) {
-            this._setCmdOutput('Cannot withdraw moves from a finished game'); return;
+            this._setCmdOutput('Cannot withdraw moves from a finished game'); return false;
         }
-        if (this.activeIdx.startsWith('O_')) { void this._requestWithdraw(); return; }
+        if (this.activeIdx.startsWith('O_')) { void this._requestWithdraw(toPly); return false; }
         this.engineManager.cancel();
         this.engineManager.sessionId = null;
+        return true;
+    }
+
+    // Withdraws n real moves (see BoardState.withdrawMove) - the 'w' command and the Withdraw
+    // button.
+    private _withdrawMove(n: number) {
+        if (!this._beginWithdraw()) return;
         for (let i = 0; i < n; i++) this._active.bs.withdrawMove();
         this._active.displayPlyNum = Math.min(this._active.displayPlyNum, this._active.bs.situations.length - 1);
     }
 
-    // Withdraws down to the currently displayed ply - shared by the 'wcd'
-    // command and the WCD button.
+    // Withdraws down to the currently displayed ply - the 'wcd' command and the WCD button.
     private _withdrawToCurrentDisplay() {
-        if (this.finishedGames.has(this.activeIdx)) {
-            this._setCmdOutput('Cannot withdraw moves from a finished game'); return;
-        }
-        if (this.activeIdx.startsWith('O_')) { void this._requestWithdraw(this._active.displayPlyNum); return; }
-        this.engineManager.cancel();
-        this.engineManager.sessionId = null;
+        if (!this._beginWithdraw(this._active.displayPlyNum)) return;
         const n = this._active.bs.situations.length - 1 - this._active.displayPlyNum;
         for (let i = 0; i < n; i++) this._active.bs.withdrawMove();
     }
@@ -3286,18 +3228,54 @@ export class Renderer {
         if (!parts[0]) return;
         const cmd = parts[0].toLowerCase();
         const posInt = (s: string | undefined) => { const n = Number(s); return Number.isInteger(n) && n > 0 ? n : null; };
+        const nonNeg = (s: string | undefined) => {
+            const v = Number(s); return s !== undefined && isFinite(v) && v >= 0 ? v : null;
+        };
+        // The fixed-order-only (sol/soe/soi) and random-order-only (adde/addl/addi) commands
+        // reject each other's mode - see the 'tfpro' toggle.
+        const requireOrderMode = (fixed: boolean) => {
+            if (this.onlinePlayerRequest.fixed === fixed) return true;
+            this._setCmdOutput(`${cmd}: only available when fixed order is ${fixed ? 'enabled' : 'disabled'} (see tfpro)`);
+            return false;
+        };
+        // randomOrder can never hold more players than the new game's own numPlayers (adde/addl/addi).
+        const randomOrderHasRoom = () => {
+            if (this.onlinePlayerRequest.randomOrder.length < this.newCfg.numPlayers) return true;
+            this._setCmdOutput(`${cmd}: randomOrder is already full (${this.newCfg.numPlayers} players)`);
+            return false;
+        };
+        // One '<num|->' placement limit per stone ('-' = unlimited), as spspl/sgspl both take.
+        // Reports the problem itself and returns null on any bad/miscounted token.
+        const parseStoneLimits = (toks: string[]): (number | null)[] | null => {
+            if (toks.length !== this.newCfg.numStones) {
+                this._setCmdOutput(
+                    `${cmd}: expected ${this.newCfg.numStones} value(s) (one per stone), got ${toks.length}`,
+                );
+                return null;
+            }
+            const limits: (number | null)[] = [];
+            for (const tok of toks) {
+                if (tok === '-') { limits.push(null); continue; }
+                const n = Number(tok);
+                if (!Number.isInteger(n) || n < 0) {
+                    this._setCmdOutput(`${cmd}: each value must be a non-negative integer or '-'`); return null;
+                }
+                limits.push(n);
+            }
+            return limits;
+        };
 
         if (cmd === 'register') {
             if (!parts[1] || !parts[2]) { this._setCmdOutput('Usage: register <name> <password>'); return; }
-            void this._register(parts[1], parts[2]);
+            void this._authenticate('REGISTER', parts[1], parts[2]);
         }
         else if (cmd === 'login') {
             if (!parts[1] || !parts[2]) { this._setCmdOutput('Usage: login <name> <password>'); return; }
-            void this._login(parts[1], parts[2]);
+            void this._authenticate('LOGIN', parts[1], parts[2]);
         }
         else if (cmd === 'flogin') {
             if (!parts[1] || !parts[2]) { this._setCmdOutput('Usage: flogin <name> <password>'); return; }
-            void this._forceLogin(parts[1], parts[2]);
+            void this._authenticate('FLOGIN', parts[1], parts[2]);
         }
         else if (cmd === 'tfpro') {
             this.onlinePlayerRequest.fixed = !this.onlinePlayerRequest.fixed;
@@ -3305,20 +3283,13 @@ export class Renderer {
             this._render();
         }
         else if (cmd === 'sol') {
-            if (!this.onlinePlayerRequest.fixed) {
-                this._setCmdOutput('sol: only available when fixed order is enabled (see tfpro)'); return;
-            }
+            if (!requireOrderMode(true)) return;
             const n = posInt(parts[1]); if (n === null) { this._setCmdOutput('Usage: sol <player-id>'); return; }
             this.onlinePlayerRequest.fixedOrder.set(n, new PlayerInfo('local', this.userName ?? 'Player')); this._render();
         }
         else if (cmd === 'soe') {
-            if (!this.onlinePlayerRequest.fixed) {
-                this._setCmdOutput('soe: only available when fixed order is enabled (see tfpro)'); return;
-            }
+            if (!requireOrderMode(true)) return;
             const n = posInt(parts[1]); if (n === null) { this._setCmdOutput('Usage: soe <player-id> [emsim] [temp]'); return; }
-            const nonNeg = (s: string | undefined) => {
-                const v = Number(s); return s !== undefined && isFinite(v) && v >= 0 ? v : null;
-            };
             const emsim = parts[2] !== undefined ? nonNeg(parts[2]) : this.emNumSims;
             const temp  = parts[3] !== undefined ? nonNeg(parts[3]) : this.emTemperature;
             if (emsim === null || temp === null) { this._setCmdOutput('Usage: soe <player-id> [emsim] [temp]'); return; }
@@ -3326,23 +3297,13 @@ export class Renderer {
             this._render();
         }
         else if (cmd === 'soi') {
-            if (!this.onlinePlayerRequest.fixed) {
-                this._setCmdOutput('soi: only available when fixed order is enabled (see tfpro)'); return;
-            }
+            if (!requireOrderMode(true)) return;
             const n = posInt(parts[1]);
             if (n === null || !parts[2]) { this._setCmdOutput('Usage: soi <player-id> <name>'); return; }
             this.onlinePlayerRequest.fixedOrder.set(n, new PlayerInfo('pendingInvitedOnline', parts[2])); this._render();
         }
         else if (cmd === 'adde') {
-            if (this.onlinePlayerRequest.fixed) {
-                this._setCmdOutput('adde: only available when fixed order is disabled (see tfpro)'); return;
-            }
-            if (this.onlinePlayerRequest.randomOrder.length >= this.newCfg.numPlayers) {
-                this._setCmdOutput(`adde: randomOrder is already full (${this.newCfg.numPlayers} players)`); return;
-            }
-            const nonNeg = (s: string | undefined) => {
-                const v = Number(s); return s !== undefined && isFinite(v) && v >= 0 ? v : null;
-            };
+            if (!requireOrderMode(false) || !randomOrderHasRoom()) return;
             const emsim = parts[1] !== undefined ? nonNeg(parts[1]) : this.emNumSims;
             const temp  = parts[2] !== undefined ? nonNeg(parts[2]) : this.emTemperature;
             if (emsim === null || temp === null) { this._setCmdOutput('Usage: adde [emsim] [temp]'); return; }
@@ -3350,22 +3311,12 @@ export class Renderer {
             this._render();
         }
         else if (cmd === 'addl') {
-            if (this.onlinePlayerRequest.fixed) {
-                this._setCmdOutput('addl: only available when fixed order is disabled (see tfpro)'); return;
-            }
-            if (this.onlinePlayerRequest.randomOrder.length >= this.newCfg.numPlayers) {
-                this._setCmdOutput(`addl: randomOrder is already full (${this.newCfg.numPlayers} players)`); return;
-            }
+            if (!requireOrderMode(false) || !randomOrderHasRoom()) return;
             this.onlinePlayerRequest.randomOrder.push(new PlayerInfo('local', this.userName ?? 'Player'));
             this._render();
         }
         else if (cmd === 'addi') {
-            if (this.onlinePlayerRequest.fixed) {
-                this._setCmdOutput('addi: only available when fixed order is disabled (see tfpro)'); return;
-            }
-            if (this.onlinePlayerRequest.randomOrder.length >= this.newCfg.numPlayers) {
-                this._setCmdOutput(`addi: randomOrder is already full (${this.newCfg.numPlayers} players)`); return;
-            }
+            if (!requireOrderMode(false) || !randomOrderHasRoom()) return;
             if (!parts[1]) { this._setCmdOutput('Usage: addi <name>'); return; }
             this.onlinePlayerRequest.randomOrder.push(new PlayerInfo('pendingInvitedOnline', parts[1]));
             this._render();
@@ -3381,18 +3332,14 @@ export class Renderer {
             if (!parts[1]) { this._setCmdOutput('Usage: swl <game-id>'); return; }
             const id = parts[1].startsWith('L_') ? parts[1] : 'L_' + parts[1];
             if (!this.activeGames.has(id)) { this._setCmdOutput(`Local game not found: ${id}`); return; }
-            this.engineManager.cancel();
-            this._cancelSelfPlay();
-            this.activeIdx = id;
+            this._switchToGame(id);
         }
         else if (cmd === 'swo') {
             if (!parts[1]) { this._setCmdOutput('Usage: swo <game-id>'); return; }
             const raw = parts[1].startsWith('O_') ? parts[1].slice(2) : parts[1];
             const id = 'O_' + raw.toUpperCase();
             if (!this.activeGames.has(id)) { this._setCmdOutput(`Online game not found: ${raw.toUpperCase()}`); return; }
-            this.engineManager.cancel();
-            this._cancelSelfPlay();
-            this.activeIdx = id;
+            this._switchToGame(id);
         }
         else if (cmd === 'swf') {
             if (!parts[1]) { this._setCmdOutput('Usage: swf <game-id>'); return; }
@@ -3401,9 +3348,7 @@ export class Renderer {
             if (!this.finishedGames.has(id)) {
                 this._setCmdOutput(`Finished online game not found: ${raw.toUpperCase()}`); return;
             }
-            this.engineManager.cancel();
-            this._cancelSelfPlay();
-            this.activeIdx = id;
+            this._switchToGame(id);
         }
         else if (cmd === 'em') {
             if (this.activeIdx.startsWith('O_')) { this._setCmdOutput('Engine moves are disabled in online mode'); return; }
@@ -3580,39 +3525,28 @@ export class Renderer {
             }
             this.newCfg.turnList = entries;
         }
-        else if (cmd === 'sprot') {
-            if (parts.length < 2) { this._setCmdOutput('Usage: sprot <0-1 str> <0-1 str> …'); return; }
+        // One numStones-length 0/1 string per turn-list entry, setting either the protected or the
+        // friendly flags - identical parsing, so the two commands differ only in which field of
+        // each TurnInfo the parsed bits land in.
+        else if (cmd === 'sprot' || cmd === 'sfriend') {
+            if (parts.length < 2) { this._setCmdOutput(`Usage: ${cmd} <0-1 str> <0-1 str> …`); return; }
             const strs = parts.slice(1);
             if (strs.length !== this.newCfg.turnList.length) {
                 this._setCmdOutput(
-                    `sprot: expected ${this.newCfg.turnList.length} value(s) (one per turn), got ${strs.length}`,
+                    `${cmd}: expected ${this.newCfg.turnList.length} value(s) (one per turn), got ${strs.length}`,
                 );
                 return;
             }
             if (!strs.every(s => s.length === this.newCfg.numStones && /^[01]+$/.test(s))) {
                 this._setCmdOutput(
-                    `sprot: each value must be a ${this.newCfg.numStones}-character string of 0s and 1s`,
+                    `${cmd}: each value must be a ${this.newCfg.numStones}-character string of 0s and 1s`,
                 );
                 return;
             }
-            this.newCfg.turnList = this.newCfg.turnList.map((t, i) => ({ ...t, protected: strs[i].split('').map(Number) }));
-        }
-        else if (cmd === 'sfriend') {
-            if (parts.length < 2) { this._setCmdOutput('Usage: sfriend <0-1 str> <0-1 str> …'); return; }
-            const strs = parts.slice(1);
-            if (strs.length !== this.newCfg.turnList.length) {
-                this._setCmdOutput(
-                    `sfriend: expected ${this.newCfg.turnList.length} value(s) (one per turn), got ${strs.length}`,
-                );
-                return;
-            }
-            if (!strs.every(s => s.length === this.newCfg.numStones && /^[01]+$/.test(s))) {
-                this._setCmdOutput(
-                    `sfriend: each value must be a ${this.newCfg.numStones}-character string of 0s and 1s`,
-                );
-                return;
-            }
-            this.newCfg.turnList = this.newCfg.turnList.map((t, i) => ({ ...t, friendly: strs[i].split('').map(Number) }));
+            this.newCfg.turnList = this.newCfg.turnList.map((t, i) => {
+                const bits = strs[i].split('').map(Number);
+                return cmd === 'sprot' ? { ...t, protected: bits } : { ...t, friendly: bits };
+            });
         }
         else if (cmd === 'spm') {
             if (parts.length < 4 || parts[1] !== 's' || parts[3] !== 'p') {
@@ -3638,41 +3572,13 @@ export class Renderer {
                 this._setCmdOutput(`spspl: player must be an integer between 1 and ${this.newCfg.numPlayers}`);
                 return;
             }
-            const toks = parts.slice(3);
-            if (toks.length !== this.newCfg.numStones) {
-                this._setCmdOutput(
-                    `spspl: expected ${this.newCfg.numStones} value(s) (one per stone), got ${toks.length}`,
-                );
-                return;
-            }
-            const limits: (number | null)[] = [];
-            for (const tok of toks) {
-                if (tok === '-') { limits.push(null); continue; }
-                const n = Number(tok);
-                if (!Number.isInteger(n) || n < 0) {
-                    this._setCmdOutput(`spspl: each value must be a non-negative integer or '-'`); return;
-                }
-                limits.push(n);
-            }
+            const limits = parseStoneLimits(parts.slice(3));
+            if (limits === null) return;
             limits.forEach((lim, i) => { this.newCfg.playerStonePlaceLimit[i][player - 1] = lim; });
         }
         else if (cmd === 'sgspl') {
-            const toks = parts.slice(1);
-            if (toks.length !== this.newCfg.numStones) {
-                this._setCmdOutput(
-                    `sgspl: expected ${this.newCfg.numStones} value(s) (one per stone), got ${toks.length}`,
-                );
-                return;
-            }
-            const limits: (number | null)[] = [];
-            for (const tok of toks) {
-                if (tok === '-') { limits.push(null); continue; }
-                const n = Number(tok);
-                if (!Number.isInteger(n) || n < 0) {
-                    this._setCmdOutput(`sgspl: each value must be a non-negative integer or '-'`); return;
-                }
-                limits.push(n);
-            }
+            const limits = parseStoneLimits(parts.slice(1));
+            if (limits === null) return;
             this.newCfg.globalStonePlaceLimit = limits;
         }
         else if (cmd === 'sr') {
@@ -3827,35 +3733,22 @@ export class Renderer {
         }
     }
 
-    private async _register(name: string, password: string) {
+    // The three ways to sign in - all identical apart from the request type and the messages they
+    // report. 'REGISTER' creates the account first; 'FLOGIN' takes over from (closes) any other
+    // connection already logged in as this username, instead of failing with a conflict.
+    private async _authenticate(kind: 'REGISTER' | 'LOGIN' | 'FLOGIN', name: string, password: string) {
         try {
-            const data = await conn.request<LoginResponse>('REGISTER', { name, password }).promise;
+            const data = await conn.request<LoginResponse>(kind, { name, password }).promise;
             this.userName = data.name;
             this._addFinishedGames(data.finishedGames);
-            this._setCmdOutput(`Registered and logged in as: ${data.name}`);
-        } catch (e: any) { this._setCmdOutput(`Registration failed: ${e.message}`); }
-        this._render();
-    }
-
-    private async _login(name: string, password: string) {
-        try {
-            const data = await conn.request<LoginResponse>('LOGIN', { name, password }).promise;
-            this.userName = data.name;
-            this._addFinishedGames(data.finishedGames);
-            this._setCmdOutput(`Logged in as: ${data.name}`);
-        } catch (e: any) { this._setCmdOutput(`Login failed: ${e.message}`); }
-        this._render();
-    }
-
-    // Like _login, but takes over from (closes) any other connection already
-    // logged in as this username, instead of failing with a conflict.
-    private async _forceLogin(name: string, password: string) {
-        try {
-            const data = await conn.request<LoginResponse>('FLOGIN', { name, password }).promise;
-            this.userName = data.name;
-            this._addFinishedGames(data.finishedGames);
-            this._setCmdOutput(`Logged in as: ${data.name} (took over from other connection)`);
-        } catch (e: any) { this._setCmdOutput(`Login failed: ${e.message}`); }
+            this._setCmdOutput(
+                kind === 'REGISTER' ? `Registered and logged in as: ${data.name}`
+                : kind === 'LOGIN'  ? `Logged in as: ${data.name}`
+                : `Logged in as: ${data.name} (took over from other connection)`,
+            );
+        } catch (e: any) {
+            this._setCmdOutput(`${kind === 'REGISTER' ? 'Registration' : 'Login'} failed: ${e.message}`);
+        }
         this._render();
     }
 
