@@ -296,7 +296,7 @@ BoardConfig node_edge_induced_subgraph(
 // own indicator, whose length is dim+1 - making it impossible to unambiguously re-derive the
 // grouping from a flat array alone). `value` is meaningful iff `kind == Number`; `values` iff
 // `kind == CommaSeparatedNumbers` or `ZeroOneList` (both are plain int lists once parsed - the
-// distinction only matters for the ORIGINAL command-line token's own syntax, comma-joined vs a bare
+// distinction only matters for the ORIGINAL source token's own syntax, comma-joined vs a bare
 // 0/1 string, which C++ never re-parses from text - see board_arg_number()/board_arg_list()).
 enum class BoardArgKind { Number, CommaSeparatedNumbers, ZeroOneList };
 struct BoardArgEntry {
@@ -310,7 +310,8 @@ struct BoardArgEntry {
 };
 
 // Mirrors shared/boardConfig.ts's numArg()/csvArg()/zolArg() - shorthand for building a BoardArgEntry
-// by hand (as opposed to parsing one from JSON - see training/self_play.cpp's own to_json/from_json).
+// by hand. The only caller is game/cleg_eval.cpp, converting an evaluated cleg argument value into
+// the entry build_board_config() expects.
 inline BoardArgEntry num_arg(int value) { return BoardArgEntry{ BoardArgKind::Number, value, {} }; }
 inline BoardArgEntry csv_arg(std::vector<int> values) {
     return BoardArgEntry{ BoardArgKind::CommaSeparatedNumbers, 0, std::move(values) };
@@ -325,18 +326,18 @@ inline BoardArgEntry zol_arg(std::vector<int> values) {
 int board_arg_number(const BoardArgEntry& e);
 const std::vector<int>& board_arg_list(const BoardArgEntry& e);
 
-// Mirrors shared/boardConfig.ts's formatBoardArgEntry() - the command-line token e was parsed from
+// Mirrors shared/boardConfig.ts's formatBoardArgEntry() - the source token e was parsed from
 // (Number -> the plain value; CommaSeparatedNumbers -> comma-joined; ZeroOneList -> concatenated
-// digits, no separator). Used for diagnostic printouts (train.cpp).
+// digits, no separator). Kept for parity with the TS helper; no C++ caller needs it today (board
+// descriptions are printed as their own cleg source text instead - see train.cpp).
 std::string format_board_arg_entry(const BoardArgEntry& e);
 
 // A BoardConfig-transforming operation - see apply_modifier/apply_modifiers. Mirrors
-// shared/types.ts's BoardModifier - a cleg `mod`-typed value (game/cleg.cpp) always wraps one of
-// these directly, built by whichever of cleg's own rectify()/edgeSplit()/.../nis()/eis() builtins
-// matches; cleg's own prod(a, b) combines two already-built boards directly (no BoardModifier of
-// its own involved), and has no Repeat equivalent at all (a cleg program just writes out a repeated
-// call, or a real `for` loop, instead) - so unlike every other variant here, nothing constructs a
-// Prod- or Repeat-kind BoardModifier value anymore.
+// shared/types.ts's BoardModifier - a cleg `mod`-typed value (game/cleg_eval.cpp) always wraps one
+// of these directly, built by whichever of cleg's own rectify()/edgeSplit()/.../nis()/eis()
+// builtins matches. Board composition and repetition have no ModifierKind of their own: cleg's
+// prod(a, b) combines two already-built boards directly, and a repeated modifier is just a
+// repeated call (or a `for` loop) in the cleg program itself.
 enum class ModifierKind {
     Rectify, Truncate, EdgeSplit, MergeClose, TriangleForm, QuadForm, QuadDiagForm, QuadKnightForm,
     QuadBishopForm, Form, LocalReplace, GlobalCentralize, Scale, NodeInducedSubgraph, EdgeInducedSubgraph
@@ -436,7 +437,7 @@ BoardConfig simplex_board(int meshdim, int dim, int w);
 
 // A regular polygon with n edges (a simple n-cycle graph), n >= 3. Unlike every other board type
 // here, a unit-edge-length regular n-gon has no exact-integer Cartesian embedding for general n
-// (see shared/boardConfig.ts's regularPolygonBoard() and ai/Readme.md's now-resolved TODO note).
+// (see shared/boardConfig.ts's regularPolygonBoard()).
 // Rather than force an approximate/scaled embedding that would behave inconsistently with every
 // other board's "1 embed unit = 1 real unit" convention (see merge_close's own doc comment), this
 // uses emb_dim = 0 and an empty embed[] per node - adjacency (a plain n-cycle) is exact and
@@ -642,14 +643,15 @@ BoardConfig glue_twisted_square_board(int w, int h, int g);
 BoardConfig twisted_square_board(int w, int h, int g);
 
 // Dispatches to the board builder above matching `kind` ("line" | "rect" | "rectd" |
-// "cublat" | "hcub" | "tri" | "sier" | "simplex" | "regpoly" | "tetra" | "octa" | "ortho" |
-// "reg24Cell" | "reg120Cell" | "reg600Cell" | "ap" | "dodeca" |
+// "cublat" | "hcub" | "tri" | "sier" | "simplex" | "regpoly" | "tetra" | "diamondCubic" | "octa" |
+// "ortho" | "reg24Cell" | "reg120Cell" | "reg600Cell" | "ap" | "dodeca" |
 // "icosa" | "dodflake" | "icoflake" | "octaflake" | "polyflake" | "cpolyflake" | "cpentflake" |
 // "menger" | "trihex" | "hex" | "hexdel" | "snubsq" | "twsq" | "gtsq" | "star"),
 // reading each of `args` back via board_arg_number()/board_arg_list() as that builder's own
 // positional parameters expect. Throws std::runtime_error for an unknown kind. The one primitive
-// game/cleg.cpp's own board-constructor builtins (each cleg name is `kind` + "B", e.g. "rectB" ->
-// "rect" - see cleg.cpp's own prescribed-board registration table) call to actually build a board -
+// game/cleg_eval.cpp's own board-constructor builtins (each cleg name is `kind` + "B", e.g.
+// "rectB" -> "rect" - see cleg_eval.cpp's own prescribed-board registration table) call to
+// actually build a board -
 // no other caller invokes this directly anymore (train.cpp/server.cpp go through
 // build_board_from_cleg(), which parses/evaluates a GameConfig::board_descr cleg program instead).
 BoardConfig build_board_config(const std::string& kind, const std::vector<BoardArgEntry>& args);

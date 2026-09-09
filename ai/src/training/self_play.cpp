@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <random>
 #include <cstdint>
-#include <stdexcept>
 
 static std::mt19937 rng(std::random_device{}());
 
@@ -88,7 +87,7 @@ nlohmann::json GameConfig::to_json() const {
     return j;
 }
 
-// ── Config JSON parsing (matches shared/types.ts's GameConfig.toJSON() shape) ──
+// ── Config JSON parsing (matches shared/gameConfig.ts's GameConfig.toJSON() shape) ──
 
 static std::vector<TurnInfo> parse_turn_list(const json& j) {
     std::vector<TurnInfo> out;
@@ -228,8 +227,9 @@ BoardState new_state(const GameConfig& cfg, const BoardConfig& bc) {
     if (komi.empty())
         komi = std::vector<float>(cfg.num_players, 0.0f);
 
-    // Every player currently maps to model id 1 - real per-player model assignment isn't wired
-    // through GameConfig yet (see BoardState::player_model_id's doc comment).
+    // A fresh state starts with every player on model id 1 - self-play/tournament callers
+    // reassign these per game (train.cpp's assign_random_models/assign_by_sequence), while
+    // server.cpp keeps the default (see BoardState::player_model_id's doc comment).
     std::vector<int> player_model_id(cfg.num_players, 1);
 
     BoardState state(

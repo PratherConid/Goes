@@ -326,9 +326,7 @@ static std::pair<double, double> regular_polygon_flake_rc(int n_sides) {
 // independently recompute their own verts/edges/glue (a JS Map cache per function is cheap enough
 // there), whereas here central_pentagon_fractal_descr() needs the exact same base pentagon
 // edges/node_glue regular_polygon_fractal_descr(5, ...) does, so this avoids a second distance
-// search for identical data - mirrors the pre-generalization version of this file's own
-// regular_polygon_flake_data(), unchanged in spirit, just feeding the new GlueEntry-based descr
-// builders below instead of the old edge_glue_map/node_glue_map split.
+// search for identical data.
 struct RegularPolygonRawData {
     std::vector<std::pair<int, int>> edges;
     std::vector<std::array<int, 6>> edge_glue; // populated iff n_sides % 4 == 0

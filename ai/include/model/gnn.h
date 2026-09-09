@@ -45,7 +45,6 @@ struct MessagePassingGNNImpl : torch::nn::Module {
     GNNPolicyHead policy_head{nullptr};
 
     GNNConfig cfg_;
-    int num_players_;
     int num_stones_;
     // Untrainable random Gaussian embedding table for neighbor counts:
     // (max_degree+1, L) - row d is the fixed vector used whenever a node has
@@ -54,8 +53,7 @@ struct MessagePassingGNNImpl : torch::nn::Module {
     // run against (deg_embed_ is saved/loaded with the model like any other buffer).
     torch::Tensor deg_embed_;
 
-    MessagePassingGNNImpl(const GNNConfig& cfg, int num_players, int num_stones,
-                          const AdjNorms& adj_norms);
+    MessagePassingGNNImpl(const GNNConfig& cfg, int num_stones, const AdjNorms& adj_norms);
 
     // Returns (policy, ownership).
     //   Unbatched: x (N,F), legal_mask (numStones*N+1,)   → policy (numStones*N+1,), ownership (2,N,num_stones+1)
@@ -69,16 +67,10 @@ struct MessagePassingGNNImpl : torch::nn::Module {
         const AdjNorms& adj_norms,
         torch::Tensor legal_mask);
 
-    // Evaluate a single BoardState. Returns (policy (numStones*N+1,), ownership (2,N,num_stones+1)),
-    // both left on the model's device - callers needing CPU access (e.g. via
-    // .accessor<T,N>()) must call .cpu() themselves at their point of use.
-    std::pair<torch::Tensor, torch::Tensor> evaluate(
-        const BoardState& state,
-        const AdjNorms& adj_norms);
-
-    // Evaluate a list of states in one forward pass (all must share the same board).
-    // Returns policy_batch (B, numStones*N+1) and ownership_batch (B, 2, N, num_stones+1), both
-    // left on the model's device (see evaluate()'s comment).
+    // Evaluate a list of states in one forward pass (all must share the same board). Returns
+    // policy_batch (B, numStones*N+1) and ownership_batch (B, 2, N, num_stones+1), both left on
+    // the model's device - callers needing CPU access (e.g. via .accessor<T,N>()) must call .cpu()
+    // themselves at their point of use.
     std::pair<torch::Tensor, torch::Tensor> evaluate_batch(
         const std::vector<BoardState*>& states,
         const AdjNorms& adj_norms);

@@ -25,16 +25,16 @@ struct MCTSNode {
     std::vector<float> total_value;  // (num_stones*N+1,)
     std::unordered_map<int, std::unique_ptr<MCTSNode>> children;
     bool is_expanded = false;
-    // True only for genuine game-over terminal states (not max_plies
-    // truncation): reward_estimate is then an exact, ground-truth value
-    // rather than a GNN estimate, and backup() lets it override averaging -
-    // see the comment on MCTS::backup().
+    // True for any game_over() state (BoardState::game_over() covers max_plies truncation too, and
+    // make_move() refuses to continue past it, so such a state's score is final rather than a
+    // heuristic snapshot): reward_estimate is then an exact, ground-truth value rather than a model
+    // estimate, and backup() lets it override averaging - see the comment on MCTS::backup().
     bool proven = false;
-    // Debug: this node's per-player reward estimate when first evaluated
-    // (terminal value via compute_player_rewards, or derived from the model's
-    // ownership output via estimate_player_rewards()), or - once proven -
-    // the exact terminal value adopted from its best proven child. nullopt
-    // until the node is evaluated as a leaf / root.
+    // This node's per-player reward estimate when first evaluated (terminal value via
+    // compute_player_rewards, or derived from the model's ownership output via
+    // estimate_player_rewards()), or - once proven - the exact terminal value adopted from its best
+    // proven child. nullopt until the node is evaluated as a leaf / root. Also what
+    // DBG_PRINT_TREE's dump reports per node (mcts.cpp).
     std::optional<std::unordered_map<int,float>> reward_estimate;
 
     MCTSNode(BoardState s, std::vector<float> p);

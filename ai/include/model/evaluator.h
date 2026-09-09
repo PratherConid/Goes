@@ -7,8 +7,10 @@
 #include <torch/torch.h>
 #include "game/board_state.h"
 
-// Type-erased neural-network evaluator used by MCTS and self-play.
-// Wraps either a MessagePassingGNN (with adj_norms captured in fn), a UNet, or a CNN.
+// Type-erased neural-network evaluator used by MCTS and self-play. Wraps any of the four
+// architectures (see make_evaluator(), any_model.h) - for a MessagePassingGNN, its adj_norms are
+// captured inside fn, so every wrapped model presents the same states-in/(policy, ownership)-out
+// interface regardless of what it needs internally.
 struct Evaluator {
     std::function<std::pair<torch::Tensor, torch::Tensor>(
         const std::vector<const BoardState*>&)> fn;

@@ -38,7 +38,7 @@ namespace fs = std::filesystem;
 // ── CLI argument parsing ──────────────────────────────────────────────────────
 
 struct Args {
-    // Path to a GameConfig JSON file (shared/types.ts's GameConfig.toJSON()
+    // Path to a GameConfig JSON file (shared/gameConfig.ts's GameConfig.toJSON()
     // wire shape - same as server.cpp's /move request `config` object).
     // Required: there's no safe universal default, since forced_pass_only
     // requires --net-arch transformer (see the assert in main()) but the
@@ -124,7 +124,7 @@ struct Args {
 static void print_usage(const char* prog) {
     std::cout << "Usage: " << prog << " [options]\n"
               << "  --game-config PATH        (required) Path to a GameConfig JSON file (same shape\n"
-              << "                            as shared/types.ts's GameConfig.toJSON(), e.g. a file\n"
+              << "                            as shared/gameConfig.ts's GameConfig.toJSON(), e.g. a file\n"
               << "                            under public/game_presets/) - forcedPassOnly requires\n"
               << "                            --net-arch transformer (see the assert in main())\n"
               << "  --gnn-hidden-dim N        GNN hidden dimension (default: 128)\n"
@@ -137,7 +137,7 @@ static void print_usage(const char* prog) {
               << "  --num-attn-layers N       Transformer cross-attention layers (default: 8)\n"
               << "  --iterations N            Training iterations (default: 200)\n"
               << "  --self-play-games N       Games to complete before each training step (default: 10)\n"
-              << "  --gamegen-batch-size N    Games generated in parallel (default: 10)\n"
+              << "  --gamegen-batch-size N    Games generated in parallel (default: 25)\n"
               << "  --num-simulations N       MCTS simulations per move (default: 200)\n"
               << "  --train-fraction F        Train on F * current buffer size randomly selected game\n"
               << "                            states per iteration, rounded up w.r.t. batch size (default: 0.1)\n"
@@ -180,7 +180,7 @@ static void print_usage(const char* prog) {
               << "  --cpu                     Force CPU even if CUDA is available\n"
               << "  --verbosity N             0=silent, 1=per-game, >=2=per-ply (default: 1)\n"
               << "  --linear-move-bound K1 K2 End games after Uniform(K1,K2)*N plies, resampled per game\n"
-              << "                            (no shared/types.ts analog - a self-play-only sampling\n"
+              << "                            (no shared/gameConfig.ts analog - a self-play-only sampling\n"
               << "                            knob for BoardState::max_plies, so it stays a CLI flag\n"
               << "                            rather than part of --game-config)\n";
 }
@@ -353,16 +353,16 @@ static std::string effective_arch(const Args& args, const std::string& board_des
 // not a real runtime type check.
 static AnyModel build_model(const BoardConfig& bc, const ModelConfig& cfg, const GameConfig& game_cfg) {
     if (cfg.model_type == "cnn")
-        return CNN(bc, static_cast<const CNNConfig&>(cfg), game_cfg.num_players, game_cfg.num_stones);
+        return CNN(bc, static_cast<const CNNConfig&>(cfg), game_cfg.num_stones);
     if (cfg.model_type == "unet")
-        return UNet(bc, static_cast<const UNetConfig&>(cfg), game_cfg.num_players, game_cfg.num_stones);
+        return UNet(bc, static_cast<const UNetConfig&>(cfg), game_cfg.num_stones);
     if (cfg.model_type == "transformer")
-        return Transformer(bc, static_cast<const TransformerConfig&>(cfg), game_cfg.num_players, game_cfg.num_stones);
+        return Transformer(bc, static_cast<const TransformerConfig&>(cfg), game_cfg.num_stones);
     // adj_norms is only needed to size the GNN's neighbor-count embedding
     // table (max_degree); compute it locally rather than threading it
     // through build_model's signature for architectures that don't use it.
     auto adj_norms = compute_adj_norms(bc, torch::kCPU);
-    return MessagePassingGNN(static_cast<const GNNConfig&>(cfg), game_cfg.num_players, game_cfg.num_stones, adj_norms);
+    return MessagePassingGNN(static_cast<const GNNConfig&>(cfg), game_cfg.num_stones, adj_norms);
 }
 
 // Returns a pointer to TransformerConfig::history_descr when cfg is a transformer config, else
@@ -497,10 +497,10 @@ static void assign_by_sequence(const std::vector<BoardState*>& states, const Mod
         for (int p = 0; p < state->num_players; p++) state->player_model_id[p] = sequence[cursor++];
 }
 
-// Prints one finished game's result line - shared by both self-play and tournament output (the
-// two previously had near-identical, separately-maintained copies of this print). `label` is the
-// full leading text before "game" (including indentation) - "  " for self-play, "  tournament "
-// for tournament games - so the caller controls both the indentation and the distinguishing prefix.
+// Prints one finished game's result line - shared by both self-play and tournament output.
+// `label` is the full leading text before "game" (including indentation) - "  " for self-play,
+// "  tournament " for tournament games - so the caller controls both the indentation and the
+// distinguishing prefix.
 // Always includes players=[...] (which model evaluated each player) - self-play games can mix
 // models across player slots just like tournament games can (see
 // assign_random_models()/refresh_player()).
@@ -844,19 +844,8 @@ static int resume(const fs::path& ckpt_dir, const ModelConfig& model_cfg, AnyMod
 
 // ── Training step ─────────────────────────────────────────────────────────────
 
-// Runs one iteration's worth of backprop against whatever is currently in
-// `buffer` (sampling train_fraction*buffer.size()/batch_size batches,
-// rounded up), and prints the same "[iter ...] loss=..." summary line the
-// live self-play loop always has. `t0` is purely for the printed elapsed
-// time - the live loop passes a start time from before self-play so
-// generation+training are reported together, while a replay-phase caller can
-// pass a start time from just before this call to report training time
-// alone; this function doesn't care which.
-//
-// Returns false (and prints "buffer too small, skipping train step" instead)
-// exactly when buffer.size() < batch_size - callers must skip
-// checkpoint-saving too in that case, matching the original inline code's
-// `continue` past the whole rest of the iteration.
+// One training step's individual loss terms, plus their sum in `total` (the one that's
+// backpropagated) - see compute_losses() below for what each term measures.
 struct Losses {
     torch::Tensor total, policy, stone, territory, point;
 };
@@ -909,6 +898,17 @@ static Losses compute_losses(const torch::Tensor& policy, const torch::Tensor& o
     return {loss, policy_loss, stone_loss, territory_loss, point_loss};
 }
 
+// Runs one iteration's worth of backprop against whatever is currently in
+// `buffer` (sampling train_fraction*buffer.size()/batch_size batches,
+// rounded up), and prints the "[iter ...] loss=..." summary line. `t0` is
+// purely for the printed elapsed time - the live loop passes a start time
+// from before self-play so generation+training are reported together, while
+// --retrain's replay phase passes one from just before this call to report
+// training time alone; this function doesn't care which.
+//
+// Returns false (and prints "buffer too small, skipping train step" instead)
+// exactly when buffer.size() < batch_size - callers must skip
+// checkpoint-saving too in that case.
 static bool run_training_iteration(
     int iter, AnyModel& model_var, torch::optim::Adam& optimizer, ReplayBuffer& buffer,
     std::mt19937& rng, const GameConfig& game_cfg, const BoardConfig& bc,
@@ -1007,7 +1007,7 @@ static void save_config_json(const fs::path& ckpt_dir, const std::string& arch,
 // iteration_from_model_path()/latest_checkpoint() read `id` back the same way regardless of which
 // case produced it.
 static void save_model_weights(const fs::path& ckpt_dir, const std::string& arch, int id,
-                                AnyModel& model, const GameConfig&, const ModelConfig&)
+                                AnyModel& model)
 {
     std::ostringstream oss;
     oss << arch << "_" << std::setfill('0') << std::setw(6) << id << ".pt";
@@ -1049,7 +1049,7 @@ int main(int argc, char* argv[]) {
     json cfg_json;
     cfg_file >> cfg_json;
     GameConfig game_cfg = parse_game_cfg(cfg_json);
-    // linear_move_bound has no shared/types.ts analog - it's a self-play-only
+    // linear_move_bound has no shared/gameConfig.ts analog - it's a self-play-only
     // sampling knob for BoardState::max_plies, so it stays a plain CLI flag
     // rather than part of --game-config.
     game_cfg.linear_move_bound = args.linear_move_bound;
@@ -1173,7 +1173,7 @@ int main(int argc, char* argv[]) {
     ModelSnapshots active_models;
     if (args.resume_tag.empty()) {
         active_models.push_back({0, clone_model(model_var, bc, *model_cfg, game_cfg, device)});
-        save_model_weights(ckpt_dir, arch, 0, active_models.back().second, game_cfg, *model_cfg);
+        save_model_weights(ckpt_dir, arch, 0, active_models.back().second);
     } else {
         active_models.push_back({start_iter - 1, clone_model(model_var, bc, *model_cfg, game_cfg, device)});
     }
@@ -1264,7 +1264,7 @@ int main(int argc, char* argv[]) {
             if (!hit_iteration_cap && did_train) {
                 // No tournament concept here (this phase never runs self-play/MCTS) - model_var
                 // itself is the only thing to save, tagged by its own current iteration.
-                save_model_weights(ckpt_dir, arch, iter - 1, model_var, game_cfg, *model_cfg);
+                save_model_weights(ckpt_dir, arch, iter - 1, model_var);
                 save_trajectories(ckpt_dir, arch, iter - 1, span_games);
             }
 
@@ -1275,9 +1275,8 @@ int main(int argc, char* argv[]) {
     int ply_iter = 0;
     for (; iter < args.iterations; iter++) {
         auto t0 = std::chrono::high_resolution_clock::now();
-        // No top-of-iteration eval-mode toggle needed here (unlike the old single-model_var
-        // design) - every active_models/challengers entry is already in eval mode from the moment
-        // it's stored, via clone_model()'s own convention.
+        // No top-of-iteration eval-mode toggle needed: every active_models/challengers entry is
+        // already in eval mode from the moment it's stored, via clone_model()'s own convention.
 
         // ── Self-play ────────────────────────────────────────────────────────
         if (args.verbosity >= 1)
@@ -1357,12 +1356,12 @@ int main(int argc, char* argv[]) {
             // skips this branch, no extra check needed. Tournaments never fire here either -
             // challengers stays empty, so the existing not-enough-challengers skip already handles it.
             active_models = {{iter, std::move(snapshot)}};
-            save_model_weights(ckpt_dir, arch, iter, active_models.back().second, game_cfg, *model_cfg);
+            save_model_weights(ckpt_dir, arch, iter, active_models.back().second);
             for (auto& state : pool) refresh_player(state, active_models, rng);
             evaluators = build_evaluators(active_models, adj_norms);
         } else if ((int)active_models.size() < args.num_selfplay_models) {
             active_models.push_back({iter, std::move(snapshot)});
-            save_model_weights(ckpt_dir, arch, iter, active_models.back().second, game_cfg, *model_cfg);
+            save_model_weights(ckpt_dir, arch, iter, active_models.back().second);
             evaluators = build_evaluators(active_models, adj_norms);
         } else {
             challengers.push_back(iter, std::move(snapshot));
@@ -1513,7 +1512,7 @@ int main(int argc, char* argv[]) {
                 for (int id : real_winner_ids) {
                     auto pit = std::find_if(participants.begin(), participants.end(),
                                              [&](auto& e) { return e.first == id; });
-                    if (is_new(id)) save_model_weights(ckpt_dir, arch, id, pit->second, game_cfg, *model_cfg);
+                    if (is_new(id)) save_model_weights(ckpt_dir, arch, id, pit->second);
                     new_active.push_back(*pit);
                 }
 
@@ -1540,7 +1539,7 @@ int main(int argc, char* argv[]) {
                     if (args.verbosity >= 1)
                         std::cout << "[iter " << std::setw(4) << iter << "] undefeated-threshold: retiring model "
                                   << new_active[retire_idx].first << ", promoting model " << runner_up_id << std::endl;
-                    save_model_weights(ckpt_dir, arch, runner_up_id, runner_up_it->second, game_cfg, *model_cfg);
+                    save_model_weights(ckpt_dir, arch, runner_up_id, runner_up_it->second);
                     undefeated.push_back(std::move(new_active[retire_idx]));
                     new_active[retire_idx] = *runner_up_it;
                     consecutive_all_prevails = 0;

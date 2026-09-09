@@ -37,8 +37,8 @@ struct ChannelLayerNormImpl : torch::nn::Module {
 };
 TORCH_MODULE(ChannelLayerNorm);
 
-UNetImpl::UNetImpl(const BoardConfig& bc, const UNetConfig& cfg, int num_players, int num_stones)
-    : cfg_(cfg), num_players_(num_players), num_stones_(num_stones)
+UNetImpl::UNetImpl(const BoardConfig& bc, const UNetConfig& cfg, int num_stones)
+    : cfg_(cfg), num_stones_(num_stones)
 {
     // A real (always-active) check, not assert() - assert compiles out under NDEBUG (this project's
     // Release builds), which would otherwise let a non-2D-embedded board (e.g. regpoly/dodeca/icosa
@@ -144,7 +144,7 @@ UNetImpl::UNetImpl(const BoardConfig& bc, const UNetConfig& cfg, int num_players
             enc_channels_[k], enc_channels_[k], k == 0 ? 3 : 1, level_size_[k]));
     }
 
-    // Value heads: same full-resolution decoder output as the policy head
+    // Ownership heads: same full-resolution decoder output as the policy head
     // (see forward()), gathered per-node.
     stone_head = register_module("stone_head", torch::nn::Sequential(
         torch::nn::Linear(enc_channels_[0], enc_channels_[0]),
@@ -246,10 +246,9 @@ std::pair<torch::Tensor, torch::Tensor> UNetImpl::forward(
     }
     // h: (B, C_0, H, W) - same full-resolution decoder output the policy head reads
 
-    // Gather the decoder's full-resolution output at each node's grid
-    // position - feeds both the value heads (stone/territory estimate) and
-    // the policy head, all of which now operate purely on this per-node
-    // (B,N,C_0) tensor rather than the raw grid.
+    // Gather the decoder's full-resolution output at each node's grid position - feeds both the
+    // ownership heads (stone/territory estimate) and the policy head, all of which operate purely
+    // on this per-node (B,N,C_0) tensor rather than the raw grid.
     auto h_nodes = h.reshape({B, enc_channels_[0], -1})
                     .index_select(2, lin_idx_)
                     .permute({0, 2, 1});                                  // (B, N, C_0)
@@ -268,14 +267,6 @@ std::pair<torch::Tensor, torch::Tensor> UNetImpl::forward(
     return {policy, ownership};
 }
 
-std::pair<torch::Tensor, torch::Tensor> UNetImpl::evaluate(const BoardState& state) {
-    torch::NoGradGuard ng;
-    auto dev = lin_idx_.device();
-    auto [ft, mask] = board_to_features(state, dev, cfg_.input_descr);
-    auto [policy, ownership] = forward(ft, mask);
-    return {policy, ownership};
-}
-
 static std::pair<torch::Tensor, torch::Tensor> run_batch(
     UNetImpl* self,
     const std::vector<const BoardState*>& states)
@@ -291,7 +282,7 @@ static std::pair<torch::Tensor, torch::Tensor> run_batch(
         masks[i] = mask;
     }
     auto x    = torch::stack(feats, 0); // (B, N, F)
-    auto mask = torch::stack(masks, 0); // (B, N+1)
+    auto mask = torch::stack(masks, 0); // (B, ns*N+1)
     auto [policy, ownership] = self->forward(x, mask);
     return {policy, ownership};
 }

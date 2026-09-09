@@ -75,7 +75,6 @@ struct UNetImpl : torch::nn::Module {
     UNetPolicyHead policy_head{nullptr};
 
     UNetConfig cfg_;
-    int num_players_;
     int num_stones_;
     int num_levels_;                            // L+1 (total encoder blocks)
     int side_;                                  // padded power-of-two square side
@@ -88,7 +87,7 @@ struct UNetImpl : torch::nn::Module {
     // cfg.feature_dim: per-node feature dimension F (as produced by board_to_features), NOT
     // the number of input channels to input_proj. features_to_grid appends
     // a validity channel, so input_proj actually receives feature_dim + 1 channels.
-    UNetImpl(const BoardConfig& bc, const UNetConfig& cfg, int num_players, int num_stones);
+    UNetImpl(const BoardConfig& bc, const UNetConfig& cfg, int num_stones);
 
     // x: (N,F) or (B,N,F) → (1,F+1,H,W) or (B,F+1,H,W)
     torch::Tensor features_to_grid(const torch::Tensor& x) const;
@@ -100,13 +99,10 @@ struct UNetImpl : torch::nn::Module {
         torch::Tensor x,
         torch::Tensor legal_mask);
 
-    // Evaluate a single BoardState. Returns (policy (numStones*N+1,), ownership (2,N,num_stones+1)),
-    // both left on the model's device - callers needing CPU access (e.g. via
-    // .accessor<T,N>()) must call .cpu() themselves at their point of use.
-    std::pair<torch::Tensor, torch::Tensor> evaluate(const BoardState& state);
-
-    // Evaluate a batch of states in one forward pass (all must share the same board).
-    // Returns tensors on the model's device (see evaluate()'s comment).
+    // Evaluate a batch of states in one forward pass (all must share the same board). Returns
+    // policy (B, numStones*N+1) and ownership (B, 2, N, num_stones+1), both left on the model's
+    // device - callers needing CPU access (e.g. via .accessor<T,N>()) must call .cpu() themselves
+    // at their point of use.
     std::pair<torch::Tensor, torch::Tensor> evaluate_batch(
         const std::vector<BoardState*>& states);
     std::pair<torch::Tensor, torch::Tensor> evaluate_batch(

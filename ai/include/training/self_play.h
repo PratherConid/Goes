@@ -15,7 +15,8 @@
 
 struct GameConfig {
     // Mirrors shared/gameConfig.ts's GameConfig.boardDescr - cleg source text (see
-    // game/cleg.h's parse_cleg/build_board_from_cleg), not a parsed program: unlike the TS side
+    // game/cleg_parser.h's parse_cleg and game/cleg_eval.h's build_board_from_cleg), not a parsed
+    // program: unlike the TS side
     // (which keeps the parsed ClegProgram in memory for its UI to show back via unparseCleg), a
     // GameConfig here is built once per training run/request and only ever needs a board built from
     // it once, so there's no benefit to persisting the AST - re-parsing this string is cheap enough
@@ -32,7 +33,8 @@ struct GameConfig {
     std::vector<std::optional<int>> global_stone_place_limit;
     std::unordered_map<int, std::vector<int>> stone_to_player_map;
     bool forced_pass_only = true;
-    // Scoring rule ("stone" | "territoryonly" | "area") - see BoardState::compute_points().
+    // Scoring rule ("stone" | "territoryonly" | "area" | "territory") - see
+    // BoardState::compute_points().
     std::string score_rule = "area";
     // Per-player scoring handicap (see BoardState::komi). If left empty,
     // new_state() defaults to all-zero, sized to num_players.
@@ -55,7 +57,7 @@ struct GameConfig {
     // BoardState::max_plies (see max_plies, above, for how the two combine).
     std::optional<std::pair<float,float>> linear_move_bound;
 
-    // Serialises to the same wire shape as shared/types.ts's GameConfig.toJSON()
+    // Serialises to the same wire shape as shared/gameConfig.ts's GameConfig.toJSON()
     // (the mirror of parse_game_cfg, below) - used by train.cpp's checkpoint
     // config.json. GameConfig has no `players` field (the engine doesn't track
     // PlayerInfo), so that TS-side key is omitted; every other key matches by name.
@@ -84,11 +86,11 @@ bool weak_equal(const GameConfig& a, const GameConfig& b);
 bool strong_equal(const GameConfig& a, const GameConfig& b);
 
 // Parses a GameConfig-shaped JSON object into a GameConfig, matching
-// shared/types.ts's GameConfig.toJSON() wire shape - the same parser used by
+// shared/gameConfig.ts's GameConfig.toJSON() wire shape - the same parser used by
 // server.cpp's /move handler (its request `config` object) and train.cpp's
 // --game-config file, so there's one JSON->GameConfig implementation instead
 // of two independently-maintained copies. linear_move_bound has no
-// shared/types.ts analog (a self-play-only max_plies sampling knob), so it's
+// shared/gameConfig.ts analog (a self-play-only max_plies sampling knob), so it's
 // never set here - callers that want it set it explicitly afterward.
 GameConfig parse_game_cfg(const nlohmann::json& cfg);
 
@@ -227,8 +229,7 @@ GameRecord trajectory_to_record(
 //
 // evaluators: model id -> Evaluator, keyed to match BoardState::player_model_id (each state in
 // `states` is routed to the model its own next_turn.player is assigned to - see
-// MCTS::evaluate_batch()). Copied into the MCTS instance constructed internally, same as passing a
-// single Evaluator used to be.
+// MCTS::evaluate_batch()). Copied into the MCTS instance constructed internally.
 //
 // history_descr, when non-null, additionally captures each ply's minimal history features
 // (PlyResult::history_features) via a second board_to_features() call under that descriptor -

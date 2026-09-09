@@ -3,16 +3,16 @@
 Self-play training pipeline for Goes using Monte Carlo Tree Search (MCTS), in the style of AlphaZero.
 
 Four model architectures are available:
-- **CNN**: a plain residual conv stack (no pooling) for boards with a 2D integer embedding — `rect`, `rectd`, `tri`, `twsq`, `gtsq`. The default for these boards.
+- **CNN**: a plain residual conv stack (no pooling) for boards with a 2D integer embedding — `rect`, `rectd`, `tri`, `trihex`, `hex`, `hexdel`, `snubsq`, `twsq`, `gtsq`. The default for these boards.
 - **UNet**: an alternative for the same board types (U-Net encoder/decoder with pooling), selectable via `--net-arch unet`.
-- **MessagePassingGNN**: for higher-dimensional boards whose nodes cannot be laid out on a 2D grid — `cub`, `hcub` — and for any `boardDescr` program whose resulting board doesn't have `emb_dim == 2` (e.g. one using `rectify`/`triangleForm`/`quadForm`/`globalCentralize`/`quadOctarize`, which always force `emb_dim = 0` - see **Server API**, below). CNN/UNet's featurizer actually derives its grid shape dynamically from the board's own embedding, not from `boardDescr` itself, so a modified 2D board that happens to keep `emb_dim == 2` (e.g. via `edgeSplit`/`mergeClose`/`scale`) wouldn't crash it either way - `effective_arch()` checks `bc.emb_dim` directly, with no separate allowlist of board kinds.
+- **MessagePassingGNN**: for higher-dimensional boards whose nodes cannot be laid out on a 2D grid — `cublat`, `hcub` — and for any `boardDescr` program whose resulting board doesn't have `emb_dim == 2` (e.g. one using `triangleForm`/`quadForm`/`globalCentralize`/`quadOctarize`, which always force `emb_dim = 0` - see **Inference Server**, below). CNN/UNet's featurizer actually derives its grid shape dynamically from the board's own embedding, not from `boardDescr` itself, so a modified 2D board that happens to keep `emb_dim == 2` (e.g. via `rectify`/`truncate`/`edgeSplit`/`mergeClose`/`scale`) wouldn't crash it either way - `effective_arch()` checks `bc.emb_dim` directly, with no separate allowlist of board kinds.
 - **Transformer**: history-aware (attends over every previously reached board state, not just the current one), topology-agnostic, selectable via `--net-arch transformer` on any board type. This is the **only** architecture that supports `forcedPassOnly: true` — see **Transformer Architecture**, below.
 
 ## Differences from the TypeScript engine
 
-`shared/boardConfig.ts` stores node positions (`pos`) and a bounding box (`boardDimension`) for the canvas renderer. The C++ `BoardConfig` now includes `pos` (ported from the TypeScript factory functions) but omits `boardDimension`, which is only needed by the renderer.
+`shared/boardConfig.ts` stores real-valued node positions (`pos`) and a bounding box (`boardDimension`) for the canvas renderer. The C++ `BoardConfig` carries the same positions as `embed` (ported from the TypeScript factory functions) but as **exact unsigned integers only**, and omits `boardDimension`, which is only needed by the renderer. Boards and modifiers whose TypeScript positions are irrational (or need real-number averaging) therefore drop to `emb_dim = 0` with an empty `embed[]` per node — adjacency stays exact either way; see **Inference Server**, below, for the full list.
 
-`BoardState` otherwise has full feature parity with `shared/boardState.ts`: multi-stone-per-turn offering (`TurnInfo.stones`), protected/friendly stones, per-player and global stone placement limits, `maxPlies`, resignation (including `withdraw_move()` re-stamping a resignation-caused game-over onto the new last move), `komi` (per-player scoring handicap, applied in `compute_winners()` and folded into both MCTS reward formulas — see **Reward**, below), and `koRule` (both `positional` and `situational` superko are implemented — `HistoryManager`'s `(ply_mod, board)` key collapses `ply_mod` to a constant under `positional`, since two boards are then "the same" purely by content, mirroring `compareState()` skipping the ply-mod comparison in `shared/boardState.ts`). `stoneToPlayerMap` is stone → *set* of players (each mapped player gets a stone's full point value, not split), matching the TypeScript side.
+`BoardState` otherwise has full feature parity with `shared/boardState.ts`: multi-stone-per-turn offering (`TurnInfo.stones`), protected/friendly stones, per-player and global stone placement limits, `maxPlies`, resignation (permanent — never undone by `withdraw_move()`, and `game_over()` re-checks the resigned set live rather than stamping it onto a move), `komi` (per-player scoring handicap, applied in `compute_winners()` and folded into both MCTS reward formulas — see **Reward**, below), and `koRule` (both `positional` and `situational` superko are implemented — `HistoryManager`'s `(ply_mod, board)` key collapses `ply_mod` to a constant under `positional`, since two boards are then "the same" purely by content, mirroring `compareState()` skipping the ply-mod comparison in `shared/boardState.ts`). `stoneToPlayerMap` is stone → *set* of players (each mapped player gets a stone's full point value, not split), matching the TypeScript side.
 
 Not ported (no C++ consumer needs them): `GameConfig.players`/`FinishedGame`-style replay reconstruction — self-play never replays a finished game, and the inference server replays a live move list instead.
 
@@ -26,11 +26,19 @@ ai/
 │   └── nlohmann/json.hpp               single-header JSON library
 ├── include/ and src/                   (headers in include/, implementations in src/)
 │   ├── game/
-│   │   ├── board_config.{h,cpp}        Adjacency-only port of shared/boardConfig.ts
-│   │   └── board_state.{h,cpp}         Port of shared/boardState.ts
+│   │   ├── board_config.{h,cpp}        Port of shared/boardConfig.ts (adjacency + integer embedding)
+│   │   ├── board_state.{h,cpp}         Port of shared/boardState.ts
+│   │   ├── cleg_base.{h,cpp}           Port of shared/clegBase.ts (cleg AST/type/value declarations)
+│   │   ├── cleg_parser.{h,cpp}         Port of shared/clegParser.ts (source text → AST)
+│   │   ├── cleg_check.{h,cpp}          Port of shared/clegCheck.ts (static type checker)
+│   │   ├── cleg_eval.{h,cpp}           Port of shared/clegEval.ts (builtins + evaluator → BoardConfig)
+│   │   ├── selector.{h,cpp}            Port of shared/selector.ts (node/edge/simplex/quad selectors)
+│   │   ├── fractal.{h,cpp}             Port of shared/fractal.ts (flake/Menger glue tables)
+│   │   ├── geometry.{h,cpp}            Port of shared/geometry.ts (LP-based convex hull, for rectify)
+│   │   └── topology.{h,cpp}            Port of shared/topology.ts (merge_boards, find_simplices/quads)
 │   ├── model/
 │   │   ├── features.{h,cpp}            BoardState → per-node feature tensor
-│   │   ├── gnn.{h,cpp}                 MessagePassingGNN (policy + ownership heads, for cub/hcub)
+│   │   ├── gnn.{h,cpp}                 MessagePassingGNN (policy + ownership heads, for cublat/hcub)
 │   │   ├── unet.{h,cpp}                U-Net (policy + ownership heads, for 2D boards)
 │   │   ├── cnn.{h,cpp}                 Plain residual CNN (policy + ownership heads, for 2D boards)
 │   │   ├── transformer.{h,cpp}         History-aware Transformer (policy + ownership heads, any board; only arch supporting forcedPassOnly)
@@ -46,6 +54,7 @@ ai/
 ├── src/
 │   ├── train.cpp                       Main training entry point → binary: goes_train
 │   └── server.cpp                      HTTP inference server: POST /move → binary: goes_server
+├── analysis.py                         Offline reader for dumped _traj.json trajectories / training logs
 └── checkpoints/                        Saved model weights (created at runtime)
 ```
 
@@ -202,9 +211,9 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
 - `POST /move` — runs MCTS from the given position and returns the chosen move.
   - **Request fields:**
     - `config`: object with the game configuration (matches `shared/gameConfig.ts`'s `GameConfig.toJSON()` wire shape):
-      - `boardDescr`: a cleg program, as source text (see `shared/clegBase.ts`'s own top comment for the full language; `game/cleg.h`/`game/cleg.cpp` is its C++ port) - e.g. `"rectB(9, 9);"` for a 9×9 rect board, or `"modify([rectify()], rectB(3, 3));"` for a rectified 3×3 board. `parse_cleg`/`build_board_from_cleg` (`game/cleg.h`) are the one entry point that turns this into a real `BoardConfig` - the old three-field `boardType`/`boardArgs`/`boardModifiers` wire shape no longer exists.
-        - Boards whose prescribed-board cleg name ends in the inherently-irrational-coordinate kinds (`regpolyB`/`regularPolygonBoard`, `tetraB`, `octaB`, `dodecaB`, `icosaB`, `starB`) use `emb_dim = 0` with an empty `embed[]` per node instead of an approximate embedding - `BoardConfig::embed` (`unsigned` integers only) can't represent their unit-edge-length coordinates exactly like every other board type here can, but adjacency alone is exact and complete for gameplay, and no featurizer needs real coordinates for them (CNN/UNet require `emb_dim == 2` and throw otherwise - see `cnn.cpp`/`unet.cpp` - and none is grid-shaped anyway, so nothing is lost by omitting positions). A side-length-w subdivision of a tetrahedron's 4 triangular faces (or an octahedron's 8) is available via `modify([triangleForm(w)], ...)` instead of being built into either directly. `modify([globalCentralize()], ...)` adds a hub node connected to every existing node, at the board's barycenter - it likewise always forces `emb_dim = 0` (a global hub isn't grid-shaped either), regardless of the board it's applied to. `modify([quadOctarize()], ...)` replaces every quad (4-cycle with no diagonal edges) with an octahedron - two new apex nodes per quad, each connected to that quad's 4 corners - and also always forces `emb_dim = 0`, since the TS side's apex positions are offset along a genuinely new dimension by an inherently irrational (Euclidean) distance. `modify([scale(factor)], ...)` multiplies every node's position by `factor` on the TS side; here it's a no-op (returns the board unchanged) - `embed` coordinates must stay exact integers and C++ never renders them anyway, so scaling would only lose precision for no benefit.
-        - `effective_arch()`/`compute_input_descr()` gate `cnn`/`unet` purely on the resulting `bc.emb_dim == 2` (see **AI Training Pipeline**, above) - not on whether `boardDescr` happens to call `modify(...)` at all. Some modifiers (`rectify`, `triangleForm`/`quadForm`/`form`, `globalCentralize`, `quadOctarize`) always force `emb_dim = 0`, as noted above; others (`edgeSplit`, `mergeClose`, `scale`, `nis`/`eis`) leave the board's own `emb_dim` untouched, so a 2D board can stay CNN/UNet-eligible after one of those.
+      - `boardDescr`: a cleg program, as source text (see `shared/clegBase.ts`'s own top comment for the full language; `game/cleg_base.*`, `game/cleg_parser.*`, `game/cleg_check.*` and `game/cleg_eval.*` are its C++ port) - e.g. `"rectB(9, 9);"` for a 9×9 rect board, or `"modify([rectify()], rectB(3, 3));"` for a rectified 3×3 board. `parse_cleg` (`game/cleg_parser.h`) followed by `build_board_from_cleg` (`game/cleg_eval.h`) is the one entry point that turns this into a real `BoardConfig` - the old three-field `boardType`/`boardArgs`/`boardModifiers` wire shape no longer exists.
+        - Boards whose coordinates are inherently irrational (`regpolyB`, `starB`, `apB`, `dodecaB`, `icosaB`, `reg120CellB`, `reg600CellB`, the flake/`mengerB` fractals, `diamondCubicB`) use `emb_dim = 0` with an empty `embed[]` per node instead of an approximate embedding - `BoardConfig::embed` (`unsigned` integers only) can't represent their unit-edge-length coordinates exactly like every other board type here can, but adjacency alone is exact and complete for gameplay, and no featurizer needs real coordinates for them (CNN/UNet require `emb_dim == 2` and throw otherwise - see `cnn.cpp`/`unet.cpp` - and none is grid-shaped anyway, so nothing is lost by omitting positions). `tetraB`/`octaB` are *not* in that group here: they delegate to `simplex_board`/`orthoplex_board`, whose exact-integer embeddings the C++ side substitutes for the TS side's real-valued coordinates. A side-length-w subdivision of a tetrahedron's 4 triangular faces (or an octahedron's 8) is available via `modify([triangleForm(w)], ...)` instead of being built into either directly. `modify([globalCentralize()], ...)` adds a hub node connected to every existing node, at the board's barycenter - it always forces `emb_dim = 0` (a global hub isn't grid-shaped either), regardless of the board it's applied to. `modify([quadOctarize()], ...)` replaces every quad (4-cycle with no diagonal edges) with an octahedron - two new apex nodes per quad, each connected to that quad's 4 corners - and also always forces `emb_dim = 0`, since the TS side's apex positions are offset along a genuinely new dimension by an inherently irrational (Euclidean) distance. `modify([scale(factor)], ...)` multiplies every node's position by `factor` on the TS side; here it's a no-op (returns the board unchanged) - `embed` coordinates must stay exact integers and C++ never renders them anyway, so scaling would only lose precision for no benefit.
+        - `effective_arch()`/`compute_input_descr()` gate `cnn`/`unet` purely on the resulting `bc.emb_dim == 2` (see **AI Training Pipeline**, above) - not on whether `boardDescr` happens to call `modify(...)` at all. The modifiers that always force `emb_dim = 0` are the lattice-substituting `form` family (`triangleForm`/`quadForm`/`quadDiagForm`/`quadKnightForm`/`quadBishopForm`/`form`), the `localReplace` family (`simpCentralize`/`triCentralize`/`quadCentralize`, their `*Centering` variants, and `quadOctarize`), and `globalCentralize` - each adds nodes whose true position needs real-number averaging. The rest (`rectify`, `truncate`, `edgeSplit`, `mergeClose`, `scale`, `nis`/`eis`) leave the board's own `emb_dim` untouched, so a 2D board can stay CNN/UNet-eligible after one of those. (`rectify`/`truncate`/`mergeClose` do *require* a non-zero `emb_dim` and throw on an `emb_dim = 0` board, since they need real edge directions/distances.)
       - `numStones`, `numPlayers`, `forcedPassOnly`
       - `turnList`: array of `{player, stones, protected, friendly}` (see `shared/types.ts`'s `TurnInfo`) — `stones`/`protected`/`friendly` are `numStones`-length 0/1 arrays
       - `stoneToPlayerMap`: `{stone: player[]}` — stone color → the set of players it scores for (a stone mapped to several players credits each one its full point value, not split)
@@ -213,7 +222,10 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
       - `maxPlies` _(optional, default `null`)_: `int|null`
       - `allowSuicide` _(optional, default `false`)_: whether a move leaving the mover's own group with zero liberties is legal (self-captures that group immediately); part of `weak_equal()`'s checkpoint-matching fields like the other config fields
       - `scoreRule` _(optional, default `"area"`)_: `"stone"` | `"territoryonly"` | `"area"` | `"territory"` — see `BoardState::compute_points()`; part of `weak_equal()`'s checkpoint-matching fields like the other config fields. `"territory"` (real-world Japanese-style scoring) scores territory only in `compute_points()` (same as `"territoryonly"`) plus each player's `captureCount` (stones captured so far), the latter folded in separately at the player-aggregation layer (`compute_winners()`, and both reward formulas below) the same way `komi` is - see **Reward**, below
+      - `komi` _(optional, default all-zero)_: `float[]`, per-player (`komi[player-1]`, required non-negative) scoring handicap; part of `weak_equal()`'s checkpoint-matching fields — see **Reward**, below
+      - `koRule` _(optional, default `"situational"`)_: `"positional"` | `"situational"` superko variant; part of `weak_equal()`'s checkpoint-matching fields
     - `moves`: full move history as an array. Each entry is either a legacy `int|null` (board index, or `null` for pass — the stone is auto-picked if the turn offers exactly one) or an object `{"pos": int|null, "stone": int|null}` (required once a turn offers more than one stone) — see `shared/types.ts`'s `ReplayMove`.
+    - `resigns` _(optional, default none)_: `[[ply, [player, ...]], ...]` — who resigned at each ply, the same shape as `shared/types.ts`'s `FinishedGame.toJSON()`'s `resigns` field. Replayed interleaved with `moves` (see `replay_tail()`, `server.cpp`), since a resigned player may always pass even under `forcedPassOnly`, but the resignation must be applied at the ply it actually happened.
     - `board`: current stone array (length N) — used to verify the replayed state matches the client
     - `session_id`: opaque string returned by a previous response; omit, `""`, or `null` for a new session
     - `num_simulations` _(optional)_: overrides the server default
@@ -228,7 +240,7 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
   - Checkpoint directories are opaque hash names, not derivable from `config` - the server scans `ai/checkpoints`'s subdirectories once (first request only; later-created directories need a server restart to be picked up) and matches `config` against each directory's saved config via `weak_equal()` (see **Checkpoint Directories and Matching**, below). The matched directory's model is then loaded lazily on first use and cached.
 - `GET /health` — returns `{status, loaded_tags, device}`.
 
-The `GOES_CHECKPOINT_DIR` environment variable overrides the checkpoint directory, and `GOES_NUM_SIMS` overrides the default number of MCTS simulations.
+`goes_server` accepts `--checkpoint-dir PATH` (default `ai/checkpoints`), `--port N` (default `8765`), `--sims N` (default number of MCTS simulations, default `200`), `--temperature F` (default `0.0` = argmax visit count) and `--cpu` (force CPU even if CUDA is available). The `GOES_CHECKPOINT_DIR`, `GOES_NUM_SIMS` and `GOES_TEMPERATURE` environment variables override the checkpoint directory, default simulation count and default temperature respectively (they are applied after the flags, so they win).
 
 ## Key Flags
 
@@ -242,6 +254,12 @@ The `GOES_CHECKPOINT_DIR` environment variable overrides the checkpoint director
 | `--linear-move-bound K1 K2` | _(none)_ | End games after Uniform(K1,K2)×N plies, resampled each time a game spawns |
 | `--train-fraction F` | `0.1` | Train on `F × current buffer size` randomly selected game states per iteration, rounded up w.r.t. batch size |
 | `--batch-size N` | `128` | Training batch size |
+| `--buffer-size N` | `2048` | Replay buffer capacity, in games (not plies) |
+| `--lr F` | `0.001` | Adam learning rate |
+| `--l2 F` | `0.0001` | Adam weight decay |
+| `--c-puct F` | `1.0` | MCTS exploration constant |
+| `--net-arch NAME` | `auto` | `auto`\|`cnn`\|`unet`\|`gnn`\|`transformer` - `auto` picks `cnn` for a board with `emb_dim == 2`, else `gnn` (see `effective_arch()`) |
+| `--cpu` | _(off)_ | Force CPU even if CUDA is available |
 | `--gnn-hidden-dim N` | `128` | GNN hidden dimension (cub/hcub boards) |
 | `--unet-hidden-dim N` | `16` | UNet hidden dimension (2D boards) |
 | `--cnn-hidden-dim N` | `64` | CNN hidden dimension (2D boards) |
@@ -293,7 +311,7 @@ Stones a turn doesn't offer are simply illegal everywhere that ply (masked out v
 
 ## Transformer Architecture
 
-Unlike CNN/UNet/GNN, which evaluate only the current `BoardState`, the transformer attends over every board state reached so far in the game - this is what lets it support `forcedPassOnly: true`, where legality (superko in particular) depends on the *set* of previously-reached states, not just the current one. `BoardState` already content-interns its full history via `HistoryManager` (`board_at(ply)`, `consecutive_passes_at(ply)`), so `Evaluator`/MCTS need no interface changes at all - the transformer's own `evaluate()`/`evaluate_batch()` (`ai/src/model/transformer.cpp`) reconstruct the history internally from a single `const BoardState&`.
+Unlike CNN/UNet/GNN, which evaluate only the current `BoardState`, the transformer attends over every board state reached so far in the game - this is what lets it support `forcedPassOnly: true`, where legality (superko in particular) depends on the *set* of previously-reached states, not just the current one. `BoardState` already content-interns its full history via `HistoryManager` (`board_at(ply)`, `consecutive_passes_at(ply)`), so `Evaluator`/MCTS need no interface changes at all - the transformer's own `evaluate_batch()` (`ai/src/model/transformer.cpp`) reconstructs each state's history internally from a single `const BoardState&`.
 
 Pipeline, applied per sampled ply during training (and per MCTS leaf during self-play):
 
@@ -341,7 +359,7 @@ matched checkpoint, same as before this scheme existed.
 
 1. **Self-play**: the current model plays games against itself. Each move is chosen by running MCTS simulations guided by the model's policy and ownership estimates.
 2. **Record collection**: each ply stores `(features, MCTS visit distribution)`; once a game ends, its final board's stone/territory ownership is recorded once, stone-type indexed with no player mapping (see Ownership Heads, below), and shared across every ply of that game as the ownership heads' training target.
-3. **Training**: mini-batches are sampled from a replay buffer. The model is trained to predict the MCTS visit distribution (policy head, cross-entropy scaled by `1/log(numStones*N)` so the loss magnitude stays comparable across both board sizes and stone counts) and the final per-location stone/territory ownership (see Ownership Heads, below).
+3. **Training**: mini-batches are sampled from a replay buffer. The model is trained to predict the MCTS visit distribution (policy head, cross-entropy scaled by `1/log(numStones*N+1)` so the loss magnitude stays comparable across both board sizes and stone counts) and the final per-location stone/territory ownership (see Ownership Heads, below).
 4. **Iteration**: the updated model is used for the next round of self-play.
 
 ## Tournament-Based Model Selection
@@ -482,7 +500,7 @@ Both come out of the same per-node features the policy head reads, via two indep
 
 ## MCTS Backup: Hybrid Averaging + Proven Values
 
-`MCTS::backup()` uses the standard AlphaZero running average (`total_value/visit_count`) for every edge, with one override: if a child is `proven` — its `reward_estimate` came from an actual game-over state via `compute_player_rewards()`, not a GNN guess — and its value is currently the best available at that node, the node adopts that child's exact reward vector as its own instead of averaging it in, and is itself marked `proven`. This only ever propagates *exact* terminal outcomes upward; an unproven, few-visit GNN estimate never overrides anything, so ordinary positions still rely purely on averaging (the statistical robustness that makes MCTS work well for large-branching-factor games like this one — a pure minimax backup applied everywhere was considered and rejected for that reason, since it would let a single noisy, barely-sampled estimate dictate a node's value among dozens of siblings).
+`MCTS::backup()` uses the standard AlphaZero running average (`total_value/visit_count`) for every edge, with one override: if a child is `proven` — its `reward_estimate` came from an actual game-over state via `compute_player_rewards()`, not a model estimate — and its value is currently the best available at that node, the node adopts that child's exact reward vector as its own instead of averaging it in, and is itself marked `proven`. This only ever propagates *exact* terminal outcomes upward; an unproven, few-visit model estimate never overrides anything, so ordinary positions still rely purely on averaging (the statistical robustness that makes MCTS work well for large-branching-factor games like this one — a pure minimax backup applied everywhere was considered and rejected for that reason, since it would let a single noisy, barely-sampled estimate dictate a node's value among dozens of siblings).
 
 ## Notes
 

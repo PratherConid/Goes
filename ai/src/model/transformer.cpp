@@ -39,7 +39,7 @@ TransformerBlockImpl::TransformerBlockImpl(int hidden_dim, int num_heads) {
 torch::Tensor TransformerBlockImpl::forward(const torch::Tensor& q, const torch::Tensor& kv,
                                              const torch::Tensor& key_padding_mask) {
     auto qn = ln1->forward(q);
-    auto kvn = ln1->forward(kv);  // same LN weights applied independently - identical to qn when kv is q (self-attention)
+    auto kvn = ln1->forward(kv);  // same LN weights as qn, applied independently to the key/value sequence
     auto attn_out = std::get<0>(mha->forward(qn, kvn, kvn, key_padding_mask));
     auto x = q + attn_out;
     x = x + ffn->forward(ln2->forward(x));
@@ -47,8 +47,8 @@ torch::Tensor TransformerBlockImpl::forward(const torch::Tensor& q, const torch:
 }
 
 TransformerImpl::TransformerImpl(const BoardConfig& bc, const TransformerConfig& cfg,
-                                  int num_players, int num_stones)
-    : cfg_(cfg), num_players_(num_players), num_stones_(num_stones), N_(bc.N),
+                                  int num_stones)
+    : cfg_(cfg), num_stones_(num_stones), N_(bc.N),
       history_feature_dim_(cfg_.history_descr.at("totalDims").get<int>())
 {
     assert(cfg_.hidden_dim % kNumHeads == 0 && "TransformerImpl: hidden_dim must be divisible by kNumHeads");
@@ -147,21 +147,6 @@ std::pair<torch::Tensor, torch::Tensor> TransformerImpl::forward(
 
     if (!batched)
         return {policy.squeeze(0), ownership.squeeze(0)};
-    return {policy, ownership};
-}
-
-std::pair<torch::Tensor, torch::Tensor> TransformerImpl::evaluate(const BoardState& state) {
-    torch::NoGradGuard ng;
-    auto dev = encoder_in->weight.device();
-
-    int T = state.ply_count();  // number of PAST plies (0..T-1); T itself is the current ply
-    std::vector<torch::Tensor> hist_rows(T);
-    for (int k = 0; k < T; k++) hist_rows[k] = history_features_at_ply(state, k, cfg_.history_descr);
-    auto hist_x = (T > 0) ? torch::stack(hist_rows, 0) : torch::zeros({0, N_, history_feature_dim_}, torch::kFloat32);
-    auto hist_mask = torch::zeros({T}, torch::kBool);  // no padding for a single, non-batched state
-
-    auto [cur_x, legal_mask] = board_to_features(state, dev, cfg_.input_descr);
-    auto [policy, ownership] = forward(hist_x.to(dev), hist_mask.to(dev), cur_x, legal_mask);
     return {policy, ownership};
 }
 
