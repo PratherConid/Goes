@@ -160,10 +160,8 @@ function calculateLegalMoves(
     const isFriendly = (stone: number) => friendlyStones[stone - 1] === 1;
     const groupDict = groupLiberty(board, adj, N, friendlyStones);
 
-    // Nodes captured by a pass: every non-protected zero-liberty group on the
-    // board, regardless of color - this doesn't depend on which stone the
-    // mover could have played (see LegalMovesData doc comment in types.ts for
-    // why the opponent/self split below doesn't change this union).
+    // Nodes captured by a pass - see LegalMovesData.passCapture's own doc comment (types.ts) for
+    // why the opponent/self split below doesn't change this union.
     const passCapture = new Set<number>();
     for (const [color, groups] of groupDict) {
         if (isProtected(color)) continue;
@@ -318,11 +316,7 @@ export class BoardState {
     numPlayers: number;
     turnList: TurnInfo[];
     playerStonePlaceLimit: (number | null)[][]; // [stone-1][player-1]; null = unlimited - see calculateLegalMoves
-    // Total placements of each stone color allowed across ALL players combined
-    // (unlike playerStonePlaceLimit); length numStones, indexed [stone-1]; null
-    // = unlimited. No separate count field - derived in calculateLegalMoves by
-    // summing playerStonePlaceCnt[stone-1] across every player.
-    globalStonePlaceLimit: (number | null)[];
+    globalStonePlaceLimit: (number | null)[]; // [stone-1]; null = unlimited - see GameConfig's own field doc comment, and calculateLegalMoves
     stoneToPlayerMap: Record<number, Set<number>>;
     forcedPassOnly: boolean;
     scoreRule: ScoreRule;
@@ -355,12 +349,9 @@ export class BoardState {
     //   turnList.length) - the sole source of truth for turn ownership - see
     //   nextTurn/advanceResigned/makeMove. e.g.
     //   [{player:1,stones:[1,0]},{player:2,stones:[0,1]}] for standard two-player.
-    //   Each entry's `stones` offers a set of stone colors the player may choose
-    //   from that turn - see BoardState.makeMove.
-    //   Each entry's `protected` (length numStones) marks stone colors that can
-    //   never be removed from the board on that turn, and `friendly` (length
-    //   numStones) marks stone colors that don't block anyone else's liberties
-    //   that turn - see calculateLegalMoves and groupLiberty.
+    //   Each entry's `stones`/`protected`/`friendly` fields are documented on TurnInfo itself
+    //   (types.ts) - see also calculateLegalMoves/groupLiberty for how `protected`/`friendly`
+    //   are actually enforced.
     // stoneToPlayerMap:
     //   map from stone type to the set of players it scores for, used only for
     //   scoring (_computeWinners) - independent of turnList, so a stone's scoring

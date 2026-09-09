@@ -518,6 +518,19 @@ export function randomlyTake<T>(items: T[], takeCount: number): T[] {
     return shuffled.slice(0, toTake);
 }
 
+// Applies whichever of rrmn/rrmp/rpkn/rpkp `sel` itself is to an already-evaluated `base` array -
+// shared by every object kind's own switch below, which are otherwise identical for these 4 ops
+// modulo which selectNode/selectEdge/selectSimp/selectQuad call produced `base` (and selectNode's
+// own extra Set wrapping around the result).
+function applyRandomOp<T>(sel: Extract<Selector, { op: 'rrmn' | 'rrmp' | 'rpkn' | 'rpkp' }>, base: T[]): T[] {
+    switch (sel.op) {
+        case 'rrmn': return randomlyRemove(base, sel.count);
+        case 'rrmp': return randomlyRemove(base, Math.floor(sel.frac * base.length));
+        case 'rpkn': return randomlyTake(base, sel.count);
+        case 'rpkp': return randomlyTake(base, Math.floor(sel.frac * base.length));
+    }
+}
+
 // True iff `a`'s own members are completely contained in `b`'s, or vice versa - the general
 // "association" test conva/conve rely on (see this file's own top comment). Every object kind here
 // has a fixed arity (node 1, edge 2, simp N N+1, quad 4) and every object's own members are
@@ -647,22 +660,8 @@ export function selectNode(adj: number[][], pos: number[][], sel: Selector): Set
             const selectedKeys = new Set<string | number>(selectQuad(adj, pos, sel.a).map(quadKey));
             return new Set(convertObjectsCmp(toNodes, i => [i], allFrom, s => [s.n1, s.n2, s.n3, s.n4], quadKey, selectedKeys, cmp, complement, n));
         }
-        case 'rrmn': {
-            const base = [...selectNode(adj, pos, sel.a)];
-            return new Set(randomlyRemove(base, sel.count));
-        }
-        case 'rrmp': {
-            const base = [...selectNode(adj, pos, sel.a)];
-            return new Set(randomlyRemove(base, Math.floor(sel.frac * base.length)));
-        }
-        case 'rpkn': {
-            const base = [...selectNode(adj, pos, sel.a)];
-            return new Set(randomlyTake(base, sel.count));
-        }
-        case 'rpkp': {
-            const base = [...selectNode(adj, pos, sel.a)];
-            return new Set(randomlyTake(base, Math.floor(sel.frac * base.length)));
-        }
+        case 'rrmn': case 'rrmp': case 'rpkn': case 'rpkp':
+            return new Set(applyRandomOp(sel, [...selectNode(adj, pos, sel.a)]));
         case 'raw':
             // sel.type !== 'node' was already rejected above, but that doesn't by itself guarantee
             // sel.items (a separately-tagged SelectedVals) agrees - a hand-built Selector could still
@@ -766,22 +765,8 @@ export function selectEdge(adj: number[][], pos: number[][], sel: Selector): Boa
             const selectedKeys = new Set<string | number>(selectQuad(adj, pos, sel.a).map(quadKey));
             return convertObjectsCmp(allEdges, e => [e.n1, e.n2], allFrom, s => [s.n1, s.n2, s.n3, s.n4], quadKey, selectedKeys, cmp, complement, n);
         }
-        case 'rrmn': {
-            const base = selectEdge(adj, pos, sel.a);
-            return randomlyRemove(base, sel.count);
-        }
-        case 'rrmp': {
-            const base = selectEdge(adj, pos, sel.a);
-            return randomlyRemove(base, Math.floor(sel.frac * base.length));
-        }
-        case 'rpkn': {
-            const base = selectEdge(adj, pos, sel.a);
-            return randomlyTake(base, sel.count);
-        }
-        case 'rpkp': {
-            const base = selectEdge(adj, pos, sel.a);
-            return randomlyTake(base, Math.floor(sel.frac * base.length));
-        }
+        case 'rrmn': case 'rrmp': case 'rpkn': case 'rpkp':
+            return applyRandomOp(sel, selectEdge(adj, pos, sel.a));
         case 'raw':
             if (sel.items.kind !== 'edge')
                 throw new Error(`selectEdge: 'raw' selector's own items must be edge-kind, got '${sel.items.kind}'`);
@@ -853,22 +838,8 @@ export function selectSimp(adj: number[][], pos: number[][], sel: Selector): Boa
             const selectedKeys = new Set<string | number>(selectSimp(adj, pos, sel.a).map(simpKey));
             return convertObjectsCmp(allTo, t => t.nodes, allFrom, f => f.nodes, simpKey, selectedKeys, cmp, complement, threshold);
         }
-        case 'rrmn': {
-            const base = selectSimp(adj, pos, sel.a);
-            return randomlyRemove(base, sel.count);
-        }
-        case 'rrmp': {
-            const base = selectSimp(adj, pos, sel.a);
-            return randomlyRemove(base, Math.floor(sel.frac * base.length));
-        }
-        case 'rpkn': {
-            const base = selectSimp(adj, pos, sel.a);
-            return randomlyTake(base, sel.count);
-        }
-        case 'rpkp': {
-            const base = selectSimp(adj, pos, sel.a);
-            return randomlyTake(base, Math.floor(sel.frac * base.length));
-        }
+        case 'rrmn': case 'rrmp': case 'rpkn': case 'rpkp':
+            return applyRandomOp(sel, selectSimp(adj, pos, sel.a));
         case 'raw':
             if (sel.items.kind !== 'simp')
                 throw new Error(`selectSimp: 'raw' selector's own items must be simp-kind, got '${sel.items.kind}'`);
@@ -942,22 +913,8 @@ export function selectQuad(adj: number[][], pos: number[][], sel: Selector): Boa
             const selectedKeys = new Set<string | number>(selectEdge(adj, pos, sel.a).map(edgeKey));
             return convertObjectsCmp(allQuad, s => [s.n1, s.n2, s.n3, s.n4], allFrom, e => [e.n1, e.n2], edgeKey, selectedKeys, cmp, complement, n);
         }
-        case 'rrmn': {
-            const base = selectQuad(adj, pos, sel.a);
-            return randomlyRemove(base, sel.count);
-        }
-        case 'rrmp': {
-            const base = selectQuad(adj, pos, sel.a);
-            return randomlyRemove(base, Math.floor(sel.frac * base.length));
-        }
-        case 'rpkn': {
-            const base = selectQuad(adj, pos, sel.a);
-            return randomlyTake(base, sel.count);
-        }
-        case 'rpkp': {
-            const base = selectQuad(adj, pos, sel.a);
-            return randomlyTake(base, Math.floor(sel.frac * base.length));
-        }
+        case 'rrmn': case 'rrmp': case 'rpkn': case 'rpkp':
+            return applyRandomOp(sel, selectQuad(adj, pos, sel.a));
         case 'raw':
             if (sel.items.kind !== 'quad')
                 throw new Error(`selectQuad: 'raw' selector's own items must be quad-kind, got '${sel.items.kind}'`);
