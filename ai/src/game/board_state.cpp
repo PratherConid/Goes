@@ -1,8 +1,6 @@
 #include "game/board_state.h"
 #include <cassert>
 #include <algorithm>
-#include <numeric>
-#include <cmath>
 #include <unordered_set>
 
 // ── Reward ────────────────────────────────────────────────────────────────────

@@ -8,8 +8,8 @@
 #include <utility>
 
 // Policy head: identical structure/formula to CNNPolicyHeadImpl/GNNPolicyHeadImpl/
-// UNetPolicyHeadImpl (duplicated here rather than shared, matching this codebase's existing
-// per-architecture convention - no common base class exists for these heads today). Per-node
+// UNetPolicyHeadImpl (deliberately one head type per architecture rather than one shared class,
+// matching this codebase's existing per-architecture convention). Per-node
 // linear produces num_stones place-logit channels and 1 pass-field channel; the pass field is
 // reduced to a single pass logit via a learned attention-weighted sum over nodes.
 struct TransformerPolicyHeadImpl : torch::nn::Module {
@@ -24,10 +24,11 @@ struct TransformerPolicyHeadImpl : torch::nn::Module {
 };
 TORCH_MODULE(TransformerPolicyHead);
 
-// One pre-LN attention + feed-forward block, shared shape for both the history self-attention
-// stack and the cross-attention stack (only the query/key-value wiring differs at the call site -
-// see TransformerImpl::forward()). Sequence-first (L,B,D) layout throughout - this libtorch
-// build's torch::nn::MultiheadAttention has no batch_first option.
+// One pre-LN attention + feed-forward block - the unit TransformerImpl's cross-attention stack is
+// built from, with the query and key/value sequences passed separately by the call site (see
+// TransformerImpl::forward()), so the same block also works as a self-attention layer when handed
+// the same tensor for both. Sequence-first (L,B,D) layout throughout - this libtorch build's
+// torch::nn::MultiheadAttention has no batch_first option.
 struct TransformerBlockImpl : torch::nn::Module {
     torch::nn::MultiheadAttention mha{nullptr};
     torch::nn::LayerNorm ln1{nullptr}, ln2{nullptr};
@@ -100,13 +101,12 @@ struct TransformerImpl : torch::nn::Module {
     TransformerPolicyHead policy_head{nullptr};
 
     TransformerConfig cfg_;
-    int num_players_;
     int num_stones_;
     int N_;
     int history_feature_dim_;  // cfg_.history_descr's totalDims, cached at construction time
     static constexpr int kNumHeads = 4;  // hardcoded, not CLI-configurable - see .cpp ctor
 
-    TransformerImpl(const BoardConfig& bc, const TransformerConfig& cfg, int num_players, int num_stones);
+    TransformerImpl(const BoardConfig& bc, const TransformerConfig& cfg, int num_stones);
 
     // hist_x: (B,T,N,F) or (T,N,F) float32 (T past plies, zero-padded to the batch's own max);
     // hist_mask: (B,T) or (T,) bool, True = padded/invalid slot; cur_x: (B,N,F) or (N,F) - the
@@ -116,12 +116,9 @@ struct TransformerImpl : torch::nn::Module {
         torch::Tensor hist_x, torch::Tensor hist_mask,
         torch::Tensor cur_x, torch::Tensor legal_mask);
 
-    // Evaluate a single BoardState. Returns (policy (numStones*N+1,), ownership (2,N,num_stones+1)),
-    // both left on the model's device - matching CNN/GNN/UNet's evaluate() contract exactly.
-    std::pair<torch::Tensor, torch::Tensor> evaluate(const BoardState& state);
-
     // Evaluate a batch of states (arbitrary, independently-varying history lengths) in one forward
-    // pass. Returns tensors on the model's device (see evaluate()'s comment).
+    // pass. Returns tensors on the model's device, matching CNN/GNN/UNet's evaluate_batch()
+    // contract exactly.
     std::pair<torch::Tensor, torch::Tensor> evaluate_batch(const std::vector<BoardState*>& states);
     std::pair<torch::Tensor, torch::Tensor> evaluate_batch(const std::vector<const BoardState*>& states);
 };

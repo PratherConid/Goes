@@ -6,8 +6,8 @@
 #include <string>
 #include <omp.h>
 
-CNNImpl::CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_players, int num_stones)
-    : cfg_(cfg), num_players_(num_players), num_stones_(num_stones)
+CNNImpl::CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_stones)
+    : cfg_(cfg), num_stones_(num_stones)
 {
     // A real (always-active) check, not assert() - assert compiles out under NDEBUG (this project's
     // Release builds), which would otherwise let a non-2D-embedded board (e.g. regpoly/dodeca/icosa
@@ -45,17 +45,11 @@ CNNImpl::CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_players, i
 
     num_blocks_ = std::max(gw, gh);
 
-    // input_proj maps feature_dim+1 (validity channel included) -> hidden_dim
-    // once, so every block below operates at a constant hidden_dim width on
-    // both sides of its residual shortcut (see forward()) - no channel
-    // matching needed anywhere in the block loop itself.
     input_proj = register_module("input_proj",
         torch::nn::Conv2d(torch::nn::Conv2dOptions(cfg_.feature_dim + 1, cfg_.hidden_dim, 1)));
 
-    // Blocks: constant hidden_dim width throughout, both in and out. "Same"
-    // padding (conv_size/2, integer division - exact since conv_size is
-    // enforced odd) keeps H,W unchanged across every conv, which the
-    // residual add below requires.
+    // "Same" padding (conv_size/2, integer division - exact since conv_size is enforced odd) keeps
+    // H,W unchanged across every conv, which forward()'s residual add requires.
     int pad = cfg_.conv_size / 2;
     for (int k = 0; k < num_blocks_; k++) {
         torch::nn::Sequential seq;
@@ -135,9 +129,6 @@ std::pair<torch::Tensor, torch::Tensor> CNNImpl::forward(
 
     int64_t B = x.size(0);
 
-    // input_proj brings every block to a constant hidden_dim width, so each
-    // block's residual shortcut (its own input added to its two-conv output,
-    // before the final ReLU) is a plain identity add - no channel matching.
     auto h = torch::relu(input_proj->forward(features_to_grid(x))); // (B, hidden_dim, H, W)
     for (int k = 0; k < num_blocks_; k++) {
         auto out = blocks_[k]->forward(h);
@@ -145,10 +136,9 @@ std::pair<torch::Tensor, torch::Tensor> CNNImpl::forward(
     }
     // h: (B, hidden_dim, H, W)
 
-    // Gather the final block output at each node's grid position - feeds both
-    // the value heads (stone/territory estimate) and the policy head, all of
-    // which now operate purely on this per-node (B,N,hidden_dim) tensor
-    // rather than the raw grid.
+    // Gather the final block output at each node's grid position - feeds both the ownership heads
+    // (stone/territory estimate) and the policy head, all of which operate purely on this per-node
+    // (B,N,hidden_dim) tensor rather than the raw grid.
     auto h_nodes = h.reshape({B, cfg_.hidden_dim, -1})
                     .index_select(2, lin_idx_)
                     .permute({0, 2, 1});                                  // (B, N, hidden_dim)
@@ -167,14 +157,6 @@ std::pair<torch::Tensor, torch::Tensor> CNNImpl::forward(
     return {policy, ownership};
 }
 
-std::pair<torch::Tensor, torch::Tensor> CNNImpl::evaluate(const BoardState& state) {
-    torch::NoGradGuard ng;
-    auto dev = lin_idx_.device();
-    auto [ft, mask] = board_to_features(state, dev, cfg_.input_descr);
-    auto [policy, ownership] = forward(ft, mask);
-    return {policy, ownership};
-}
-
 static std::pair<torch::Tensor, torch::Tensor> run_batch(
     CNNImpl* self,
     const std::vector<const BoardState*>& states)
@@ -190,7 +172,7 @@ static std::pair<torch::Tensor, torch::Tensor> run_batch(
         masks[i] = mask;
     }
     auto x    = torch::stack(feats, 0); // (B, N, F)
-    auto mask = torch::stack(masks, 0); // (B, N+1)
+    auto mask = torch::stack(masks, 0); // (B, ns*N+1)
     auto [policy, ownership] = self->forward(x, mask);
     return {policy, ownership};
 }

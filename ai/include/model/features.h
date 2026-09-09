@@ -22,7 +22,7 @@ struct AdjNorms {
 
 // Compute per-node feature matrix and legal mask for one state. descr is the
 // self-describing feature-block descriptor built by
-// compute_input_descr(const GameConfig&, int, const std::string&) (training/self_play.h) - see
+// compute_input_descr(const GameConfig&, int) (training/self_play.h) - see
 // that function's doc comment for the JSON shape and this function's own doc
 // comment (features.cpp) for the recognized block names/args. The feature
 // width F is read directly from descr["totalDims"], not recomputed here.

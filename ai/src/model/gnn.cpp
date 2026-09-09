@@ -3,9 +3,9 @@
 #include <cmath>
 #include <omp.h>
 
-MessagePassingGNNImpl::MessagePassingGNNImpl(const GNNConfig& cfg, int num_players,
-                                              int num_stones, const AdjNorms& adj_norms)
-    : cfg_(cfg), num_players_(num_players), num_stones_(num_stones)
+MessagePassingGNNImpl::MessagePassingGNNImpl(const GNNConfig& cfg, int num_stones,
+                                              const AdjNorms& adj_norms)
+    : cfg_(cfg), num_stones_(num_stones)
 {
     input_proj = register_module("input_proj", torch::nn::Linear(cfg_.feature_dim, cfg_.hidden_dim));
 
@@ -93,9 +93,9 @@ std::pair<torch::Tensor, torch::Tensor> MessagePassingGNNImpl::forward(
         h = layer_norms[i]->forward(torch::relu(layers[i]->forward(h_cat)) + h);
     }
 
-    // Value: per-location stone/territory ownership softmax, applied directly to
-    // the per-node hidden state h (B, N, hidden) - no pooling, since every node
-    // needs its own distribution over "who owns this location at game end".
+    // Ownership: per-location stone/territory softmax, applied directly to the per-node hidden
+    // state h (B, N, hidden) - no pooling, since every node needs its own distribution over "who
+    // owns this location at game end".
     auto stone_est     = torch::softmax(stone_head->forward(h), -1);      // (B, N, num_stones+1)
     auto territory_est = torch::softmax(territory_head->forward(h), -1);  // (B, N, num_stones+1)
     auto ownership = torch::stack({stone_est, territory_est}, 1);        // (B, 2, N, num_stones+1)
@@ -117,17 +117,6 @@ std::pair<torch::Tensor, torch::Tensor> MessagePassingGNNImpl::forward(
     return {policy, ownership};
 }
 
-std::pair<torch::Tensor, torch::Tensor> MessagePassingGNNImpl::evaluate(
-    const BoardState& state,
-    const AdjNorms& adj_norms)
-{
-    auto dev = adj_norms.adj.device();
-    torch::NoGradGuard ng;
-    auto [ft, mask] = board_to_features(state, dev, cfg_.input_descr);
-    auto [policy, ownership] = forward(ft, adj_norms, mask);
-    return {policy, ownership};
-}
-
 // Helper: run a batch of raw pointers
 static std::pair<torch::Tensor, torch::Tensor> run_batch(
     MessagePassingGNNImpl* self,
@@ -145,7 +134,7 @@ static std::pair<torch::Tensor, torch::Tensor> run_batch(
         masks[i] = mask;
     }
     auto x    = torch::stack(feats, 0); // (B, N, F)
-    auto mask = torch::stack(masks, 0); // (B, N+1)
+    auto mask = torch::stack(masks, 0); // (B, ns*N+1)
     auto [policy, ownership] = self->forward(x, adj_norms, mask);
     return {policy, ownership};
 }

@@ -91,7 +91,7 @@ inline int simp_n(const SelectorType& t) { return t.kind == SelectorKind::Simp ?
 
 // The operator tag of a Selector node - mirrors the `op` field of shared/selector.ts's own
 // discriminated-union Selector type. `Raw` has no textual grammar (format_selector rejects it) -
-// it's built only by game/cleg.cpp, wrapping a `set`-typed cleg selector argument directly (mirrors
+// it's built only by game/cleg_eval.cpp, wrapping a `set`-typed cleg selector argument directly (mirrors
 // shared/types.ts's Selector 'raw' variant).
 enum class SelectorOp {
     Union, Inter, Diff, Compl, More, All, None, Deg, Conva, Conve,
@@ -143,7 +143,7 @@ struct Selector {
     // parsed from.
     std::optional<int> steps;
     // meaningful iff op == Raw - the literal contents of a `set`-typed cleg selector argument (see
-    // game/cleg.cpp's resolve_selector_arg/resolve_any_kind_selector_arg), one populated per `type`
+    // game/cleg_eval.cpp's resolve_selector_arg/resolve_any_kind_selector_arg), one populated per `type`
     // (node -> raw_nodes, edge -> raw_edges, simp -> raw_simps, quad -> raw_quads) - mirrors
     // shared/types.ts's Selector 'raw' variant/SelectedVals. raw_nodes is a std::set (like
     // select_node's own return type) since node membership has genuine equality; the other three
@@ -160,7 +160,7 @@ struct Selector {
 // than exist isn't meaningful) uniformly-randomly-chosen elements dropped, via a partial
 // Fisher-Yates shuffle (only the first remove_count positions need to be randomized to pick which
 // elements to drop) - mirrors shared/selector.ts's randomlyRemove(). A public header-only template
-// (rather than selector.cpp-private) so game/cleg.cpp's randRmN/randRmP builtins can reuse it over
+// (rather than selector.cpp-private) so game/cleg_eval.cpp's randRmN/randRmP builtins can reuse it over
 // a generic ClegValue too, not just Selector's own BoardEdge/BoardSimplex/BoardQuad - matches that
 // TS builtin's own doc comment ("reuses that file's own randomlyRemove() rather than
 // reimplementing"). Shares one process-wide RNG with select_node/select_edge/etc.'s own Rrmn/Rrmp

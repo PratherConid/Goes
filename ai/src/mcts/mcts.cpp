@@ -3,7 +3,6 @@
 #include <chrono>
 #include <numeric>
 #include <algorithm>
-#include <cassert>
 #include <iostream>
 #include <string>
 #include <fstream>
@@ -26,7 +25,7 @@ using json = nlohmann::json;
 //   "ply"            ply number of this node's state
 //   "value_estimate" per-player reward estimate (empty if not yet evaluated)
 //   "proven"         true if value_estimate is an exact terminal outcome
-//                    rather than a GNN estimate (see MCTSNode::proven)
+//                    rather than a model estimate (see MCTSNode::proven)
 //   "subtree"        list of child nodes
 static json mcts_node_to_json(const MCTSNode* node, std::optional<int> move,
                               int visit_count, float total_value, float prior) {
@@ -164,8 +163,8 @@ std::vector<bool> MCTS::legal_mask(const BoardState& state) {
 
 // Walk tree via UCB to a leaf. Returns (path, leaf, per-player-rewards-or-nullopt).
 //
-// cached_rewards is non-nullopt only for terminal leaves (no GNN call needed):
-// either game-over states or states that have reached their own max_plies.
+// cached_rewards is non-nullopt only for terminal leaves (no model call needed) - game_over()
+// states, which includes ones that have reached their own max_plies.
 // New non-terminal leaves have is_expanded=false; caller must evaluate them.
 std::tuple<std::vector<std::pair<MCTSNode*, int>>,
            MCTSNode*,
@@ -236,12 +235,12 @@ MCTS::select(MCTSNode* root) {
 
 // Hybrid backup: plain running average for every edge (as before), plus a
 // "proven" override. If an expanded child is proven (its reward_estimate is
-// an exact terminal outcome, not a GNN estimate - see MCTSNode::proven) and
+// an exact terminal outcome, not a model estimate - see MCTSNode::proven) and
 // its value is currently at least as good as every other action available at
 // this node, this node adopts that child's exact reward vector as its own
 // and is itself marked proven, since its own mover would simply always take
 // that guaranteed-best option. This only ever propagates *exact* values
-// upward - an unproven, few-visit GNN estimate never overrides anything, so
+// upward - an unproven, few-visit model estimate never overrides anything, so
 // this stays safe for large-branching-factor games: averaging alone still
 // governs every uncertain estimate, exactly as in plain AlphaZero-style MCTS.
 void MCTS::backup(const std::vector<std::pair<MCTSNode*, int>>& path,
@@ -281,21 +280,21 @@ void MCTS::backup(const std::vector<std::pair<MCTSNode*, int>>& path,
     }
 }
 
-// Run one simulation step across all roots with a single batched GNN call.
+// Run one simulation step across all roots with a single batched model call.
 //
 // Each simulation selects a leaf per root: follows UCB scores (exploitation Q +
 // exploration prior) down existing edges until reaching an unvisited child or a
 // terminal node. For non-terminal leaves, estimate_player_rewards() derives a
 // per-player reward from the model's ownership output, standing in for
-// rolling the game out to the end. When a new child is created, the GNN is
+// rolling the game out to the end. When a new child is created, the model is
 // called once to get its prior and value; the child is immediately marked
 // expanded so a second evaluation is not triggered on the next visit.
 //
-// All non-terminal leaves across roots are evaluated together in one batched GNN
+// All non-terminal leaves across roots are evaluated together in one batched
 // call. Backup looks up per-player rewards so each node's Q-value reflects its
 // own player's outcome rather than relying on a zero-sum negation.
 //
-// Returns timing: seconds spent in MCTS::select (all roots) and model.evaluate_batch
+// Returns timing: seconds spent in MCTS::select (all roots) and evaluate_batch
 //                 (eval=0.0 if all leaves were terminal and no model call was needed)
 MCTSTiming MCTS::simulate_batch(const std::vector<MCTSNode*>& roots) {
     int n = static_cast<int>(roots.size());
@@ -368,10 +367,9 @@ MCTSTiming MCTS::simulate_batch(const std::vector<MCTSNode*>& roots) {
     for (int i = 0; i < n; i++) {
         if (leaf_values[i].has_value()) {
             nodes[i]->reward_estimate = leaf_values[i];
-            // Only a genuine game-over state has an exact, ground-truth
-            // reward; a max_plies-truncated leaf's "reward" is a heuristic
-            // approximation like a GNN estimate, so it must not be treated
-            // as proven either.
+            // Only a game-over state has an exact, ground-truth reward - a leaf whose value came
+            // from the model is an estimate and must never be treated as proven. game_over()
+            // covers max_plies truncation as well (see BoardState::game_over()).
             nodes[i]->proven = nodes[i]->state.game_over();
             backup(paths[i], leaf_values[i].value());
         }
@@ -412,12 +410,12 @@ MCTS::visit_counts_to_policy(const std::vector<int>& vc, float temperature,
 // Batched MCTS search: build a search tree per state and return a move for each.
 //
 // Runs `num_simulations` rounds of simulation. In each round one simulation step
-// is taken across all trees simultaneously, with all GNN evaluations batched into
+// is taken across all trees simultaneously, with all model evaluations batched into
 // a single forward pass. For a single state pass a one-element vector.
 //
 // Each simulation traverses a tree to a leaf via UCB scores, evaluates non-terminal
-// leaves with the GNN, and backs the value up to the root. The root's visit-count
-// distribution is the policy target (stronger than the raw GNN prior because it
+// leaves with the model, and backs the value up to the root. The root's visit-count
+// distribution is the policy target (stronger than the raw model prior because it
 // reflects the result of lookahead). The move is sampled from that distribution
 // raised to the power 1/temperature; temperature=0 picks the most-visited action.
 //
@@ -426,8 +424,8 @@ MCTS::visit_counts_to_policy(const std::vector<int>& vc, float temperature,
 // noise_cfg: Dirichlet root-noise settings (added to root priors for self-play exploration).
 // Move-count truncation is read from each state's own BoardState::max_plies
 // (a state at or beyond its own bound is treated as terminal - value from
-// stone counts - rather than evaluated by the GNN); it propagates to every
-// node of that state's search tree via copy()/copy_with_hm().
+// its own final score - rather than evaluated by the model); it propagates to
+// every node of that state's search tree via copy()/copy_with_hm().
 //
 // Each root gets its own HistoryManager so the per-root search trees are fully
 // independent. This is required for parallel select: HistoryManager::store_board/lookup
@@ -480,7 +478,6 @@ MCTS::search_batch(
         }
         auto root = std::make_unique<MCTSNode>(states[i]->copy_with_hm(&hms[i]), std::move(prior));
         root->is_expanded = true;
-        // Debug: store the root's per-player reward estimate from the initial eval.
         std::unordered_map<int,float> root_rewards;
         for (int p = 0; p < states[i]->num_players; p++)
             root_rewards[p + 1] = reward_a[i][p];

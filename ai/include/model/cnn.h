@@ -53,13 +53,12 @@ TORCH_MODULE(CNNPolicyHead);
 // Requires bc.emb_dim == 2.
 struct CNNImpl : torch::nn::Module {
     torch::nn::Conv2d input_proj{nullptr};       // 1x1 conv: feature_dim+1 -> hidden_dim
-    std::vector<torch::nn::Sequential> blocks_;  // [k=0..num_blocks_-1]: Conv3x3->ReLU->Conv3x3
+    std::vector<torch::nn::Sequential> blocks_;  // [k=0..num_blocks_-1]: Conv->ReLU->Conv (cfg.conv_size)
     torch::nn::Sequential stone_head{nullptr};
     torch::nn::Sequential territory_head{nullptr};
     CNNPolicyHead policy_head{nullptr};
 
     CNNConfig cfg_;
-    int num_players_;
     int num_stones_;
     int num_blocks_;
     int grid_h_, grid_w_;  // tight bounding box (no padding)
@@ -70,7 +69,7 @@ struct CNNImpl : torch::nn::Module {
     // cfg.feature_dim: per-node feature dimension F (as produced by board_to_features), NOT
     // the number of input channels to input_proj. features_to_grid appends
     // a validity channel, so input_proj actually receives feature_dim + 1 channels.
-    CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_players, int num_stones);
+    CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_stones);
 
     // x: (N,F) or (B,N,F) → (1,F+1,H,W) or (B,F+1,H,W)
     torch::Tensor features_to_grid(const torch::Tensor& x) const;
@@ -82,13 +81,10 @@ struct CNNImpl : torch::nn::Module {
         torch::Tensor x,
         torch::Tensor legal_mask);
 
-    // Evaluate a single BoardState. Returns (policy (numStones*N+1,), ownership (2,N,num_stones+1)),
-    // both left on the model's device - callers needing CPU access (e.g. via
-    // .accessor<T,N>()) must call .cpu() themselves at their point of use.
-    std::pair<torch::Tensor, torch::Tensor> evaluate(const BoardState& state);
-
-    // Evaluate a batch of states in one forward pass (all must share the same board).
-    // Returns tensors on the model's device (see evaluate()'s comment).
+    // Evaluate a batch of states in one forward pass (all must share the same board). Returns
+    // policy (B, numStones*N+1) and ownership (B, 2, N, num_stones+1), both left on the model's
+    // device - callers needing CPU access (e.g. via .accessor<T,N>()) must call .cpu() themselves
+    // at their point of use.
     std::pair<torch::Tensor, torch::Tensor> evaluate_batch(
         const std::vector<BoardState*>& states);
     std::pair<torch::Tensor, torch::Tensor> evaluate_batch(

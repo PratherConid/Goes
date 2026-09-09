@@ -18,11 +18,11 @@
 // on the matching subclass below, so e.g. CNNImpl only ever sees the fields
 // it actually uses.
 struct ModelConfig {
-    std::string model_type;  // "cnn" | "unet" | "gnn" - matches the checkpoint filename prefix
+    std::string model_type;  // "cnn" | "unet" | "gnn" | "transformer" - matches the checkpoint filename prefix
     int feature_dim;
     // Hidden dim of whichever architecture model_type names. train.cpp's Args
-    // keeps three separate CLI-configurable defaults (--cnn-hidden-dim etc.,
-    // since a training run may target any one architecture) but only the one
+    // keeps one CLI-configurable default per architecture (--cnn-hidden-dim etc.,
+    // since a training run may target any one of them) but only the one
     // actually trained is persisted here.
     int hidden_dim;
     // Self-describing feature-block descriptor this model was trained with -
@@ -58,7 +58,7 @@ struct CNNConfig : ModelConfig {
     // a spatial conv here) - enforced by train.cpp's --cnn-conv-size parsing.
     int conv_size;
 
-    CNNConfig(int feature_dim, int hidden_dim, nlohmann::json input_descr, int conv_size_ = 5)
+    CNNConfig(int feature_dim, int hidden_dim, nlohmann::json input_descr, int conv_size_)
         : ModelConfig("cnn", feature_dim, hidden_dim, std::move(input_descr)), conv_size(conv_size_) {}
 
     nlohmann::json to_json() const override;
@@ -104,9 +104,10 @@ struct TransformerConfig : ModelConfig {
     nlohmann::json to_json() const override;
 };
 
-// Parses a checkpoint's <arch>_config.json modelType/featureDim/hiddenDim
-// (/numLayers for gnn) keys into the matching concrete subclass, selected by
-// the modelType key - call parse_game_cfg (training/self_play.h) on the same
+// Parses a checkpoint's <arch>_config.json modelType/featureDim/hiddenDim/inputDescr keys - plus
+// whichever extra keys the named architecture's own subclass carries (convSize for cnn, numLayers
+// for gnn, numAttnLayers/historyDescr for transformer) - into the matching concrete subclass,
+// selected by the modelType key. Call parse_game_cfg (training/self_play.h) on the same
 // JSON separately for the GameConfig (numStones/numPlayers/etc.) fields
 // joined into the same file. Used by server.cpp's load_model() instead of
 // reading individual keys inline.

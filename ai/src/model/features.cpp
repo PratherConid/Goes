@@ -59,8 +59,7 @@ static float clamp_scale(int value, int bit_index) {
 // player_stone_place_cnt_at(), consecutive_passes_at()) rather than state's own "live" fields
 // (state.board, state.next_turn, state.legal_moves_data(), ...) - those live fields are themselves
 // exactly the ply_count()-indexed case of each accessor (e.g. next_turn ==
-// turn_list[ply_count() % len], confirmed via make_move()'s own use of that formula), so this is
-// behaviorally identical to the old board_to_features() when ply == state.ply_count(). All of
+// turn_list[ply_count() % len], confirmed via make_move()'s own use of that formula). All of
 // these accessors are O(1), backed by HistoryManager's per-ply interning - no BoardState mutation
 // (withdraw_move()) is ever needed to reconstruct a past ply's features.
 static torch::Tensor board_to_features_at_ply(const BoardState& state, int ply, const nlohmann::json& descr) {
@@ -193,7 +192,7 @@ static torch::Tensor board_to_features_at_ply(const BoardState& state, int ply, 
     return features;
 }
 
-// Convert a BoardState to tensors for the GNN.
+// Convert a BoardState to model input tensors (identical for all four architectures).
 //
 // Returns
 //   features  : float32 (N, F)               per-node feature matrix

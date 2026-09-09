@@ -9,7 +9,7 @@
 // triangulations would need to be resolved recursively, dimension by dimension, to recover the true
 // 1-skeleton without introducing spurious "diagonal" edges). Mirrors shared/geometry.ts.
 //
-// Unlike the rest of this file's board-construction code, this uses double (not integer)
+// Unlike the rest of this codebase's board-construction code, this uses double (not integer)
 // arithmetic with an epsilon tolerance (EPS in the .cpp): the vectors this gets called on are
 // normalized to unit length (see rectify()'s doc comment), and normalization requires sqrt, which
 // is irrational for almost every integer input - there is no exact-integer alternative here, unlike

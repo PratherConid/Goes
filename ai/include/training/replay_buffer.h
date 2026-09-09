@@ -8,8 +8,8 @@
 
 struct GameRecord {
     torch::Tensor features;         // (P, N, F) float32 - P = plies in this game
-    torch::Tensor legal_mask;       // (P, N+1) bool
-    torch::Tensor policy_target;    // (P, N+1) float32
+    torch::Tensor legal_mask;       // (P, numStones*N+1) bool
+    torch::Tensor policy_target;    // (P, numStones*N+1) float32
     torch::Tensor stone_owner;      // (N,) int64 - stone type occupying each node at game end
                                      // (BoardState::board), 0 = empty
     torch::Tensor territory_owner;  // (N,) int64 - stone type whose territory each node is at game
@@ -32,8 +32,8 @@ struct HistoryBatch {
     torch::Tensor hist_features;    // (B, T_max, N, F) float32, zero-padded
     torch::Tensor hist_mask;        // (B, T_max) bool - True = padded/invalid slot
     torch::Tensor cur_features;     // (B, N, F) float32 - the sampled ply's own features
-    torch::Tensor legal_mask;       // (B, N+1) bool
-    torch::Tensor policy_target;    // (B, N+1) float32
+    torch::Tensor legal_mask;       // (B, numStones*N+1) bool
+    torch::Tensor policy_target;    // (B, numStones*N+1) float32
     torch::Tensor stone_owner;      // (B, N) int64
     torch::Tensor territory_owner;  // (B, N) int64
 };
@@ -64,12 +64,11 @@ public:
     void add(GameRecord record);
 
     // Returns (features, legal_mask, policy_target, stone_owner, territory_owner) batched tensors:
-    //   features        : (B, N, F) float32
-    //   legal_mask      : (B, N+1)  bool
-    //   policy_target   : (B, N+1)  float32
-    //   stone_owner     : (B, N)    int64
-    //   territory_owner : (B, N)    int64
-    // adj_norm is assumed shared / caller-supplied externally
+    //   features        : (B, N, F)           float32
+    //   legal_mask      : (B, numStones*N+1)  bool
+    //   policy_target   : (B, numStones*N+1)  float32
+    //   stone_owner     : (B, N)              int64
+    //   territory_owner : (B, N)              int64
     std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
     sample(int batch_size, std::mt19937& rng);
 

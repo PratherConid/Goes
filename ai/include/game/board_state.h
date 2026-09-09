@@ -362,9 +362,9 @@ public:
     // evaluates each player's turns during self-play - 1-indexed via player_model_id[p-1], an id
     // key into MCTS::models_ (mcts.h). Lets different players in the same self-play game be
     // evaluated by different models (e.g. a candidate checkpoint vs. a previous one), routed off
-    // whoever's next_turn.player it is at each state (see MCTS::evaluate_batch()). Currently always
-    // all-1s (new_state() hardcodes it) - no GameConfig field wires this up yet, so real per-player
-    // customization is a future addition on top of this plumbing.
+    // whoever's next_turn.player it is at each state (see MCTS::evaluate_batch()). new_state()
+    // starts every player at id 1; train.cpp then reassigns them per game from the currently-active
+    // snapshot set (assign_random_models()/refresh_player()/assign_by_sequence()).
     std::vector<int> player_model_id;
     // Superko variant enforced by calculate_legal_moves()'s repeat-position
     // check ('positional' | 'situational').
