@@ -314,9 +314,9 @@ function cloneLegalMovesData(lmd: LegalMovesData): LegalMovesData {
 // ── BoardState ───────────────────────────────────────────────────────────────
 
 export class BoardState {
-    numStones:    number;
-    numPlayers:   number;
-    turnList:     TurnInfo[];
+    numStones: number;
+    numPlayers: number;
+    turnList: TurnInfo[];
     playerStonePlaceLimit: (number | null)[][]; // [stone-1][player-1]; null = unlimited - see calculateLegalMoves
     // Total placements of each stone color allowed across ALL players combined
     // (unlike playerStonePlaceLimit); length numStones, indexed [stone-1]; null
@@ -326,27 +326,27 @@ export class BoardState {
     stoneToPlayerMap: Record<number, Set<number>>;
     forcedPassOnly: boolean;
     scoreRule: ScoreRule;
-    komi:         number[];
+    komi: number[];
     koRule: KoRule;
     allowSuicide: boolean;
     maxPlies: number | null; // max plies before the game auto-ends (see makeMove); null = unlimited
     // the turnList entry for the upcoming ply - nextTurn.stones lists the offered stone colors
     // (rendered via a ColorGen, see src/renderer.ts), nextTurn.player is the player whose turn is
     // next
-    nextTurn:     TurnInfo;
-    board:        number[];
-    emb:          Embedding; // natural-dim node positions - see Embedding
-    adj:          number[][];
-    N:            number;
+    nextTurn: TurnInfo;
+    board: number[];
+    emb: Embedding; // natural-dim node positions - see Embedding
+    adj: number[][];
+    N: number;
 
-    situations:       Situation[];
+    situations: Situation[];
     sortedSituations: AVLTree<Situation>;
 
     // Only non-null once the game is over (see _refreshWinners).
     winners: number[] | null = null;
     // Map from ply index to the players (1-indexed) that resigned at that ply, in
     // resignation order. A resigned player may only pass and is excluded from scoring.
-    resigns:              Map<number, number[]>  = new Map();
+    resigns: Map<number, number[]> = new Map();
     // invariant: history.length === situations.length
     history: HistoryEntry[] = [];
 
