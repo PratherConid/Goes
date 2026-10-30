@@ -24,8 +24,6 @@ using json = nlohmann::json;
 //   "last_move"      description of the move that produced this state (root only)
 //   "ply"            ply number of this node's state
 //   "value_estimate" per-player reward estimate (empty if not yet evaluated)
-//   "proven"         true if value_estimate is an exact terminal outcome
-//                    rather than a model estimate (see MCTSNode::proven)
 //   "subtree"        list of child nodes
 static json mcts_node_to_json(const MCTSNode* node, std::optional<int> move,
                               int visit_count, float total_value, float prior) {
@@ -47,7 +45,6 @@ static json mcts_node_to_json(const MCTSNode* node, std::optional<int> move,
         for (const auto& [player, val] : *node->reward_estimate)
             ve[std::to_string(player)] = val;
     j["value_estimate"] = std::move(ve);
-    j["proven"] = node->proven;
     json sub = json::array();
     for (const auto& [action, child] : node->children)
         sub.push_back(mcts_node_to_json(child.get(), action,
@@ -68,21 +65,8 @@ MCTSNode::MCTSNode(BoardState s, std::vector<float> p)
 
 std::vector<float> MCTSNode::q_values() const {
     std::vector<float> q(visit_count.size());
-    // Turn ownership (who is moving) is independent of stone_to_player_map
-    // (which is scoring-only and can now map a stone to several players) -
-    // next_turn.player is the sole source of truth, mirrors shared/boardState.ts.
-    int mover = state.next_turn.player;
-    for (size_t i = 0; i < q.size(); i++) {
-        auto cit = children.find(static_cast<int>(i));
-        if (cit != children.end() && cit->second->proven) {
-            // Exact, ground-truth value - use it directly instead of the
-            // (possibly still-averaging-over-few-samples) running average.
-            auto rit = cit->second->reward_estimate->find(mover);
-            q[i] = (rit != cit->second->reward_estimate->end()) ? rit->second : 0.0f;
-        } else {
-            q[i] = visit_count[i] > 0 ? total_value[i] / visit_count[i] : 0.0f;
-        }
-    }
+    for (size_t i = 0; i < q.size(); i++)
+        q[i] = visit_count[i] > 0 ? total_value[i] / visit_count[i] : 0.0f;
     return q;
 }
 
@@ -177,9 +161,8 @@ MCTS::select(MCTSNode* root) {
     // game_over() checks max_plies live (against ply_count()), independently of
     // MoveInfo.all_passed (which only covers the consecutive-passes cause) -
     // mirroring shared/boardState.ts. Once true, make_move() itself will always
-    // refuse further moves, so a max_plies-truncated leaf's score is exact/final
-    // in the same sense as any other game-over leaf (see the "proven" comment
-    // on simulate_batch()).
+    // refuse further moves, so a max_plies-truncated leaf is scored by
+    // compute_player_rewards() like any other game-over leaf.
     auto is_terminal = [&](const MCTSNode* n) { return n->state.game_over(); };
 
     while (node->is_expanded && !is_terminal(node)) {
@@ -233,50 +216,16 @@ MCTS::select(MCTSNode* root) {
     return {std::move(path), node, std::move(cached_rewards)};
 }
 
-// Hybrid backup: plain running average for every edge (as before), plus a
-// "proven" override. If an expanded child is proven (its reward_estimate is
-// an exact terminal outcome, not a model estimate - see MCTSNode::proven) and
-// its value is currently at least as good as every other action available at
-// this node, this node adopts that child's exact reward vector as its own
-// and is itself marked proven, since its own mover would simply always take
-// that guaranteed-best option. This only ever propagates *exact* values
-// upward - an unproven, few-visit model estimate never overrides anything, so
-// this stays safe for large-branching-factor games: averaging alone still
-// governs every uncertain estimate, exactly as in plain AlphaZero-style MCTS.
+// Plain running-average backup: each edge on the path accumulates the reward of
+// its own node's mover (next_turn.player - turn ownership is independent of
+// stone_to_player_map, mirroring shared/boardState.ts).
 void MCTS::backup(const std::vector<std::pair<MCTSNode*, int>>& path,
                   const std::unordered_map<int,float>& rewards) {
     for (int i = static_cast<int>(path.size()) - 1; i >= 0; i--) {
         auto [node, action] = path[i];
-        int mover = node->state.next_turn.player;
-        float value = 0.0f;
-        {
-            auto rit = rewards.find(mover);
-            if (rit != rewards.end()) value = rit->second;
-        }
+        auto rit = rewards.find(node->state.next_turn.player);
         node->visit_count[action] += 1;
-        node->total_value[action] += value;
-
-        float best = -std::numeric_limits<float>::infinity();
-        bool best_proven = false;
-        const std::unordered_map<int,float>* best_vec = nullptr;
-        for (auto& [a, child] : node->children) {
-            float v;
-            if (child->proven) {
-                auto rit = child->reward_estimate->find(mover);
-                v = (rit != child->reward_estimate->end()) ? rit->second : 0.0f;
-            } else if (node->visit_count[a] > 0) {
-                v = node->total_value[a] / node->visit_count[a];
-            } else {
-                continue;
-            }
-            if (v > best) {
-                best = v;
-                best_proven = child->proven;
-                best_vec = child->proven ? &child->reward_estimate.value() : nullptr;
-            }
-        }
-        node->proven = best_proven;
-        if (best_proven) node->reward_estimate = *best_vec;
+        node->total_value[action] += (rit != rewards.end()) ? rit->second : 0.0f;
     }
 }
 
@@ -367,10 +316,6 @@ MCTSTiming MCTS::simulate_batch(const std::vector<MCTSNode*>& roots) {
     for (int i = 0; i < n; i++) {
         if (leaf_values[i].has_value()) {
             nodes[i]->reward_estimate = leaf_values[i];
-            // Only a game-over state has an exact, ground-truth reward - a leaf whose value came
-            // from the model is an estimate and must never be treated as proven. game_over()
-            // covers max_plies truncation as well (see BoardState::game_over()).
-            nodes[i]->proven = nodes[i]->state.game_over();
             backup(paths[i], leaf_values[i].value());
         }
     }
