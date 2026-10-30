@@ -27,8 +27,8 @@ struct MCTSNode {
     bool is_expanded = false;
     // This node's per-player reward estimate when first evaluated (terminal value via
     // compute_player_rewards, or derived from the model's ownership output via
-    // estimate_player_rewards()). nullopt until the node is evaluated as a leaf / root. Only read
-    // by DBG_PRINT_TREE's dump (mcts.cpp).
+    // estimate_player_rewards()). nullopt until the node is evaluated as a leaf / root. Counted
+    // as one visit of q_values()'s value for unvisited actions; also DBG_PRINT_TREE's dump.
     std::optional<std::unordered_map<int,float>> reward_estimate;
 
     MCTSNode(BoardState s, std::vector<float> p);

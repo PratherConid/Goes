@@ -63,10 +63,21 @@ MCTSNode::MCTSNode(BoardState s, std::vector<float> p)
       total_value(state.N * state.num_stones + 1, 0.0f)
 {}
 
+// An unvisited action's Q is this node's own running mean value for its mover: its first
+// evaluation (reward_estimate) counted as one visit, plus every reward backed up through it.
 std::vector<float> MCTSNode::q_values() const {
+    float sum_value = std::accumulate(total_value.begin(), total_value.end(), 0.0f);
+    int sum_visits = std::accumulate(visit_count.begin(), visit_count.end(), 0);
+    if (reward_estimate.has_value()) {
+        auto rit = reward_estimate->find(state.next_turn.player);
+        sum_value += (rit != reward_estimate->end()) ? rit->second : 0.0f;
+        sum_visits += 1;
+    }
+    float unvisited_q = sum_visits > 0 ? sum_value / sum_visits : 0.0f;
+
     std::vector<float> q(visit_count.size());
     for (size_t i = 0; i < q.size(); i++)
-        q[i] = visit_count[i] > 0 ? total_value[i] / visit_count[i] : 0.0f;
+        q[i] = visit_count[i] > 0 ? total_value[i] / visit_count[i] : unvisited_q;
     return q;
 }
 
