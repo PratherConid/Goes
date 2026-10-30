@@ -49,11 +49,13 @@ inline torch::Tensor estimate_stone_points(const torch::Tensor& ownership, const
 // MCTS's non-terminal leaf evaluation stays consistent with the terminal ground
 // truth, whatever the game's scoring rule. MCTS batches always share one game's
 // config (see Evaluator::evaluate_batch's "all must share the same board"
-// contract), so a single rule/map per call is correct.
+// contract), so a single rule/map per call is correct. Capture counts differ
+// between positions, though, so capture_counts holds one row per batch entry
+// (that state's BoardState::capture_count()).
 inline torch::Tensor estimate_player_rewards(
-    const torch::Tensor& ownership, const std::string& rule,
-    const std::unordered_map<int, std::vector<int>>& stone_to_player_map, int num_players,
-    const std::vector<float>& komi, const std::vector<int>& capture_count)
+    const torch::Tensor& ownership, const std::vector<std::vector<int>>& capture_counts,
+    const std::string& rule, const std::unordered_map<int, std::vector<int>>& stone_to_player_map,
+    int num_players, const std::vector<float>& komi)
 {
     auto stone_points = estimate_stone_points(ownership, rule); // (B, num_stones)
     int64_t num_stones = stone_points.size(-1);
@@ -74,7 +76,7 @@ inline torch::Tensor estimate_player_rewards(
     }
     auto total = torch::matmul(stone_points, agg.to(stone_points.device())); // (B, num_players)
 
-    // Fold in komi (and, under "territory", capture_count - captures so far
+    // Fold in komi (and, under "territory", capture_counts - captures so far
     // are a fully-known quantity at any ply, not a prediction, so this is a
     // direct extension of the same treatment) before computing the
     // point-fraction denominator (below), matching compute_player_rewards()'s
@@ -85,11 +87,13 @@ inline torch::Tensor estimate_player_rewards(
                           .to(total.device());
         total = total + komi_t;
     }
-    if (rule == "territory" && (int64_t)capture_count.size() == num_players) {
-        std::vector<float> capture_count_f(capture_count.begin(), capture_count.end());
-        auto capture_t = torch::from_blob((void*)capture_count_f.data(), {(int64_t)capture_count_f.size()}, torch::kFloat32)
-                              .to(total.device());
-        total = total + capture_t;
+    if (rule == "territory") {
+        auto capture_t = torch::zeros({total.size(0), (int64_t)num_players}, torch::kFloat32);
+        auto capture_a = capture_t.accessor<float, 2>();
+        for (int64_t b = 0; b < total.size(0); b++)
+            for (int p = 0; p < num_players; p++)
+                capture_a[b][p] = static_cast<float>(capture_counts.at(b).at(p));
+        total = total + capture_t.to(total.device());
     }
 
     int64_t P = total.size(-1);

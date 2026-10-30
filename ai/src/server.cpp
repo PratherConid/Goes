@@ -495,9 +495,9 @@ int main(int argc, char* argv[]) {
                 {temperature});
             auto& [policy_vec, move_idx] = results[0];
             auto [_pol_t, ownership_t] = evaluator.evaluate_batch({sess->state.get()});
-            auto reward_t = estimate_player_rewards(ownership_t, sess->state->score_rule,
-                                                    sess->state->stone_to_player_map, sess->state->num_players,
-                                                    sess->state->komi, sess->state->capture_count());
+            auto reward_t = estimate_player_rewards(ownership_t, {sess->state->capture_count()},
+                                                    sess->state->score_rule, sess->state->stone_to_player_map,
+                                                    sess->state->num_players, sess->state->komi);
             // Turn ownership (who is moving) is independent of stone_to_player_map
             // (scoring-only, and now potentially multi-valued) - next_turn.player
             // is the sole source of truth, mirrors shared/boardState.ts.

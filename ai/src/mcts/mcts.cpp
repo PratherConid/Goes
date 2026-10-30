@@ -15,6 +15,14 @@
 
 using json = nlohmann::json;
 
+// Each state's own capture counts, one row per state - see estimate_player_rewards().
+static std::vector<std::vector<int>> capture_counts_of(const std::vector<const BoardState*>& states) {
+    std::vector<std::vector<int>> counts;
+    counts.reserve(states.size());
+    for (const BoardState* s : states) counts.push_back(s->capture_count());
+    return counts;
+}
+
 // Recursively serialise an MCTS node and its subtree to JSON.
 //   "move"           action taken from the parent state (omitted for the root)
 //   "visit_count"    N(parent, move): visits to the edge into this node (non-root)
@@ -300,9 +308,9 @@ MCTSTiming MCTS::simulate_batch(const std::vector<MCTSNode*>& roots) {
         auto t1 = std::chrono::high_resolution_clock::now();
         eval_time = std::chrono::duration<double>(t1 - t0).count();
 
-        auto reward_t = estimate_player_rewards(ownership_t, batch_states[0]->score_rule,
-                                                batch_states[0]->stone_to_player_map, batch_states[0]->num_players,
-                                                batch_states[0]->komi, batch_states[0]->capture_count());
+        auto reward_t = estimate_player_rewards(ownership_t, capture_counts_of(batch_states),
+                                                batch_states[0]->score_rule, batch_states[0]->stone_to_player_map,
+                                                batch_states[0]->num_players, batch_states[0]->komi);
         // Both tensors arrive on the model's device (see evaluate_batch()'s comment) -
         // transfer only here, right where CPU-side accessor reads actually happen.
         auto policy_cpu = policy_t.cpu();
@@ -407,9 +415,9 @@ MCTS::search_batch(
     MCTSTiming total;
     total.eval = std::chrono::duration<double>(t1 - t0).count();
 
-    auto reward_t = estimate_player_rewards(ownership_t, states[0]->score_rule,
-                                            states[0]->stone_to_player_map, states[0]->num_players,
-                                            states[0]->komi, states[0]->capture_count());
+    auto reward_t = estimate_player_rewards(ownership_t, capture_counts_of(cstates),
+                                            states[0]->score_rule, states[0]->stone_to_player_map,
+                                            states[0]->num_players, states[0]->komi);
     // Both tensors arrive on the model's device (see evaluate_batch()'s comment) -
     // transfer only here, right where CPU-side accessor reads actually happen.
     auto policy_cpu = policy_t.cpu();
