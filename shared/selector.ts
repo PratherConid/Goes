@@ -49,7 +49,7 @@ import { findSimplices, findQuads } from './topology.js';
 //   (convgt <node|edge|simp N|tri|quad> <num> SEL)  -- see convlt just above
 //   (convclt <node|edge|simp N|tri|quad> <num> SEL) -- same as convlt, but counts associated "from"
 //                               objects that are NOT selected instead ("c" for "complement") - so
-//                               e.g. (conva K 0 SEL) is exactly (convceq K 0 SEL) (zero NOT-selected
+//                               e.g. (conva K SEL) is exactly (convceq K 0 SEL) (zero NOT-selected
 //                               associated - i.e. every one of them is), and (conve K SEL) is exactly
 //                               (convgt K 0 SEL) (more than zero selected)
 //   (convceq <node|edge|simp N|tri|quad> <num> SEL) -- see convclt just above
@@ -396,10 +396,6 @@ export function parseSimpSelector(n: number, s: string): Selector {
     return parseSelectorAsType(s, simpType(n));
 }
 
-/** Formats `sel` back into the S-expression syntax parseNodeSelector()/parseEdgeSelector()/
- * parseTriangleSelector()/parseQuadSelector() accept - the inverse of parsing. Used e.g. to
- * round-trip a BoardModifier's own selector back into command-line text for display (see
- * src/sidePanel.ts's fmtModifiers). */
 // Renders a SelectorType back into its own grammar token(s) - "node"/"edge"/"quad" as-is, or
 // "simp N" (two tokens) for a simp type. Always uses the canonical "simp N" spelling, even for
 // simp 2 - round-tripping doesn't preserve "tri" sugar, only meaning (the same simp 2 Selector
@@ -409,6 +405,8 @@ function formatSelectorType(type: SelectorType): string {
     return n === null ? type : `simp ${n}`;
 }
 
+/** Formats `sel` back into the S-expression syntax parseNodeSelector()/parseEdgeSelector()/
+ * parseTriangleSelector()/parseQuadSelector() accept - the inverse of parsing. */
 export function formatSelector(sel: Selector): string {
     switch (sel.op) {
         case 'union': case 'inter': {

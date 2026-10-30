@@ -130,6 +130,7 @@ export function setupDom(): void {
         HTMLElement: dom.window.HTMLElement,
         HTMLButtonElement: dom.window.HTMLButtonElement,
         HTMLInputElement: dom.window.HTMLInputElement,
+        HTMLTextAreaElement: dom.window.HTMLTextAreaElement,
         Event: dom.window.Event,
         MouseEvent: dom.window.MouseEvent,
         KeyboardEvent: dom.window.KeyboardEvent,

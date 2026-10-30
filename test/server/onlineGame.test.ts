@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    useTestServer, withRestartedServer, connect, registerAndLogin, waitForEvents,
+    useTestServer, withRestartedServer, connect, registerAndLogin, waitForEvents, type TestClient,
 } from './testServer.ts';
 
 const server = useTestServer();
@@ -40,6 +40,27 @@ function fixedRequest(entries: [number, { type: string; name: string }][]) {
         randomOrder: [],
         fixed: true,
     };
+}
+
+// Seats `creator` in slot 1 and invites each of `invitees` ([client, account name]) into the next
+// slot, then has every one accept - game/create rejects a pre-seated 'client' slot, so an invite
+// (or game/join) is the only way to seat another account. Resolves to the game id, once playing.
+async function createStartedGame(
+    creator: TestClient, config: object, invitees: [TestClient, string][],
+): Promise<string> {
+    const { id } = await creator.req<{ id: string }>('game/create', {
+        config,
+        onlinePlayerRequest: fixedRequest([
+            [1, { type: 'local', name: '' }],
+            ...invitees.map(([, name], i): [number, { type: string; name: string }] =>
+                [i + 2, { type: 'pendingInvitedOnline', name }]),
+        ]),
+    });
+    let status = '';
+    for (const [client] of invitees)
+        status = (await client.req<{ status: string }>('game/invite-respond', { id, accept: true })).status;
+    assert.equal(status, 'playing', 'the last accept starts the game');
+    return id;
 }
 
 test('game/create + game/join broadcast byte-identical config to both observers (no personalized broadcasts)', async () => {
@@ -106,12 +127,7 @@ test('game/resign ends a 2-player game and broadcasts the resigned slot to both 
     const alice = await registerAndLogin(server.url, 'erin');
     const bob = await registerAndLogin(server.url, 'frank');
 
-    // Both slots pre-claimed -> starts immediately ('playing').
-    const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
-        config: passOnlyConfig(),
-        onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'client', name: 'frank' }]]),
-    });
-    assert.equal(status, 'playing');
+    const id = await createStartedGame(alice, passOnlyConfig(), [[bob, 'frank']]);
     await alice.req('game/subscribe', { id, position: 1 });
     await bob.req('game/subscribe', { id, position: 2 });
 
@@ -131,11 +147,7 @@ test('game/sendchat broadcasts to both observers, is seeded via game/subscribe, 
     const alice = await registerAndLogin(server.url, 'tina');
     const bob = await registerAndLogin(server.url, 'ursula');
 
-    const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
-        config: passOnlyConfig(),
-        onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'client', name: 'ursula' }]]),
-    });
-    assert.equal(status, 'playing');
+    const id = await createStartedGame(alice, passOnlyConfig(), [[bob, 'ursula']]);
     await alice.req('game/subscribe', { id, position: 1 });
     await bob.req('game/subscribe', { id, position: 2 });
 
@@ -164,11 +176,7 @@ test('game/sendchat is rejected once the game has finished', async () => {
     const alice = await registerAndLogin(server.url, 'wendy');
     const bob = await registerAndLogin(server.url, 'xavier');
 
-    const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
-        config: passOnlyConfig(),
-        onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'client', name: 'xavier' }]]),
-    });
-    assert.equal(status, 'playing');
+    const id = await createStartedGame(alice, passOnlyConfig(), [[bob, 'xavier']]);
 
     await alice.req('game/resign', { id });   // ends the game
 
@@ -185,11 +193,7 @@ test("a finished game's chat is included in a fresh LOGIN response", async () =>
     const alice = await registerAndLogin(server.url, 'yolanda');
     const bob = await registerAndLogin(server.url, 'zach');
 
-    const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
-        config: passOnlyConfig(),
-        onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'client', name: 'zach' }]]),
-    });
-    assert.equal(status, 'playing');
+    const id = await createStartedGame(alice, passOnlyConfig(), [[bob, 'zach']]);
 
     await alice.req('game/sendchat', { id, content: 'well played' });
     await alice.req('game/resign', { id });   // ends the game
@@ -213,10 +217,7 @@ test('a finished game survives a real server restart and shows up in a fresh LOG
         const alice = await registerAndLogin(url, 'grace');
         const bob = await registerAndLogin(url, 'henry');
 
-        const { id } = await alice.req<{ id: string }>('game/create', {
-            config: passOnlyConfig(),
-            onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'client', name: 'henry' }]]),
-        });
+        const id = await createStartedGame(alice, passOnlyConfig(), [[bob, 'henry']]);
         gameId = id;
         await alice.req('game/move', { id, moveIndex: null, clientIdx: 0 });
         await bob.req('game/move', { id, moveIndex: null, clientIdx: 1 });
@@ -303,6 +304,41 @@ test('game/create rejects invited usernames that are offline, proven via a real 
         await alice.close();
         await xavierAgain.close();
     });
+});
+
+test('game/create rejects a pre-seated client slot, or any slot type the real client never sends', async () => {
+    // 'client' is the server's own output type - accepting one would seat an account without its
+    // consent (and with a name nobody checked). Seating another account takes an invite or a join.
+    const alice = await registerAndLogin(server.url, 'oscar');
+    const penny = await registerAndLogin(server.url, 'penny');
+    for (const type of ['client', 'localEngine', 'bogus']) {
+        await assert.rejects(
+            alice.req('game/create', {
+                config: passOnlyConfig(),
+                onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type, name: 'penny' }]]),
+            }),
+            (e: any) => { assert.match(e.message, /can't be requested/); assert.equal(e.statusCode, 400); return true; },
+            `slot type ${type}`,
+        );
+    }
+    await alice.close();
+    await penny.close();
+});
+
+test('game/create rejects a server-engine slot whose name contains an HTML-special character', async () => {
+    // A 'serverEngine' slot's name is taken from the client as-is, so it gets the same check a
+    // registered username does - otherwise it would reach every observer as-is.
+    const alice = await registerAndLogin(server.url, 'rhea');
+    await assert.rejects(
+        alice.req('game/create', {
+            config: passOnlyConfig(),
+            onlinePlayerRequest: fixedRequest([
+                [1, { type: 'local', name: '' }], [2, { type: 'serverEngine', name: '<img/src=x/onerror=alert(1)>' }],
+            ]),
+        }),
+        (e: any) => { assert.match(e.message, /Invalid player name/); assert.equal(e.statusCode, 400); return true; },
+    );
+    await alice.close();
 });
 
 test('game/create ignores a stale invite left in the inactive list (fixed vs random)', async () => {
@@ -478,13 +514,7 @@ test('a withdraw request applies once every remaining player agrees, broadcastin
     const bob = await registerAndLogin(server.url, 'bella');
     const carol = await registerAndLogin(server.url, 'cindy');
 
-    const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
-        config: realThreePlayerConfig(),
-        onlinePlayerRequest: fixedRequest([
-            [1, { type: 'local', name: '' }], [2, { type: 'client', name: 'bella' }], [3, { type: 'client', name: 'cindy' }],
-        ]),
-    });
-    assert.equal(status, 'playing');
+    const id = await createStartedGame(alice, realThreePlayerConfig(), [[bob, 'bella'], [carol, 'cindy']]);
     await alice.req('game/subscribe', { id, position: 1 });
     await bob.req('game/subscribe', { id, position: 2 });
     await carol.req('game/subscribe', { id, position: 3 });
@@ -532,13 +562,7 @@ test('a decline notifies everyone else, leaves the game unmodified, and a too-la
     const bob = await registerAndLogin(server.url, 'elena');
     const carol = await registerAndLogin(server.url, 'felix');
 
-    const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
-        config: realThreePlayerConfig(),
-        onlinePlayerRequest: fixedRequest([
-            [1, { type: 'local', name: '' }], [2, { type: 'client', name: 'elena' }], [3, { type: 'client', name: 'felix' }],
-        ]),
-    });
-    assert.equal(status, 'playing');
+    const id = await createStartedGame(alice, realThreePlayerConfig(), [[bob, 'elena'], [carol, 'felix']]);
     await alice.req('game/subscribe', { id, position: 1 });
     await bob.req('game/subscribe', { id, position: 2 });
     await carol.req('game/subscribe', { id, position: 3 });
@@ -583,11 +607,7 @@ test('a decline notifies everyone else, leaves the game unmodified, and a too-la
 test('requesting withdrawal with no prior moves gets a specific error', async () => {
     const alice = await registerAndLogin(server.url, 'gabriel');
     const bob = await registerAndLogin(server.url, 'hannah');
-    const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
-        config: realTwoPlayerConfig(),
-        onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'client', name: 'hannah' }]]),
-    });
-    assert.equal(status, 'playing');
+    const id = await createStartedGame(alice, realTwoPlayerConfig(), [[bob, 'hannah']]);
 
     await assert.rejects(
         alice.req('game/withdraw-request', { id }),
@@ -605,11 +625,7 @@ test('requesting withdrawal with no prior moves gets a specific error', async ()
 test('a second withdraw request while one is already pending is rejected', async () => {
     const alice = await registerAndLogin(server.url, 'isabel');
     const bob = await registerAndLogin(server.url, 'jasper');
-    const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
-        config: realTwoPlayerConfig(),
-        onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'client', name: 'jasper' }]]),
-    });
-    assert.equal(status, 'playing');
+    const id = await createStartedGame(alice, realTwoPlayerConfig(), [[bob, 'jasper']]);
     await alice.req('game/move', { id, moveIndex: 0, clientIdx: 0 });
 
     const first = await alice.req<{ status: string }>('game/withdraw-request', { id });
@@ -631,11 +647,7 @@ test('a second withdraw request while one is already pending is rejected', async
 test('game/move and game/resign are rejected while a withdraw vote is pending, and the lock lifts once resolved', async () => {
     const alice = await registerAndLogin(server.url, 'kara');
     const bob = await registerAndLogin(server.url, 'liam');
-    const { id, status } = await alice.req<{ id: string; status: string }>('game/create', {
-        config: realTwoPlayerConfig(),
-        onlinePlayerRequest: fixedRequest([[1, { type: 'local', name: '' }], [2, { type: 'client', name: 'liam' }]]),
-    });
-    assert.equal(status, 'playing');
+    const id = await createStartedGame(alice, realTwoPlayerConfig(), [[bob, 'liam']]);
     await alice.req('game/move', { id, moveIndex: 0, clientIdx: 0 });
 
     const req = await alice.req<{ status: string }>('game/withdraw-request', { id });

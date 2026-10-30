@@ -10,6 +10,7 @@ import { scrypt, randomBytes, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { escapeHtml } from '@shared/types.js';
 
 const scryptAsync = promisify(scrypt) as (password: string, salt: string, keylen: number) => Promise<Buffer>;
 
@@ -58,13 +59,23 @@ async function verifyPassword(password: string, salt: string, hash: string): Pro
     return timingSafeEqual(candidate, stored);
 }
 
+// Why `name` can't be a username, or null if it can. Clients embed player names in innerHTML
+// templates as-is, so a name must be left unchanged by escapeHtml; whitespace is rejected too,
+// since commands taking a name (login, soi, ...) split their arguments on whitespace.
+export function userNameError(name: string): string | null {
+    if (/\s/.test(name)) return 'Username cannot contain spaces';
+    if (name !== escapeHtml(name)) return "Username cannot contain '&', '<' or '>'";
+    return null;
+}
+
 // Registers a new user, appending one JSON-line to state.filePath. Returns an
-// error (without touching the file) if the name contains whitespace, is
+// error (without touching the file) if the name is invalid (see userNameError), is
 // already taken, or another registration for the same name is currently in flight.
 export async function registerUser(
     state: UserStoreState, name: string, password: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-    if (/\s/.test(name)) return { ok: false, error: 'Username cannot contain spaces' };
+    const nameError = userNameError(name);
+    if (nameError) return { ok: false, error: nameError };
     if (state.users.has(name)) return { ok: false, error: 'Username already exists' };
     // Reserve the name synchronously, before any await, so a second concurrent
     // registerUser() call for the same name sees this reservation immediately

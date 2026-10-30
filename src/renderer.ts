@@ -1178,13 +1178,15 @@ export class Renderer {
         this.mainSvg.addEventListener('pointerdown', e => this._onBoardPointerDown(e));
         // Camera roll (left/right) and scale (up/down, same 1.02 multiply/divide as the status
         // panel's own Scale textbox - see src/camera.ts) - global so they work regardless of which
-        // side-panel node is focused, but skipped while a text input (cmdInput, the projMat cell
-        // editor, etc.) has focus, or while any popup (e.g. the 'board' command's board-description
-        // textarea) is showing, so they don't hijack arrow-key input meant for those instead.
+        // side-panel node is focused, but skipped while a text input or textarea (cmdInput, the
+        // projMat cell editor, the chat box, etc.) has focus, or while any popup (e.g. the 'board'
+        // command's board-description textarea) is showing, so they don't hijack arrow-key input
+        // meant for those instead.
         document.addEventListener('keydown', e => {
             if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
             if (this.popUp) return;
-            if (document.activeElement instanceof HTMLInputElement) return;
+            const focused = document.activeElement;
+            if (focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement) return;
             if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
                 this._active.viewport.quat = applyRoll(this._active.viewport.quat, e.key === 'ArrowLeft' ? 1 : -1);
                 this._render();

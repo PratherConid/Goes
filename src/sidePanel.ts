@@ -1,16 +1,9 @@
 // Side-panel content nodes, navigable as a tree (see SidePanelHierarchy) -
 // Home/Up buttons plus one full-width button per child.
 
-import type { BoardView, PlayerInfo, TurnInfo, ColorGen } from '@shared/types.js';
+import { escapeHtml, type BoardView, type PlayerInfo, type TurnInfo, type ColorGen } from '@shared/types.js';
 import type { GameConfig } from '@shared/gameConfig.js';
 import { unparseCleg } from '@shared/clegParser.js';
-
-// Minimal HTML-escaping for text embedded in an innerHTML template - needed for cleg source text
-// (unparseCleg), which can contain '<'/'>' (comparison operators) or '&' that would otherwise be
-// misread as markup.
-function escapeHtml(s: string): string {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
 
 export enum SidePanelContent {
     Home                = 'home',

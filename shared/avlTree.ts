@@ -99,6 +99,8 @@ function cloneNode<T>(n: AVLNode<T> | null, copyValue: (v: T) => T): AVLNode<T> 
 export class AVLTree<T> {
     private root: AVLNode<T> | null = null;
     private readonly cmp: Comparator<T>;
+    // Set semantics (per this.cmp): inserting a value already present, or removing one that isn't,
+    // leaves both the tree and size unchanged.
     size = 0;
 
     constructor(cmp: Comparator<T>) {
@@ -106,6 +108,7 @@ export class AVLTree<T> {
     }
 
     insert(value: T): void {
+        if (this.has(value)) return;
         this.root = insertNode(this.root, value, this.cmp);
         this.size++;
     }
@@ -118,6 +121,7 @@ export class AVLTree<T> {
     }
 
     remove(value: T): void {
+        if (!this.has(value)) return;
         this.root = removeNode(this.root, value, this.cmp);
         this.size--;
     }

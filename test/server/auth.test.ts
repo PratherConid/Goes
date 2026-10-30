@@ -44,6 +44,24 @@ test('registering an existing name is rejected', async () => {
     await client.close();
 });
 
+test('registering a name with whitespace or an HTML-special character is rejected', async () => {
+    // Clients embed usernames in innerHTML as-is, so a name escapeHtml would change can't exist.
+    const client = await connect(server.url);
+    for (const [name, message] of [
+        ['has space', /cannot contain spaces/],
+        ['<img/src=x/onerror=alert(1)>', /cannot contain '&', '<' or '>'/],
+        ['a&b', /cannot contain '&', '<' or '>'/],
+        ['a>b', /cannot contain '&', '<' or '>'/],
+    ] as const) {
+        await assert.rejects(
+            client.req('REGISTER', { name, password: 'pw' }),
+            (e: any) => { assert.match(e.message, message); return true; },
+            `name ${JSON.stringify(name)}`,
+        );
+    }
+    await client.close();
+});
+
 test('logging in from a second connection while already logged in is rejected', async () => {
     const client = await registerAndLogin(server.url, 'dave');
 

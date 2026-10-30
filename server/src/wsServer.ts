@@ -5,7 +5,7 @@ import { OnlinePlayerRequest } from '@shared/types.js';
 import { GameConfig } from '@shared/gameConfig.js';
 import { engineManager, aiMove } from './engineManager.js';
 import { httpError } from './httpError.js';
-import { loadUserStore, registerUser, verifyLogin, userExists } from './userStore.js';
+import { loadUserStore, registerUser, verifyLogin, userExists, userNameError } from './userStore.js';
 import { loadGameRecordStore } from './gameRecordStore.js';
 
 // ── Wire protocol ──────────────────────────────────────────────────────────────
@@ -239,10 +239,22 @@ export function attachWebSocket(server: Server, dataDir: string): void {
                 // - createGame() itself ignores the other one entirely (see its own
                 // fixed-branch), so a stale invite left over in the inactive list (e.g.
                 // from before switching fixed/random modes) must not block a request
-                // that no longer uses it.
+                // that no longer uses it. A slot may only be requested as 'local' (the
+                // creator), 'serverEngine', or 'pendingInvitedOnline' - 'client' is the
+                // server's own output type (createGame()/joinGame()/respondToInvite()), so
+                // accepting one here would seat an account in the game without its consent.
+                // Every active slot's name must also pass userNameError (the same check a
+                // registered username does) - a 'serverEngine' slot's name is whatever the
+                // client sent, yet is broadcast to every other observer like any other slot's.
                 const activeEntries = request.fixed ? [...request.fixedOrder.values()] : request.randomOrder;
                 const offlineInvited = new Set<string>();
                 for (const pi of activeEntries) {
+                    if (pi.type !== 'local' && pi.type !== 'serverEngine' && pi.type !== 'pendingInvitedOnline')
+                        throw httpError(
+                            400,
+                            `Slot type '${pi.type}' can't be requested - use local, serverEngine, or pendingInvitedOnline`);
+                    const nameError = userNameError(pi.name);
+                    if (nameError) throw httpError(400, `Invalid player name "${pi.name}": ${nameError}`);
                     if (pi.type !== 'pendingInvitedOnline') continue;
                     if (!userExists(userStoreState, pi.name))
                         throw httpError(400, `Invited user "${pi.name}" does not exist`);

@@ -793,6 +793,14 @@ export interface BoardView {
     passEnabled: boolean;
 }
 
+/** Minimal HTML-escaping for text embedded in an innerHTML template - needed for cleg source text
+ * (unparseCleg), which can contain '<'/'>' (comparison operators) or '&' that would otherwise be
+ * misread as markup. Usernames are instead required to be left unchanged by this (see
+ * server/src/userStore.ts's userNameError), so clients can embed them as-is. */
+export function escapeHtml(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 const _ID_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 export function makeId(len: number): string {
     let id = '';

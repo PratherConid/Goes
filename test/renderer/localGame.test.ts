@@ -163,3 +163,20 @@ test('sending a chat message in a local game updates the panel directly, no serv
     assert.match(document.getElementById('chat-log')!.textContent ?? '', /\(⌂\): gg/);
     assert.equal(textarea.value, '');
 });
+
+test('arrow keys typed into the chat textarea do not roll or scale the board camera', () => {
+    const renderer: any = createRenderer();
+    (document.querySelector('#home-panel button[data-child="status"]') as HTMLButtonElement).click();
+    document.querySelector<HTMLButtonElement>('#status-chat-btn')!.click();
+
+    const textarea = document.getElementById('chat-input') as HTMLTextAreaElement;
+    textarea.focus();
+    const { quat, scale } = renderer._active.viewport;
+    for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']) {
+        const e = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+        textarea.dispatchEvent(e);
+        assert.equal(e.defaultPrevented, false, `${key} must keep moving the textarea's own cursor`);
+    }
+    assert.equal(renderer._active.viewport.quat, quat);
+    assert.equal(renderer._active.viewport.scale, scale);
+});
