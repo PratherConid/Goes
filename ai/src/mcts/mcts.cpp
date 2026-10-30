@@ -382,26 +382,26 @@ MCTS::visit_counts_to_policy(const std::vector<int>& vc, float temperature,
                               std::mt19937& rng) {
     std::vector<int> vc2 = vc;
     int total = std::accumulate(vc2.begin(), vc2.end(), 0);
-    if (total == 0) std::fill(vc2.begin(), vc2.end(), 1);
+    if (total == 0) {
+        std::fill(vc2.begin(), vc2.end(), 1);
+        total = static_cast<int>(vc2.size());
+    }
 
     int n = static_cast<int>(vc2.size());
+    // The returned distribution is the plain visit-count distribution regardless of `temperature`
+    // - it's the policy training target, and temperature only shapes which move gets played.
     std::vector<float> dist(n);
-    int move;
+    for (int i = 0; i < n; i++) dist[i] = static_cast<float>(vc2[i]) / static_cast<float>(total);
 
+    int move;
     if (temperature == 0.0f) {
         move = static_cast<int>(
             std::max_element(vc2.begin(), vc2.end()) - vc2.begin());
-        std::fill(dist.begin(), dist.end(), 0.0f);
-        dist[move] = 1.0f;
     } else {
-        float sum = 0.0f;
-        for (int i = 0; i < n; i++) {
-            dist[i] = std::pow(static_cast<float>(vc2[i]), 1.0f / temperature);
-            sum += dist[i];
-        }
-        for (float& d : dist) d /= sum;
-        // Sample from dist
-        std::discrete_distribution<int> distr(dist.begin(), dist.end());
+        std::vector<float> weights(n);
+        for (int i = 0; i < n; i++)
+            weights[i] = std::pow(static_cast<float>(vc2[i]), 1.0f / temperature);
+        std::discrete_distribution<int> distr(weights.begin(), weights.end());
         move = distr(rng);
     }
     return {std::move(dist), move};
