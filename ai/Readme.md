@@ -228,7 +228,7 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
     - `resigns` _(optional, default none)_: `[[ply, [player, ...]], ...]` — who resigned at each ply, the same shape as `shared/types.ts`'s `FinishedGame.toJSON()`'s `resigns` field. Replayed interleaved with `moves` (see `replay_tail()`, `server.cpp`), since a resigned player may always pass even under `forcedPassOnly`, but the resignation must be applied at the ply it actually happened.
     - `board`: current stone array (length N) — used to verify the replayed state matches the client
     - `session_id`: opaque string returned by a previous response; omit, `""`, or `null` for a new session
-    - `num_simulations` _(optional)_: overrides the server default
+    - `num_simulations` _(optional)_: overrides the server default; must be `>= 1` (the request is rejected otherwise)
     - `temperature` _(optional)_: overrides the server default; `0` = argmax visit count, `>0` = sample from the visit distribution
   - **Response:** `{move, stone, policy, value, session_id}`
     - `move`: board index (0-based) or `null` for pass
@@ -240,7 +240,7 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
   - Checkpoint directories are opaque hash names, not derivable from `config` - the server scans `ai/checkpoints`'s subdirectories once (first request only; later-created directories need a server restart to be picked up) and matches `config` against each directory's saved config via `weak_equal()` (see **Checkpoint Directories and Matching**, below). The matched directory's model is then loaded lazily on first use and cached.
 - `GET /health` — returns `{status, loaded_tags, device}`.
 
-`goes_server` accepts `--checkpoint-dir PATH` (default `ai/checkpoints`), `--port N` (default `8765`), `--sims N` (default number of MCTS simulations, default `200`), `--temperature F` (default `0.0` = argmax visit count) and `--cpu` (force CPU even if CUDA is available). The `GOES_CHECKPOINT_DIR`, `GOES_NUM_SIMS` and `GOES_TEMPERATURE` environment variables override the checkpoint directory, default simulation count and default temperature respectively (they are applied after the flags, so they win).
+`goes_server` accepts `--checkpoint-dir PATH` (default `ai/checkpoints`), `--port N` (default `8765`), `--sims N` (default number of MCTS simulations, default `200`, must be `>= 1`), `--temperature F` (default `0.0` = argmax visit count) and `--cpu` (force CPU even if CUDA is available). The `GOES_CHECKPOINT_DIR`, `GOES_NUM_SIMS` and `GOES_TEMPERATURE` environment variables override the checkpoint directory, default simulation count and default temperature respectively (they are applied after the flags, so they win).
 
 ## Key Flags
 
@@ -250,7 +250,7 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
 | `--iterations N` | `200` | Training iterations |
 | `--self-play-games N` | `10` | Games to complete before each training step |
 | `--gamegen-batch-size N` | `25` | Games generated in parallel (pool size) |
-| `--num-simulations N` | `200` | MCTS sims per move |
+| `--num-simulations N` | `200` | MCTS sims per move - must be `>= 1` |
 | `--linear-move-bound K1 K2` | _(none)_ | End games after Uniform(K1,K2)×N plies, resampled each time a game spawns |
 | `--train-fraction F` | `0.1` | Train on `F × current buffer size` randomly selected game states per iteration, rounded up w.r.t. batch size |
 | `--batch-size N` | `128` | Training batch size |

@@ -207,7 +207,13 @@ static Args parse_args(int argc, char* argv[]) {
         else if (a == "--iterations")      args.iterations      = std::stoi(argv[++i]);
         else if (a == "--self-play-games") args.self_play_games = std::stoi(argv[++i]);
         else if (a == "--gamegen-batch-size") args.gamegen_batch_size = std::stoi(argv[++i]);
-        else if (a == "--num-simulations") args.num_simulations = std::stoi(argv[++i]);
+        else if (a == "--num-simulations") {
+            args.num_simulations = std::stoi(argv[++i]);
+            if (args.num_simulations < 1) {
+                std::cerr << "--num-simulations must be >= 1 (got " << args.num_simulations << ")\n";
+                std::exit(1);
+            }
+        }
         else if (a == "--train-fraction")  args.train_fraction  = std::stof(argv[++i]);
         else if (a == "--batch-size")      args.batch_size      = std::stoi(argv[++i]);
         else if (a == "--buffer-size")     args.buffer_size     = std::stoi(argv[++i]);

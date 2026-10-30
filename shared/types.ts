@@ -345,7 +345,7 @@ export type PlayerType = 'local' | 'serverEngine' | 'client' | 'pendingInvitedOn
 export class PlayerInfo {
     type: PlayerType;
     name: string;
-    emsim: number;  // AI simulations per move (0 = server default); for serverEngine slots
+    emsim: number;  // AI simulations per move; for serverEngine slots
     temp: number;   // AI temperature (0 = server default); for serverEngine slots
 
     constructor(type: PlayerType, name: string, emsim = 0, temp = 0) {

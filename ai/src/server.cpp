@@ -56,7 +56,7 @@
 //                                    the replayed state matches the client's state
 //   session_id        string|null  - opaque token returned by a previous response;
 //                                    omit or pass "" / null for a new session
-//   num_simulations   int (optional, overrides server default)
+//   num_simulations   int (optional, overrides server default; must be >= 1)
 //   temperature       float (optional, overrides server default; 0 = argmax
 //                      visit count, >0 = sample from visit distribution)
 //
@@ -372,6 +372,10 @@ int main(int argc, char* argv[]) {
     if (const char* e = std::getenv("GOES_CHECKPOINT_DIR")) ckpt_dir = e;
     if (const char* e = std::getenv("GOES_NUM_SIMS"))      default_sims = std::stoi(e);
     if (const char* e = std::getenv("GOES_TEMPERATURE"))   default_temperature = std::stof(e);
+    if (default_sims < 1) {
+        std::cerr << "--sims / GOES_NUM_SIMS must be >= 1 (got " << default_sims << ")\n";
+        return 1;
+    }
 
     ServerState ss;
     ss.device      = (torch::cuda::is_available() && !use_cpu) ? torch::kCUDA : torch::kCPU;
@@ -392,6 +396,11 @@ int main(int argc, char* argv[]) {
             std::string session_id;
             if (j.contains("session_id") && j["session_id"].is_string())
                 session_id = j["session_id"].get<std::string>();
+
+            // Checked before any session/model work, so a rejected request changes nothing.
+            int num_sims = j.value("num_simulations", ss.default_sims);
+            if (num_sims < 1)
+                throw std::runtime_error("num_simulations must be >= 1, got " + std::to_string(num_sims));
 
             GameConfig game_cfg     = parse_game_cfg(cfg);
             const std::string& tag  = find_checkpoint_dir(ss, game_cfg);
@@ -472,7 +481,6 @@ int main(int argc, char* argv[]) {
 
             // ── Run MCTS ─────────────────────────────────────────────────────
 
-            int num_sims = j.value("num_simulations", ss.default_sims);
             float temperature = j.value("temperature", ss.default_temperature);
             // Server sessions always evaluate with a single model (BoardState::player_model_id is
             // always the default all-1s from new_state() here) - wrap it as a 1-entry map purely
