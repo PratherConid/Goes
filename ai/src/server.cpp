@@ -254,19 +254,28 @@ static std::optional<fs::path> find_config_json(const fs::path& dir) {
 // first time this is called (see that field's own doc comment for the
 // no-live-refresh caveat), then returns the first entry that weak_equal-
 // matches request_cfg (training/self_play.h) - i.e. agrees on every field
-// the old model_tag() encoded into its directory name.
+// the old model_tag() encoded into its directory name. A directory whose
+// config can't be read or parsed is skipped with a warning rather than
+// failing every request, and the index is only stored once the whole scan
+// has finished.
 static const std::string& find_checkpoint_dir(ServerState& ss, const GameConfig& request_cfg) {
     if (!ss.checkpoint_index.has_value()) {
-        ss.checkpoint_index.emplace();
+        std::vector<std::pair<std::string, GameConfig>> index;
         if (fs::exists(ss.ckpt_dir)) {
             for (auto& e : fs::directory_iterator(ss.ckpt_dir)) {
                 if (!e.is_directory()) continue;
                 auto cfg_path = find_config_json(e.path());
                 if (!cfg_path.has_value()) continue;
-                json cfg_json = json::parse(std::ifstream(*cfg_path));
-                ss.checkpoint_index->emplace_back(e.path().filename().string(), parse_game_cfg(cfg_json));
+                try {
+                    json cfg_json = json::parse(std::ifstream(*cfg_path));
+                    index.emplace_back(e.path().filename().string(), parse_game_cfg(cfg_json));
+                } catch (const std::exception& ex) {
+                    std::cerr << "[inference] Skipping checkpoint " << e.path().filename().string()
+                              << " - unreadable config " << cfg_path->filename() << ": " << ex.what() << "\n";
+                }
             }
         }
+        ss.checkpoint_index = std::move(index);
     }
     for (auto& [dir, cfg] : *ss.checkpoint_index)
         if (weak_equal(cfg, request_cfg)) return dir;

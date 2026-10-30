@@ -93,8 +93,8 @@ static std::vector<TurnInfo> parse_turn_list(const json& j) {
     std::vector<TurnInfo> out;
     for (auto& t : j) {
         TurnInfo ti;
-        ti.player = t["player"].get<int>();
-        ti.stones = t["stones"].get<std::vector<int>>();
+        ti.player = t.at("player").get<int>();
+        ti.stones = t.at("stones").get<std::vector<int>>();
         ti.is_protected = t.value("protected", std::vector<int>(ti.stones.size(), 0));
         ti.friendly     = t.value("friendly",  std::vector<int>(ti.stones.size(), 0));
         out.push_back(std::move(ti));
@@ -134,17 +134,19 @@ static std::optional<int> parse_max_plies(const json& j) {
     return j.is_null() ? std::nullopt : std::optional<int>(j.get<int>());
 }
 
+// Required keys are read via .at(), not operator[]: on a const json, operator[] with a missing key
+// is undefined behavior (an assert compiled out under NDEBUG), not an exception.
 GameConfig parse_game_cfg(const json& cfg) {
     GameConfig game_cfg;
-    game_cfg.board_descr = cfg["boardDescr"].get<std::string>();
-    game_cfg.num_stones  = cfg["numStones"].get<int>();
-    game_cfg.num_players = cfg["numPlayers"].get<int>();
-    game_cfg.turn_list   = parse_turn_list(cfg["turnList"]);
+    game_cfg.board_descr = cfg.at("boardDescr").get<std::string>();
+    game_cfg.num_stones  = cfg.at("numStones").get<int>();
+    game_cfg.num_players = cfg.at("numPlayers").get<int>();
+    game_cfg.turn_list   = parse_turn_list(cfg.at("turnList"));
     game_cfg.player_stone_place_limit = parse_player_stone_place_limit(
         cfg.value("playerStonePlaceLimit", json(nullptr)), game_cfg.num_stones, game_cfg.num_players);
     game_cfg.global_stone_place_limit = parse_global_stone_place_limit(
         cfg.value("globalStonePlaceLimit", json(nullptr)), game_cfg.num_stones);
-    game_cfg.stone_to_player_map = parse_stone_to_player_map(cfg["stoneToPlayerMap"]);
+    game_cfg.stone_to_player_map = parse_stone_to_player_map(cfg.at("stoneToPlayerMap"));
     game_cfg.forced_pass_only = cfg.value("forcedPassOnly", true);
     game_cfg.score_rule       = cfg.value("scoreRule", std::string("area"));
     game_cfg.komi             = cfg.value("komi", std::vector<float>());
@@ -260,9 +262,9 @@ nlohmann::json PlyResult::to_json() const {
 
 PlyResult parse_ply_result(const json& j) {
     PlyResult pr;
-    pr.move   = j["move"].get<int>();
-    pr.stone  = j["stone"].get<int>();
-    pr.policy = j["policy"].get<std::vector<float>>();
+    pr.move   = j.at("move").get<int>();
+    pr.stone  = j.at("stone").get<int>();
+    pr.policy = j.at("policy").get<std::vector<float>>();
     return pr;
 }
 
