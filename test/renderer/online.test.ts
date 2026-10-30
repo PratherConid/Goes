@@ -25,7 +25,7 @@ const initialGame = new BoardState(
     [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, false, 'area', [0, 0],
     'situational', false, null, new Array(bc.N).fill(0), bc,
 );
-const renderer = new Renderer(initialGame);
+const renderer = new Renderer(initialGame, 0);
 renderer.init();
 
 // The one FakeWebSocket constructed by renderer.ts's module-scope `const conn
@@ -56,7 +56,7 @@ test('LOGIN round trip updates the status panel\'s Your Name line', async () => 
 
 test("game/start activates the online game and passBtn reflects _isMyTurn()'s 'client' branch", async () => {
     const config = {
-        boardDescr: 'rectB(3, 3);', numStones: 2, numPlayers: 2,
+        boardDescr: 'rectB(3, 3);', boardSeed: 0, numStones: 2, numPlayers: 2,
         turnList: [
             { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
             { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },
@@ -78,7 +78,7 @@ test("game/start activates the online game and passBtn reflects _isMyTurn()'s 'c
 
 test("it is not alice's turn once the opponent's slot is next", async () => {
     const config = {
-        boardDescr: 'rectB(3, 3);', numStones: 2, numPlayers: 2,
+        boardDescr: 'rectB(3, 3);', boardSeed: 0, numStones: 2, numPlayers: 2,
         turnList: [
             { player: 1, stones: [1, 0], protected: [0, 0], friendly: [0, 0] },
             { player: 2, stones: [0, 1], protected: [0, 0], friendly: [0, 0] },

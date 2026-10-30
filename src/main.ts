@@ -1,6 +1,6 @@
 import { BoardState } from '@shared/boardState.js';
 import { buildBoardFromCleg } from '@shared/clegEval.js';
-import { GameConfig } from '@shared/gameConfig.js';
+import { GameConfig, randomBoardSeed } from '@shared/gameConfig.js';
 import { loadFont, BUNDLED_FONT_NAMES } from '@shared/glyphRaster.js';
 import { Renderer } from './renderer.js';
 
@@ -21,13 +21,14 @@ async function main() {
         loadBundledFonts(),
     ]);
     const cfg = GameConfig.fromJSON(raw);
-    const bc  = buildBoardFromCleg(cfg.boardDescr);
+    const boardSeed = randomBoardSeed();
+    const bc  = buildBoardFromCleg(cfg.boardDescr, boardSeed);
     const game = new BoardState(
         cfg.numStones, cfg.numPlayers, cfg.turnList, cfg.playerStonePlaceLimit, cfg.globalStonePlaceLimit,
         cfg.stoneToPlayerMap, cfg.forcedPassOnly, cfg.scoreRule, cfg.komi, cfg.koRule, cfg.allowSuicide,
         cfg.maxPlies, new Array(bc.N).fill(0), bc,
     );
-    const renderer = new Renderer(game);
+    const renderer = new Renderer(game, boardSeed);
     renderer.init();
 }
 

@@ -14,28 +14,31 @@ import {
     quadCentering, quadOctarize, triangularBoard, rectangularBoard, tetrahedronBoard, applyModifier,
 } from '../shared/boardConfig.ts';
 import type { LocalReplaceSelector } from '../shared/types.ts';
-import { parseTriangleSelector } from '../shared/selector.ts';
+import { parseTriangleSelector, ClegRandom } from '../shared/selector.ts';
 import { edgeCount, degree, boardFromEdges } from './graphHelpers.ts';
+
+// The generator every selector/board-modifier call in this file draws from.
+const random = new ClegRandom(0);
 
 test('genericLocalReplace with a single SimpCentralize n=2 selector is identical to triCentralize', () => {
     const bc = triangularBoard(2);
-    assert.deepEqual(genericLocalReplace(bc, [{ kind: 'SimpCentralize', n: 2 }]), triCentralize(bc));
+    assert.deepEqual(genericLocalReplace(bc, [{ kind: 'SimpCentralize', n: 2 }], random), triCentralize(bc, random));
 });
 
 test('genericLocalReplace with a single QuadCentralize selector is identical to quadCentralize', () => {
     const bc = rectangularBoard(2, 2);
-    assert.deepEqual(genericLocalReplace(bc, [{ kind: 'QuadCentralize' }]), quadCentralize(bc));
+    assert.deepEqual(genericLocalReplace(bc, [{ kind: 'QuadCentralize' }], random), quadCentralize(bc, random));
 });
 
 test('genericLocalReplace with a single QuadOctarize selector is identical to quadOctarize', () => {
     const bc = rectangularBoard(2, 2);
-    assert.deepEqual(genericLocalReplace(bc, [{ kind: 'QuadOctarize' }]), quadOctarize(bc));
+    assert.deepEqual(genericLocalReplace(bc, [{ kind: 'QuadOctarize' }], random), quadOctarize(bc, random));
 });
 
 test('triCentralize adds one hub per triangle, connected to all 3 corners, original edges unchanged (removed then re-added)', () => {
     // triangularBoard(2) is a bare K3: 3 nodes, 1 triangle, 3 edges.
     const bc = triangularBoard(2);
-    const result = triCentralize(bc);
+    const result = triCentralize(bc, random);
     assert.equal(result.N, 4);
     assert.equal(edgeCount(result.adj), 6); // 3 original + 3 hub-to-corner
     // Original 3x3 block reads the same as before, even though genericLocalReplace excludes these
@@ -51,7 +54,7 @@ test('triCentralize adds one hub per triangle, connected to all 3 corners, origi
 test('quadCentralize adds one hub per quad, connected to all 4 corners, original edges unchanged (removed then re-added)', () => {
     // rectangularBoard(2, 2) is a single 4-cycle: 4 nodes, 1 quad, 4 edges.
     const bc = rectangularBoard(2, 2);
-    const result = quadCentralize(bc);
+    const result = quadCentralize(bc, random);
     assert.equal(result.N, 5);
     assert.equal(edgeCount(result.adj), 8); // 4 original + 4 hub-to-corner
     for (let i = 0; i < 4; i++)
@@ -64,7 +67,7 @@ test('quadCentralize adds one hub per quad, connected to all 4 corners, original
 test('quadOctarize replaces a quad with a real octahedron: 12 edges total, two antipodal degree-4 apexes not connected to each other', () => {
     // rectangularBoard(2, 2) is a single 4-cycle: 4 nodes, 1 quad, 4 equatorial edges.
     const bc = rectangularBoard(2, 2);
-    const result = quadOctarize(bc);
+    const result = quadOctarize(bc, random);
     assert.equal(result.N, 6); // 4 corners + 2 apexes
     assert.equal(edgeCount(result.adj), 12); // 4 equatorial (re-added) + 4+4 apex-to-corner
     // The equatorial ring reads the same as bc's own 4-cycle, even though it was excluded from the
@@ -90,21 +93,21 @@ test('quadOctarize accepts a restricting sel, unlike before this refactor', () =
     const bc = boardFromEdges(6, [[0, 1], [1, 2], [2, 3], [3, 0], [1, 4], [4, 5], [5, 2]]);
 
     const restrictedSel = { op: 'all' as const, type: 'quad' as const };
-    const result = quadOctarize(bc, restrictedSel);
+    const result = quadOctarize(bc, random, restrictedSel);
     // Both quads found -> 6 original + 2*2 apexes = 10.
     assert.equal(result.N, 10);
 });
 
 test('genericLocalReplace with a single QuadCentering selector is identical to quadCentering', () => {
     const bc = rectangularBoard(2, 2);
-    assert.deepEqual(genericLocalReplace(bc, [{ kind: 'QuadCentering' }]), quadCentering(bc));
+    assert.deepEqual(genericLocalReplace(bc, [{ kind: 'QuadCentering' }], random), quadCentering(bc, random));
 });
 
 test('quadCentering adds one hub per quad, connected to all 4 corners, but the quad\'s own 4 ' +
     'original edges are dropped rather than kept', () => {
     // rectangularBoard(2, 2) is a single 4-cycle: 4 nodes, 1 quad, 4 edges.
     const bc = rectangularBoard(2, 2);
-    const result = quadCentering(bc);
+    const result = quadCentering(bc, random);
     assert.equal(result.N, 5);
     assert.equal(edgeCount(result.adj), 4); // only the 4 hub-to-corner edges - no original edges survive
     for (let i = 0; i < 4; i++)
@@ -118,7 +121,7 @@ test('simpCentering generalizes quadCentering to n-simplices: a triangle loses i
     'ending up connected only through the new hub', () => {
     // triangularBoard(2) is a bare K3: 3 nodes, 1 triangle, 3 edges.
     const bc = triangularBoard(2);
-    const result = simpCentering(bc, 2);
+    const result = simpCentering(bc, 2, random);
     assert.equal(result.N, 4);
     assert.equal(edgeCount(result.adj), 3); // only the 3 hub-to-corner edges
     for (let i = 0; i < 3; i++)
@@ -131,7 +134,7 @@ test('simpCentering generalizes quadCentering to n-simplices: a triangle loses i
 test('simpCentering generalizes beyond triangles: n=3 on a K4 tetrahedron drops all 6 original ' +
     'edges, leaving only the 4 hub-to-corner edges', () => {
     const bc = tetrahedronBoard();
-    const result = simpCentering(bc, 3);
+    const result = simpCentering(bc, 3, random);
     assert.equal(result.N, 5);
     assert.equal(edgeCount(result.adj), 4);
     for (let i = 0; i < 4; i++)
@@ -145,7 +148,7 @@ test('a shared edge consumed only by Centering-kind selectors is genuinely dropp
     // Two triangles sharing edge (1, 2): {0,1,2} and {1,2,3}.
     const bc = boardFromEdges(4, [[0, 1], [1, 2], [2, 0], [1, 3], [3, 2]]);
 
-    const result = simpCentering(bc, 2);
+    const result = simpCentering(bc, 2, random);
     // Both triangles get their own hub; the shared edge (1, 2) is consumed by both but re-added by
     // neither, so it stays gone.
     assert.equal(result.N, 6);
@@ -158,7 +161,7 @@ test('a mixed selectors list adds one independent local replacement per face - u
     const bc = boardFromEdges(N, [[0, 1], [1, 2], [2, 0], [1, 3], [3, 4], [4, 2]]);
 
     const selectors: LocalReplaceSelector[] = [{ kind: 'SimpCentralize', n: 2 }, { kind: 'QuadCentralize' }];
-    const both = genericLocalReplace(bc, selectors);
+    const both = genericLocalReplace(bc, selectors, random);
     // One hub per face - no gluing, so always exactly N + (number of faces), regardless of shared edges.
     assert.equal(both.N, N + 2);
     const triHub = 5, quadHub = 6;
@@ -173,7 +176,7 @@ test('a mixed selectors list adds one independent local replacement per face - u
 
 test('an empty selectors list is a total no-op', () => {
     const bc = triangularBoard(2);
-    const result = genericLocalReplace(bc, []);
+    const result = genericLocalReplace(bc, [], random);
     assert.deepEqual(result.adj, bc.adj);
 });
 
@@ -181,39 +184,39 @@ test('applyModifier matches calling triCentralize/quadCentralize/quadOctarize/qu
     'simpCentering/genericLocalReplace directly', () => {
     const triBc = triangularBoard(2);
     assert.deepEqual(
-        applyModifier(triBc, { kind: 'LocalReplace', selectors: [{ kind: 'SimpCentralize', n: 2 }] }),
-        triCentralize(triBc));
+        applyModifier(triBc, { kind: 'LocalReplace', selectors: [{ kind: 'SimpCentralize', n: 2 }] }, random),
+        triCentralize(triBc, random));
     const quadBc = rectangularBoard(2, 2);
     assert.deepEqual(
-        applyModifier(quadBc, { kind: 'LocalReplace', selectors: [{ kind: 'QuadCentralize' }] }),
-        quadCentralize(quadBc));
+        applyModifier(quadBc, { kind: 'LocalReplace', selectors: [{ kind: 'QuadCentralize' }] }, random),
+        quadCentralize(quadBc, random));
     assert.deepEqual(
-        applyModifier(quadBc, { kind: 'LocalReplace', selectors: [{ kind: 'QuadOctarize' }] }),
-        quadOctarize(quadBc));
+        applyModifier(quadBc, { kind: 'LocalReplace', selectors: [{ kind: 'QuadOctarize' }] }, random),
+        quadOctarize(quadBc, random));
     assert.deepEqual(
-        applyModifier(quadBc, { kind: 'LocalReplace', selectors: [{ kind: 'QuadCentering' }] }),
-        quadCentering(quadBc));
+        applyModifier(quadBc, { kind: 'LocalReplace', selectors: [{ kind: 'QuadCentering' }] }, random),
+        quadCentering(quadBc, random));
     assert.deepEqual(
-        applyModifier(triBc, { kind: 'LocalReplace', selectors: [{ kind: 'SimpCentering', n: 2 }] }),
-        simpCentering(triBc, 2));
+        applyModifier(triBc, { kind: 'LocalReplace', selectors: [{ kind: 'SimpCentering', n: 2 }] }, random),
+        simpCentering(triBc, 2, random));
     const selectors: LocalReplaceSelector[] = [{ kind: 'SimpCentralize', n: 2 }, { kind: 'QuadCentralize' }];
     assert.deepEqual(
-        applyModifier(triBc, { kind: 'LocalReplace', selectors }),
-        genericLocalReplace(triBc, selectors));
+        applyModifier(triBc, { kind: 'LocalReplace', selectors }, random),
+        genericLocalReplace(triBc, selectors, random));
 });
 
-test('triCentralize is exactly simpCentralize(bc, 2, sel)', () => {
+test('triCentralize is exactly simpCentralize(bc, 2, random, sel)', () => {
     const bc = triangularBoard(2);
-    assert.deepEqual(triCentralize(bc), simpCentralize(bc, 2));
+    assert.deepEqual(triCentralize(bc, random), simpCentralize(bc, 2, random));
     const sel = parseTriangleSelector('(conve tri (deg eq 3))');
-    assert.deepEqual(triCentralize(bc, sel), simpCentralize(bc, 2, sel));
+    assert.deepEqual(triCentralize(bc, random, sel), simpCentralize(bc, 2, random, sel));
 });
 
-test('triCentering is exactly simpCentering(bc, 2, sel)', () => {
+test('triCentering is exactly simpCentering(bc, 2, random, sel)', () => {
     const bc = triangularBoard(2);
-    assert.deepEqual(triCentering(bc), simpCentering(bc, 2));
+    assert.deepEqual(triCentering(bc, random), simpCentering(bc, 2, random));
     const sel = parseTriangleSelector('(conve tri (deg eq 3))');
-    assert.deepEqual(triCentering(bc, sel), simpCentering(bc, 2, sel));
+    assert.deepEqual(triCentering(bc, random, sel), simpCentering(bc, 2, random, sel));
 });
 
 test('sel restricts triCentralize to only the selected triangles - an unselected one gets no hub', () => {
@@ -222,7 +225,7 @@ test('sel restricts triCentralize to only the selected triangles - an unselected
     const bc = boardFromEdges(6, [[0, 1], [0, 2], [0, 5], [1, 2], [2, 3], [2, 4], [3, 4]]);
     // Selects only the triangle containing the degree-3 node (0) - triangle {0,1,2}, not {2,3,4}.
     const sel = parseTriangleSelector('(conve tri (deg eq 3))');
-    const result = triCentralize(bc, sel);
+    const result = triCentralize(bc, random, sel);
     // Exactly one hub added (for {0,1,2}), connected to 0/1/2 only.
     assert.equal(result.N, 7);
     assert.equal(degree(result.adj, 6), 3);
@@ -236,7 +239,7 @@ test('sel restricts triCentralize to only the selected triangles - an unselected
 
 test('the new hub sits at its triangle\'s own barycenter', () => {
     const bc = triangularBoard(2);
-    const result = triCentralize(bc);
+    const result = triCentralize(bc, random);
     const [A, B, C] = [0, 1, 2].map(i => bc.emb.pos[i]);
     const expected = A.map((_, k) => (A[k] + B[k] + C[k]) / 3);
     assert.deepEqual(result.emb.pos[3], expected);
@@ -247,7 +250,7 @@ test('simpCentralize generalizes beyond triangles: n=3 on a K4 tetrahedron adds 
     // tetrahedronBoard() is K4: 4 nodes, all mutually adjacent - exactly one simp-3 object (the
     // whole K4), so simpCentralize(bc, 3) adds exactly one hub.
     const bc = tetrahedronBoard();
-    const result = simpCentralize(bc, 3);
+    const result = simpCentralize(bc, 3, random);
     assert.equal(result.N, 5);
     assert.equal(degree(result.adj, 4), 4);
     for (let i = 0; i < 4; i++) assert.equal(result.adj[4][i], 1);
@@ -263,14 +266,14 @@ test('simpCentralize generalizes beyond triangles: n=3 on a K4 tetrahedron adds 
 test('genericLocalReplace rejects an out-of-range SimpCentralize n at evaluation time', () => {
     const bc = triangularBoard(2);
     assert.throws(
-        () => genericLocalReplace(bc, [{ kind: 'SimpCentralize', n: 1 }]),
+        () => genericLocalReplace(bc, [{ kind: 'SimpCentralize', n: 1 }], random),
         /n must be an integer >= 2, got 1/);
 });
 
 test('genericLocalReplace rejects an out-of-range SimpCentering n at evaluation time', () => {
     const bc = triangularBoard(2);
     assert.throws(
-        () => genericLocalReplace(bc, [{ kind: 'SimpCentering', n: 1 }]),
+        () => genericLocalReplace(bc, [{ kind: 'SimpCentering', n: 1 }], random),
         /n must be an integer >= 2, got 1/);
-    assert.throws(() => simpCentering(bc, 0), /n must be an integer >= 2, got 0/);
+    assert.throws(() => simpCentering(bc, 0, random), /n must be an integer >= 2, got 0/);
 });

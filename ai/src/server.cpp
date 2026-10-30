@@ -10,6 +10,8 @@
 //                        shared/clegBase.ts's own top comment for the language; parse_cleg
 //                        (game/cleg_parser.h) + build_board_from_cleg (game/cleg_eval.h) are
 //                        what turn it into a BoardConfig here)
+//     boardSeed         int in [0, 2^32) - seeds boardDescr's random builtins, so the board
+//                        built here matches the game's own; not part of weak_equal()
 //     numStones         int
 //     numPlayers        int
 //     turnList          [{player, stones, protected, friendly}] - see shared/types.ts's TurnInfo
@@ -403,8 +405,10 @@ int main(int argc, char* argv[]) {
                 throw std::runtime_error("num_simulations must be >= 1, got " + std::to_string(num_sims));
 
             GameConfig game_cfg     = parse_game_cfg(cfg);
+            if (!game_cfg.board_seed)
+                throw std::runtime_error("config.boardSeed is required");
             const std::string& tag  = find_checkpoint_dir(ss, game_cfg);
-            auto bc                 = build_board_from_cleg(*parse_cleg(game_cfg.board_descr));
+            auto bc                 = build_board_from_cleg(*parse_cleg(game_cfg.board_descr), *game_cfg.board_seed);
             auto adj_norms          = compute_adj_norms(bc, ss.device);
             auto& model_v           = load_model(ss, tag, bc);
             auto evaluator          = make_evaluator(model_v, adj_norms);

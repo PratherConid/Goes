@@ -29,8 +29,9 @@ import {
     make, nodeInducedSubgraph, edgeInducedSubgraph, nodeEdgeInducedSubgraph, stringBoard,
 } from './boardConfig.js';
 import {
-    randomlyRemove, randomlyTake, parseSelector, parseNodeSelector, parseEdgeSelector, parseTriangleSelector,
-    parseQuadSelector, parseSimpSelector, selectNode, selectEdge, selectTriangle, selectSimp, selectQuad,
+    ClegRandom, randomlyRemove, randomlyTake, compareIndexLists, parseSelector, parseNodeSelector,
+    parseEdgeSelector, parseTriangleSelector, parseQuadSelector, parseSimpSelector, selectNode, selectEdge,
+    selectTriangle, selectSimp, selectQuad,
 } from './selector.js';
 import { rasterizeString, getFont } from './glyphRaster.js';
 import { zeroAdj } from './topology.js';
@@ -89,11 +90,12 @@ export interface BuiltinFunction {
     /** Validates `argTypes` (throwing descriptively on a bad arg count/type) and returns the call's
      * result type. */
     checkCall: (callee: string, argTypes: ClegType[]) => ClegType;
-    /** `funcs` is only ever needed by a builtin that itself calls a `func`-typed argument back
-     * (e.g. subHcublatB's own `cond`, via callUserFunction) - every other builtin's own `call` simply
-     * ignores it, which TypeScript allows (a function declared with fewer parameters than a call
-     * signature requires is still a valid implementation of it). */
-    call: (args: ClegValue[], funcs: UserFuncTable) => ClegValue;
+    /** `globals` is only ever needed by a builtin that calls a `func`-typed argument back (e.g.
+     * subHcublatB's own `cond`, via callUserFunction) or draws randomness (`globals.random` - the
+     * random selectors/builtins and every board modifier that evaluates a selector) - every other
+     * builtin's own `call` simply ignores it, which TypeScript allows (a function declared with fewer
+     * parameters than a call signature requires is still a valid implementation of it). */
+    call: (args: ClegValue[], globals: GlobalInfo) => ClegValue;
 }
 
 /** Builds a BuiltinFunction's own checkCall from a fixed ClegType[] -> ClegType signature - shares
@@ -222,17 +224,42 @@ function randRmCheckCall(callee: string, argTypes: ClegType[]): ClegType {
     return argTypes[0];
 }
 
+// The canonical order the four builtins below put a set's elements in before handing them to
+// randomlyRemove()/randomlyTake() (see randomlyRemove's own doc comment on why) - every element of
+// one set shares a SET_ELEM_KINDS kind, compared by value: numbers numerically, strings by UTF-16
+// code unit, false before true, edge/simp/quad by their own canonical node fields.
+function compareClegSetElems(a: ClegValue, b: ClegValue): number {
+    const order = <T>(x: T, y: T) => (x < y ? -1 : x > y ? 1 : 0);
+    switch (a.kind) {
+        case 'number': return order(a.value, (b as { value: number }).value);
+        case 'string': return order(a.value, (b as { value: string }).value);
+        case 'bool': return order(Number(a.value), Number((b as { value: boolean }).value));
+        case 'edge': {
+            const y = (b as { value: BoardEdge }).value;
+            return compareIndexLists([a.value.n1, a.value.n2], [y.n1, y.n2]);
+        }
+        case 'simp': return compareIndexLists(a.value.nodes, (b as { value: BoardSimplex }).value.nodes);
+        case 'quad': {
+            const x = a.value, y = (b as { value: BoardQuad }).value;
+            return compareIndexLists([x.n1, x.n2, x.n3, x.n4], [y.n1, y.n2, y.n3, y.n4]);
+        }
+        default:
+            // Unreachable in a program that has passed typecheckCleg - see clegSetKey's own default.
+            throw new Error(`cleg: '${a.kind}' cannot be a set element`);
+    }
+}
+
 // Randomly (uniformly) removes `count` elements from a set of any element type, mirroring
 // shared/selector.ts's own `(rrmn <num> SEL)` selector semantics - reuses that file's own
 // randomlyRemove() rather than reimplementing the same partial shuffle.
 BUILTIN_FUNCTIONS['randRmN'] = {
     checkCall: randRmCheckCall,
-    call(args) {
+    call(args, { random }) {
         const s = args[0] as { kind: 'set'; elem: ClegType; value: ClegValue[] };
         const count = (args[1] as { value: number }).value;
         if (!Number.isInteger(count) || count < 0)
             throw new Error(`cleg: 'randRmN' count must be a nonnegative integer, got ${count}`);
-        return { kind: 'set', elem: s.elem, value: randomlyRemove(s.value, count) };
+        return { kind: 'set', elem: s.elem, value: randomlyRemove(s.value, count, compareClegSetElems, random) };
     },
 };
 
@@ -242,12 +269,15 @@ BUILTIN_FUNCTIONS['randRmN'] = {
 // randomlyRemove's own clamp, same as rrmp's own behavior).
 BUILTIN_FUNCTIONS['randRmP'] = {
     checkCall: randRmCheckCall,
-    call(args) {
+    call(args, { random }) {
         const s = args[0] as { kind: 'set'; elem: ClegType; value: ClegValue[] };
         const frac = (args[1] as { value: number }).value;
         if (!Number.isFinite(frac) || frac < 0)
             throw new Error(`cleg: 'randRmP' portion must be a nonnegative number, got ${frac}`);
-        return { kind: 'set', elem: s.elem, value: randomlyRemove(s.value, Math.floor(frac * s.value.length)) };
+        return {
+            kind: 'set', elem: s.elem,
+            value: randomlyRemove(s.value, Math.floor(frac * s.value.length), compareClegSetElems, random),
+        };
     },
 };
 
@@ -257,23 +287,26 @@ BUILTIN_FUNCTIONS['randRmP'] = {
 // many elements are KEPT rather than how many are dropped.
 BUILTIN_FUNCTIONS['randTakeN'] = {
     checkCall: randRmCheckCall,
-    call(args) {
+    call(args, { random }) {
         const s = args[0] as { kind: 'set'; elem: ClegType; value: ClegValue[] };
         const count = (args[1] as { value: number }).value;
         if (!Number.isInteger(count) || count < 0)
             throw new Error(`cleg: 'randTakeN' count must be a nonnegative integer, got ${count}`);
-        return { kind: 'set', elem: s.elem, value: randomlyTake(s.value, count) };
+        return { kind: 'set', elem: s.elem, value: randomlyTake(s.value, count, compareClegSetElems, random) };
     },
 };
 
 BUILTIN_FUNCTIONS['randTakeP'] = {
     checkCall: randRmCheckCall,
-    call(args) {
+    call(args, { random }) {
         const s = args[0] as { kind: 'set'; elem: ClegType; value: ClegValue[] };
         const frac = (args[1] as { value: number }).value;
         if (!Number.isFinite(frac) || frac < 0)
             throw new Error(`cleg: 'randTakeP' portion must be a nonnegative number, got ${frac}`);
-        return { kind: 'set', elem: s.elem, value: randomlyTake(s.value, Math.floor(frac * s.value.length)) };
+        return {
+            kind: 'set', elem: s.elem,
+            value: randomlyTake(s.value, Math.floor(frac * s.value.length), compareClegSetElems, random),
+        };
     },
 };
 
@@ -705,28 +738,28 @@ function selectSetCheckCall(elemType: ClegType): BuiltinFunction['checkCall'] {
 }
 BUILTIN_FUNCTIONS['selectNode'] = {
     checkCall: selectSetCheckCall(NUMBER_TYPE),
-    call: ([arg, egrVal]) => {
+    call: ([arg, egrVal], { random }) => {
         const sel = resolveSelectorArg('selectNode', arg, 'node', parseNodeSelector);
         const bc = (egrVal as { value: BoardConfig }).value;
-        const nodes = [...selectNode(bc.adj, bc.emb.pos, sel)].map((n): ClegValue => ({ kind: 'number', value: n }));
+        const nodes = [...selectNode(bc.adj, bc.emb.pos, sel, random)].map((n): ClegValue => ({ kind: 'number', value: n }));
         return makeClegSet(NUMBER_TYPE, nodes);
     },
 };
 BUILTIN_FUNCTIONS['selectEdge'] = {
     checkCall: selectSetCheckCall(EDGE_TYPE),
-    call: ([arg, egrVal]) => {
+    call: ([arg, egrVal], { random }) => {
         const sel = resolveSelectorArg('selectEdge', arg, 'edge', parseEdgeSelector);
         const bc = (egrVal as { value: BoardConfig }).value;
-        const edges = selectEdge(bc.adj, bc.emb.pos, sel).map((e): ClegValue => ({ kind: 'edge', value: e }));
+        const edges = selectEdge(bc.adj, bc.emb.pos, sel, random).map((e): ClegValue => ({ kind: 'edge', value: e }));
         return makeClegSet(EDGE_TYPE, edges);
     },
 };
 BUILTIN_FUNCTIONS['selectTriangle'] = {
     checkCall: selectSetCheckCall(SIMP_TYPE),
-    call: ([arg, egrVal]) => {
+    call: ([arg, egrVal], { random }) => {
         const sel = resolveSelectorArg('selectTriangle', arg, simpType(2), parseTriangleSelector);
         const bc = (egrVal as { value: BoardConfig }).value;
-        const tris = selectTriangle(bc.adj, bc.emb.pos, sel).map((t): ClegValue => ({ kind: 'simp', value: t }));
+        const tris = selectTriangle(bc.adj, bc.emb.pos, sel, random).map((t): ClegValue => ({ kind: 'simp', value: t }));
         return makeClegSet(SIMP_TYPE, tris);
     },
 };
@@ -736,21 +769,21 @@ BUILTIN_FUNCTIONS['selectTriangle'] = {
 // comment) to actually be SOME simp N and not e.g. a node/edge/quad selector.
 BUILTIN_FUNCTIONS['selectSimp'] = {
     checkCall: selectSetCheckCall(SIMP_TYPE),
-    call: ([arg, egrVal]) => {
+    call: ([arg, egrVal], { random }) => {
         const sel = resolveAnyKindSelectorArg('selectSimp', arg);
         if (simpN(sel.type) === null)
             throw new Error(`cleg: 'selectSimp' expects a simp selector, got a '${sel.type}' selector`);
         const bc = (egrVal as { value: BoardConfig }).value;
-        const simps = selectSimp(bc.adj, bc.emb.pos, sel).map((t): ClegValue => ({ kind: 'simp', value: t }));
+        const simps = selectSimp(bc.adj, bc.emb.pos, sel, random).map((t): ClegValue => ({ kind: 'simp', value: t }));
         return makeClegSet(SIMP_TYPE, simps);
     },
 };
 BUILTIN_FUNCTIONS['selectQuad'] = {
     checkCall: selectSetCheckCall(QUAD_TYPE),
-    call: ([arg, egrVal]) => {
+    call: ([arg, egrVal], { random }) => {
         const sel = resolveSelectorArg('selectQuad', arg, 'quad', parseQuadSelector);
         const bc = (egrVal as { value: BoardConfig }).value;
-        const quads = selectQuad(bc.adj, bc.emb.pos, sel).map((q): ClegValue => ({ kind: 'quad', value: q }));
+        const quads = selectQuad(bc.adj, bc.emb.pos, sel, random).map((q): ClegValue => ({ kind: 'quad', value: q }));
         return makeClegSet(QUAD_TYPE, quads);
     },
 };
@@ -1058,10 +1091,10 @@ BUILTIN_FUNCTIONS['triCentering'] = {
 // `scale(4)`), neither of which a set would preserve.
 BUILTIN_FUNCTIONS['modify'] = {
     checkCall: fixedSignature([{ kind: 'array', elem: MOD_TYPE }, EGR_TYPE], EGR_TYPE),
-    call: ([modsVal, egrVal]) => {
+    call: ([modsVal, egrVal], { random }) => {
         const mods = (modsVal as { value: ClegValue[] }).value.map(v => (v as { value: BoardModifier }).value);
         const bc = (egrVal as { value: BoardConfig }).value;
-        return { kind: 'egr', value: applyModifiers(bc, mods) };
+        return { kind: 'egr', value: applyModifiers(bc, mods, random) };
     },
 };
 
@@ -1255,13 +1288,15 @@ function tupleOfFullIndex(fpi: FullProductIndex, idx: number): number[] {
 // SelectorType at the data-structure level - see ProdSelector's own doc comment), multiProd's own
 // evaluation requires node or edge specifically, since there's no other sensible way to turn a
 // tri/quad selection into "which nodes of this one factor board survive".
-function restrictBoardBySelector(board: BoardConfig, sel: Selector): { bc: BoardConfig; survivors: number[] } {
+function restrictBoardBySelector(
+    board: BoardConfig, sel: Selector, random: ClegRandom,
+): { bc: BoardConfig; survivors: number[] } {
     if (sel.type === 'node') {
-        const kept = selectNode(board.adj, board.emb.pos, sel);
+        const kept = selectNode(board.adj, board.emb.pos, sel, random);
         return { bc: nodeInducedSubgraph(board, kept), survivors: [...kept].sort((a, b) => a - b) };
     }
     if (sel.type === 'edge') {
-        const edges = selectEdge(board.adj, board.emb.pos, sel);
+        const edges = selectEdge(board.adj, board.emb.pos, sel, random);
         const kept = new Set(edges.flatMap(e => [e.n1, e.n2]));
         return { bc: edgeInducedSubgraph(board, edges), survivors: [...kept].sort((a, b) => a - b) };
     }
@@ -1276,10 +1311,10 @@ function restrictBoardBySelector(board: BoardConfig, sel: Selector): { bc: Board
 // whichever extra nodes nodeSel selects (see nodeEdgeInducedSubgraph) - a node nodeSel selects
 // survives even with no kept incident edge, unlike a bare edge selector's own restriction.
 function restrictBoardByNodeAndEdgeSelector(
-    board: BoardConfig, nodeSel: Selector, edgeSel: Selector,
+    board: BoardConfig, nodeSel: Selector, edgeSel: Selector, random: ClegRandom,
 ): { bc: BoardConfig; survivors: number[] } {
-    const extraNodes = selectNode(board.adj, board.emb.pos, nodeSel);
-    const edges = selectEdge(board.adj, board.emb.pos, edgeSel);
+    const extraNodes = selectNode(board.adj, board.emb.pos, nodeSel, random);
+    const edges = selectEdge(board.adj, board.emb.pos, edgeSel, random);
     const kept = new Set(extraNodes);
     for (const e of edges) { kept.add(e.n1); kept.add(e.n2); }
     return { bc: nodeEdgeInducedSubgraph(board, extraNodes, edges), survivors: [...kept].sort((a, b) => a - b) };
@@ -1417,25 +1452,25 @@ function combineRestrictedFactor(
 }
 
 function evalProdSelector(
-    boards: BoardConfig[], fpi: FullProductIndex, psel: ProdSelector,
+    boards: BoardConfig[], fpi: FullProductIndex, psel: ProdSelector, random: ClegRandom,
 ): { bc: BoardConfig; origIndex: number[] } {
     switch (psel.op) {
         case 'all':
             return fullProductResult(boards, fpi);
         case 'base': {
-            const { bc: restricted, survivors } = restrictBoardBySelector(boards[psel.number], psel.sel);
+            const { bc: restricted, survivors } = restrictBoardBySelector(boards[psel.number], psel.sel, random);
             return combineRestrictedFactor(boards, fpi, psel.number, restricted, survivors);
         }
         case 'baseNE': {
             const { bc: restricted, survivors } =
-                restrictBoardByNodeAndEdgeSelector(boards[psel.number], psel.nodeSel, psel.edgeSel);
+                restrictBoardByNodeAndEdgeSelector(boards[psel.number], psel.nodeSel, psel.edgeSel, random);
             return combineRestrictedFactor(boards, fpi, psel.number, restricted, survivors);
         }
         case 'union': {
             const nodes = new Set<number>();
             const edges = new Set<string>();
             for (const item of psel.items) {
-                const r = evalProdSelector(boards, fpi, item);
+                const r = evalProdSelector(boards, fpi, item, random);
                 for (const idx of r.origIndex) nodes.add(idx);
                 for (const key of originalEdgeKeysOf(r.bc, r.origIndex)) edges.add(key);
             }
@@ -1443,7 +1478,7 @@ function evalProdSelector(
         }
         case 'inter': {
             if (psel.items.length === 0) return fullProductResult(boards, fpi);
-            const results = psel.items.map(item => evalProdSelector(boards, fpi, item));
+            const results = psel.items.map(item => evalProdSelector(boards, fpi, item, random));
             let nodes = new Set(results[0].origIndex);
             let edges = originalEdgeKeysOf(results[0].bc, results[0].origIndex);
             for (let i = 1; i < results.length; i++) {
@@ -1455,8 +1490,8 @@ function evalProdSelector(
             return buildFromNodesAndEdges(boards, fpi, nodes, edges);
         }
         case 'diff': {
-            const ra = evalProdSelector(boards, fpi, psel.a);
-            const rb = evalProdSelector(boards, fpi, psel.b);
+            const ra = evalProdSelector(boards, fpi, psel.a, random);
+            const rb = evalProdSelector(boards, fpi, psel.b, random);
             const bNodes = new Set(rb.origIndex);
             const nodes = new Set([...ra.origIndex].filter(idx => !bNodes.has(idx)));
             const aEdges = originalEdgeKeysOf(ra.bc, ra.origIndex);
@@ -1475,12 +1510,12 @@ function evalProdSelector(
 // definition here.
 BUILTIN_FUNCTIONS['multiProd'] = {
     checkCall: fixedSignature([{ kind: 'array', elem: EGR_TYPE }, PSEL_TYPE], EGR_TYPE),
-    call: ([boardsVal, pselVal]) => {
+    call: ([boardsVal, pselVal], { random }) => {
         const boards = (boardsVal as { value: ClegValue[] }).value.map(v => (v as { value: BoardConfig }).value);
         if (boards.length === 0) throw new Error(`cleg: multiProd: boards must be non-empty`);
         const fpi = makeFullProductIndex(boards);
         const psel = (pselVal as { value: ProdSelector }).value;
-        return { kind: 'egr', value: evalProdSelector(boards, fpi, psel).bc };
+        return { kind: 'egr', value: evalProdSelector(boards, fpi, psel, random).bc };
     },
 };
 
@@ -1570,7 +1605,7 @@ function recenterPositions(pos: number[][], k: number): void {
 // box, not from `bounds` itself, since `cond` may keep a shape nowhere near centered within the
 // hyperrectangle it was given.
 function buildSubHcublat(
-    boundsVal: ClegValue, condVal: ClegValue, econd: (a: number[], b: number[]) => boolean, funcs: UserFuncTable,
+    boundsVal: ClegValue, condVal: ClegValue, econd: (a: number[], b: number[]) => boolean, globals: GlobalInfo,
 ): ClegValue {
     const { lo, dims } = parseHcublatBounds(boundsVal);
     const k = lo.length;
@@ -1580,7 +1615,7 @@ function buildSubHcublat(
     // assuming `fn`'s own full parameter list is just `[pointArg]` (it was, for a plain
     // reference, but not in general once `cond` can be a closure).
     const cond = condVal as { name: string; boundArgs: (ClegValue | null)[] };
-    const fn = funcs[cond.name];
+    const fn = globals.funcs[cond.name];
 
     const strides = new Array<number>(k);
     strides[0] = 1;
@@ -1599,7 +1634,7 @@ function buildSubHcublat(
         const pointArg: ClegValue = {
             kind: 'array', elem: NUMBER_TYPE, value: point.map(v => ({ kind: 'number', value: v })),
         };
-        const keep = (callUserFunction(fn, fillHoles(cond.boundArgs, [pointArg]), funcs) as { value: boolean }).value;
+        const keep = (callUserFunction(fn, fillHoles(cond.boundArgs, [pointArg]), globals) as { value: boolean }).value;
         if (!keep) continue;
         boardIdxOf.set(n, survivingLocal.length);
         survivingLocal.push(local);
@@ -1637,13 +1672,13 @@ function buildSubHcublat(
 // a partial application) - shared by subHcublatB's econd overload only; the plain 2-arg overload
 // never calls this, passing a trivial `() => true` (every structural edge kept) straight to
 // buildSubHcublat instead.
-function econdCallback(econdVal: ClegValue, funcs: UserFuncTable): (a: number[], b: number[]) => boolean {
+function econdCallback(econdVal: ClegValue, globals: GlobalInfo): (a: number[], b: number[]) => boolean {
     const econd = econdVal as { name: string; boundArgs: (ClegValue | null)[] };
-    const fn = funcs[econd.name];
+    const fn = globals.funcs[econd.name];
     return (a, b) => {
         const aArg: ClegValue = { kind: 'array', elem: NUMBER_TYPE, value: a.map(v => ({ kind: 'number', value: v })) };
         const bArg: ClegValue = { kind: 'array', elem: NUMBER_TYPE, value: b.map(v => ({ kind: 'number', value: v })) };
-        return (callUserFunction(fn, fillHoles(econd.boundArgs, [aArg, bArg]), funcs) as { value: boolean }).value;
+        return (callUserFunction(fn, fillHoles(econd.boundArgs, [aArg, bArg]), globals) as { value: boolean }).value;
     };
 }
 
@@ -1663,12 +1698,12 @@ function econdCallback(econdVal: ClegValue, funcs: UserFuncTable): (a: number[],
 // the caller only has to decide once, from either endpoint. Re-centering matches buildSubHcublat's
 // own (see its doc comment).
 function buildSubHcublatCustomAdj(
-    boundsVal: ClegValue, condVal: ClegValue, adjFn: (point: number[]) => number[][], funcs: UserFuncTable,
+    boundsVal: ClegValue, condVal: ClegValue, adjFn: (point: number[]) => number[][], globals: GlobalInfo,
 ): ClegValue {
     const { lo, dims } = parseHcublatBounds(boundsVal);
     const k = lo.length;
     const cond = condVal as { name: string; boundArgs: (ClegValue | null)[] };
-    const fn = funcs[cond.name];
+    const fn = globals.funcs[cond.name];
 
     const fullN = dims.reduce((p, d) => p * d, 1);
 
@@ -1683,7 +1718,7 @@ function buildSubHcublatCustomAdj(
         const pointArg: ClegValue = {
             kind: 'array', elem: NUMBER_TYPE, value: point.map(v => ({ kind: 'number', value: v })),
         };
-        const keep = (callUserFunction(fn, fillHoles(cond.boundArgs, [pointArg]), funcs) as { value: boolean }).value;
+        const keep = (callUserFunction(fn, fillHoles(cond.boundArgs, [pointArg]), globals) as { value: boolean }).value;
         if (!keep) continue;
         boardIdxOfPoint.set(point.join(','), pos.length);
         pos.push(point);
@@ -1708,14 +1743,14 @@ function buildSubHcublatCustomAdj(
 // evaluated the same closure-aware way econdCallback's own is, but converts its return VALUE (a
 // cleg `number[][]`) back into a plain nested array rather than just unwrapping a `bool`. Shared by
 // subHcublatB's adjFn overload only.
-function adjFnCallback(adjFnVal: ClegValue, funcs: UserFuncTable): (point: number[]) => number[][] {
+function adjFnCallback(adjFnVal: ClegValue, globals: GlobalInfo): (point: number[]) => number[][] {
     const adjFn = adjFnVal as { name: string; boundArgs: (ClegValue | null)[] };
-    const fn = funcs[adjFn.name];
+    const fn = globals.funcs[adjFn.name];
     return (point) => {
         const pointArg: ClegValue = {
             kind: 'array', elem: NUMBER_TYPE, value: point.map(v => ({ kind: 'number', value: v })),
         };
-        const result = callUserFunction(fn, fillHoles(adjFn.boundArgs, [pointArg]), funcs) as { value: ClegValue[] };
+        const result = callUserFunction(fn, fillHoles(adjFn.boundArgs, [pointArg]), globals) as { value: ClegValue[] };
         return result.value.map(inner =>
             (inner as { value: ClegValue[] }).value.map(v => (v as { value: number }).value));
     };
@@ -1743,11 +1778,11 @@ function subHcublatCheckCall(callee: string, argTypes: ClegType[]): ClegType {
 }
 BUILTIN_FUNCTIONS['subHcublatB'] = {
     checkCall: subHcublatCheckCall,
-    call([boundsVal, condVal, thirdVal], funcs) {
-        if (!thirdVal) return buildSubHcublat(boundsVal, condVal, () => true, funcs);
+    call([boundsVal, condVal, thirdVal], globals) {
+        if (!thirdVal) return buildSubHcublat(boundsVal, condVal, () => true, globals);
         const third = thirdVal as { params: ClegType[] };
-        if (third.params.length === 2) return buildSubHcublat(boundsVal, condVal, econdCallback(thirdVal, funcs), funcs);
-        return buildSubHcublatCustomAdj(boundsVal, condVal, adjFnCallback(thirdVal, funcs), funcs);
+        if (third.params.length === 2) return buildSubHcublat(boundsVal, condVal, econdCallback(thirdVal, globals), globals);
+        return buildSubHcublatCustomAdj(boundsVal, condVal, adjFnCallback(thirdVal, globals), globals);
     },
 };
 
@@ -1825,16 +1860,24 @@ function fillHoles(boundArgs: (ClegValue | null)[], suppliedArgs: ClegValue[]): 
  * either way" reasoning: starting from a fresh all-`null` boundArgs (a bare top-level function name,
  * nothing bound yet) or an existing value's own boundArgs (a plain pointer, still all-`null`, or an
  * already-partial closure) is the exact same operation, just a different starting point. */
-function mergeBoundArgs(boundArgs: (ClegValue | null)[], args: Expr[], env: ValueEnv, funcs: UserFuncTable): (ClegValue | null)[] {
+function mergeBoundArgs(boundArgs: (ClegValue | null)[], args: Expr[], env: ValueEnv, globals: GlobalInfo): (ClegValue | null)[] {
     let j = 0;
     return boundArgs.map(b => {
         if (b !== null) return b;
         const a = args[j++];
-        return a.kind === 'HoleExpr' ? null : cloneArrayValue(evalExpr(a, env, funcs));
+        return a.kind === 'HoleExpr' ? null : cloneArrayValue(evalExpr(a, env, globals));
     });
 }
 
 type UserFuncTable = Record<string, FunctionDecl>;
+
+// Per-run state every evaluation function threads through alongside its ValueEnv - the program's
+// own top-level functions, and the random generator every random selector/builtin/board modifier
+// draws from (one per run, so a run's draws depend only on its own seed).
+interface GlobalInfo {
+    funcs: UserFuncTable;
+    random: ClegRandom;
+}
 
 // Thrown to unwind out of nested blocks/if-statements on `return` - always caught by
 // callUserFunction below, never escapes runCleg itself.
@@ -1848,18 +1891,18 @@ class ReturnSignal { constructor(public value: ClegValue) {} }
 class BreakSignal {}
 class ContinueSignal {}
 
-function evalBlock(block: Block, parent: ValueEnv, funcs: UserFuncTable): void {
+function evalBlock(block: Block, parent: ValueEnv, globals: GlobalInfo): void {
     const env: ValueEnv = { vars: new Map(), parent };
-    for (const stmt of block.stmts) evalStmt(stmt, env, funcs);
+    for (const stmt of block.stmts) evalStmt(stmt, env, globals);
 }
 
-function evalStmt(stmt: Stmt, env: ValueEnv, funcs: UserFuncTable): void {
+function evalStmt(stmt: Stmt, env: ValueEnv, globals: GlobalInfo): void {
     switch (stmt.kind) {
         case 'VarDecl':
-            env.vars.set(stmt.name, cloneArrayValue(evalExpr(stmt.init, env, funcs)));
+            env.vars.set(stmt.name, cloneArrayValue(evalExpr(stmt.init, env, globals)));
             return;
         case 'AssignStmt': {
-            const value = cloneArrayValue(evalExpr(stmt.value, env, funcs));
+            const value = cloneArrayValue(evalExpr(stmt.value, env, globals));
             if (stmt.indices.length === 0) {
                 setValue(env, stmt.name, value);
                 return;
@@ -1872,20 +1915,20 @@ function evalStmt(stmt: Stmt, env: ValueEnv, funcs: UserFuncTable): void {
             // doc comment).
             let target = lookupValue(env, stmt.name) as { kind: 'array'; value: ClegValue[] };
             for (let i = 0; i < stmt.indices.length - 1; i++) {
-                const idxValue = (evalExpr(stmt.indices[i], env, funcs) as { kind: 'number'; value: number }).value;
+                const idxValue = (evalExpr(stmt.indices[i], env, globals) as { kind: 'number'; value: number }).value;
                 const idx = validateArrayIndex(idxValue, target.value.length);
                 target = target.value[idx] as { kind: 'array'; value: ClegValue[] };
             }
             const lastIdxValue =
-                (evalExpr(stmt.indices[stmt.indices.length - 1], env, funcs) as { kind: 'number'; value: number }).value;
+                (evalExpr(stmt.indices[stmt.indices.length - 1], env, globals) as { kind: 'number'; value: number }).value;
             const lastIdx = validateArrayIndex(lastIdxValue, target.value.length);
             target.value[lastIdx] = value;
             return;
         }
         case 'IfStmt': {
-            const cond = evalExpr(stmt.cond, env, funcs) as { kind: 'bool'; value: boolean };
-            if (cond.value) evalBlock(stmt.then, env, funcs);
-            else if (stmt.else_) stmt.else_.kind === 'Block' ? evalBlock(stmt.else_, env, funcs) : evalStmt(stmt.else_, env, funcs);
+            const cond = evalExpr(stmt.cond, env, globals) as { kind: 'bool'; value: boolean };
+            if (cond.value) evalBlock(stmt.then, env, globals);
+            else if (stmt.else_) stmt.else_.kind === 'Block' ? evalBlock(stmt.else_, env, globals) : evalStmt(stmt.else_, env, globals);
             return;
         }
         case 'ForStmt': {
@@ -1897,23 +1940,23 @@ function evalStmt(stmt: Stmt, env: ValueEnv, funcs: UserFuncTable): void {
             // next `cond` check, exactly like real C++; `break` skips straight past the loop
             // entirely, never running `update` again.
             const loopEnv: ValueEnv = { vars: new Map(), parent: env };
-            if (stmt.init) evalStmt(stmt.init, loopEnv, funcs);
-            while (!stmt.cond || (evalExpr(stmt.cond, loopEnv, funcs) as { kind: 'bool'; value: boolean }).value) {
+            if (stmt.init) evalStmt(stmt.init, loopEnv, globals);
+            while (!stmt.cond || (evalExpr(stmt.cond, loopEnv, globals) as { kind: 'bool'; value: boolean }).value) {
                 try {
-                    evalBlock(stmt.body, loopEnv, funcs);
+                    evalBlock(stmt.body, loopEnv, globals);
                 } catch (e) {
                     if (e instanceof BreakSignal) break;
                     if (!(e instanceof ContinueSignal)) throw e;
                 }
-                if (stmt.update) evalStmt(stmt.update, loopEnv, funcs);
+                if (stmt.update) evalStmt(stmt.update, loopEnv, globals);
             }
             return;
         }
         case 'WhileStmt': {
             // Same BreakStmt/ContinueStmt unwind target as ForStmt above - see its own comment.
-            while ((evalExpr(stmt.cond, env, funcs) as { kind: 'bool'; value: boolean }).value) {
+            while ((evalExpr(stmt.cond, env, globals) as { kind: 'bool'; value: boolean }).value) {
                 try {
-                    evalBlock(stmt.body, env, funcs);
+                    evalBlock(stmt.body, env, globals);
                 } catch (e) {
                     if (e instanceof BreakSignal) break;
                     if (!(e instanceof ContinueSignal)) throw e;
@@ -1926,17 +1969,17 @@ function evalStmt(stmt: Stmt, env: ValueEnv, funcs: UserFuncTable): void {
         case 'ContinueStmt':
             throw new ContinueSignal();
         case 'ReturnStmt':
-            throw new ReturnSignal(evalExpr(stmt.value, env, funcs));
+            throw new ReturnSignal(evalExpr(stmt.value, env, globals));
         case 'ExprStmt':
-            evalExpr(stmt.expr, env, funcs);
+            evalExpr(stmt.expr, env, globals);
             return;
         case 'Block':
-            evalBlock(stmt, env, funcs);
+            evalBlock(stmt, env, globals);
             return;
     }
 }
 
-function evalExpr(expr: Expr, env: ValueEnv, funcs: UserFuncTable): ClegValue {
+function evalExpr(expr: Expr, env: ValueEnv, globals: GlobalInfo): ClegValue {
     switch (expr.kind) {
         case 'NumberLit': return { kind: 'number', value: expr.value };
         case 'StringLit': return { kind: 'string', value: expr.value };
@@ -1946,20 +1989,20 @@ function evalExpr(expr: Expr, env: ValueEnv, funcs: UserFuncTable): ClegValue {
             if (v) return v;
             // Not a variable - a bare reference to one of program's own top-level functions, used as
             // a function-pointer value (checkExpr already confirmed this resolves and is func-typed).
-            const fn = funcs[expr.name];
+            const fn = globals.funcs[expr.name];
             return {
                 kind: 'func', params: fn.params.map(p => p.type), returnType: fn.returnType, name: expr.name,
                 boundArgs: fn.params.map(() => null),
             };
         }
         case 'ArrayLit': {
-            const values = expr.elements.map(e => evalExpr(e, env, funcs));
+            const values = expr.elements.map(e => evalExpr(e, env, globals));
             // typecheckCleg already rejected an empty or mixed-element-type literal, so the first
             // value's own type is always the array's element type.
             return { kind: 'array', elem: clegValueType(values[0]), value: values };
         }
         case 'SetLit': {
-            const values = expr.elements.map(e => evalExpr(e, env, funcs));
+            const values = expr.elements.map(e => evalExpr(e, env, globals));
             // typecheckCleg already rejected an empty, mixed-element-type, or non-SET_ELEM_KINDS
             // literal, so the first value's own type is always the set's element type.
             return makeClegSet(clegValueType(values[0]), values);
@@ -1977,15 +2020,15 @@ function evalExpr(expr: Expr, env: ValueEnv, funcs: UserFuncTable): ClegValue {
                 const varValue = lookupValueOptional(env, expr.callee);
                 const fv = varValue as { kind: 'func'; name: string; boundArgs: (ClegValue | null)[] } | undefined;
                 const name = fv ? fv.name : expr.callee;
-                const fn = funcs[name];
+                const fn = globals.funcs[name];
                 const startingBoundArgs = fv ? fv.boundArgs : fn.params.map(() => null);
-                const boundArgs = mergeBoundArgs(startingBoundArgs, expr.args, env, funcs);
+                const boundArgs = mergeBoundArgs(startingBoundArgs, expr.args, env, globals);
                 const holeParams = fn.params.filter((_, i) => boundArgs[i] === null).map(p => p.type);
                 return { kind: 'func', params: holeParams, returnType: fn.returnType, name, boundArgs };
             }
-            const args = expr.args.map(a => evalExpr(a, env, funcs));
+            const args = expr.args.map(a => evalExpr(a, env, globals));
             const builtin = BUILTIN_FUNCTIONS[expr.callee];
-            if (builtin) return builtin.call(args, funcs);
+            if (builtin) return builtin.call(args, globals);
             // A local variable of func type shadows a same-named top-level function - see checkExpr's
             // own CallExpr case, which already required this to resolve the same way. fillHoles
             // handles a plain (never-partially-applied) function value transparently, since its own
@@ -1993,9 +2036,9 @@ function evalExpr(expr: Expr, env: ValueEnv, funcs: UserFuncTable): ClegValue {
             const varValue = lookupValueOptional(env, expr.callee);
             if (varValue) {
                 const fv = varValue as { kind: 'func'; name: string; boundArgs: (ClegValue | null)[] };
-                return callUserFunction(funcs[fv.name], fillHoles(fv.boundArgs, args), funcs);
+                return callUserFunction(globals.funcs[fv.name], fillHoles(fv.boundArgs, args), globals);
             }
-            return callUserFunction(funcs[expr.callee], args, funcs);
+            return callUserFunction(globals.funcs[expr.callee], args, globals);
         }
         case 'BinaryExpr': {
             // `&&`/`||` short-circuit here, before ever reaching BINARY_OPERATOR_OVERLOADS below -
@@ -2004,12 +2047,12 @@ function evalExpr(expr: Expr, env: ValueEnv, funcs: UserFuncTable): ClegValue {
             // returns false without evaluating `right` at all if `left` is already false, otherwise
             // `right`'s own value; `||` is the mirror image.
             if (expr.op === '&&' || expr.op === '||') {
-                const l = (evalExpr(expr.left, env, funcs) as { kind: 'bool'; value: boolean }).value;
-                if (expr.op === '&&') return l ? evalExpr(expr.right, env, funcs) : { kind: 'bool', value: false };
-                return l ? { kind: 'bool', value: true } : evalExpr(expr.right, env, funcs);
+                const l = (evalExpr(expr.left, env, globals) as { kind: 'bool'; value: boolean }).value;
+                if (expr.op === '&&') return l ? evalExpr(expr.right, env, globals) : { kind: 'bool', value: false };
+                return l ? { kind: 'bool', value: true } : evalExpr(expr.right, env, globals);
             }
-            const l = evalExpr(expr.left, env, funcs);
-            const r = evalExpr(expr.right, env, funcs);
+            const l = evalExpr(expr.left, env, globals);
+            const r = evalExpr(expr.right, env, globals);
             for (const overload of BINARY_OPERATOR_OVERLOADS[expr.op]) {
                 const m = overload.match(clegValueType(l), clegValueType(r));
                 if (m) return m.eval(l, r);
@@ -2019,16 +2062,16 @@ function evalExpr(expr: Expr, env: ValueEnv, funcs: UserFuncTable): ClegValue {
         }
         case 'UnaryExpr': {
             if (expr.op === '-') {
-                const v = (evalExpr(expr.operand, env, funcs) as { kind: 'number'; value: number }).value;
+                const v = (evalExpr(expr.operand, env, globals) as { kind: 'number'; value: number }).value;
                 return { kind: 'number', value: -v };
             }
-            const v = (evalExpr(expr.operand, env, funcs) as { kind: 'bool'; value: boolean }).value;
+            const v = (evalExpr(expr.operand, env, globals) as { kind: 'bool'; value: boolean }).value;
             return { kind: 'bool', value: !v };
         }
         case 'NilExpr': return { kind: 'array', elem: expr.type, value: [] };
         case 'IndexExpr': {
-            const arr = evalExpr(expr.array, env, funcs) as { kind: 'array'; elem: ClegType; value: ClegValue[] };
-            const idxValue = (evalExpr(expr.index, env, funcs) as { kind: 'number'; value: number }).value;
+            const arr = evalExpr(expr.array, env, globals) as { kind: 'array'; elem: ClegType; value: ClegValue[] };
+            const idxValue = (evalExpr(expr.index, env, globals) as { kind: 'number'; value: number }).value;
             const idx = validateArrayIndex(idxValue, arr.value.length);
             return arr.value[idx];
         }
@@ -2039,13 +2082,13 @@ function evalExpr(expr: Expr, env: ValueEnv, funcs: UserFuncTable): ClegValue {
     }
 }
 
-function callUserFunction(fn: FunctionDecl, args: ClegValue[], funcs: UserFuncTable): ClegValue {
+function callUserFunction(fn: FunctionDecl, args: ClegValue[], globals: GlobalInfo): ClegValue {
     // cloneArrayValue here (not just at the call site's own VarDecl/AssignStmt) is what makes an
     // array argument a genuine value-copy rather than a reference to the caller's own array, exactly
     // like passing one to another variable - see cloneArrayValue's own doc comment.
     const env: ValueEnv = { vars: new Map(fn.params.map((p, i) => [p.name, cloneArrayValue(args[i])])), parent: null };
     try {
-        evalBlock(fn.body, env, funcs);
+        evalBlock(fn.body, env, globals);
     } catch (e) {
         if (e instanceof ReturnSignal) return e.value;
         throw e;
@@ -2066,24 +2109,27 @@ function callUserFunction(fn: FunctionDecl, args: ClegValue[], funcs: UserFuncTa
  * evaluating, and a program's `program.functions`/`program.stmts` AST could in principle have been
  * hand-built or tampered with since it was last checked.
  */
-export function runClegProgram(program: ClegProgram): ClegValue {
+export function runClegProgram(program: ClegProgram, seed: number): ClegValue {
     typecheckCleg(program);
     const funcs: UserFuncTable = {};
     for (const fn of program.functions) funcs[fn.name] = fn;
+    // Every random builtin (rrmn/randRmN/...) draws from this one generator, so a run is fully
+    // determined by (program, seed).
+    const globals: GlobalInfo = { funcs, random: new ClegRandom(seed) };
 
     // One env shared across every top-level TopStmt - see typecheckCleg's own matching env.
     const env: ValueEnv = { vars: new Map(), parent: null };
     let result: ClegValue | undefined;
     for (const stmt of program.stmts) {
-        if (stmt.kind === 'ExprStmt') result = evalExpr(stmt.expr, env, funcs);
-        else evalStmt(stmt, env, funcs);
+        if (stmt.kind === 'ExprStmt') result = evalExpr(stmt.expr, env, globals);
+        else evalStmt(stmt, env, globals);
     }
     return result!; // typecheckCleg already required the last top-level statement to be an ExprStmt
 }
 
 /** Parses `source`, then runs it via runClegProgram - see that function's own doc comment. */
-export function runCleg(source: string): ClegValue {
-    return runClegProgram(parseCleg(source));
+export function runCleg(source: string, seed: number): ClegValue {
+    return runClegProgram(parseCleg(source), seed);
 }
 
 /** Type-checks `program` (see typecheckCleg) and additionally requires its own result type to be
@@ -2098,9 +2144,10 @@ export function typecheckClegAsBoard(program: ClegProgram): void {
  * Type-checks `program` as a board description (typecheckClegAsBoard), runs it (runClegProgram),
  * and unwraps the resulting `egr`'s own BoardConfig - the one entry point every GameConfig ->
  * BoardConfig call site (src/renderer.ts, src/main.ts, server/src/onlineGameManager.ts) uses
- * instead of the old boardType/boardArgs + applyModifiers two-step.
+ * instead of the old boardType/boardArgs + applyModifiers two-step. A game passes its own
+ * GameConfig.boardSeed as `seed`, so every participant builds the same board.
  */
-export function buildBoardFromCleg(program: ClegProgram): BoardConfig {
+export function buildBoardFromCleg(program: ClegProgram, seed: number): BoardConfig {
     typecheckClegAsBoard(program);
-    return (runClegProgram(program) as { kind: 'egr'; value: BoardConfig }).value;
+    return (runClegProgram(program, seed) as { kind: 'egr'; value: BoardConfig }).value;
 }

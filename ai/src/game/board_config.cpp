@@ -278,7 +278,7 @@ BoardConfig merge_close(const BoardConfig& bc, double dist) {
     return quotient_board(bc, quot);
 }
 
-BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSelector>& sels) {
+BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSelector>& sels, ClegRandom& random) {
     assert(w >= 1 && "w must be at least 1");
     int N = bc.N;
 
@@ -339,7 +339,7 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
     for (auto& fsel : sels) {
         if (fsel.kind == FormSelKind::TriForm) {
             auto sel = fsel.sel.value_or(Selector{SelectorOp::All, simp_type(2)});
-            auto triangles = select_triangle(bc.adj, bc.embed, sel);
+            auto triangles = select_triangle(bc.adj, bc.embed, sel, random);
             int n_face = w * (w + 1) / 2;
             auto local_idx = [](int i, int j) { return i * (i + 1) / 2 + j; };
             const int dirs[6][2] = {{1,0},{1,1},{0,1},{-1,0},{-1,-1},{0,-1}};
@@ -364,17 +364,17 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
             }
         } else if (fsel.kind == FormSelKind::QuadForm) {
             auto sel = fsel.sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
-            build_quad_grid_lattice(select_quad(bc.adj, bc.embed, sel), {{0,1},{1,0},{0,-1},{-1,0}});
+            build_quad_grid_lattice(select_quad(bc.adj, bc.embed, sel, random), {{0,1},{1,0},{0,-1},{-1,0}});
         } else if (fsel.kind == FormSelKind::QuadKnightForm) {
             auto sel = fsel.sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
-            build_quad_grid_lattice(select_quad(bc.adj, bc.embed, sel),
+            build_quad_grid_lattice(select_quad(bc.adj, bc.embed, sel, random),
                 {{1,2},{2,1},{2,-1},{1,-2},{-1,-2},{-2,-1},{-2,1},{-1,2}});
         } else if (fsel.kind == FormSelKind::QuadBishopForm) {
             auto sel = fsel.sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
-            build_quad_grid_lattice(select_quad(bc.adj, bc.embed, sel), {{1,1},{1,-1},{-1,1},{-1,-1}});
+            build_quad_grid_lattice(select_quad(bc.adj, bc.embed, sel, random), {{1,1},{1,-1},{-1,1},{-1,-1}});
         } else { // FormSelKind::QuadDiagForm
             auto sel = fsel.sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
-            auto quads = select_quad(bc.adj, bc.embed, sel);
+            auto quads = select_quad(bc.adj, bc.embed, sel, random);
             int n_primary = w * w;
             auto primary_idx = [&](int i, int j) { return i * w + j; };
             auto center_idx = [&](int i, int j) { return n_primary + i * (w - 1) + j; };
@@ -432,24 +432,24 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
     return quotient_board(combined, quot);
 }
 
-BoardConfig triangle_form(const BoardConfig& bc, int w, std::optional<Selector> sel) {
-    return generic_form(bc, w, { FormSelector{FormSelKind::TriForm, sel} });
+BoardConfig triangle_form(const BoardConfig& bc, int w, ClegRandom& random, std::optional<Selector> sel) {
+    return generic_form(bc, w, { FormSelector{FormSelKind::TriForm, sel} }, random);
 }
 
-BoardConfig quad_form(const BoardConfig& bc, int w, std::optional<Selector> sel) {
-    return generic_form(bc, w, { FormSelector{FormSelKind::QuadForm, sel} });
+BoardConfig quad_form(const BoardConfig& bc, int w, ClegRandom& random, std::optional<Selector> sel) {
+    return generic_form(bc, w, { FormSelector{FormSelKind::QuadForm, sel} }, random);
 }
 
-BoardConfig quad_diag_form(const BoardConfig& bc, int w, std::optional<Selector> sel) {
-    return generic_form(bc, w, { FormSelector{FormSelKind::QuadDiagForm, sel} });
+BoardConfig quad_diag_form(const BoardConfig& bc, int w, ClegRandom& random, std::optional<Selector> sel) {
+    return generic_form(bc, w, { FormSelector{FormSelKind::QuadDiagForm, sel} }, random);
 }
 
-BoardConfig quad_knight_form(const BoardConfig& bc, int w, std::optional<Selector> sel) {
-    return generic_form(bc, w, { FormSelector{FormSelKind::QuadKnightForm, sel} });
+BoardConfig quad_knight_form(const BoardConfig& bc, int w, ClegRandom& random, std::optional<Selector> sel) {
+    return generic_form(bc, w, { FormSelector{FormSelKind::QuadKnightForm, sel} }, random);
 }
 
-BoardConfig quad_bishop_form(const BoardConfig& bc, int w, std::optional<Selector> sel) {
-    return generic_form(bc, w, { FormSelector{FormSelKind::QuadBishopForm, sel} });
+BoardConfig quad_bishop_form(const BoardConfig& bc, int w, ClegRandom& random, std::optional<Selector> sel) {
+    return generic_form(bc, w, { FormSelector{FormSelKind::QuadBishopForm, sel} }, random);
 }
 
 // Mirrors shared/boardConfig.ts's genericLocalReplace() - unlike the TS side, every branch here
@@ -457,7 +457,7 @@ BoardConfig quad_bishop_form(const BoardConfig& bc, int w, std::optional<Selecto
 // the TS version there's no barycenter/apex-position computation or "pad every position with one
 // extra dimension for QuadOctarize" bookkeeping at all - only the consumed/extra_edges adjacency
 // logic itself needs porting.
-BoardConfig generic_local_replace(const BoardConfig& bc, const std::vector<LocalReplaceSelector>& selectors) {
+BoardConfig generic_local_replace(const BoardConfig& bc, const std::vector<LocalReplaceSelector>& selectors, ClegRandom& random) {
     int N = bc.N;
     int next_idx = N;
     // (i,j) i<j - a selected face's own original edge, excluded from bc.adj's straight copy below
@@ -471,7 +471,7 @@ BoardConfig generic_local_replace(const BoardConfig& bc, const std::vector<Local
         if (s.kind == LocalReplaceKind::QuadCentralize || s.kind == LocalReplaceKind::QuadOctarize ||
             s.kind == LocalReplaceKind::QuadCentering) {
             Selector sel = s.sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
-            auto quads = select_quad(bc.adj, bc.embed, sel);
+            auto quads = select_quad(bc.adj, bc.embed, sel, random);
             for (auto& [A, B, C, D] : quads) {
                 mark_consumed(A, B); mark_consumed(B, C); mark_consumed(C, D); mark_consumed(D, A);
                 if (s.kind != LocalReplaceKind::QuadCentering) {
@@ -500,7 +500,7 @@ BoardConfig generic_local_replace(const BoardConfig& bc, const std::vector<Local
             int n = s.n;
             assert(n >= 2 && "generic_local_replace: n must be at least 2");
             Selector sel = s.sel.value_or(Selector{SelectorOp::All, simp_type(n)});
-            auto simplices = select_simp(bc.adj, bc.embed, sel);
+            auto simplices = select_simp(bc.adj, bc.embed, sel, random);
             for (auto& simplex : simplices) {
                 auto& nodes = simplex.nodes;
                 for (size_t i = 0; i < nodes.size(); i++)
@@ -533,30 +533,30 @@ BoardConfig generic_local_replace(const BoardConfig& bc, const std::vector<Local
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-BoardConfig simp_centralize(const BoardConfig& bc, int n, std::optional<Selector> sel) {
+BoardConfig simp_centralize(const BoardConfig& bc, int n, ClegRandom& random, std::optional<Selector> sel) {
     assert(n >= 2 && "simp_centralize: n must be at least 2");
-    return generic_local_replace(bc, { LocalReplaceSelector{LocalReplaceKind::SimpCentralize, n, sel} });
+    return generic_local_replace(bc, { LocalReplaceSelector{LocalReplaceKind::SimpCentralize, n, sel} }, random);
 }
 
-BoardConfig simp_centering(const BoardConfig& bc, int n, std::optional<Selector> sel) {
+BoardConfig simp_centering(const BoardConfig& bc, int n, ClegRandom& random, std::optional<Selector> sel) {
     assert(n >= 2 && "simp_centering: n must be at least 2");
-    return generic_local_replace(bc, { LocalReplaceSelector{LocalReplaceKind::SimpCentering, n, sel} });
+    return generic_local_replace(bc, { LocalReplaceSelector{LocalReplaceKind::SimpCentering, n, sel} }, random);
 }
 
-BoardConfig tri_centralize(const BoardConfig& bc, std::optional<Selector> sel) {
-    return simp_centralize(bc, 2, sel);
+BoardConfig tri_centralize(const BoardConfig& bc, ClegRandom& random, std::optional<Selector> sel) {
+    return simp_centralize(bc, 2, random, sel);
 }
 
-BoardConfig tri_centering(const BoardConfig& bc, std::optional<Selector> sel) {
-    return simp_centering(bc, 2, sel);
+BoardConfig tri_centering(const BoardConfig& bc, ClegRandom& random, std::optional<Selector> sel) {
+    return simp_centering(bc, 2, random, sel);
 }
 
-BoardConfig quad_centralize(const BoardConfig& bc, std::optional<Selector> sel) {
-    return generic_local_replace(bc, { LocalReplaceSelector{LocalReplaceKind::QuadCentralize, 0, sel} });
+BoardConfig quad_centralize(const BoardConfig& bc, ClegRandom& random, std::optional<Selector> sel) {
+    return generic_local_replace(bc, { LocalReplaceSelector{LocalReplaceKind::QuadCentralize, 0, sel} }, random);
 }
 
-BoardConfig quad_centering(const BoardConfig& bc, std::optional<Selector> sel) {
-    return generic_local_replace(bc, { LocalReplaceSelector{LocalReplaceKind::QuadCentering, 0, sel} });
+BoardConfig quad_centering(const BoardConfig& bc, ClegRandom& random, std::optional<Selector> sel) {
+    return generic_local_replace(bc, { LocalReplaceSelector{LocalReplaceKind::QuadCentering, 0, sel} }, random);
 }
 
 BoardConfig global_centralize(const BoardConfig& bc) {
@@ -578,8 +578,8 @@ BoardConfig global_centralize(const BoardConfig& bc) {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-BoardConfig quad_octarize(const BoardConfig& bc, std::optional<Selector> sel) {
-    return generic_local_replace(bc, { LocalReplaceSelector{LocalReplaceKind::QuadOctarize, 0, sel} });
+BoardConfig quad_octarize(const BoardConfig& bc, ClegRandom& random, std::optional<Selector> sel) {
+    return generic_local_replace(bc, { LocalReplaceSelector{LocalReplaceKind::QuadOctarize, 0, sel} }, random);
 }
 
 BoardConfig scale_board(const BoardConfig& bc, double /*factor*/) {
@@ -674,30 +674,30 @@ BoardConfig node_edge_induced_subgraph(
     return make_bc(std::move(adj), bc.emb_dim, std::move(embed));
 }
 
-BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier) {
+BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier, ClegRandom& random) {
     switch (modifier.kind) {
         case ModifierKind::Rectify:    return rectify(bc);
         case ModifierKind::Truncate:   return truncate(bc);
         case ModifierKind::EdgeSplit:  return edge_split(bc, modifier.split_n);
         case ModifierKind::MergeClose: return merge_close(bc, modifier.dist);
-        case ModifierKind::TriangleForm: return triangle_form(bc, modifier.split_n, modifier.form_sel);
-        case ModifierKind::QuadForm: return quad_form(bc, modifier.split_n, modifier.form_sel);
-        case ModifierKind::QuadDiagForm: return quad_diag_form(bc, modifier.split_n, modifier.form_sel);
-        case ModifierKind::QuadKnightForm: return quad_knight_form(bc, modifier.split_n, modifier.form_sel);
-        case ModifierKind::QuadBishopForm: return quad_bishop_form(bc, modifier.split_n, modifier.form_sel);
-        case ModifierKind::Form: return generic_form(bc, modifier.split_n, modifier.form_sels);
-        case ModifierKind::LocalReplace: return generic_local_replace(bc, modifier.selectors);
+        case ModifierKind::TriangleForm: return triangle_form(bc, modifier.split_n, random, modifier.form_sel);
+        case ModifierKind::QuadForm: return quad_form(bc, modifier.split_n, random, modifier.form_sel);
+        case ModifierKind::QuadDiagForm: return quad_diag_form(bc, modifier.split_n, random, modifier.form_sel);
+        case ModifierKind::QuadKnightForm: return quad_knight_form(bc, modifier.split_n, random, modifier.form_sel);
+        case ModifierKind::QuadBishopForm: return quad_bishop_form(bc, modifier.split_n, random, modifier.form_sel);
+        case ModifierKind::Form: return generic_form(bc, modifier.split_n, modifier.form_sels, random);
+        case ModifierKind::LocalReplace: return generic_local_replace(bc, modifier.selectors, random);
         case ModifierKind::GlobalCentralize: return global_centralize(bc);
         case ModifierKind::Scale: return scale_board(bc, modifier.dist);
-        case ModifierKind::NodeInducedSubgraph: return node_induced_subgraph(bc, select_node(bc.adj, bc.embed, modifier.sel));
-        case ModifierKind::EdgeInducedSubgraph: return edge_induced_subgraph(bc, select_edge(bc.adj, bc.embed, modifier.sel));
+        case ModifierKind::NodeInducedSubgraph: return node_induced_subgraph(bc, select_node(bc.adj, bc.embed, modifier.sel, random));
+        case ModifierKind::EdgeInducedSubgraph: return edge_induced_subgraph(bc, select_edge(bc.adj, bc.embed, modifier.sel, random));
     }
     throw std::runtime_error("apply_modifier: unknown ModifierKind");
 }
 
-BoardConfig apply_modifiers(const BoardConfig& bc, const std::vector<BoardModifier>& modifiers) {
+BoardConfig apply_modifiers(const BoardConfig& bc, const std::vector<BoardModifier>& modifiers, ClegRandom& random) {
     BoardConfig current = bc;
-    for (auto& m : modifiers) current = apply_modifier(current, m);
+    for (auto& m : modifiers) current = apply_modifier(current, m, random);
     return current;
 }
 

@@ -22,7 +22,7 @@ function createRenderer(forcedPassOnly = false) {
         [[null, null], [null, null]], [null, null], { 1: new Set([1]), 2: new Set([2]) }, forcedPassOnly, 'area',
         [0, 0], 'situational', false, null, new Array(bc.N).fill(0), bc,
     );
-    const renderer = new Renderer(game);
+    const renderer = new Renderer(game, 0);
     renderer.init();
     return renderer;
 }

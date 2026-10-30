@@ -48,6 +48,7 @@ bool strong_equal(const GameConfig& a, const GameConfig& b) {
 nlohmann::json GameConfig::to_json() const {
     json j;
     j["boardDescr"] = board_descr;
+    j["boardSeed"]  = board_seed.has_value() ? json(*board_seed) : json(nullptr);
     j["numStones"]  = num_stones;
     j["numPlayers"] = num_players;
 
@@ -134,11 +135,21 @@ static std::optional<int> parse_max_plies(const json& j) {
     return j.is_null() ? std::nullopt : std::optional<int>(j.get<int>());
 }
 
+// Same range check as shared/gameConfig.ts's GameConfig constructor - get<uint32_t>() alone would
+// silently wrap a negative or oversized value.
+static std::optional<uint32_t> parse_board_seed(const json& j) {
+    if (j.is_null()) return std::nullopt;
+    if (!j.is_number_unsigned() || j.get<uint64_t>() > UINT32_MAX)
+        throw std::runtime_error("boardSeed must be null or an integer in [0, 2^32), got " + j.dump());
+    return j.get<uint32_t>();
+}
+
 // Required keys are read via .at(), not operator[]: on a const json, operator[] with a missing key
 // is undefined behavior (an assert compiled out under NDEBUG), not an exception.
 GameConfig parse_game_cfg(const json& cfg) {
     GameConfig game_cfg;
     game_cfg.board_descr = cfg.at("boardDescr").get<std::string>();
+    game_cfg.board_seed  = parse_board_seed(cfg.value("boardSeed", json(nullptr)));
     game_cfg.num_stones  = cfg.at("numStones").get<int>();
     game_cfg.num_players = cfg.at("numPlayers").get<int>();
     game_cfg.turn_list   = parse_turn_list(cfg.at("turnList"));

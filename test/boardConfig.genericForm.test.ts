@@ -9,17 +9,20 @@ import {
     genericForm, triangleForm, quadForm, quadDiagForm, triangularBoard, rectangularBoard, applyModifier,
 } from '../shared/boardConfig.ts';
 import type { FormSelector, Selector } from '../shared/types.ts';
-import { parseTriangleSelector, parseQuadSelector } from '../shared/selector.ts';
+import { parseTriangleSelector, parseQuadSelector, ClegRandom } from '../shared/selector.ts';
 import { edgeCount, assertSymmetricNoSelfLoops, assertConnected, boardFromEdges } from './graphHelpers.ts';
+
+// The generator every selector/board-modifier call in this file draws from.
+const random = new ClegRandom(0);
 
 test('genericForm with a single TriForm selector is identical to triangleForm', () => {
     const bc = triangularBoard(2);
-    assert.deepEqual(genericForm(bc, 3, [{ kind: 'TriForm' }]), triangleForm(bc, 3));
+    assert.deepEqual(genericForm(bc, 3, [{ kind: 'TriForm' }], random), triangleForm(bc, 3, random));
 });
 
 test('genericForm with a single QuadForm selector is identical to quadForm', () => {
     const bc = rectangularBoard(2, 2);
-    assert.deepEqual(genericForm(bc, 3, [{ kind: 'QuadForm' }]), quadForm(bc, 3));
+    assert.deepEqual(genericForm(bc, 3, [{ kind: 'QuadForm' }], random), quadForm(bc, 3, random));
 });
 
 test('a triangle and a quad sharing an edge glue seamlessly across kinds', () => {
@@ -27,12 +30,12 @@ test('a triangle and a quad sharing an edge glue seamlessly across kinds', () =>
     const N = 5;
     const bc = boardFromEdges(N, [[0, 1], [1, 2], [2, 0], [1, 3], [3, 4], [4, 2]]);
 
-    const triOnly = genericForm(bc, 3, [{ kind: 'TriForm', sel: parseTriangleSelector('(all tri)') }]);
-    const quadOnly = genericForm(bc, 3, [{ kind: 'QuadForm', sel: parseQuadSelector('(all quad)') }]);
+    const triOnly = genericForm(bc, 3, [{ kind: 'TriForm', sel: parseTriangleSelector('(all tri)') }], random);
+    const quadOnly = genericForm(bc, 3, [{ kind: 'QuadForm', sel: parseQuadSelector('(all quad)') }], random);
     const both = genericForm(bc, 3, [
         { kind: 'TriForm', sel: parseTriangleSelector('(all tri)') },
         { kind: 'QuadForm', sel: parseQuadSelector('(all quad)') },
-    ]);
+    ], random);
     assertSymmetricNoSelfLoops(both.adj);
     assertConnected(both.adj);
     // If the shared edge (1,2) weren't glued across kinds, `both` would just be the disjoint union
@@ -45,7 +48,7 @@ test('a triangle and a quad sharing an edge glue seamlessly across kinds', () =>
 test('quadDiagForm has w*w + (w-1)*(w-1) nodes per quad, only diagonal edges', () => {
     const bc = rectangularBoard(2, 2);
     for (const w of [1, 2, 3, 4]) {
-        const result = quadDiagForm(bc, w);
+        const result = quadDiagForm(bc, w, random);
         assert.equal(result.N, w * w + (w - 1) * (w - 1));
         assertSymmetricNoSelfLoops(result.adj);
         assertConnected(result.adj);
@@ -60,13 +63,13 @@ test('quadDiagForm has w*w + (w-1)*(w-1) nodes per quad, only diagonal edges', (
 
 test('quadDiagForm w=1 collapses the quad to a single point', () => {
     const bc = rectangularBoard(2, 2);
-    const result = quadDiagForm(bc, 1);
+    const result = quadDiagForm(bc, 1, random);
     assert.equal(result.N, 1);
 });
 
-test('applyModifier("QuadDiagForm", ...) matches calling quadDiagForm directly', () => {
+test('applyModifier("QuadDiagForm", ..., random) matches calling quadDiagForm directly', () => {
     const bc = rectangularBoard(2, 2);
-    assert.deepEqual(applyModifier(bc, { kind: 'QuadDiagForm', w: 3 }), quadDiagForm(bc, 3));
+    assert.deepEqual(applyModifier(bc, { kind: 'QuadDiagForm', w: 3 }, random), quadDiagForm(bc, 3, random));
 });
 
 test('two quadDiagForm quads sharing an edge glue seamlessly', () => {
@@ -79,9 +82,9 @@ test('two quadDiagForm quads sharing an edge glue seamlessly', () => {
     const quad2: Selector =
         { op: 'raw', type: 'quad', items: { kind: 'quad', value: [{ n1: 1, n2: 4, n3: 5, n4: 2 }] } };
     for (const w of [2, 3, 4]) {
-        const only1 = genericForm(bc, w, [{ kind: 'QuadDiagForm', sel: quad1 }]);
-        const only2 = genericForm(bc, w, [{ kind: 'QuadDiagForm', sel: quad2 }]);
-        const both = genericForm(bc, w, [{ kind: 'QuadDiagForm', sel: parseQuadSelector('(all quad)') }]);
+        const only1 = genericForm(bc, w, [{ kind: 'QuadDiagForm', sel: quad1 }], random);
+        const only2 = genericForm(bc, w, [{ kind: 'QuadDiagForm', sel: quad2 }], random);
+        const both = genericForm(bc, w, [{ kind: 'QuadDiagForm', sel: parseQuadSelector('(all quad)') }], random);
         assertSymmetricNoSelfLoops(both.adj);
         assertConnected(both.adj);
         // Corner quotienting alone accounts for only1.N + only2.N - N; the shared edge's own w-2
@@ -94,12 +97,12 @@ test('two quadDiagForm quads sharing an edge glue seamlessly', () => {
 
 test('an empty sels list is a total no-op', () => {
     const bc = triangularBoard(2);
-    const result = genericForm(bc, 3, []);
+    const result = genericForm(bc, 3, [], random);
     assert.deepEqual(result.adj, bc.adj);
 });
 
-test('applyModifier("Form", ...) matches calling genericForm directly', () => {
+test('applyModifier("Form", ..., random) matches calling genericForm directly', () => {
     const bc = triangularBoard(2);
     const sels: FormSelector[] = [{ kind: 'TriForm' }];
-    assert.deepEqual(applyModifier(bc, { kind: 'Form', w: 3, sels }), genericForm(bc, 3, sels));
+    assert.deepEqual(applyModifier(bc, { kind: 'Form', w: 3, sels }, random), genericForm(bc, 3, sels, random));
 });

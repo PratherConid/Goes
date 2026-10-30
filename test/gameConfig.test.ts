@@ -18,6 +18,7 @@ function sampleConfig() {
     );
     config.players.set(1, new PlayerInfo('client', 'alice'));
     config.players.set(2, new PlayerInfo('serverEngine', 'Engine', 400, 1));
+    config.boardSeed = 3_000_000_000;   // above 2^31, so a signed-int32 mixup would show
     return config;
 }
 
@@ -44,6 +45,7 @@ test('GameConfig.toJSON()/fromJSON() round-trips players and scalar fields', () 
     const roundTripped = GameConfig.fromJSON(JSON.parse(JSON.stringify(original.toJSON())));
 
     assert.deepEqual(roundTripped.boardDescr, original.boardDescr);
+    assert.equal(roundTripped.boardSeed, original.boardSeed);
     assert.equal(roundTripped.forcedPassOnly, original.forcedPassOnly);
     assert.equal(roundTripped.scoreRule, original.scoreRule);
     assert.deepEqual(roundTripped.komi, original.komi);
@@ -55,7 +57,7 @@ test('GameConfig.toJSON()/fromJSON() round-trips players and scalar fields', () 
         'stoneToPlayerMap survives the real JSON.stringify/JSON.parse wire path as equivalent Sets');
 });
 
-test('GameConfig.fromJSON() defaults scoreRule/komi/koRule/allowSuicide/maxPlies when absent', () => {
+test('GameConfig.fromJSON() defaults scoreRule/komi/koRule/allowSuicide/maxPlies/boardSeed when absent', () => {
     const raw = {
         boardDescr: 'rectB(9, 9);', numStones: 2, numPlayers: 2,
         turnList: [
@@ -70,4 +72,12 @@ test('GameConfig.fromJSON() defaults scoreRule/komi/koRule/allowSuicide/maxPlies
     assert.equal(config.koRule, 'situational');
     assert.equal(config.allowSuicide, false);
     assert.equal(config.maxPlies, null);
+    assert.equal(config.boardSeed, null);
+    assert.throws(() => config.requireBoardSeed(), /has not started/);
+});
+
+test('GameConfig rejects a boardSeed outside the uint32 range', () => {
+    const raw = sampleConfig().toJSON();
+    for (const boardSeed of [-1, 2 ** 32, 1.5])
+        assert.throws(() => GameConfig.fromJSON({ ...raw, boardSeed }), /boardSeed must be/);
 });

@@ -28,6 +28,11 @@ export class GameConfig {
     // AST, so a serialized GameConfig (public/game_presets/*.json, a persisted finished game, a
     // game/create payload) is human-readable/editable as plain cleg, not a JSON AST dump.
     boardDescr: ClegProgram;
+    // Seeds boardDescr's random builtins (see buildBoardFromCleg), so everyone in a game builds the
+    // same board. null until the game starts, when a local game's client or an online game's server
+    // draws one (randomBoardSeed()). An integer in [0, 2^32), since the C++ engine reads it as a
+    // uint32.
+    boardSeed: number | null;
     numStones: number;
     numPlayers: number;
     turnList: TurnInfo[];
@@ -70,9 +75,13 @@ export class GameConfig {
         allowSuicide: boolean,
         maxPlies: number | null,
         players: Map<number, PlayerInfo> = new Map(),
+        boardSeed: number | null = null,
     ) {
         if (komi.some(k => k < 0)) throw new Error(`komi values must be >= 0, got [${komi.join(', ')}]`);
+        if (boardSeed !== null && !(Number.isInteger(boardSeed) && boardSeed >= 0 && boardSeed < 2 ** 32))
+            throw new Error(`boardSeed must be null or an integer in [0, 2^32), got ${boardSeed}`);
         this.boardDescr       = boardDescr;
+        this.boardSeed        = boardSeed;
         this.numStones        = numStones;
         this.numPlayers       = numPlayers;
         this.turnList         = turnList;
@@ -110,7 +119,14 @@ export class GameConfig {
             new Map([...this.players.entries()].map(
                 ([s, pi]) => [s, new PlayerInfo(pi.type, pi.name, pi.emsim, pi.temp)]
             )),
+            this.boardSeed,
         );
+    }
+
+    // boardSeed of a game that has started - throws if it hasn't (boardSeed still null).
+    requireBoardSeed(): number {
+        if (this.boardSeed === null) throw new Error('GameConfig.boardSeed is unset: the game has not started');
+        return this.boardSeed;
     }
 
     // Serialise players Map as an array, and each stoneToPlayerMap Set as a plain
@@ -119,6 +135,7 @@ export class GameConfig {
     toJSON() {
         return {
             boardDescr: unparseCleg(this.boardDescr),
+            boardSeed: this.boardSeed,
             numStones: this.numStones, numPlayers: this.numPlayers,
             turnList: this.turnList,
             playerStonePlaceLimit: this.playerStonePlaceLimit,
@@ -160,8 +177,14 @@ export class GameConfig {
             (raw.koRule ?? 'situational') as KoRule,
             (raw.allowSuicide ?? false) as boolean,
             (raw.maxPlies ?? null) as number | null, players,
+            (raw.boardSeed ?? null) as number | null,
         );
     }
+}
+
+// A fresh GameConfig.boardSeed, drawn when a game starts.
+export function randomBoardSeed(): number {
+    return Math.floor(Math.random() * 2 ** 32);
 }
 
 // Minimal, principled record of a finished game: just enough to deterministically

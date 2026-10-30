@@ -2,7 +2,7 @@ import { BoardState } from '@shared/boardState.js';
 import { buildBoardFromCleg, typecheckClegAsBoard } from '@shared/clegEval.js';
 import { PlayerInfo, OnlinePlayerRequest, makeId } from '@shared/types.js';
 import type { OnlineStateResponse, PendingGame, ReplayMove, ChatMessage } from '@shared/types.js';
-import { GameConfig, FinishedGame } from '@shared/gameConfig.js';
+import { GameConfig, FinishedGame, randomBoardSeed } from '@shared/gameConfig.js';
 import { httpError } from './httpError.js';
 import { recordFinishedGame, getFinishedGames } from './gameRecordStore.js';
 import type { GameRecordStoreState } from './gameRecordStore.js';
@@ -68,7 +68,7 @@ export class OnlineGameManager {
         this.gameRecordState = gameRecordState;
         for (const { id, finishedGame, observers, chat } of gameRecordState.loadedRecords) {
             try {
-                const bc = buildBoardFromCleg(finishedGame.config.boardDescr);
+                const bc = buildBoardFromCleg(finishedGame.config.boardDescr, finishedGame.config.requireBoardSeed());
                 const boardState = BoardState.fromFinishedGame(finishedGame, bc);
                 this.finishedGames.set(id, {
                     id, config: finishedGame.config, boardState, engineSessions: new Map(), observers, chat,
@@ -246,7 +246,10 @@ export class OnlineGameManager {
     }
 
     private _startGame(pending: ServerPendingGame) {
-        const bc = buildBoardFromCleg(pending.config.boardDescr);
+        // Drawn here, not taken from the creator's config, so the server alone picks the board; the
+        // game/start broadcast then hands it to every client along with the rest of the config.
+        pending.config.boardSeed = randomBoardSeed();
+        const bc = buildBoardFromCleg(pending.config.boardDescr, pending.config.boardSeed);
         const boardState = new BoardState(
             pending.config.numStones, pending.config.numPlayers,
             pending.config.turnList, pending.config.playerStonePlaceLimit, pending.config.globalStonePlaceLimit,

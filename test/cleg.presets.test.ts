@@ -26,21 +26,6 @@ for (const name of BUNDLED_FONT_NAMES) {
     loadFont(name, buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
 }
 
-// shared/selector.ts's randomlyRemove()/randomlyTake() are the Math.random() call sites any preset
-// can reach (via a (rrmp ...)/(rrmn ...)/(rpkp ...)/(rpkn ...) selector, or the randRmN/randRmP/
-// randTakeN/randTakeP cleg builtins) - substituting a seeded PRNG for the duration makes the
-// handful of presets using them (fractaldrop-built ones, nice_drop, rrmp) evaluate to the exact
-// same board every run.
-function mulberry32(seed: number): () => number {
-    return () => {
-        seed |= 0;
-        seed = (seed + 0x6D2B79F5) | 0;
-        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-}
-
 // Golden N/edge-count values, one per public/board_presets/*.cleg file that DOESN'T use any of
 // RANDOM_BUILTIN_NAMES below - captured from buildBoardFromCleg()'s verified-correct behavior,
 // cross-checked against the independent C++ port's own evaluation of the same files.
@@ -98,16 +83,16 @@ const BOARD_PRESET_GOLDEN: Record<string, { N: number; edges: number }> = {
 };
 
 // Every cleg builtin (function name or selector-operator keyword) that can reach
-// shared/selector.ts's randomlyRemove()/randomlyTake() - i.e. every Math.random() call site a
-// preset can reach. Matched textually (word-boundary, against the raw source - including inside
-// selector STRING literals like "(rrmp 0.1 (all))", not just parsed-out identifiers) rather than by
-// inspecting the parsed AST, since a preset only needs to MENTION one of these somewhere for its
-// own result to depend on Math.random() - a golden N/edge count for such a preset wouldn't be
-// testing "this preset still builds the right shape", just "this exact seeded PRNG sequence, spent
-// in this exact order, still happens to produce this exact number" - a much more fragile thing to
-// pin down, tripped by any internal reordering of random draws even when real (unseeded) behavior
-// is unchanged. Presets that use one of these still get evaluated below (so a genuine crash/error
-// is still caught), just not checked against a golden N/edge count.
+// shared/selector.ts's randomlyRemove()/randomlyTake() - i.e. every draw from cleg's seeded
+// generator a preset can reach. Matched textually (word-boundary, against the raw source - including
+// inside selector STRING literals like "(rrmp 0.1 (all))", not just parsed-out identifiers) rather
+// than by inspecting the parsed AST, since a preset only needs to MENTION one of these somewhere for
+// its own result to depend on that generator - a golden N/edge count for such a preset wouldn't be
+// testing "this preset still builds the right shape", just "this exact PRNG sequence, spent in this
+// exact order, still happens to produce this exact number" - a much more fragile thing to pin down,
+// tripped by any internal reordering of random draws even when the board's shape is unaffected.
+// Presets that use one of these still get evaluated below (so a genuine crash/error is still
+// caught), just not checked against a golden N/edge count.
 const RANDOM_BUILTIN_NAMES = ['rrmp', 'rrmn', 'rpkp', 'rpkn', 'randRmN', 'randRmP', 'randTakeN', 'randTakeP'];
 const RANDOM_BUILTIN_RE = new RegExp(`\\b(${RANDOM_BUILTIN_NAMES.join('|')})\\b`);
 
@@ -124,20 +109,13 @@ test('every public/board_presets/*.cleg file parses and evaluates without throwi
         `doesn't use any of ${RANDOM_BUILTIN_NAMES.join('/')} - update it when presets are added/` +
         'removed/renamed, or gain/lose their own use of randomness');
 
-    const originalRandom = Math.random;
-    try {
-        for (const file of files) {
-            const source = fs.readFileSync(path.join(boardPresetsDir, file), 'utf8');
-            const program = parseCleg(source);
-            Math.random = mulberry32(42);
-            const bc = buildBoardFromCleg(program);
-            const golden = BOARD_PRESET_GOLDEN[file];
-            if (!golden) continue; // randomized preset - evaluating without throwing is enough
-            assert.equal(bc.N, golden.N, `${file}: node count`);
-            assert.equal(edgeCount(bc.adj), golden.edges, `${file}: edge count`);
-        }
-    } finally {
-        Math.random = originalRandom;
+    for (const file of files) {
+        const source = fs.readFileSync(path.join(boardPresetsDir, file), 'utf8');
+        const bc = buildBoardFromCleg(parseCleg(source), 0);
+        const golden = BOARD_PRESET_GOLDEN[file];
+        if (!golden) continue; // randomized preset - evaluating without throwing is enough
+        assert.equal(bc.N, golden.N, `${file}: node count`);
+        assert.equal(edgeCount(bc.adj), golden.edges, `${file}: edge count`);
     }
 });
 

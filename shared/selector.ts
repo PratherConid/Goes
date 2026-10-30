@@ -482,35 +482,77 @@ function quadKey(s: BoardQuad): string {
     return `${s.n1},${s.n2},${s.n3},${s.n4}`;
 }
 
+// cleg's one source of randomness: a seeded mulberry32 generator. Each cleg program run owns one
+// (shared/clegEval.ts's GlobalInfo.random) and hands it to every select*()/randomlyRemove()/
+// randomlyTake()/board modifier it calls, so a given seed always reproduces the same board.
+// Integer-only arithmetic (Math.imul, >>> 0) so ai/include/game/selector.h's port draws the exact
+// same sequence.
+export class ClegRandom {
+    private state: number;
+
+    constructor(seed: number) {
+        this.state = seed | 0;
+    }
+
+    // The next draw, uniform in [0, 1) - a 32-bit integer divided by 2^32, so `next() * k` (k a
+    // small integer) is exact in a double and floors identically in C++.
+    next(): number {
+        this.state = (this.state + 0x6D2B79F5) | 0;
+        let t = Math.imul(this.state ^ (this.state >>> 15), this.state | 1);
+        t = (t + Math.imul(t ^ (t >>> 7), t | 61)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    }
+}
+
+// Lexicographic order over node-index lists (a shorter prefix sorts first) - the canonical order
+// randomlyRemove/randomlyTake put node/edge/simp/quad items in before shuffling (see below), each
+// object kind compared by its own already-canonical node fields. Exported for shared/clegEval.ts's
+// set-element order.
+export function compareIndexLists(a: readonly number[], b: readonly number[]): number {
+    for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) return a[i] - b[i];
+    return a.length - b.length;
+}
+const compareNodes = (a: number, b: number) => a - b;
+const compareEdges = (a: BoardEdge, b: BoardEdge) => compareIndexLists([a.n1, a.n2], [b.n1, b.n2]);
+const compareSimps = (a: BoardSimplex, b: BoardSimplex) => compareIndexLists(a.nodes, b.nodes);
+const compareQuads = (a: BoardQuad, b: BoardQuad) =>
+    compareIndexLists([a.n1, a.n2, a.n3, a.n4], [b.n1, b.n2, b.n3, b.n4]);
+
 // Returns a NEW array with exactly `removeCount` (clamped to [0, items.length], since removing more
-// than exist isn't meaningful) uniformly-randomly-chosen elements dropped, via a partial
-// Fisher-Yates shuffle (only the first `removeCount` positions need to be randomized to pick which
-// elements to drop). The rest of this file's set operations are pure and order-preserving; rrmn/rrmp
-// (the only Selector ops that use this) and rpkn/rpkp (which use randomlyTake just below instead)
-// are neither - two evaluations of the same selector can return different results, and the kept
-// elements' relative order isn't preserved either. Exported for shared/clegEval.ts's own `randRmN`
-// builtin, which performs this exact operation on a cleg set.
-export function randomlyRemove<T>(items: T[], removeCount: number): T[] {
+// than exist isn't meaningful) pseudo-randomly-chosen elements dropped, via a partial Fisher-Yates
+// shuffle (only the first `removeCount` positions need to be randomized to pick which elements to
+// drop) over `random`. `items` is first sorted by `compare`, so which elements get dropped
+// depends only on the seed and the item SET, not on the order an earlier operation happened to
+// produce them in (that order differs between this file and its C++ port). The rest of this file's
+// set operations are pure and order-preserving; rrmn/rrmp (the only Selector ops that use this) and
+// rpkn/rpkp (which use randomlyTake just below instead) don't preserve the kept elements' relative
+// order. Exported for shared/clegEval.ts's own `randRmN` builtin, which performs this exact
+// operation on a cleg set.
+export function randomlyRemove<T>(
+    items: T[], removeCount: number, compare: (a: T, b: T) => number, random: ClegRandom,
+): T[] {
     const n = items.length;
     const toRemove = Math.min(Math.max(removeCount, 0), n);
-    const shuffled = [...items];
+    const shuffled = [...items].sort(compare);
     for (let i = 0; i < toRemove; i++) {
-        const j = i + Math.floor(Math.random() * (n - i));
+        const j = i + Math.floor(random.next() * (n - i));
         [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
     return shuffled.slice(toRemove);
 }
 
-// The take-instead-of-remove counterpart of randomlyRemove just above - same partial Fisher-Yates
-// shuffle (the first `takeCount` positions become the randomized ones), but returns THOSE positions
-// (the taken elements) rather than the rest. Exported for shared/clegEval.ts's own `randTakeN`
-// builtin, which performs this exact operation on a cleg set.
-export function randomlyTake<T>(items: T[], takeCount: number): T[] {
+// The take-instead-of-remove counterpart of randomlyRemove just above - same sort and partial
+// Fisher-Yates shuffle (the first `takeCount` positions become the randomized ones), but returns
+// THOSE positions (the taken elements) rather than the rest. Exported for shared/clegEval.ts's own
+// `randTakeN` builtin, which performs this exact operation on a cleg set.
+export function randomlyTake<T>(
+    items: T[], takeCount: number, compare: (a: T, b: T) => number, random: ClegRandom,
+): T[] {
     const n = items.length;
     const toTake = Math.min(Math.max(takeCount, 0), n);
-    const shuffled = [...items];
+    const shuffled = [...items].sort(compare);
     for (let i = 0; i < toTake; i++) {
-        const j = i + Math.floor(Math.random() * (n - i));
+        const j = i + Math.floor(random.next() * (n - i));
         [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
     return shuffled.slice(0, toTake);
@@ -520,12 +562,15 @@ export function randomlyTake<T>(items: T[], takeCount: number): T[] {
 // shared by every object kind's own switch below, which are otherwise identical for these 4 ops
 // modulo which selectNode/selectEdge/selectSimp/selectQuad call produced `base` (and selectNode's
 // own extra Set wrapping around the result).
-function applyRandomOp<T>(sel: Extract<Selector, { op: 'rrmn' | 'rrmp' | 'rpkn' | 'rpkp' }>, base: T[]): T[] {
+function applyRandomOp<T>(
+    sel: Extract<Selector, { op: 'rrmn' | 'rrmp' | 'rpkn' | 'rpkp' }>, base: T[], compare: (a: T, b: T) => number,
+    random: ClegRandom,
+): T[] {
     switch (sel.op) {
-        case 'rrmn': return randomlyRemove(base, sel.count);
-        case 'rrmp': return randomlyRemove(base, Math.floor(sel.frac * base.length));
-        case 'rpkn': return randomlyTake(base, sel.count);
-        case 'rpkp': return randomlyTake(base, Math.floor(sel.frac * base.length));
+        case 'rrmn': return randomlyRemove(base, sel.count, compare, random);
+        case 'rrmp': return randomlyRemove(base, Math.floor(sel.frac * base.length), compare, random);
+        case 'rpkn': return randomlyTake(base, sel.count, compare, random);
+        case 'rpkp': return randomlyTake(base, Math.floor(sel.frac * base.length), compare, random);
     }
 }
 
@@ -568,39 +613,39 @@ function convertObjectsCmp<F, T>(
  * operators. `pos` isn't used by any selector in the current grammar, but is threaded through
  * (matching the other three evaluators' own signatures) for future position-based selectors.
  */
-export function selectNode(adj: number[][], pos: number[][], sel: Selector): Set<number> {
+export function selectNode(adj: number[][], pos: number[][], sel: Selector, random: ClegRandom): Set<number> {
     if (sel.type !== 'node')
         throw new Error(`selectNode: expected a node selector, got ${describeSelectorType(sel.type)} selector (op '${sel.op}')`);
     const N = adj.length;
     switch (sel.op) {
         case 'union': {
             const out = new Set<number>();
-            for (const item of sel.items) for (const x of selectNode(adj, pos, item)) out.add(x);
+            for (const item of sel.items) for (const x of selectNode(adj, pos, item, random)) out.add(x);
             return out;
         }
         case 'inter': {
             // Zero operands is the universal set, matching (all) - see Selector's own doc comment
             // (shared/types.ts) on why an empty inter is the identity for intersection's fold.
-            if (sel.items.length === 0) return selectNode(adj, pos, { op: 'all', type: 'node' });
-            let acc = selectNode(adj, pos, sel.items[0]);
+            if (sel.items.length === 0) return selectNode(adj, pos, { op: 'all', type: 'node' }, random);
+            let acc = selectNode(adj, pos, sel.items[0], random);
             for (let i = 1; i < sel.items.length; i++) {
-                const next = selectNode(adj, pos, sel.items[i]);
+                const next = selectNode(adj, pos, sel.items[i], random);
                 acc = new Set([...acc].filter(x => next.has(x)));
             }
             return acc;
         }
         case 'diff': {
-            const a = selectNode(adj, pos, sel.a), b = selectNode(adj, pos, sel.b);
+            const a = selectNode(adj, pos, sel.a, random), b = selectNode(adj, pos, sel.b, random);
             return new Set([...a].filter(x => !b.has(x)));
         }
         case 'compl': {
-            const a = selectNode(adj, pos, sel.a);
+            const a = selectNode(adj, pos, sel.a, random);
             const out = new Set<number>();
             for (let i = 0; i < N; i++) if (!a.has(i)) out.add(i);
             return out;
         }
         case 'more': {
-            const a = selectNode(adj, pos, sel.a);
+            const a = selectNode(adj, pos, sel.a, random);
             const out = new Set(a);
             // Repeats the one-step expansion `steps` times (default 1) - each step only walks
             // `frontier` (the nodes newly added by the PREVIOUS step, not the whole accumulated `out`
@@ -641,25 +686,25 @@ export function selectNode(adj: number[][], pos: number[][], sel: Selector): Set
             // `sel.from === 'node'` still produces the right answer through the general formula (a
             // node's only associated object is itself, so the count reduces to plain membership).
             if (sel.from === 'node') {
-                const selectedKeys = new Set<string | number>(selectNode(adj, pos, sel.a));
+                const selectedKeys = new Set<string | number>(selectNode(adj, pos, sel.a, random));
                 return new Set(convertObjectsCmp(toNodes, i => [i], toNodes, i => [i], i => i, selectedKeys, cmp, complement, n));
             }
             if (sel.from === 'edge') {
-                const allFrom = selectEdge(adj, pos, { op: 'all', type: 'edge' });
-                const selectedKeys = new Set<string | number>(selectEdge(adj, pos, sel.a).map(edgeKey));
+                const allFrom = selectEdge(adj, pos, { op: 'all', type: 'edge' }, random);
+                const selectedKeys = new Set<string | number>(selectEdge(adj, pos, sel.a, random).map(edgeKey));
                 return new Set(convertObjectsCmp(toNodes, i => [i], allFrom, e => [e.n1, e.n2], edgeKey, selectedKeys, cmp, complement, n));
             }
             if (isSimpType(sel.from)) {
-                const allFrom = selectSimp(adj, pos, { op: 'all', type: sel.from });
-                const selectedKeys = new Set<string | number>(selectSimp(adj, pos, sel.a).map(simpKey));
+                const allFrom = selectSimp(adj, pos, { op: 'all', type: sel.from }, random);
+                const selectedKeys = new Set<string | number>(selectSimp(adj, pos, sel.a, random).map(simpKey));
                 return new Set(convertObjectsCmp(toNodes, i => [i], allFrom, t => t.nodes, simpKey, selectedKeys, cmp, complement, n));
             }
-            const allFrom = selectQuad(adj, pos, { op: 'all', type: 'quad' });
-            const selectedKeys = new Set<string | number>(selectQuad(adj, pos, sel.a).map(quadKey));
+            const allFrom = selectQuad(adj, pos, { op: 'all', type: 'quad' }, random);
+            const selectedKeys = new Set<string | number>(selectQuad(adj, pos, sel.a, random).map(quadKey));
             return new Set(convertObjectsCmp(toNodes, i => [i], allFrom, s => [s.n1, s.n2, s.n3, s.n4], quadKey, selectedKeys, cmp, complement, n));
         }
         case 'rrmn': case 'rrmp': case 'rpkn': case 'rpkp':
-            return new Set(applyRandomOp(sel, [...selectNode(adj, pos, sel.a)]));
+            return new Set(applyRandomOp(sel, [...selectNode(adj, pos, sel.a, random)], compareNodes, random));
         case 'raw':
             // sel.type !== 'node' was already rejected above, but that doesn't by itself guarantee
             // sel.items (a separately-tagged SelectedVals) agrees - a hand-built Selector could still
@@ -677,29 +722,29 @@ export function selectNode(adj: number[][], pos: number[][], sel: Selector): Set
  * edges as BoardEdge values (deduplicated). Mutually recursive with selectNode()/selectSimp()/
  * selectQuad() via the conva/conve operators.
  */
-export function selectEdge(adj: number[][], pos: number[][], sel: Selector): BoardEdge[] {
+export function selectEdge(adj: number[][], pos: number[][], sel: Selector, random: ClegRandom): BoardEdge[] {
     if (sel.type !== 'edge')
         throw new Error(`selectEdge: expected an edge selector, got ${describeSelectorType(sel.type)} selector (op '${sel.op}')`);
     const N = adj.length;
     switch (sel.op) {
         case 'union':
-            return dedupeByKey(sel.items.flatMap(item => selectEdge(adj, pos, item)), edgeKey);
+            return dedupeByKey(sel.items.flatMap(item => selectEdge(adj, pos, item, random)), edgeKey);
         case 'inter': {
-            if (sel.items.length === 0) return selectEdge(adj, pos, { op: 'all', type: 'edge' });
-            let acc = selectEdge(adj, pos, sel.items[0]);
+            if (sel.items.length === 0) return selectEdge(adj, pos, { op: 'all', type: 'edge' }, random);
+            let acc = selectEdge(adj, pos, sel.items[0], random);
             for (let i = 1; i < sel.items.length; i++) {
-                const nextKeys = new Set(selectEdge(adj, pos, sel.items[i]).map(edgeKey));
+                const nextKeys = new Set(selectEdge(adj, pos, sel.items[i], random).map(edgeKey));
                 acc = acc.filter(e => nextKeys.has(edgeKey(e)));
             }
             return acc;
         }
         case 'diff': {
-            const a = selectEdge(adj, pos, sel.a);
-            const bKeys = new Set(selectEdge(adj, pos, sel.b).map(edgeKey));
+            const a = selectEdge(adj, pos, sel.a, random);
+            const bKeys = new Set(selectEdge(adj, pos, sel.b, random).map(edgeKey));
             return a.filter(e => !bKeys.has(edgeKey(e)));
         }
         case 'compl': {
-            const aKeys = new Set(selectEdge(adj, pos, sel.a).map(edgeKey));
+            const aKeys = new Set(selectEdge(adj, pos, sel.a, random).map(edgeKey));
             const out: BoardEdge[] = [];
             for (let i = 0; i < N; i++)
                 for (let j = i + 1; j < N; j++) {
@@ -710,7 +755,7 @@ export function selectEdge(adj: number[][], pos: number[][], sel: Selector): Boa
             return out;
         }
         case 'more': {
-            const a = selectEdge(adj, pos, sel.a);
+            const a = selectEdge(adj, pos, sel.a, random);
             const outByKey = new Map<string | number, BoardEdge>(a.map(e => [edgeKey(e), e]));
             const touchedNodes = new Set<number>();
             for (const e of a) { touchedNodes.add(e.n1); touchedNodes.add(e.n2); }
@@ -744,27 +789,27 @@ export function selectEdge(adj: number[][], pos: number[][], sel: Selector): Boa
         case 'conva': case 'conve':
         case 'convlt': case 'conveq': case 'convgt': case 'convclt': case 'convceq': case 'convcgt': {
             const { cmp, complement, n } = convCmpParams(sel);
-            const allEdges = selectEdge(adj, pos, { op: 'all', type: 'edge' });
+            const allEdges = selectEdge(adj, pos, { op: 'all', type: 'edge' }, random);
             if (sel.from === 'node') {
-                const selectedKeys = new Set<string | number>(selectNode(adj, pos, sel.a));
+                const selectedKeys = new Set<string | number>(selectNode(adj, pos, sel.a, random));
                 const allNodes = Array.from({ length: N }, (_, i) => i);
                 return convertObjectsCmp(allEdges, e => [e.n1, e.n2], allNodes, i => [i], i => i, selectedKeys, cmp, complement, n);
             }
             if (sel.from === 'edge') {
-                const selectedKeys = new Set<string | number>(selectEdge(adj, pos, sel.a).map(edgeKey));
+                const selectedKeys = new Set<string | number>(selectEdge(adj, pos, sel.a, random).map(edgeKey));
                 return convertObjectsCmp(allEdges, e => [e.n1, e.n2], allEdges, e => [e.n1, e.n2], edgeKey, selectedKeys, cmp, complement, n);
             }
             if (isSimpType(sel.from)) {
-                const allFrom = selectSimp(adj, pos, { op: 'all', type: sel.from });
-                const selectedKeys = new Set<string | number>(selectSimp(adj, pos, sel.a).map(simpKey));
+                const allFrom = selectSimp(adj, pos, { op: 'all', type: sel.from }, random);
+                const selectedKeys = new Set<string | number>(selectSimp(adj, pos, sel.a, random).map(simpKey));
                 return convertObjectsCmp(allEdges, e => [e.n1, e.n2], allFrom, t => t.nodes, simpKey, selectedKeys, cmp, complement, n);
             }
-            const allFrom = selectQuad(adj, pos, { op: 'all', type: 'quad' });
-            const selectedKeys = new Set<string | number>(selectQuad(adj, pos, sel.a).map(quadKey));
+            const allFrom = selectQuad(adj, pos, { op: 'all', type: 'quad' }, random);
+            const selectedKeys = new Set<string | number>(selectQuad(adj, pos, sel.a, random).map(quadKey));
             return convertObjectsCmp(allEdges, e => [e.n1, e.n2], allFrom, s => [s.n1, s.n2, s.n3, s.n4], quadKey, selectedKeys, cmp, complement, n);
         }
         case 'rrmn': case 'rrmp': case 'rpkn': case 'rpkp':
-            return applyRandomOp(sel, selectEdge(adj, pos, sel.a));
+            return applyRandomOp(sel, selectEdge(adj, pos, sel.a, random), compareEdges, random);
         case 'raw':
             if (sel.items.kind !== 'edge')
                 throw new Error(`selectEdge: 'raw' selector's own items must be edge-kind, got '${sel.items.kind}'`);
@@ -782,29 +827,29 @@ export function selectEdge(adj: number[][], pos: number[][], sel: Selector): Boa
  * selectEdge()/selectQuad() (and itself, for a simp M <-> simp N conversion) via the conva/conve
  * operators.
  */
-export function selectSimp(adj: number[][], pos: number[][], sel: Selector): BoardSimplex[] {
+export function selectSimp(adj: number[][], pos: number[][], sel: Selector, random: ClegRandom): BoardSimplex[] {
     const n = simpN(sel.type);
     if (n === null)
         throw new Error(`selectSimp: expected a simp selector, got ${describeSelectorType(sel.type)} selector (op '${sel.op}')`);
     switch (sel.op) {
         case 'union':
-            return dedupeByKey(sel.items.flatMap(item => selectSimp(adj, pos, item)), simpKey);
+            return dedupeByKey(sel.items.flatMap(item => selectSimp(adj, pos, item, random)), simpKey);
         case 'inter': {
-            if (sel.items.length === 0) return selectSimp(adj, pos, { op: 'all', type: sel.type });
-            let acc = selectSimp(adj, pos, sel.items[0]);
+            if (sel.items.length === 0) return selectSimp(adj, pos, { op: 'all', type: sel.type }, random);
+            let acc = selectSimp(adj, pos, sel.items[0], random);
             for (let i = 1; i < sel.items.length; i++) {
-                const nextKeys = new Set(selectSimp(adj, pos, sel.items[i]).map(simpKey));
+                const nextKeys = new Set(selectSimp(adj, pos, sel.items[i], random).map(simpKey));
                 acc = acc.filter(t => nextKeys.has(simpKey(t)));
             }
             return acc;
         }
         case 'diff': {
-            const a = selectSimp(adj, pos, sel.a);
-            const bKeys = new Set(selectSimp(adj, pos, sel.b).map(simpKey));
+            const a = selectSimp(adj, pos, sel.a, random);
+            const bKeys = new Set(selectSimp(adj, pos, sel.b, random).map(simpKey));
             return a.filter(t => !bKeys.has(simpKey(t)));
         }
         case 'compl': {
-            const aKeys = new Set(selectSimp(adj, pos, sel.a).map(simpKey));
+            const aKeys = new Set(selectSimp(adj, pos, sel.a, random).map(simpKey));
             return findSimplices(adj, n).filter(t => !aKeys.has(simpKey(t)));
         }
         case 'all':
@@ -817,27 +862,27 @@ export function selectSimp(adj: number[][], pos: number[][], sel: Selector): Boa
                 throw new Error(`selectSimp: no association is defined between 'simp' and 'quad'`);
             // Named `threshold`, not `n`, since `n` above is already this function's own simp arity.
             const { cmp, complement, n: threshold } = convCmpParams(sel);
-            const allTo = selectSimp(adj, pos, { op: 'all', type: sel.type });
+            const allTo = selectSimp(adj, pos, { op: 'all', type: sel.type }, random);
             if (sel.from === 'node') {
-                const selectedKeys = new Set<string | number>(selectNode(adj, pos, sel.a));
+                const selectedKeys = new Set<string | number>(selectNode(adj, pos, sel.a, random));
                 const allNodes = Array.from({ length: adj.length }, (_, i) => i);
                 return convertObjectsCmp(allTo, t => t.nodes, allNodes, n2 => [n2], n2 => n2, selectedKeys, cmp, complement, threshold);
             }
             if (sel.from === 'edge') {
-                const allFrom = selectEdge(adj, pos, { op: 'all', type: 'edge' });
-                const selectedKeys = new Set<string | number>(selectEdge(adj, pos, sel.a).map(edgeKey));
+                const allFrom = selectEdge(adj, pos, { op: 'all', type: 'edge' }, random);
+                const selectedKeys = new Set<string | number>(selectEdge(adj, pos, sel.a, random).map(edgeKey));
                 return convertObjectsCmp(allTo, t => t.nodes, allFrom, e => [e.n1, e.n2], edgeKey, selectedKeys, cmp, complement, threshold);
             }
             // sel.from is some simp M (possibly M === this function's own arity - unlike conva/conve
             // in isolation, there's no same-kind shortcut needed here, see convCmpParams's own doc
             // comment on why the general formula already gives the right answer), via the same
             // general containment rule as every other pair.
-            const allFrom = selectSimp(adj, pos, { op: 'all', type: sel.from });
-            const selectedKeys = new Set<string | number>(selectSimp(adj, pos, sel.a).map(simpKey));
+            const allFrom = selectSimp(adj, pos, { op: 'all', type: sel.from }, random);
+            const selectedKeys = new Set<string | number>(selectSimp(adj, pos, sel.a, random).map(simpKey));
             return convertObjectsCmp(allTo, t => t.nodes, allFrom, f => f.nodes, simpKey, selectedKeys, cmp, complement, threshold);
         }
         case 'rrmn': case 'rrmp': case 'rpkn': case 'rpkp':
-            return applyRandomOp(sel, selectSimp(adj, pos, sel.a));
+            return applyRandomOp(sel, selectSimp(adj, pos, sel.a, random), compareSimps, random);
         case 'raw':
             if (sel.items.kind !== 'simp')
                 throw new Error(`selectSimp: 'raw' selector's own items must be simp-kind, got '${sel.items.kind}'`);
@@ -851,10 +896,10 @@ export function selectSimp(adj: number[][], pos: number[][], sel: Selector): Boa
  * case, kept as a thin sugar wrapper (see this file's own top comment) for callers that only ever
  * deal in triangles (shared/boardConfig.ts's triangleForm/triCentralize). Throws if `sel` isn't
  * specifically simp 2 (not just any simp N). */
-export function selectTriangle(adj: number[][], pos: number[][], sel: Selector): BoardSimplex[] {
+export function selectTriangle(adj: number[][], pos: number[][], sel: Selector, random: ClegRandom): BoardSimplex[] {
     if (sel.type !== simpType(2))
         throw new Error(`selectTriangle: expected a triangle selector, got ${describeSelectorType(sel.type)} selector (op '${sel.op}')`);
-    return selectSimp(adj, pos, sel);
+    return selectSimp(adj, pos, sel, random);
 }
 
 /**
@@ -863,28 +908,28 @@ export function selectTriangle(adj: number[][], pos: number[][], sel: Selector):
  * `(all)` is every quad shared/topology.ts's findQuads() finds. Mutually recursive with
  * selectNode()/selectEdge() via the conva/conve operators.
  */
-export function selectQuad(adj: number[][], pos: number[][], sel: Selector): BoardQuad[] {
+export function selectQuad(adj: number[][], pos: number[][], sel: Selector, random: ClegRandom): BoardQuad[] {
     if (sel.type !== 'quad')
         throw new Error(`selectQuad: expected a quad selector, got ${describeSelectorType(sel.type)} selector (op '${sel.op}')`);
     switch (sel.op) {
         case 'union':
-            return dedupeByKey(sel.items.flatMap(item => selectQuad(adj, pos, item)), quadKey);
+            return dedupeByKey(sel.items.flatMap(item => selectQuad(adj, pos, item, random)), quadKey);
         case 'inter': {
-            if (sel.items.length === 0) return selectQuad(adj, pos, { op: 'all', type: 'quad' });
-            let acc = selectQuad(adj, pos, sel.items[0]);
+            if (sel.items.length === 0) return selectQuad(adj, pos, { op: 'all', type: 'quad' }, random);
+            let acc = selectQuad(adj, pos, sel.items[0], random);
             for (let i = 1; i < sel.items.length; i++) {
-                const nextKeys = new Set(selectQuad(adj, pos, sel.items[i]).map(quadKey));
+                const nextKeys = new Set(selectQuad(adj, pos, sel.items[i], random).map(quadKey));
                 acc = acc.filter(s => nextKeys.has(quadKey(s)));
             }
             return acc;
         }
         case 'diff': {
-            const a = selectQuad(adj, pos, sel.a);
-            const bKeys = new Set(selectQuad(adj, pos, sel.b).map(quadKey));
+            const a = selectQuad(adj, pos, sel.a, random);
+            const bKeys = new Set(selectQuad(adj, pos, sel.b, random).map(quadKey));
             return a.filter(s => !bKeys.has(quadKey(s)));
         }
         case 'compl': {
-            const aKeys = new Set(selectQuad(adj, pos, sel.a).map(quadKey));
+            const aKeys = new Set(selectQuad(adj, pos, sel.a, random).map(quadKey));
             return findQuads(adj).filter(s => !aKeys.has(quadKey(s)));
         }
         case 'all':
@@ -896,23 +941,23 @@ export function selectQuad(adj: number[][], pos: number[][], sel: Selector): Boa
             if (isSimpType(sel.from))
                 throw new Error(`selectQuad: no association is defined between 'simp' and 'quad'`);
             const { cmp, complement, n } = convCmpParams(sel);
-            const allQuad = selectQuad(adj, pos, { op: 'all', type: 'quad' });
+            const allQuad = selectQuad(adj, pos, { op: 'all', type: 'quad' }, random);
             if (sel.from === 'node') {
-                const selectedKeys = new Set<string | number>(selectNode(adj, pos, sel.a));
+                const selectedKeys = new Set<string | number>(selectNode(adj, pos, sel.a, random));
                 const allNodes = Array.from({ length: adj.length }, (_, i) => i);
                 return convertObjectsCmp(allQuad, s => [s.n1, s.n2, s.n3, s.n4], allNodes, i => [i], i => i, selectedKeys, cmp, complement, n);
             }
             if (sel.from === 'quad') {
-                const selectedKeys = new Set<string | number>(selectQuad(adj, pos, sel.a).map(quadKey));
+                const selectedKeys = new Set<string | number>(selectQuad(adj, pos, sel.a, random).map(quadKey));
                 return convertObjectsCmp(allQuad, s => [s.n1, s.n2, s.n3, s.n4], allQuad, s2 => [s2.n1, s2.n2, s2.n3, s2.n4], quadKey, selectedKeys, cmp, complement, n);
             }
             // sel.from === 'edge'
-            const allFrom = selectEdge(adj, pos, { op: 'all', type: 'edge' });
-            const selectedKeys = new Set<string | number>(selectEdge(adj, pos, sel.a).map(edgeKey));
+            const allFrom = selectEdge(adj, pos, { op: 'all', type: 'edge' }, random);
+            const selectedKeys = new Set<string | number>(selectEdge(adj, pos, sel.a, random).map(edgeKey));
             return convertObjectsCmp(allQuad, s => [s.n1, s.n2, s.n3, s.n4], allFrom, e => [e.n1, e.n2], edgeKey, selectedKeys, cmp, complement, n);
         }
         case 'rrmn': case 'rrmp': case 'rpkn': case 'rpkp':
-            return applyRandomOp(sel, selectQuad(adj, pos, sel.a));
+            return applyRandomOp(sel, selectQuad(adj, pos, sel.a, random), compareQuads, random);
         case 'raw':
             if (sel.items.kind !== 'quad')
                 throw new Error(`selectQuad: 'raw' selector's own items must be quad-kind, got '${sel.items.kind}'`);

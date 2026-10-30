@@ -487,6 +487,19 @@ static std::string quad_key(const BoardQuad& s) {
     return std::to_string(s.n1) + "," + std::to_string(s.n2) + "," + std::to_string(s.n3) + "," + std::to_string(s.n4);
 }
 
+// Mirrors shared/selector.ts's compareNodes/compareEdges/compareSimps/compareQuads (its
+// compareIndexLists() order) as std::sort-style "less" predicates - the order randomly_remove/
+// randomly_take sort into before shuffling. std::vector<int>'s own operator< is the same
+// lexicographic, shorter-prefix-first order.
+static bool node_less(const int& a, const int& b) { return a < b; }
+static bool edge_less(const BoardEdge& a, const BoardEdge& b) {
+    return std::vector<int>{a.n1, a.n2} < std::vector<int>{b.n1, b.n2};
+}
+static bool simp_less(const BoardSimplex& a, const BoardSimplex& b) { return a.nodes < b.nodes; }
+static bool quad_less(const BoardQuad& a, const BoardQuad& b) {
+    return std::vector<int>{a.n1, a.n2, a.n3, a.n4} < std::vector<int>{b.n1, b.n2, b.n3, b.n4};
+}
+
 // Generic Map-based dedupe, keyed by key(item) - the last item seen for a given key overwrites the
 // value, but the FIRST occurrence's position in iteration order is kept (matches a JS Map's own
 // set-on-existing-key semantics, which shared/selector.ts's own dedupeByKey() relies on) - reproduced
@@ -577,7 +590,7 @@ static std::vector<T> convert_objects_cmp(
 
 std::set<int> select_node(const std::vector<std::vector<int>>& adj,
                            const std::vector<std::vector<unsigned>>& pos,
-                           const Selector& sel) {
+                           const Selector& sel, ClegRandom& random) {
     if (sel.type != SelectorType{SelectorKind::Node})
         throw std::runtime_error("select_node: expected a node selector, got " + describe_selector_type(sel.type));
     int N = static_cast<int>(adj.size());
@@ -585,16 +598,16 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
         case SelectorOp::Union: {
             std::set<int> out;
             for (auto& item : sel.items) {
-                auto s = select_node(adj, pos, item);
+                auto s = select_node(adj, pos, item, random);
                 out.insert(s.begin(), s.end());
             }
             return out;
         }
         case SelectorOp::Inter: {
-            if (sel.items.empty()) return select_node(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Node}});
-            auto acc = select_node(adj, pos, sel.items[0]);
+            if (sel.items.empty()) return select_node(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Node}}, random);
+            auto acc = select_node(adj, pos, sel.items[0], random);
             for (size_t i = 1; i < sel.items.size(); i++) {
-                auto next = select_node(adj, pos, sel.items[i]);
+                auto next = select_node(adj, pos, sel.items[i], random);
                 std::set<int> out;
                 for (int x : acc) if (next.count(x)) out.insert(x);
                 acc = std::move(out);
@@ -602,19 +615,19 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
             return acc;
         }
         case SelectorOp::Diff: {
-            auto a = select_node(adj, pos, *sel.a), b = select_node(adj, pos, *sel.b);
+            auto a = select_node(adj, pos, *sel.a, random), b = select_node(adj, pos, *sel.b, random);
             std::set<int> out;
             for (int x : a) if (!b.count(x)) out.insert(x);
             return out;
         }
         case SelectorOp::Compl: {
-            auto a = select_node(adj, pos, *sel.a);
+            auto a = select_node(adj, pos, *sel.a, random);
             std::set<int> out;
             for (int i = 0; i < N; i++) if (!a.count(i)) out.insert(i);
             return out;
         }
         case SelectorOp::More: {
-            auto a = select_node(adj, pos, *sel.a);
+            auto a = select_node(adj, pos, *sel.a, random);
             std::set<int> out = a;
             // Repeats the one-step expansion sel.steps times (default 1, see selector.h's own doc
             // comment on Selector::steps) - each step only walks `frontier` (the nodes newly added by
@@ -660,15 +673,15 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
             // node's only associated object is itself, so the count reduces to plain membership).
             if (sel.from == SelectorType{SelectorKind::Node}) {
                 std::set<int> selected_keys;
-                for (int i : select_node(adj, pos, *sel.a)) selected_keys.insert(i);
+                for (int i : select_node(adj, pos, *sel.a, random)) selected_keys.insert(i);
                 auto result = convert_objects_cmp<int, int, int>(
                     to_nodes, node_members, to_nodes, node_members, node_key, selected_keys, p.cmp, p.complement, p.n);
                 return std::set<int>(result.begin(), result.end());
             }
             if (sel.from == SelectorType{SelectorKind::Edge}) {
-                auto all_from = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Edge}});
+                auto all_from = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Edge}}, random);
                 std::set<std::string> selected_keys;
-                for (auto& e : select_edge(adj, pos, *sel.a)) selected_keys.insert(edge_key(e));
+                for (auto& e : select_edge(adj, pos, *sel.a, random)) selected_keys.insert(edge_key(e));
                 auto result = convert_objects_cmp<BoardEdge, int, std::string>(
                     to_nodes, node_members, all_from,
                     +[](const BoardEdge& e) -> std::vector<int> { return { e.n1, e.n2 }; },
@@ -676,18 +689,18 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
                 return std::set<int>(result.begin(), result.end());
             }
             if (is_simp_type(sel.from)) {
-                auto all_from = select_simp(adj, pos, Selector{SelectorOp::All, sel.from});
+                auto all_from = select_simp(adj, pos, Selector{SelectorOp::All, sel.from}, random);
                 std::set<std::string> selected_keys;
-                for (auto& t : select_simp(adj, pos, *sel.a)) selected_keys.insert(simp_key(t));
+                for (auto& t : select_simp(adj, pos, *sel.a, random)) selected_keys.insert(simp_key(t));
                 auto result = convert_objects_cmp<BoardSimplex, int, std::string>(
                     to_nodes, node_members, all_from,
                     +[](const BoardSimplex& t) -> std::vector<int> { return t.nodes; },
                     simp_key, selected_keys, p.cmp, p.complement, p.n);
                 return std::set<int>(result.begin(), result.end());
             }
-            auto all_from = select_quad(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
+            auto all_from = select_quad(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}}, random);
             std::set<std::string> selected_keys;
-            for (auto& s : select_quad(adj, pos, *sel.a)) selected_keys.insert(quad_key(s));
+            for (auto& s : select_quad(adj, pos, *sel.a, random)) selected_keys.insert(quad_key(s));
             auto result = convert_objects_cmp<BoardQuad, int, std::string>(
                 to_nodes, node_members, all_from,
                 +[](const BoardQuad& s) -> std::vector<int> { return { s.n1, s.n2, s.n3, s.n4 }; },
@@ -695,29 +708,29 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
             return std::set<int>(result.begin(), result.end());
         }
         case SelectorOp::Rrmn: {
-            auto base_set = select_node(adj, pos, *sel.a);
+            auto base_set = select_node(adj, pos, *sel.a, random);
             std::vector<int> base(base_set.begin(), base_set.end());
-            auto kept = randomly_remove(std::move(base), sel.count);
+            auto kept = randomly_remove(std::move(base), sel.count, node_less, random);
             return std::set<int>(kept.begin(), kept.end());
         }
         case SelectorOp::Rrmp: {
-            auto base_set = select_node(adj, pos, *sel.a);
+            auto base_set = select_node(adj, pos, *sel.a, random);
             std::vector<int> base(base_set.begin(), base_set.end());
             int remove_count = static_cast<int>(std::floor(sel.frac * static_cast<double>(base.size())));
-            auto kept = randomly_remove(std::move(base), remove_count);
+            auto kept = randomly_remove(std::move(base), remove_count, node_less, random);
             return std::set<int>(kept.begin(), kept.end());
         }
         case SelectorOp::Rpkn: {
-            auto base_set = select_node(adj, pos, *sel.a);
+            auto base_set = select_node(adj, pos, *sel.a, random);
             std::vector<int> base(base_set.begin(), base_set.end());
-            auto kept = randomly_take(std::move(base), sel.count);
+            auto kept = randomly_take(std::move(base), sel.count, node_less, random);
             return std::set<int>(kept.begin(), kept.end());
         }
         case SelectorOp::Rpkp: {
-            auto base_set = select_node(adj, pos, *sel.a);
+            auto base_set = select_node(adj, pos, *sel.a, random);
             std::vector<int> base(base_set.begin(), base_set.end());
             int take_count = static_cast<int>(std::floor(sel.frac * static_cast<double>(base.size())));
-            auto kept = randomly_take(std::move(base), take_count);
+            auto kept = randomly_take(std::move(base), take_count, node_less, random);
             return std::set<int>(kept.begin(), kept.end());
         }
         case SelectorOp::Raw:
@@ -729,7 +742,7 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
 
 std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
                                     const std::vector<std::vector<unsigned>>& pos,
-                                    const Selector& sel) {
+                                    const Selector& sel, ClegRandom& random) {
     if (sel.type != SelectorType{SelectorKind::Edge})
         throw std::runtime_error("select_edge: expected an edge selector, got " + describe_selector_type(sel.type));
     int N = static_cast<int>(adj.size());
@@ -737,16 +750,16 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
         case SelectorOp::Union: {
             std::vector<BoardEdge> all;
             for (auto& item : sel.items) {
-                auto s = select_edge(adj, pos, item);
+                auto s = select_edge(adj, pos, item, random);
                 all.insert(all.end(), s.begin(), s.end());
             }
             return dedupe_by_key<BoardEdge, std::string>(all, edge_key);
         }
         case SelectorOp::Inter: {
-            if (sel.items.empty()) return select_edge(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Edge}});
-            auto acc = select_edge(adj, pos, sel.items[0]);
+            if (sel.items.empty()) return select_edge(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Edge}}, random);
+            auto acc = select_edge(adj, pos, sel.items[0], random);
             for (size_t i = 1; i < sel.items.size(); i++) {
-                auto next = select_edge(adj, pos, sel.items[i]);
+                auto next = select_edge(adj, pos, sel.items[i], random);
                 std::set<std::string> next_keys;
                 for (auto& e : next) next_keys.insert(edge_key(e));
                 std::vector<BoardEdge> out;
@@ -756,8 +769,8 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
             return acc;
         }
         case SelectorOp::Diff: {
-            auto a = select_edge(adj, pos, *sel.a);
-            auto b = select_edge(adj, pos, *sel.b);
+            auto a = select_edge(adj, pos, *sel.a, random);
+            auto b = select_edge(adj, pos, *sel.b, random);
             std::set<std::string> b_keys;
             for (auto& e : b) b_keys.insert(edge_key(e));
             std::vector<BoardEdge> out;
@@ -765,7 +778,7 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
             return out;
         }
         case SelectorOp::Compl: {
-            auto a = select_edge(adj, pos, *sel.a);
+            auto a = select_edge(adj, pos, *sel.a, random);
             std::set<std::string> a_keys;
             for (auto& e : a) a_keys.insert(edge_key(e));
             std::vector<BoardEdge> out;
@@ -778,7 +791,7 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
             return out;
         }
         case SelectorOp::More: {
-            auto a = select_edge(adj, pos, *sel.a);
+            auto a = select_edge(adj, pos, *sel.a, random);
             std::vector<BoardEdge> out = a;
             std::set<std::string> seen;
             for (auto& e : a) seen.insert(edge_key(e));
@@ -816,11 +829,11 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
         case SelectorOp::ConvLt: case SelectorOp::ConvEq: case SelectorOp::ConvGt:
         case SelectorOp::ConvClt: case SelectorOp::ConvCeq: case SelectorOp::ConvCgt: {
             ConvCmpParams p = conv_cmp_params(sel);
-            auto all_to = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Edge}});
+            auto all_to = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Edge}}, random);
             auto edge_members = +[](const BoardEdge& e) -> std::vector<int> { return { e.n1, e.n2 }; };
             if (sel.from == SelectorType{SelectorKind::Node}) {
                 std::set<int> selected_keys;
-                for (int i : select_node(adj, pos, *sel.a)) selected_keys.insert(i);
+                for (int i : select_node(adj, pos, *sel.a, random)) selected_keys.insert(i);
                 std::vector<int> all_from(N);
                 for (int i = 0; i < N; i++) all_from[i] = i;
                 return convert_objects_cmp<int, BoardEdge, int>(
@@ -828,44 +841,44 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
             }
             if (sel.from == SelectorType{SelectorKind::Edge}) {
                 std::set<std::string> selected_keys;
-                for (auto& e : select_edge(adj, pos, *sel.a)) selected_keys.insert(edge_key(e));
+                for (auto& e : select_edge(adj, pos, *sel.a, random)) selected_keys.insert(edge_key(e));
                 return convert_objects_cmp<BoardEdge, BoardEdge, std::string>(
                     all_to, edge_members, all_to, edge_members, edge_key, selected_keys, p.cmp, p.complement, p.n);
             }
             if (is_simp_type(sel.from)) {
-                auto all_from = select_simp(adj, pos, Selector{SelectorOp::All, sel.from});
+                auto all_from = select_simp(adj, pos, Selector{SelectorOp::All, sel.from}, random);
                 std::set<std::string> selected_keys;
-                for (auto& t : select_simp(adj, pos, *sel.a)) selected_keys.insert(simp_key(t));
+                for (auto& t : select_simp(adj, pos, *sel.a, random)) selected_keys.insert(simp_key(t));
                 return convert_objects_cmp<BoardSimplex, BoardEdge, std::string>(
                     all_to, edge_members, all_from,
                     +[](const BoardSimplex& t) -> std::vector<int> { return t.nodes; },
                     simp_key, selected_keys, p.cmp, p.complement, p.n);
             }
-            auto all_from = select_quad(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
+            auto all_from = select_quad(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}}, random);
             std::set<std::string> selected_keys;
-            for (auto& s : select_quad(adj, pos, *sel.a)) selected_keys.insert(quad_key(s));
+            for (auto& s : select_quad(adj, pos, *sel.a, random)) selected_keys.insert(quad_key(s));
             return convert_objects_cmp<BoardQuad, BoardEdge, std::string>(
                 all_to, edge_members, all_from,
                 +[](const BoardQuad& s) -> std::vector<int> { return { s.n1, s.n2, s.n3, s.n4 }; },
                 quad_key, selected_keys, p.cmp, p.complement, p.n);
         }
         case SelectorOp::Rrmn: {
-            auto base = select_edge(adj, pos, *sel.a);
-            return randomly_remove(base, sel.count);
+            auto base = select_edge(adj, pos, *sel.a, random);
+            return randomly_remove(base, sel.count, edge_less, random);
         }
         case SelectorOp::Rrmp: {
-            auto base = select_edge(adj, pos, *sel.a);
+            auto base = select_edge(adj, pos, *sel.a, random);
             int remove_count = static_cast<int>(std::floor(sel.frac * static_cast<double>(base.size())));
-            return randomly_remove(base, remove_count);
+            return randomly_remove(base, remove_count, edge_less, random);
         }
         case SelectorOp::Rpkn: {
-            auto base = select_edge(adj, pos, *sel.a);
-            return randomly_take(base, sel.count);
+            auto base = select_edge(adj, pos, *sel.a, random);
+            return randomly_take(base, sel.count, edge_less, random);
         }
         case SelectorOp::Rpkp: {
-            auto base = select_edge(adj, pos, *sel.a);
+            auto base = select_edge(adj, pos, *sel.a, random);
             int take_count = static_cast<int>(std::floor(sel.frac * static_cast<double>(base.size())));
-            return randomly_take(base, take_count);
+            return randomly_take(base, take_count, edge_less, random);
         }
         case SelectorOp::Raw:
             return sel.raw_edges;
@@ -876,7 +889,7 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
 
 std::vector<BoardSimplex> select_simp(const std::vector<std::vector<int>>& adj,
                                        const std::vector<std::vector<unsigned>>& pos,
-                                       const Selector& sel) {
+                                       const Selector& sel, ClegRandom& random) {
     int n = simp_n(sel.type);
     if (n < 0)
         throw std::runtime_error(
@@ -885,16 +898,16 @@ std::vector<BoardSimplex> select_simp(const std::vector<std::vector<int>>& adj,
         case SelectorOp::Union: {
             std::vector<BoardSimplex> all;
             for (auto& item : sel.items) {
-                auto s = select_simp(adj, pos, item);
+                auto s = select_simp(adj, pos, item, random);
                 all.insert(all.end(), s.begin(), s.end());
             }
             return dedupe_by_key<BoardSimplex, std::string>(all, simp_key);
         }
         case SelectorOp::Inter: {
-            if (sel.items.empty()) return select_simp(adj, pos, Selector{SelectorOp::All, sel.type});
-            auto acc = select_simp(adj, pos, sel.items[0]);
+            if (sel.items.empty()) return select_simp(adj, pos, Selector{SelectorOp::All, sel.type}, random);
+            auto acc = select_simp(adj, pos, sel.items[0], random);
             for (size_t i = 1; i < sel.items.size(); i++) {
-                auto next = select_simp(adj, pos, sel.items[i]);
+                auto next = select_simp(adj, pos, sel.items[i], random);
                 std::set<std::string> next_keys;
                 for (auto& t : next) next_keys.insert(simp_key(t));
                 std::vector<BoardSimplex> out;
@@ -904,16 +917,16 @@ std::vector<BoardSimplex> select_simp(const std::vector<std::vector<int>>& adj,
             return acc;
         }
         case SelectorOp::Diff: {
-            auto a = select_simp(adj, pos, *sel.a);
+            auto a = select_simp(adj, pos, *sel.a, random);
             std::set<std::string> b_keys;
-            for (auto& t : select_simp(adj, pos, *sel.b)) b_keys.insert(simp_key(t));
+            for (auto& t : select_simp(adj, pos, *sel.b, random)) b_keys.insert(simp_key(t));
             std::vector<BoardSimplex> out;
             for (auto& t : a) if (!b_keys.count(simp_key(t))) out.push_back(t);
             return out;
         }
         case SelectorOp::Compl: {
             std::set<std::string> a_keys;
-            for (auto& t : select_simp(adj, pos, *sel.a)) a_keys.insert(simp_key(t));
+            for (auto& t : select_simp(adj, pos, *sel.a, random)) a_keys.insert(simp_key(t));
             std::vector<BoardSimplex> out;
             for (auto& t : find_simplices(adj, n)) if (!a_keys.count(simp_key(t))) out.push_back(t);
             return out;
@@ -930,20 +943,20 @@ std::vector<BoardSimplex> select_simp(const std::vector<std::vector<int>>& adj,
             // Named p.n (via ConvCmpParams), not `n`, since `n` above is already this function's own
             // simp arity.
             ConvCmpParams p = conv_cmp_params(sel);
-            auto all_to = select_simp(adj, pos, Selector{SelectorOp::All, sel.type});
+            auto all_to = select_simp(adj, pos, Selector{SelectorOp::All, sel.type}, random);
             auto simp_members = +[](const BoardSimplex& t) -> std::vector<int> { return t.nodes; };
             if (sel.from == SelectorType{SelectorKind::Node}) {
                 std::set<int> selected_keys;
-                for (int n2 : select_node(adj, pos, *sel.a)) selected_keys.insert(n2);
+                for (int n2 : select_node(adj, pos, *sel.a, random)) selected_keys.insert(n2);
                 std::vector<int> all_from(adj.size());
                 for (size_t i = 0; i < adj.size(); i++) all_from[i] = static_cast<int>(i);
                 return convert_objects_cmp<int, BoardSimplex, int>(
                     all_to, simp_members, all_from, node_members, node_key, selected_keys, p.cmp, p.complement, p.n);
             }
             if (sel.from == SelectorType{SelectorKind::Edge}) {
-                auto all_from = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Edge}});
+                auto all_from = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Edge}}, random);
                 std::set<std::string> selected_keys;
-                for (auto& e : select_edge(adj, pos, *sel.a)) selected_keys.insert(edge_key(e));
+                for (auto& e : select_edge(adj, pos, *sel.a, random)) selected_keys.insert(edge_key(e));
                 return convert_objects_cmp<BoardEdge, BoardSimplex, std::string>(
                     all_to, simp_members, all_from,
                     +[](const BoardEdge& e) -> std::vector<int> { return { e.n1, e.n2 }; },
@@ -953,29 +966,29 @@ std::vector<BoardSimplex> select_simp(const std::vector<std::vector<int>>& adj,
             // in isolation, there's no same-kind shortcut needed here, see conv_cmp_params's own doc
             // comment on why the general formula already gives the right answer), via the same
             // general containment rule as every other pair.
-            auto all_from = select_simp(adj, pos, Selector{SelectorOp::All, sel.from});
+            auto all_from = select_simp(adj, pos, Selector{SelectorOp::All, sel.from}, random);
             std::set<std::string> selected_keys;
-            for (auto& t : select_simp(adj, pos, *sel.a)) selected_keys.insert(simp_key(t));
+            for (auto& t : select_simp(adj, pos, *sel.a, random)) selected_keys.insert(simp_key(t));
             return convert_objects_cmp<BoardSimplex, BoardSimplex, std::string>(
                 all_to, simp_members, all_from, simp_members, simp_key, selected_keys, p.cmp, p.complement, p.n);
         }
         case SelectorOp::Rrmn: {
-            auto base = select_simp(adj, pos, *sel.a);
-            return randomly_remove(base, sel.count);
+            auto base = select_simp(adj, pos, *sel.a, random);
+            return randomly_remove(base, sel.count, simp_less, random);
         }
         case SelectorOp::Rrmp: {
-            auto base = select_simp(adj, pos, *sel.a);
+            auto base = select_simp(adj, pos, *sel.a, random);
             int remove_count = static_cast<int>(std::floor(sel.frac * static_cast<double>(base.size())));
-            return randomly_remove(base, remove_count);
+            return randomly_remove(base, remove_count, simp_less, random);
         }
         case SelectorOp::Rpkn: {
-            auto base = select_simp(adj, pos, *sel.a);
-            return randomly_take(base, sel.count);
+            auto base = select_simp(adj, pos, *sel.a, random);
+            return randomly_take(base, sel.count, simp_less, random);
         }
         case SelectorOp::Rpkp: {
-            auto base = select_simp(adj, pos, *sel.a);
+            auto base = select_simp(adj, pos, *sel.a, random);
             int take_count = static_cast<int>(std::floor(sel.frac * static_cast<double>(base.size())));
-            return randomly_take(base, take_count);
+            return randomly_take(base, take_count, simp_less, random);
         }
         case SelectorOp::Raw:
             return sel.raw_simps;
@@ -986,16 +999,16 @@ std::vector<BoardSimplex> select_simp(const std::vector<std::vector<int>>& adj,
 
 std::vector<BoardSimplex> select_triangle(const std::vector<std::vector<int>>& adj,
                                            const std::vector<std::vector<unsigned>>& pos,
-                                           const Selector& sel) {
+                                           const Selector& sel, ClegRandom& random) {
     if (sel.type != simp_type(2))
         throw std::runtime_error(
             "select_triangle: expected a triangle selector, got " + describe_selector_type(sel.type));
-    return select_simp(adj, pos, sel);
+    return select_simp(adj, pos, sel, random);
 }
 
 std::vector<BoardQuad> select_quad(const std::vector<std::vector<int>>& adj,
                                         const std::vector<std::vector<unsigned>>& pos,
-                                        const Selector& sel) {
+                                        const Selector& sel, ClegRandom& random) {
     if (sel.type != SelectorType{SelectorKind::Quad})
         throw std::runtime_error(
             "select_quad: expected a quad selector, got " + describe_selector_type(sel.type));
@@ -1003,7 +1016,7 @@ std::vector<BoardQuad> select_quad(const std::vector<std::vector<int>>& adj,
         case SelectorOp::Union: {
             std::vector<BoardQuad> all;
             for (auto& item : sel.items) {
-                auto s = select_quad(adj, pos, item);
+                auto s = select_quad(adj, pos, item, random);
                 all.insert(all.end(), s.begin(), s.end());
             }
             std::set<std::string> seen;
@@ -1012,10 +1025,10 @@ std::vector<BoardQuad> select_quad(const std::vector<std::vector<int>>& adj,
             return deduped;
         }
         case SelectorOp::Inter: {
-            if (sel.items.empty()) return select_quad(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
-            auto acc = select_quad(adj, pos, sel.items[0]);
+            if (sel.items.empty()) return select_quad(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}}, random);
+            auto acc = select_quad(adj, pos, sel.items[0], random);
             for (size_t i = 1; i < sel.items.size(); i++) {
-                auto next = select_quad(adj, pos, sel.items[i]);
+                auto next = select_quad(adj, pos, sel.items[i], random);
                 std::set<std::string> next_keys;
                 for (auto& s : next) next_keys.insert(quad_key(s));
                 std::vector<BoardQuad> out;
@@ -1025,16 +1038,16 @@ std::vector<BoardQuad> select_quad(const std::vector<std::vector<int>>& adj,
             return acc;
         }
         case SelectorOp::Diff: {
-            auto a = select_quad(adj, pos, *sel.a);
+            auto a = select_quad(adj, pos, *sel.a, random);
             std::set<std::string> b_keys;
-            for (auto& s : select_quad(adj, pos, *sel.b)) b_keys.insert(quad_key(s));
+            for (auto& s : select_quad(adj, pos, *sel.b, random)) b_keys.insert(quad_key(s));
             std::vector<BoardQuad> out;
             for (auto& s : a) if (!b_keys.count(quad_key(s))) out.push_back(s);
             return out;
         }
         case SelectorOp::Compl: {
             std::set<std::string> a_keys;
-            for (auto& s : select_quad(adj, pos, *sel.a)) a_keys.insert(quad_key(s));
+            for (auto& s : select_quad(adj, pos, *sel.a, random)) a_keys.insert(quad_key(s));
             std::vector<BoardQuad> out;
             for (auto& s : find_quads(adj)) if (!a_keys.count(quad_key(s))) out.push_back(s);
             return out;
@@ -1049,11 +1062,11 @@ std::vector<BoardQuad> select_quad(const std::vector<std::vector<int>>& adj,
             if (is_simp_type(sel.from))
                 throw std::runtime_error("select_quad: no association is defined between 'simp' and 'quad'");
             ConvCmpParams p = conv_cmp_params(sel);
-            auto all_to = select_quad(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
+            auto all_to = select_quad(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}}, random);
             auto quad_members = +[](const BoardQuad& s) -> std::vector<int> { return { s.n1, s.n2, s.n3, s.n4 }; };
             if (sel.from == SelectorType{SelectorKind::Node}) {
                 std::set<int> selected_keys;
-                for (int i : select_node(adj, pos, *sel.a)) selected_keys.insert(i);
+                for (int i : select_node(adj, pos, *sel.a, random)) selected_keys.insert(i);
                 std::vector<int> all_from(adj.size());
                 for (size_t i = 0; i < adj.size(); i++) all_from[i] = static_cast<int>(i);
                 return convert_objects_cmp<int, BoardQuad, int>(
@@ -1061,36 +1074,36 @@ std::vector<BoardQuad> select_quad(const std::vector<std::vector<int>>& adj,
             }
             if (sel.from == SelectorType{SelectorKind::Quad}) {
                 std::set<std::string> selected_keys;
-                for (auto& s : select_quad(adj, pos, *sel.a)) selected_keys.insert(quad_key(s));
+                for (auto& s : select_quad(adj, pos, *sel.a, random)) selected_keys.insert(quad_key(s));
                 return convert_objects_cmp<BoardQuad, BoardQuad, std::string>(
                     all_to, quad_members, all_to, quad_members, quad_key, selected_keys, p.cmp, p.complement, p.n);
             }
             // sel.from == SelectorType{SelectorKind::Edge}
-            auto all_from = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Edge}});
+            auto all_from = select_edge(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Edge}}, random);
             std::set<std::string> selected_keys;
-            for (auto& e : select_edge(adj, pos, *sel.a)) selected_keys.insert(edge_key(e));
+            for (auto& e : select_edge(adj, pos, *sel.a, random)) selected_keys.insert(edge_key(e));
             return convert_objects_cmp<BoardEdge, BoardQuad, std::string>(
                 all_to, quad_members, all_from,
                 +[](const BoardEdge& e) -> std::vector<int> { return { e.n1, e.n2 }; },
                 edge_key, selected_keys, p.cmp, p.complement, p.n);
         }
         case SelectorOp::Rrmn: {
-            auto base = select_quad(adj, pos, *sel.a);
-            return randomly_remove(base, sel.count);
+            auto base = select_quad(adj, pos, *sel.a, random);
+            return randomly_remove(base, sel.count, quad_less, random);
         }
         case SelectorOp::Rrmp: {
-            auto base = select_quad(adj, pos, *sel.a);
+            auto base = select_quad(adj, pos, *sel.a, random);
             int remove_count = static_cast<int>(std::floor(sel.frac * static_cast<double>(base.size())));
-            return randomly_remove(base, remove_count);
+            return randomly_remove(base, remove_count, quad_less, random);
         }
         case SelectorOp::Rpkn: {
-            auto base = select_quad(adj, pos, *sel.a);
-            return randomly_take(base, sel.count);
+            auto base = select_quad(adj, pos, *sel.a, random);
+            return randomly_take(base, sel.count, quad_less, random);
         }
         case SelectorOp::Rpkp: {
-            auto base = select_quad(adj, pos, *sel.a);
+            auto base = select_quad(adj, pos, *sel.a, random);
             int take_count = static_cast<int>(std::floor(sel.frac * static_cast<double>(base.size())));
-            return randomly_take(base, take_count);
+            return randomly_take(base, take_count, quad_less, random);
         }
         case SelectorOp::Raw:
             return sel.raw_quads;

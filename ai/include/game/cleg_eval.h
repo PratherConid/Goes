@@ -1,5 +1,6 @@
 #pragma once
 #include "game/board_config.h"
+#include <cstdint>
 
 // Mirrors shared/clegEval.ts's own public surface (typecheckClegAsBoard/buildBoardFromCleg on the TS
 // side; typecheck_cleg_as_board lives in game/cleg_check.h instead here - see that header's own top
@@ -17,4 +18,4 @@ struct ClegProgram;
 // Mirrors shared/clegEval.ts's buildBoardFromCleg() - typecheck_cleg_as_board (game/cleg_check.h),
 // then evaluate and unwrap the resulting egr. The one entry point every GameConfig::board_descr ->
 // BoardConfig call site (train.cpp, server.cpp) uses.
-BoardConfig build_board_from_cleg(const ClegProgram& program);
+BoardConfig build_board_from_cleg(const ClegProgram& program, uint32_t seed);

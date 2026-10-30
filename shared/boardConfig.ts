@@ -5,7 +5,7 @@ import type { ClegProgram } from './clegBase.js';
 import { assert, BoardArgType, boardArgNumber, boardArgList, Embedding, simpType } from './types.js';
 import { convexHullEdges } from './geometry.js';
 import { zeroAdj, mergeBoards } from './topology.js';
-import { selectNode, selectEdge, selectTriangle, selectSimp, selectQuad } from './selector.js';
+import { selectNode, selectEdge, selectTriangle, selectSimp, selectQuad, type ClegRandom } from './selector.js';
 import { rasterizeString, getFont } from './glyphRaster.js';
 // The FractalDescr/nodeEdgeMergeFlakeRec recursive core, and each "flake" shape's own static
 // *FractalDescr() builder, live in fractal.ts (see git history) - the actual BoardConfig-returning
@@ -387,7 +387,7 @@ export function nodeEdgeInducedSubgraph(
  * only glue node-for-node if their own boundary sequences are the same length. triangleForm/
  * quadForm below are the single-kind special cases, each just calling this with one FormSelector.
  */
-export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): BoardConfig {
+export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[], random: ClegRandom): BoardConfig {
     assert(w >= 1, `w must be at least 1, got ${w}`);
     const N = bc.N;
     const embDim = bc.emb.embDim;
@@ -463,7 +463,7 @@ export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): B
     for (const fsel of sels) {
         if (fsel.kind === 'TriForm') {
             const sel = fsel.sel ?? { op: 'all' as const, type: simpType(2) };
-            const triangles = selectTriangle(bc.adj, bc.emb.pos, sel);
+            const triangles = selectTriangle(bc.adj, bc.emb.pos, sel, random);
             const nFace = w * (w + 1) / 2;
             const localIdx = (i: number, j: number) => i * (i + 1) / 2 + j;
             const dirs: [number, number][] = [[1, 0], [1, 1], [0, 1], [-1, 0], [-1, -1], [0, -1]];
@@ -493,18 +493,18 @@ export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): B
             }
         } else if (fsel.kind === 'QuadForm') {
             const sel = fsel.sel ?? { op: 'all' as const, type: 'quad' as const };
-            buildQuadGridLattice(selectQuad(bc.adj, bc.emb.pos, sel), [[0, 1], [1, 0], [0, -1], [-1, 0]]);
+            buildQuadGridLattice(selectQuad(bc.adj, bc.emb.pos, sel, random), [[0, 1], [1, 0], [0, -1], [-1, 0]]);
         } else if (fsel.kind === 'QuadKnightForm') {
             const sel = fsel.sel ?? { op: 'all' as const, type: 'quad' as const };
-            buildQuadGridLattice(selectQuad(bc.adj, bc.emb.pos, sel), [
+            buildQuadGridLattice(selectQuad(bc.adj, bc.emb.pos, sel, random), [
                 [1, 2], [2, 1], [2, -1], [1, -2], [-1, -2], [-2, -1], [-2, 1], [-1, 2],
             ]);
         } else if (fsel.kind === 'QuadBishopForm') {
             const sel = fsel.sel ?? { op: 'all' as const, type: 'quad' as const };
-            buildQuadGridLattice(selectQuad(bc.adj, bc.emb.pos, sel), [[1, 1], [1, -1], [-1, 1], [-1, -1]]);
+            buildQuadGridLattice(selectQuad(bc.adj, bc.emb.pos, sel, random), [[1, 1], [1, -1], [-1, 1], [-1, -1]]);
         } else {
             const sel = fsel.sel ?? { op: 'all' as const, type: 'quad' as const };
-            const quads = selectQuad(bc.adj, bc.emb.pos, sel);
+            const quads = selectQuad(bc.adj, bc.emb.pos, sel, random);
             const nPrimary = w * w;
             const primaryIdx = (i: number, j: number) => i * w + j;
             const centerIdx = (i: number, j: number) => nPrimary + i * (w - 1) + j;
@@ -591,8 +591,8 @@ export function genericForm(bc: BoardConfig, w: number, sels: FormSelector[]): B
  * untouched, as if it didn't exist (its own sides stay plain edges, even where they'd otherwise
  * have been consumed by/glued to a selected triangle's new subdivided boundary).
  */
-export function triangleForm(bc: BoardConfig, w: number, sel?: Selector): BoardConfig {
-    return genericForm(bc, w, [{ kind: 'TriForm', sel }]);
+export function triangleForm(bc: BoardConfig, w: number, random: ClegRandom, sel?: Selector): BoardConfig {
+    return genericForm(bc, w, [{ kind: 'TriForm', sel }], random);
 }
 
 /**
@@ -603,8 +603,8 @@ export function triangleForm(bc: BoardConfig, w: number, sel?: Selector): BoardC
  * left untouched, as if it didn't exist (its own sides stay plain edges, even where they'd otherwise
  * have been consumed by/glued to a selected quad's new subdivided boundary).
  */
-export function quadForm(bc: BoardConfig, w: number, sel?: Selector): BoardConfig {
-    return genericForm(bc, w, [{ kind: 'QuadForm', sel }]);
+export function quadForm(bc: BoardConfig, w: number, random: ClegRandom, sel?: Selector): BoardConfig {
+    return genericForm(bc, w, [{ kind: 'QuadForm', sel }], random);
 }
 
 /**
@@ -614,8 +614,8 @@ export function quadForm(bc: BoardConfig, w: number, sel?: Selector): BoardConfi
  * `sel`, if given, restricts this to only the quads it selects (evaluated against `bc`'s own
  * adj/pos) - every other quad is left untouched, as if it didn't exist.
  */
-export function quadDiagForm(bc: BoardConfig, w: number, sel?: Selector): BoardConfig {
-    return genericForm(bc, w, [{ kind: 'QuadDiagForm', sel }]);
+export function quadDiagForm(bc: BoardConfig, w: number, random: ClegRandom, sel?: Selector): BoardConfig {
+    return genericForm(bc, w, [{ kind: 'QuadDiagForm', sel }], random);
 }
 
 /**
@@ -626,8 +626,8 @@ export function quadDiagForm(bc: BoardConfig, w: number, sel?: Selector): BoardC
  * restricts this to only the quads it selects (evaluated against `bc`'s own adj/pos) - every other
  * quad is left untouched, as if it didn't exist.
  */
-export function quadKnightForm(bc: BoardConfig, w: number, sel?: Selector): BoardConfig {
-    return genericForm(bc, w, [{ kind: 'QuadKnightForm', sel }]);
+export function quadKnightForm(bc: BoardConfig, w: number, random: ClegRandom, sel?: Selector): BoardConfig {
+    return genericForm(bc, w, [{ kind: 'QuadKnightForm', sel }], random);
 }
 
 /**
@@ -638,8 +638,8 @@ export function quadKnightForm(bc: BoardConfig, w: number, sel?: Selector): Boar
  * this to only the quads it selects (evaluated against `bc`'s own adj/pos) - every other quad is
  * left untouched, as if it didn't exist.
  */
-export function quadBishopForm(bc: BoardConfig, w: number, sel?: Selector): BoardConfig {
-    return genericForm(bc, w, [{ kind: 'QuadBishopForm', sel }]);
+export function quadBishopForm(bc: BoardConfig, w: number, random: ClegRandom, sel?: Selector): BoardConfig {
+    return genericForm(bc, w, [{ kind: 'QuadBishopForm', sel }], random);
 }
 
 /**
@@ -682,7 +682,7 @@ export function quadBishopForm(bc: BoardConfig, w: number, sel?: Selector): Boar
  * node's own position (original and new alike) gets one extra trailing 0 coordinate, keeping one
  * shared Embedding for the whole result; otherwise the embedding dimension is untouched.
  */
-export function genericLocalReplace(bc: BoardConfig, selectors: LocalReplaceSelector[]): BoardConfig {
+export function genericLocalReplace(bc: BoardConfig, selectors: LocalReplaceSelector[], random: ClegRandom): BoardConfig {
     const N = bc.N;
     const embDim = bc.emb.embDim;
     const needsExtraDim = selectors.some(s => s.kind === 'QuadOctarize');
@@ -702,7 +702,7 @@ export function genericLocalReplace(bc: BoardConfig, selectors: LocalReplaceSele
     for (const s of selectors) {
         if (s.kind === 'QuadCentralize' || s.kind === 'QuadOctarize' || s.kind === 'QuadCentering') {
             const sel = s.sel ?? { op: 'all' as const, type: 'quad' as const };
-            const quads = selectQuad(bc.adj, bc.emb.pos, sel);
+            const quads = selectQuad(bc.adj, bc.emb.pos, sel, random);
             for (const { n1: A, n2: B, n3: C, n4: D } of quads) {
                 markConsumed(A, B); markConsumed(B, C); markConsumed(C, D); markConsumed(D, A);
                 // QuadCentering is the one branch that does NOT re-add the quad's own 4-cycle edges -
@@ -735,7 +735,7 @@ export function genericLocalReplace(bc: BoardConfig, selectors: LocalReplaceSele
             const n = s.n;
             assert(Number.isInteger(n) && n >= 2, `genericLocalReplace: n must be an integer >= 2, got ${n}`);
             const sel = s.sel ?? { op: 'all' as const, type: simpType(n) };
-            const simplices = selectSimp(bc.adj, bc.emb.pos, sel);
+            const simplices = selectSimp(bc.adj, bc.emb.pos, sel, random);
             for (const { nodes } of simplices) {
                 for (let i = 0; i < nodes.length; i++)
                     for (let j = i + 1; j < nodes.length; j++) {
@@ -779,9 +779,9 @@ export function genericLocalReplace(bc: BoardConfig, selectors: LocalReplaceSele
  * only the n-simplices it selects (evaluated against `bc`'s own adj/pos, and must itself already be
  * a simp `n` selector) - every other n-simplex is left untouched, as if it didn't exist.
  */
-export function simpCentralize(bc: BoardConfig, n: number, sel?: Selector): BoardConfig {
+export function simpCentralize(bc: BoardConfig, n: number, random: ClegRandom, sel?: Selector): BoardConfig {
     assert(Number.isInteger(n) && n >= 2, `simpCentralize: n must be an integer >= 2, got ${n}`);
-    return genericLocalReplace(bc, [{ kind: 'SimpCentralize', n, sel }]);
+    return genericLocalReplace(bc, [{ kind: 'SimpCentralize', n, sel }], random);
 }
 
 /**
@@ -791,9 +791,9 @@ export function simpCentralize(bc: BoardConfig, n: number, sel?: Selector): Boar
  * the single-arity special case of genericLocalReplace - see its own doc comment). `sel`, if given,
  * restricts this to only the n-simplices it selects - every other n-simplex is left untouched.
  */
-export function simpCentering(bc: BoardConfig, n: number, sel?: Selector): BoardConfig {
+export function simpCentering(bc: BoardConfig, n: number, random: ClegRandom, sel?: Selector): BoardConfig {
     assert(Number.isInteger(n) && n >= 2, `simpCentering: n must be an integer >= 2, got ${n}`);
-    return genericLocalReplace(bc, [{ kind: 'SimpCentering', n, sel }]);
+    return genericLocalReplace(bc, [{ kind: 'SimpCentering', n, sel }], random);
 }
 
 /**
@@ -802,8 +802,8 @@ export function simpCentering(bc: BoardConfig, n: number, sel?: Selector): Board
  * triangles it selects (evaluated against `bc`'s own adj/pos) - every other triangle is left
  * untouched, as if it didn't exist.
  */
-export function triCentralize(bc: BoardConfig, sel?: Selector): BoardConfig {
-    return simpCentralize(bc, 2, sel);
+export function triCentralize(bc: BoardConfig, random: ClegRandom, sel?: Selector): BoardConfig {
+    return simpCentralize(bc, 2, random, sel);
 }
 
 /**
@@ -812,8 +812,8 @@ export function triCentralize(bc: BoardConfig, sel?: Selector): BoardConfig {
  * corners end up connected only through the new hub, not to each other directly - simpCentering's own
  * n=2 special case, the same way triCentralize is simpCentralize's.
  */
-export function triCentering(bc: BoardConfig, sel?: Selector): BoardConfig {
-    return simpCentering(bc, 2, sel);
+export function triCentering(bc: BoardConfig, random: ClegRandom, sel?: Selector): BoardConfig {
+    return simpCentering(bc, 2, random, sel);
 }
 
 /**
@@ -822,8 +822,8 @@ export function triCentering(bc: BoardConfig, sel?: Selector): BoardConfig {
  * triCentralize is. `sel`, if given, restricts this to only the quads it selects (evaluated against
  * `bc`'s own adj/pos) - every other quad is left untouched, as if it didn't exist.
  */
-export function quadCentralize(bc: BoardConfig, sel?: Selector): BoardConfig {
-    return genericLocalReplace(bc, [{ kind: 'QuadCentralize', sel }]);
+export function quadCentralize(bc: BoardConfig, random: ClegRandom, sel?: Selector): BoardConfig {
+    return genericLocalReplace(bc, [{ kind: 'QuadCentralize', sel }], random);
 }
 
 /**
@@ -833,8 +833,8 @@ export function quadCentralize(bc: BoardConfig, sel?: Selector): BoardConfig {
  * single-kind special case of genericLocalReplace - see its own doc comment). `sel`, if given,
  * restricts this to only the quads it selects - every other quad is left untouched.
  */
-export function quadCentering(bc: BoardConfig, sel?: Selector): BoardConfig {
-    return genericLocalReplace(bc, [{ kind: 'QuadCentering', sel }]);
+export function quadCentering(bc: BoardConfig, random: ClegRandom, sel?: Selector): BoardConfig {
+    return genericLocalReplace(bc, [{ kind: 'QuadCentering', sel }], random);
 }
 
 /**
@@ -884,8 +884,8 @@ export function globalCentralize(bc: BoardConfig): BoardConfig {
  * `sel`, if given, restricts this to only the quads it selects - every other quad is left untouched,
  * as if it didn't exist.
  */
-export function quadOctarize(bc: BoardConfig, sel?: Selector): BoardConfig {
-    return genericLocalReplace(bc, [{ kind: 'QuadOctarize', sel }]);
+export function quadOctarize(bc: BoardConfig, random: ClegRandom, sel?: Selector): BoardConfig {
+    return genericLocalReplace(bc, [{ kind: 'QuadOctarize', sel }], random);
 }
 
 /** Multiplies every node's natural-dimension position by `factor` - adjacency/embDim untouched. */
@@ -2292,27 +2292,27 @@ export const PrescribedBoardFns: Record<PrescribedBoard, (...args: BoardArgEntry
     [PrescribedBoard.diamondCubicBoard]:        (...a) => diamondCubicBoard(num(a[0])),
 };
 
-export function applyModifier(bc: BoardConfig, modifier: BoardModifier): BoardConfig {
+export function applyModifier(bc: BoardConfig, modifier: BoardModifier, random: ClegRandom): BoardConfig {
     switch (modifier.kind) {
         case 'Rectify': return rectify(bc);
         case 'Truncate': return truncate(bc);
         case 'EdgeSplit': return edgeSplit(bc, modifier.splitN);
         case 'MergeClose': return mergeClose(bc, modifier.dist);
-        case 'TriangleForm': return triangleForm(bc, modifier.w, modifier.sel);
-        case 'QuadForm': return quadForm(bc, modifier.w, modifier.sel);
-        case 'QuadDiagForm': return quadDiagForm(bc, modifier.w, modifier.sel);
-        case 'QuadKnightForm': return quadKnightForm(bc, modifier.w, modifier.sel);
-        case 'QuadBishopForm': return quadBishopForm(bc, modifier.w, modifier.sel);
-        case 'Form': return genericForm(bc, modifier.w, modifier.sels);
-        case 'LocalReplace': return genericLocalReplace(bc, modifier.selectors);
+        case 'TriangleForm': return triangleForm(bc, modifier.w, random, modifier.sel);
+        case 'QuadForm': return quadForm(bc, modifier.w, random, modifier.sel);
+        case 'QuadDiagForm': return quadDiagForm(bc, modifier.w, random, modifier.sel);
+        case 'QuadKnightForm': return quadKnightForm(bc, modifier.w, random, modifier.sel);
+        case 'QuadBishopForm': return quadBishopForm(bc, modifier.w, random, modifier.sel);
+        case 'Form': return genericForm(bc, modifier.w, modifier.sels, random);
+        case 'LocalReplace': return genericLocalReplace(bc, modifier.selectors, random);
         case 'GlobalCentralize': return globalCentralize(bc);
         case 'Scale': return scaleBoard(bc, modifier.factor);
-        case 'NodeInducedSubgraph': return nodeInducedSubgraph(bc, selectNode(bc.adj, bc.emb.pos, modifier.sel));
-        case 'EdgeInducedSubgraph': return edgeInducedSubgraph(bc, selectEdge(bc.adj, bc.emb.pos, modifier.sel));
+        case 'NodeInducedSubgraph': return nodeInducedSubgraph(bc, selectNode(bc.adj, bc.emb.pos, modifier.sel, random));
+        case 'EdgeInducedSubgraph': return edgeInducedSubgraph(bc, selectEdge(bc.adj, bc.emb.pos, modifier.sel, random));
     }
 }
 
 /** Applies every modifier in `modifiers`, in order, to `bc`. */
-export function applyModifiers(bc: BoardConfig, modifiers: BoardModifier[]): BoardConfig {
-    return modifiers.reduce((current, m) => applyModifier(current, m), bc);
+export function applyModifiers(bc: BoardConfig, modifiers: BoardModifier[], random: ClegRandom): BoardConfig {
+    return modifiers.reduce((current, m) => applyModifier(current, m, random), bc);
 }

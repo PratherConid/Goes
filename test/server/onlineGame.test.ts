@@ -82,6 +82,8 @@ test('game/create + game/join broadcast byte-identical config to both observers 
 
     const [aliceMsg, bobMsg] = await Promise.all([aliceStart, bobStart]);
     assert.deepEqual(aliceMsg, bobMsg);
+    assert.equal(typeof (aliceMsg as { config: { boardSeed: unknown } }).config.boardSeed, 'number',
+        'the server draws the board seed when the game starts');
 
     await alice.close();
     await bob.close();

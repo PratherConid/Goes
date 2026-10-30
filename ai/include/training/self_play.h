@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <map>
 #include <optional>
+#include <cstdint>
 #include <string>
 
 struct GameConfig {
@@ -22,6 +23,9 @@ struct GameConfig {
     // it once, so there's no benefit to persisting the AST - re-parsing this string is cheap enough
     // to do on demand wherever a board is actually needed.
     std::string board_descr;
+    // Mirrors shared/gameConfig.ts's GameConfig.boardSeed; nullopt = null. server.cpp requires it on
+    // a /move request's config. train.cpp ignores it and draws its own seed per run.
+    std::optional<uint32_t> board_seed;
     int num_stones;
     int num_players;
     std::vector<TurnInfo> turn_list;
@@ -68,9 +72,11 @@ struct GameConfig {
 // GameConfig::model_tag()'s (now-removed) human-readable checkpoint
 // directory name: board_descr, num_stones, num_players, turn_list,
 // stone_to_player_map, forced_pass_only, allow_suicide, score_rule, komi,
-// ko_rule. board_descr is compared as plain text (exact string equality) - it fully determines the
-// actual board topology, so a checkpoint trained on one board description must never be treated as
-// resumable with a differently-worded (even if it would evaluate to an isomorphic board) one.
+// ko_rule. board_descr is compared as plain text (exact string equality) - together with
+// board_seed it fully determines the actual board topology, so a checkpoint trained on one board
+// description must never be treated as resumable with a differently-worded (even if it would
+// evaluate to an isomorphic board) one. board_seed itself is excluded: a training run builds its
+// board from a seed of its own (see train.cpp), so a checkpoint is matched by description alone.
 // stone_to_player_map compares as a sorted (stone,player) pair set
 // (order within one stone's player list doesn't matter), matching the old
 // tag's own flattening. playerStonePlaceLimit/globalStonePlaceLimit/maxPlies

@@ -15,7 +15,7 @@ const { rectangularBoard } = await import('../../shared/boardConfig.ts');
 // domSetup.ts's setupDom() comment on why this must happen every time).
 function createRenderer(game: InstanceType<typeof BoardState>) {
     setupDom();
-    const renderer = new Renderer(game);
+    const renderer = new Renderer(game, 0);
     renderer.init();
     return renderer;
 }

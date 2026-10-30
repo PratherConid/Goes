@@ -2,7 +2,7 @@ import { BoardState, MoveType } from '@shared/boardState.js';
 import {
     PlayerInfo, OnlinePlayerRequest, makeId, ColorGen,
 } from '@shared/types.js';
-import { GameConfig, FinishedGame } from '@shared/gameConfig.js';
+import { GameConfig, FinishedGame, randomBoardSeed } from '@shared/gameConfig.js';
 import type {
     BoardView, OnlineStateResponse, PendingGame, ScoreRule, KoRule, TurnInfo, ReplayMove, ChatMessage,
     BoardConfig,
@@ -826,9 +826,11 @@ export class Renderer {
     private selfPlayTimer: number | null = null;
     private engineManager = new EngineManager();
 
-    constructor(game: BoardState) {
+    // boardSeed: the seed `game`'s board was built with.
+    constructor(game: BoardState, boardSeed: number) {
         applyColorTheme(COLOR_THEMES[this.colorTheme]!);
         const initCfg = this.newCfg.copy();
+        initCfg.boardSeed = boardSeed;
         for (let slot = 1; slot <= initCfg.numPlayers; slot++)
             initCfg.players.set(slot, new PlayerInfo('local', ''));
         // Start with a default local game so there is always an active game.
@@ -3101,14 +3103,15 @@ export class Renderer {
     // "ignore invited players?" popup below (or never, if they decline) -
     // see _createLocalGame()'s own doc comment.
     private _startNewGame(onStarted?: () => void) {
+        const boardSeed = randomBoardSeed();
         let bc: BoardConfig;
         try {
-            bc = buildBoardFromCleg(this.newCfg.boardDescr);
+            bc = buildBoardFromCleg(this.newCfg.boardDescr, boardSeed);
         } catch (e) {
             this._setCmdOutput(e instanceof Error ? e.message : String(e));
             return;
         }
-        this._createLocalGame(bc, onStarted);
+        this._createLocalGame(bc, boardSeed, onStarted);
     }
 
     // Called by a Select-Game-Preset button click (see renderGamePresetSelection,
@@ -3145,8 +3148,9 @@ export class Renderer {
     // resolves to an invite, confirms via a popup first ("Ignore invited
     // players for new local game?") - the game (and onStarted) only proceed
     // if the user answers Yes; declining leaves the current game untouched.
-    private _createLocalGame(bc: BoardConfig, onStarted?: () => void) {
+    private _createLocalGame(bc: BoardConfig, boardSeed: number, onStarted?: () => void) {
         const config = this.newCfg.copy();
+        config.boardSeed = boardSeed;
         const request = this.onlinePlayerRequest.copy();  // defensive copy, same pattern as _createOnlineGame()
         let resolved: Map<number, PlayerInfo>;
         try {
@@ -3763,7 +3767,7 @@ export class Renderer {
         for (const { id, finishedGame: raw, chat } of entries) {
             try {
                 const fg = FinishedGame.fromJSON(raw);
-                const bc = buildBoardFromCleg(fg.config.boardDescr);
+                const bc = buildBoardFromCleg(fg.config.boardDescr, fg.config.requireBoardSeed());
                 const bs = BoardState.fromFinishedGame(fg, bc);
                 this.finishedGames.set('O_' + id, {
                     bs, config: fg.config, displayPlyNum: bs.getView().plyCount,
@@ -3821,7 +3825,7 @@ export class Renderer {
     private _activatePendingGame(id: string, config: GameConfig, chat: ChatMessage[] = []) {
         let bc: BoardConfig;
         try {
-            bc = buildBoardFromCleg(config.boardDescr);
+            bc = buildBoardFromCleg(config.boardDescr, config.requireBoardSeed());
         } catch (e) {
             this._setCmdOutput(e instanceof Error ? e.message : String(e));
             return;

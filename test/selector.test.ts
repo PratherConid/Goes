@@ -7,9 +7,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     parseNodeSelector, parseEdgeSelector, parseTriangleSelector, parseQuadSelector, parseSelector,
-    selectNode, selectEdge, selectTriangle, selectQuad, selectSimp, formatSelector,
+    selectNode, selectEdge, selectTriangle, selectQuad, selectSimp, formatSelector, ClegRandom,
 } from '../shared/selector.ts';
 import { simpType } from '../shared/types.ts';
+
+// The generator every selector/board-modifier call in this file draws from.
+const random = new ClegRandom(0);
 
 // An n-node path 0-1-...-(n-1): the two endpoints have degree 1, every interior node degree 2, and
 // there are no triangles or quads anywhere. `pos` is unused by the current grammar but still
@@ -76,19 +79,19 @@ test('conva/conve reject simp<->quad at evaluation time too (defensive, for a ha
         a: { op: 'all' as const, type: simpType(2) },
     };
     assert.throws(
-        () => selectQuad(adj, pos, handBuilt), /no association is defined between 'simp' and 'quad'/);
+        () => selectQuad(adj, pos, handBuilt, random), /no association is defined between 'simp' and 'quad'/);
 });
 
 test('all/none select every object of the given kind, and reject a missing/invalid kind token', () => {
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(all node)')), new Set([0, 1, 2, 3]));
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(none node)')), new Set());
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(all node)'), random), new Set([0, 1, 2, 3]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(none node)'), random), new Set());
     assert.deepEqual(
-        selectEdge(adj, pos, parseEdgeSelector('(all edge)')),
+        selectEdge(adj, pos, parseEdgeSelector('(all edge)'), random),
         [{ n1: 0, n2: 1 }, { n1: 1, n2: 2 }, { n1: 2, n2: 3 }]);
-    assert.deepEqual(selectEdge(adj, pos, parseEdgeSelector('(none edge)')), []);
+    assert.deepEqual(selectEdge(adj, pos, parseEdgeSelector('(none edge)'), random), []);
     // No triangles/quads in this path graph.
-    assert.deepEqual(selectTriangle(adj, pos, parseTriangleSelector('(all tri)')), []);
-    assert.deepEqual(selectQuad(adj, pos, parseQuadSelector('(all quad)')), []);
+    assert.deepEqual(selectTriangle(adj, pos, parseTriangleSelector('(all tri)'), random), []);
+    assert.deepEqual(selectQuad(adj, pos, parseQuadSelector('(all quad)'), random), []);
 
     // (all)/(none) now require exactly one kind token - a missing or unrecognized one is a grammar
     // error; a bare (all)/(none) (the old, context-inferred syntax) no longer parses.
@@ -98,20 +101,20 @@ test('all/none select every object of the given kind, and reject a missing/inval
 });
 
 test('deg selects nodes by exact/greater/less degree', () => {
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(deg eq 2)')), new Set([1, 2]));
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(deg gt 1)')), new Set([1, 2]));
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(deg lt 2)')), new Set([0, 3]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(deg eq 2)'), random), new Set([1, 2]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(deg gt 1)'), random), new Set([1, 2]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(deg lt 2)'), random), new Set([0, 3]));
 });
 
 test('union/inter/diff/compl combine node selectors as plain set operations', () => {
     assert.deepEqual(
-        selectNode(adj, pos, parseNodeSelector('(union (deg eq 1) (deg eq 2))')), new Set([0, 1, 2, 3]));
+        selectNode(adj, pos, parseNodeSelector('(union (deg eq 1) (deg eq 2))'), random), new Set([0, 1, 2, 3]));
     assert.deepEqual(
-        selectNode(adj, pos, parseNodeSelector('(inter (deg eq 1) (deg lt 2))')), new Set([0, 3]));
+        selectNode(adj, pos, parseNodeSelector('(inter (deg eq 1) (deg lt 2))'), random), new Set([0, 3]));
     assert.deepEqual(
-        selectNode(adj, pos, parseNodeSelector('(diff (deg gt 1) (deg eq 2))')), new Set());
+        selectNode(adj, pos, parseNodeSelector('(diff (deg gt 1) (deg eq 2))'), random), new Set());
     assert.deepEqual(
-        selectNode(adj, pos, parseNodeSelector('(compl (deg eq 2))')), new Set([0, 3]));
+        selectNode(adj, pos, parseNodeSelector('(compl (deg eq 2))'), random), new Set([0, 3]));
 });
 
 test('union/inter reject zero operands (their kind can\'t be inferred bottom-up) but otherwise ' +
@@ -125,18 +128,18 @@ test('union/inter reject zero operands (their kind can\'t be inferred bottom-up)
 
     // One operand is a plain pass-through for both.
     assert.deepEqual(
-        selectNode(adj, pos, parseNodeSelector('(union (deg eq 2))')), new Set([1, 2]));
+        selectNode(adj, pos, parseNodeSelector('(union (deg eq 2))'), random), new Set([1, 2]));
     assert.deepEqual(
-        selectNode(adj, pos, parseNodeSelector('(inter (deg eq 2))')), new Set([1, 2]));
+        selectNode(adj, pos, parseNodeSelector('(inter (deg eq 2))'), random), new Set([1, 2]));
 
     // Three-plus operands: union of {0}, {1}, {2} is {0,1,2}; a three-way inter that has no common
     // element across all three is empty even though every pair overlaps.
     assert.deepEqual(
-        selectNode(adj, pos, parseNodeSelector('(union (deg eq 1) (deg eq 2) (deg eq 1))')),
+        selectNode(adj, pos, parseNodeSelector('(union (deg eq 1) (deg eq 2) (deg eq 1))'), random),
         new Set([0, 1, 2, 3]));
     assert.deepEqual(
         selectNode(adj, pos, parseNodeSelector(
-            '(inter (deg lt 2) (deg gt 0) (deg eq 3))')), // {0,3} inter {1,2} inter {} = {}
+            '(inter (deg lt 2) (deg gt 0) (deg eq 3))'), random), // {0,3} inter {1,2} inter {} = {}
         new Set());
 });
 
@@ -163,9 +166,9 @@ test('conva(node) selects edges whose nodes are ALL selected, conve(node) whose 
     'LEAST ONE selected', () => {
     // deg eq 2 selects {1, 2} - only edge (1,2) has both endpoints in that set (conva); edges (0,1)
     // and (1,2) each have at least one endpoint in it (conve).
-    assert.deepEqual(selectEdge(adj, pos, parseEdgeSelector('(conva edge (deg eq 2))')), [{ n1: 1, n2: 2 }]);
+    assert.deepEqual(selectEdge(adj, pos, parseEdgeSelector('(conva edge (deg eq 2))'), random), [{ n1: 1, n2: 2 }]);
     assert.deepEqual(
-        selectEdge(adj, pos, parseEdgeSelector('(conve edge (deg eq 2))')),
+        selectEdge(adj, pos, parseEdgeSelector('(conve edge (deg eq 2))'), random),
         [{ n1: 0, n2: 1 }, { n1: 1, n2: 2 }, { n1: 2, n2: 3 }]);
 });
 
@@ -175,19 +178,19 @@ test('conva(edge) selects nodes whose every associated edge is selected, conve(e
     // conve: node 0's only edge is (0,1), not selected -> excluded; node 1's edges are (0,1) [not
     // selected] and (1,2) [selected] -> at least one selected -> included. Node 2 symmetric to 1.
     // Node 3's only edge (2,3) isn't selected -> excluded.
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(conve node ${selEdges})`)), new Set([1, 2]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(conve node ${selEdges})`), random), new Set([1, 2]));
     // conva: node 1 has TWO associated edges, (0,1) and (1,2) - only one is selected, so not ALL are
     // -> excluded. Same for node 2. Nodes 0/3 each have exactly one associated edge, not selected ->
     // excluded too. Nothing in this graph has every associated edge selected.
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(conva node ${selEdges})`)), new Set());
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(conva node ${selEdges})`), random), new Set());
 });
 
 test('conva is vacuously true for a node with no associated objects of the given kind', () => {
     // No triangles at all in this graph - every node "vacuously" satisfies conva (every one of its
     // zero associated triangles is trivially selected), but conve (at least one) is vacuously false.
     assert.deepEqual(
-        selectNode(adj, pos, parseNodeSelector('(conva node (all tri))')), new Set([0, 1, 2, 3]));
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(conve node (all tri))')), new Set());
+        selectNode(adj, pos, parseNodeSelector('(conva node (all tri))'), random), new Set([0, 1, 2, 3]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(conve node (all tri))'), random), new Set());
 });
 
 test('convlt/conveq/convgt require a valid node|edge|simp N|tri|quad result token, reject simp ' +
@@ -208,15 +211,15 @@ test('convlt/conveq/convgt count exactly how many associated selected objects a 
     // node: node 0 -> {(0,1)} (0 selected); node 1 -> {(0,1),(1,2)} (1 selected); node 2 ->
     // {(1,2),(2,3)} (1 selected); node 3 -> {(2,3)} (0 selected).
     const selEdges = '(conva edge (deg eq 2))';
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convlt node 1 ${selEdges})`)), new Set([0, 3]));
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(conveq node 1 ${selEdges})`)), new Set([1, 2]));
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convgt node 0 ${selEdges})`)), new Set([1, 2]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convlt node 1 ${selEdges})`), random), new Set([0, 3]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(conveq node 1 ${selEdges})`), random), new Set([1, 2]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convgt node 0 ${selEdges})`), random), new Set([1, 2]));
     // Same-kind (node -> node): a node's only associated node is itself, so this reduces to "is n
     // selected" compared against a threshold - convlt(1) is the actual selected set's own complement,
     // NOT the identity the way conva/conve's own same-kind shortcut would suggest.
     const degSel = '(deg eq 2)'; // selects {1, 2}
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convlt node 1 ${degSel})`)), new Set([0, 3]));
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convgt node 0 ${degSel})`)), new Set([1, 2]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convlt node 1 ${degSel})`), random), new Set([0, 3]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convgt node 0 ${degSel})`), random), new Set([1, 2]));
 });
 
 test('convclt/convceq/convcgt count associated objects that are NOT selected instead', () => {
@@ -225,19 +228,19 @@ test('convclt/convceq/convcgt count associated objects that are NOT selected ins
     // (1,2) not selected -> 1; node 2 -> {(1,2),(2,3)} -> (1,2) not selected -> 1; node 3 ->
     // {(2,3)} all selected -> 0.
     const selEdges = '(conve edge (deg eq 1))';
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convclt node 1 ${selEdges})`)), new Set([0, 3]));
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convceq node 1 ${selEdges})`)), new Set([1, 2]));
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convcgt node 0 ${selEdges})`)), new Set([1, 2]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convclt node 1 ${selEdges})`), random), new Set([0, 3]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convceq node 1 ${selEdges})`), random), new Set([1, 2]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector(`(convcgt node 0 ${selEdges})`), random), new Set([1, 2]));
 });
 
 test('(conva K SEL) is exactly (convceq K 0 SEL), and (conve K SEL) is exactly (convgt K 0 SEL)', () => {
     for (const sel of ['(none edge)', '(all edge)', '(conva edge (deg eq 2))']) {
         assert.deepEqual(
-            selectNode(adj, pos, parseNodeSelector(`(conva node ${sel})`)),
-            selectNode(adj, pos, parseNodeSelector(`(convceq node 0 ${sel})`)));
+            selectNode(adj, pos, parseNodeSelector(`(conva node ${sel})`), random),
+            selectNode(adj, pos, parseNodeSelector(`(convceq node 0 ${sel})`), random));
         assert.deepEqual(
-            selectNode(adj, pos, parseNodeSelector(`(conve node ${sel})`)),
-            selectNode(adj, pos, parseNodeSelector(`(convgt node 0 ${sel})`)));
+            selectNode(adj, pos, parseNodeSelector(`(conve node ${sel})`), random),
+            selectNode(adj, pos, parseNodeSelector(`(convgt node 0 ${sel})`), random));
     }
 });
 
@@ -245,11 +248,11 @@ test('convlt/convclt are vacuously true (and convgt/convcgt vacuously false) for
     'associated objects of the given kind', () => {
     // No triangles at all in this graph - 0 associated triangles for every node either way.
     assert.deepEqual(
-        selectNode(adj, pos, parseNodeSelector('(convlt node 1 (all tri))')), new Set([0, 1, 2, 3]));
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(convgt node 0 (all tri))')), new Set());
+        selectNode(adj, pos, parseNodeSelector('(convlt node 1 (all tri))'), random), new Set([0, 1, 2, 3]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(convgt node 0 (all tri))'), random), new Set());
     assert.deepEqual(
-        selectNode(adj, pos, parseNodeSelector('(convclt node 1 (all tri))')), new Set([0, 1, 2, 3]));
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(convcgt node 0 (all tri))')), new Set());
+        selectNode(adj, pos, parseNodeSelector('(convclt node 1 (all tri))'), random), new Set([0, 1, 2, 3]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(convcgt node 0 (all tri))'), random), new Set());
 });
 
 test('convlt/.../convcgt round-trip through formatSelector', () => {
@@ -260,7 +263,7 @@ test('convlt/.../convcgt round-trip through formatSelector', () => {
 
 test('compl on an edge selector complements within all of the graph\'s edges', () => {
     // All edges: (0,1), (1,2), (2,3). conva(edge, deg eq 2) = {(1,2)}.
-    const edges = selectEdge(adj, pos, parseEdgeSelector('(compl (conva edge (deg eq 2)))'));
+    const edges = selectEdge(adj, pos, parseEdgeSelector('(compl (conva edge (deg eq 2)))'), random);
     assert.deepEqual(edges, [{ n1: 0, n2: 1 }, { n1: 2, n2: 3 }]);
 });
 
@@ -269,7 +272,7 @@ test('more expands a node selector to one-edge-away neighbors, keeping the origi
     const { adj: path5Adj, pos: path5Pos } = pathGraph(5);
     // (deg eq 1) selects the two endpoints {0, 4}; more adds their neighbors {1, 3}, but not node 2
     // (two edges away from both endpoints).
-    const nodes = selectNode(path5Adj, path5Pos, parseNodeSelector('(more (deg eq 1))'));
+    const nodes = selectNode(path5Adj, path5Pos, parseNodeSelector('(more (deg eq 1))'), random);
     assert.deepEqual(nodes, new Set([0, 1, 3, 4]));
 });
 
@@ -287,7 +290,7 @@ test('more expands an edge selector to edges sharing a node, keeping the origina
     const triPlusEdgePos = [[0], [1], [2], [3], [4]];
     // conva(edge, deg eq 2) selects the 3 triangle edges; more re-adds every edge incident to nodes
     // 0/1/2 - still just those same 3 edges, since edge (3,4) isn't incident to any of them.
-    const edges = selectEdge(triPlusEdgeAdj, triPlusEdgePos, parseEdgeSelector('(more (conva edge (deg eq 2)))'));
+    const edges = selectEdge(triPlusEdgeAdj, triPlusEdgePos, parseEdgeSelector('(more (conva edge (deg eq 2)))'), random);
     assert.deepEqual(edges, [{ n1: 0, n2: 1 }, { n1: 0, n2: 2 }, { n1: 1, n2: 2 }]);
 });
 
@@ -297,7 +300,7 @@ test('more is rejected for triangle/quad selectors (no adjacency notion is defin
 });
 
 test('more on an already-all selector is a no-op, and formatSelector round-trips it', () => {
-    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(more (all node))')), new Set([0, 1, 2, 3]));
+    assert.deepEqual(selectNode(adj, pos, parseNodeSelector('(more (all node))'), random), new Set([0, 1, 2, 3]));
     const sel = parseEdgeSelector('(more (conva edge (deg eq 2)))');
     assert.equal(formatSelector(sel), '(more (conva edge (deg eq 2)))');
 });
@@ -307,14 +310,14 @@ test('more takes an optional leading step count, repeating the one-step expansio
     // (deg eq 1) selects the endpoints {0, 4}. 1 step (the default, already covered above) reaches
     // {0,1,3,4}; 2 steps also reaches node 2 (two edges from either endpoint) - the whole path.
     assert.deepEqual(
-        selectNode(path5Adj, path5Pos, parseNodeSelector('(more 2 (deg eq 1))')), new Set([0, 1, 2, 3, 4]));
+        selectNode(path5Adj, path5Pos, parseNodeSelector('(more 2 (deg eq 1))'), random), new Set([0, 1, 2, 3, 4]));
     // 0 steps is a no-op - identical to the un-expanded selector.
     assert.deepEqual(
-        selectNode(path5Adj, path5Pos, parseNodeSelector('(more 0 (deg eq 1))')), new Set([0, 4]));
+        selectNode(path5Adj, path5Pos, parseNodeSelector('(more 0 (deg eq 1))'), random), new Set([0, 4]));
     // A step count far beyond the graph's diameter still terminates (the frontier empties out) and
     // simply saturates at every reachable node.
     assert.deepEqual(
-        selectNode(path5Adj, path5Pos, parseNodeSelector('(more 100 (deg eq 1))')), new Set([0, 1, 2, 3, 4]));
+        selectNode(path5Adj, path5Pos, parseNodeSelector('(more 100 (deg eq 1))'), random), new Set([0, 1, 2, 3, 4]));
 });
 
 test('more\'s optional step count also works over edge selectors, and rejects a malformed count', () => {
@@ -323,9 +326,9 @@ test('more\'s optional step count also works over edge selectors, and rejects a 
     // adds every edge touching THOSE edges' own nodes - (1,2) and (3,4) - but not the middle edge
     // (2,3), which is 2 hops from either endpoint; a 2nd step reaches it. This is what proves the
     // step count actually chains the expansion rather than saturating after a single hop.
-    const oneStep = selectEdge(path6Adj, path6Pos, parseEdgeSelector('(more (conve edge (deg eq 1)))'));
+    const oneStep = selectEdge(path6Adj, path6Pos, parseEdgeSelector('(more (conve edge (deg eq 1)))'), random);
     assert.deepEqual(oneStep, [{ n1: 0, n2: 1 }, { n1: 4, n2: 5 }, { n1: 1, n2: 2 }, { n1: 3, n2: 4 }]);
-    const twoSteps = selectEdge(path6Adj, path6Pos, parseEdgeSelector('(more 2 (conve edge (deg eq 1)))'));
+    const twoSteps = selectEdge(path6Adj, path6Pos, parseEdgeSelector('(more 2 (conve edge (deg eq 1)))'), random);
     assert.deepEqual(twoSteps, [
         { n1: 0, n2: 1 }, { n1: 4, n2: 5 }, { n1: 1, n2: 2 }, { n1: 3, n2: 4 }, { n1: 2, n2: 3 },
     ]);
@@ -341,13 +344,13 @@ test('union/inter/diff combine edge selectors as plain (deduplicated) set operat
     // just (1,2).
     const all = '(conva edge (deg gt 0))', middle = '(conva edge (deg eq 2))';
     assert.deepEqual(
-        selectEdge(adj, pos, parseEdgeSelector(`(union ${all} ${middle})`)),
+        selectEdge(adj, pos, parseEdgeSelector(`(union ${all} ${middle})`), random),
         [{ n1: 0, n2: 1 }, { n1: 1, n2: 2 }, { n1: 2, n2: 3 }]);
     assert.deepEqual(
-        selectEdge(adj, pos, parseEdgeSelector(`(inter ${all} ${middle})`)),
+        selectEdge(adj, pos, parseEdgeSelector(`(inter ${all} ${middle})`), random),
         [{ n1: 1, n2: 2 }]);
     assert.deepEqual(
-        selectEdge(adj, pos, parseEdgeSelector(`(diff ${all} ${middle})`)),
+        selectEdge(adj, pos, parseEdgeSelector(`(diff ${all} ${middle})`), random),
         [{ n1: 0, n2: 1 }, { n1: 2, n2: 3 }]);
 });
 
@@ -366,9 +369,9 @@ const bowtiePos = bowtieAdj.map((_, i) => [i]);
 
 test('selectTriangle finds every triangle via (all tri), and none in a triangle-free graph', () => {
     assert.deepEqual(
-        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(all tri)')),
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(all tri)'), random),
         [{ nodes: [0, 1, 2] }, { nodes: [2, 3, 4] }]);
-    assert.deepEqual(selectTriangle(adj, pos, parseTriangleSelector('(all tri)')), []);
+    assert.deepEqual(selectTriangle(adj, pos, parseTriangleSelector('(all tri)'), random), []);
 });
 
 test('union/inter/diff/compl combine triangle selectors as plain (deduplicated) set operations', () => {
@@ -377,33 +380,33 @@ test('union/inter/diff/compl combine triangle selectors as plain (deduplicated) 
     const first = '(conve tri (deg eq 3))';
     const second = 'diff (all tri) ' + first; // the other triangle, [2,3,4]
     assert.deepEqual(
-        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(first)), [{ nodes: [0, 1, 2] }]);
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(first), random), [{ nodes: [0, 1, 2] }]);
     assert.deepEqual(
-        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(${second})`)), [{ nodes: [2, 3, 4] }]);
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(${second})`), random), [{ nodes: [2, 3, 4] }]);
     assert.deepEqual(
-        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(union ${first} (${second}))`)),
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(union ${first} (${second}))`), random),
         [{ nodes: [0, 1, 2] }, { nodes: [2, 3, 4] }]);
     assert.deepEqual(
-        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(inter ${first} (${second}))`)), []);
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(inter ${first} (${second}))`), random), []);
     assert.deepEqual(
-        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(compl ${first})`)), [{ nodes: [2, 3, 4] }]);
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(compl ${first})`), random), [{ nodes: [2, 3, 4] }]);
     // union/inter are variadic for triangles/quads too, same as node/edge above.
     assert.deepEqual(
-        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(union ${first} (${second}) ${first})`)),
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(union ${first} (${second}) ${first})`), random),
         [{ nodes: [0, 1, 2] }, { nodes: [2, 3, 4] }]);
 });
 
 test('conva/conve convert a node selector into a triangle selector', () => {
     // (deg eq 3) selects only node 0, which belongs to triangle [0,1,2] alone.
     assert.deepEqual(
-        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(conve tri (deg eq 3))')),
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(conve tri (deg eq 3))'), random),
         [{ nodes: [0, 1, 2] }]);
     // conva needs ALL 3 nodes of a triangle selected - a single node is never enough.
-    assert.deepEqual(selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(conva tri (deg eq 3))')), []);
+    assert.deepEqual(selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(conva tri (deg eq 3))'), random), []);
     // All 5 non-pendant nodes selected -> conva now selects both triangles (all of each one's own
     // 3 nodes are in {0,1,2,3,4}).
     assert.deepEqual(
-        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(conva tri (deg gt 1))')),
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(conva tri (deg gt 1))'), random),
         [{ nodes: [0, 1, 2] }, { nodes: [2, 3, 4] }]);
 });
 
@@ -414,9 +417,9 @@ test('conva/conve convert an edge selector into a triangle selector (a new cross
     // Triangle [0,1,2]'s own edges are (0,1), (0,2), (1,2) - only 2 of those 3 are in the selected
     // set, so conva (ALL) excludes it; conve (SOME) includes it. Triangle [2,3,4]'s edges share none
     // with the selected set, so neither op includes it.
-    assert.deepEqual(selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(conva tri ${someEdges})`)), []);
+    assert.deepEqual(selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(conva tri ${someEdges})`), random), []);
     assert.deepEqual(
-        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(conve tri ${someEdges})`)),
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector(`(conve tri ${someEdges})`), random),
         [{ nodes: [0, 1, 2] }]);
 });
 
@@ -427,13 +430,13 @@ test('conva/conve convert a triangle selector back into a node selector, includi
     // conve: nodes 0/1/2 each have that triangle as an associated one -> selected. Nodes 3/4 only
     // belong to [2,3,4], not selected -> excluded. Node 5 belongs to no triangle -> vacuously false.
     assert.deepEqual(
-        selectNode(bowtieAdj, bowtiePos, parseNodeSelector(`(conve node ${selTri})`)), new Set([0, 1, 2]));
+        selectNode(bowtieAdj, bowtiePos, parseNodeSelector(`(conve node ${selTri})`), random), new Set([0, 1, 2]));
     // conva: nodes 0/1 belong ONLY to [0,1,2] (selected) -> all of their associated triangles are
     // selected -> included. Node 2 belongs to BOTH triangles, and [2,3,4] isn't selected -> excluded.
     // Nodes 3/4 belong only to the non-selected [2,3,4] -> excluded. Node 5 belongs to zero
     // triangles -> vacuously true -> included.
     assert.deepEqual(
-        selectNode(bowtieAdj, bowtiePos, parseNodeSelector(`(conva node ${selTri})`)), new Set([0, 1, 5]));
+        selectNode(bowtieAdj, bowtiePos, parseNodeSelector(`(conva node ${selTri})`), random), new Set([0, 1, 5]));
 });
 
 // A single 4-cycle 0-1-2-3-0 (no diagonals - a genuine quad), plus a pendant node 4 off node 0.
@@ -449,35 +452,35 @@ const quadPos = quadAdj.map((_, i) => [i]);
 
 test('selectQuad finds the single induced 4-cycle via (all quad), and none in a quad-free graph', () => {
     assert.deepEqual(
-        selectQuad(quadAdj, quadPos, parseQuadSelector('(all quad)')),
+        selectQuad(quadAdj, quadPos, parseQuadSelector('(all quad)'), random),
         [{ n1: 0, n2: 1, n3: 2, n4: 3 }]);
-    assert.deepEqual(selectQuad(bowtieAdj, bowtiePos, parseQuadSelector('(all quad)')), []);
+    assert.deepEqual(selectQuad(bowtieAdj, bowtiePos, parseQuadSelector('(all quad)'), random), []);
 });
 
 test('conva/conve work the same way for quads as for triangles, including edge -> quad', () => {
     // conve from the quad's own corner nodes selects the quad; conva from just the pendant does
     // not (it isn't part of the quad at all).
     assert.deepEqual(
-        selectQuad(quadAdj, quadPos, parseQuadSelector('(conve quad (deg eq 2))')),
+        selectQuad(quadAdj, quadPos, parseQuadSelector('(conve quad (deg eq 2))'), random),
         [{ n1: 0, n2: 1, n3: 2, n4: 3 }]);
-    assert.deepEqual(selectQuad(quadAdj, quadPos, parseQuadSelector('(conva quad (deg gt 2))')), []);
+    assert.deepEqual(selectQuad(quadAdj, quadPos, parseQuadSelector('(conva quad (deg gt 2))'), random), []);
 
     // conva/conve from the (only, therefore trivially fully-selected) quad: every corner is in it,
     // so both conva and conve select {0,1,2,3}; the pendant node 4 belongs to no quad, so conva
     // includes it vacuously while conve excludes it.
     const selQuad = '(all quad)';
     assert.deepEqual(
-        selectNode(quadAdj, quadPos, parseNodeSelector(`(conva node ${selQuad})`)), new Set([0, 1, 2, 3, 4]));
+        selectNode(quadAdj, quadPos, parseNodeSelector(`(conva node ${selQuad})`), random), new Set([0, 1, 2, 3, 4]));
     assert.deepEqual(
-        selectNode(quadAdj, quadPos, parseNodeSelector(`(conve node ${selQuad})`)), new Set([0, 1, 2, 3]));
+        selectNode(quadAdj, quadPos, parseNodeSelector(`(conve node ${selQuad})`), random), new Set([0, 1, 2, 3]));
 
     // Edge -> quad (a new cross-type conversion, mirroring edge -> triangle above): edges touching
     // node 0 are (0,1), (0,3), (0,4) (only node 0 has degree 3) - only 2 of the quad's own 4 edges
     // ((0,1) and (0,3)), so conva (ALL) excludes it; conve (SOME) includes it.
     const someEdges = '(conve edge (deg eq 3))';
-    assert.deepEqual(selectQuad(quadAdj, quadPos, parseQuadSelector(`(conva quad ${someEdges})`)), []);
+    assert.deepEqual(selectQuad(quadAdj, quadPos, parseQuadSelector(`(conva quad ${someEdges})`), random), []);
     assert.deepEqual(
-        selectQuad(quadAdj, quadPos, parseQuadSelector(`(conve quad ${someEdges})`)),
+        selectQuad(quadAdj, quadPos, parseQuadSelector(`(conve quad ${someEdges})`), random),
         [{ n1: 0, n2: 1, n3: 2, n4: 3 }]);
 });
 
@@ -493,7 +496,7 @@ test('rrmn/rrmp reject a malformed count/portion argument', () => {
 // that every kept item really was in the original set), not which specific items got removed.
 test('rrmn removes exactly count items (clamped to the set size), chosen from the original set', () => {
     for (const count of [0, 1, 3, 4, 10]) {
-        const kept = selectNode(adj, pos, parseNodeSelector(`(rrmn ${count} (all node))`));
+        const kept = selectNode(adj, pos, parseNodeSelector(`(rrmn ${count} (all node))`), random);
         assert.equal(kept.size, Math.max(4 - count, 0));
         for (const n of kept) assert.ok([0, 1, 2, 3].includes(n));
     }
@@ -502,30 +505,30 @@ test('rrmn removes exactly count items (clamped to the set size), chosen from th
 test('rrmp removes floor(frac * size) items, clamped to the set size', () => {
     const cases: [number, number][] = [[0, 4], [0.25, 3], [0.5, 2], [1, 0], [1.5, 0]];
     for (const [frac, expectedSize] of cases) {
-        const kept = selectNode(adj, pos, parseNodeSelector(`(rrmp ${frac} (all node))`));
+        const kept = selectNode(adj, pos, parseNodeSelector(`(rrmp ${frac} (all node))`), random);
         assert.equal(kept.size, expectedSize, `frac=${frac}`);
         for (const n of kept) assert.ok([0, 1, 2, 3].includes(n));
     }
 });
 
 test('rrmn/rrmp also work over edge selectors', () => {
-    const kept = selectEdge(adj, pos, parseEdgeSelector('(rrmn 1 (all edge))'));
+    const kept = selectEdge(adj, pos, parseEdgeSelector('(rrmn 1 (all edge))'), random);
     assert.equal(kept.length, 2);
-    const all = selectEdge(adj, pos, parseEdgeSelector('(all edge)'));
+    const all = selectEdge(adj, pos, parseEdgeSelector('(all edge)'), random);
     for (const e of kept) assert.ok(all.some(a => a.n1 === e.n1 && a.n2 === e.n2));
 
-    const keptFrac = selectEdge(adj, pos, parseEdgeSelector('(rrmp 0.6666 (all edge))'));
+    const keptFrac = selectEdge(adj, pos, parseEdgeSelector('(rrmp 0.6666 (all edge))'), random);
     // floor(0.6666 * 3) = 1 removed, 2 kept.
     assert.equal(keptFrac.length, 2);
 });
 
 test('rrmn/rrmp also work over triangle/quad selectors', () => {
-    const keptTri = selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(rrmn 1 (all tri))'));
+    const keptTri = selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(rrmn 1 (all tri))'), random);
     assert.equal(keptTri.length, 1);
-    const allTri = selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(all tri)'));
+    const allTri = selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(all tri)'), random);
     for (const t of keptTri) assert.ok(allTri.some(a => a.nodes.join(',') === t.nodes.join(',')));
 
-    const keptQuad = selectQuad(quadAdj, quadPos, parseQuadSelector('(rrmp 1 (all quad))'));
+    const keptQuad = selectQuad(quadAdj, quadPos, parseQuadSelector('(rrmp 1 (all quad))'), random);
     assert.equal(keptQuad.length, 0);
 });
 
@@ -541,7 +544,7 @@ test('rpkn/rpkp reject a malformed count/portion argument', () => {
 // that every kept item really was in the original set), not which specific items got picked.
 test('rpkn picks exactly count items (clamped to the set size), chosen from the original set', () => {
     for (const count of [0, 1, 3, 4, 10]) {
-        const kept = selectNode(adj, pos, parseNodeSelector(`(rpkn ${count} (all node))`));
+        const kept = selectNode(adj, pos, parseNodeSelector(`(rpkn ${count} (all node))`), random);
         assert.equal(kept.size, Math.min(count, 4));
         for (const n of kept) assert.ok([0, 1, 2, 3].includes(n));
     }
@@ -550,40 +553,40 @@ test('rpkn picks exactly count items (clamped to the set size), chosen from the 
 test('rpkp picks floor(frac * size) items, clamped to the set size', () => {
     const cases: [number, number][] = [[0, 0], [0.25, 1], [0.5, 2], [1, 4], [1.5, 4]];
     for (const [frac, expectedSize] of cases) {
-        const kept = selectNode(adj, pos, parseNodeSelector(`(rpkp ${frac} (all node))`));
+        const kept = selectNode(adj, pos, parseNodeSelector(`(rpkp ${frac} (all node))`), random);
         assert.equal(kept.size, expectedSize, `frac=${frac}`);
         for (const n of kept) assert.ok([0, 1, 2, 3].includes(n));
     }
 });
 
 test('rpkn/rpkp also work over edge selectors', () => {
-    const kept = selectEdge(adj, pos, parseEdgeSelector('(rpkn 2 (all edge))'));
+    const kept = selectEdge(adj, pos, parseEdgeSelector('(rpkn 2 (all edge))'), random);
     assert.equal(kept.length, 2);
-    const all = selectEdge(adj, pos, parseEdgeSelector('(all edge)'));
+    const all = selectEdge(adj, pos, parseEdgeSelector('(all edge)'), random);
     for (const e of kept) assert.ok(all.some(a => a.n1 === e.n1 && a.n2 === e.n2));
 
-    const keptFrac = selectEdge(adj, pos, parseEdgeSelector('(rpkp 0.6666 (all edge))'));
+    const keptFrac = selectEdge(adj, pos, parseEdgeSelector('(rpkp 0.6666 (all edge))'), random);
     // floor(0.6666 * 3) = 1 picked.
     assert.equal(keptFrac.length, 1);
 });
 
 test('rpkn/rpkp also work over triangle/quad selectors', () => {
-    const keptTri = selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(rpkn 1 (all tri))'));
+    const keptTri = selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(rpkn 1 (all tri))'), random);
     assert.equal(keptTri.length, 1);
-    const allTri = selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(all tri)'));
+    const allTri = selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(all tri)'), random);
     for (const t of keptTri) assert.ok(allTri.some(a => a.nodes.join(',') === t.nodes.join(',')));
 
-    const keptQuad = selectQuad(quadAdj, quadPos, parseQuadSelector('(rpkp 0 (all quad))'));
+    const keptQuad = selectQuad(quadAdj, quadPos, parseQuadSelector('(rpkp 0 (all quad))'), random);
     assert.equal(keptQuad.length, 0);
 });
 
 test('selectNode/selectEdge/selectTriangle/selectQuad throw when given a selector of the wrong kind', () => {
     const edgeSel = parseEdgeSelector('(conva edge (deg eq 2))');
-    assert.throws(() => selectNode(adj, pos, edgeSel), /expected a node selector, got an edge selector/);
+    assert.throws(() => selectNode(adj, pos, edgeSel, random), /expected a node selector, got an edge selector/);
     const nodeSel = parseNodeSelector('(deg eq 2)');
-    assert.throws(() => selectEdge(adj, pos, nodeSel), /expected an edge selector, got a node selector/);
-    assert.throws(() => selectTriangle(adj, pos, nodeSel), /expected a triangle selector, got a node selector/);
-    assert.throws(() => selectQuad(adj, pos, nodeSel), /expected a quad selector, got a node selector/);
+    assert.throws(() => selectEdge(adj, pos, nodeSel, random), /expected an edge selector, got a node selector/);
+    assert.throws(() => selectTriangle(adj, pos, nodeSel, random), /expected a triangle selector, got a node selector/);
+    assert.throws(() => selectQuad(adj, pos, nodeSel, random), /expected a quad selector, got a node selector/);
 });
 
 // K4 on {0,1,2,3} (every pair adjacent - the graph's only simp-3 object, [0,1,2,3]) plus a pendant
@@ -602,21 +605,21 @@ test('(all tri) and (all simp 2) parse to the identical Selector and evaluate id
     // The whole point of "tri" being sugar for "simp 2" - same AST, not just the same result.
     assert.deepEqual(parseTriangleSelector('(all tri)'), parseTriangleSelector('(all simp 2)'));
     assert.deepEqual(
-        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(all tri)')),
-        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(all simp 2)')));
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(all tri)'), random),
+        selectTriangle(bowtieAdj, bowtiePos, parseTriangleSelector('(all simp 2)'), random));
 });
 
 test('selectSimp finds every simp N (N > 2) via (all simp N), generalizing beyond triangles', () => {
     const sel3 = parseSelector('(all simp 3)');
-    assert.deepEqual(selectSimp(k4Adj, k4Pos, sel3), [{ nodes: [0, 1, 2, 3] }]);
+    assert.deepEqual(selectSimp(k4Adj, k4Pos, sel3, random), [{ nodes: [0, 1, 2, 3] }]);
     // No 4-cliques at all in the triangle-free path graph, or in the bowtie (whose only cliques are
     // its own two triangles).
-    assert.deepEqual(selectSimp(adj, pos, sel3), []);
-    assert.deepEqual(selectSimp(bowtieAdj, bowtiePos, sel3), []);
+    assert.deepEqual(selectSimp(adj, pos, sel3, random), []);
+    assert.deepEqual(selectSimp(bowtieAdj, bowtiePos, sel3, random), []);
     // simp 2 on the K4 finds all 4 triangular sub-faces.
     const sel2 = parseSelector('(all simp 2)');
     assert.deepEqual(
-        selectSimp(k4Adj, k4Pos, sel2),
+        selectSimp(k4Adj, k4Pos, sel2, random),
         [{ nodes: [0, 1, 2] }, { nodes: [0, 1, 3] }, { nodes: [0, 2, 3] }, { nodes: [1, 2, 3] }]);
 });
 
@@ -625,21 +628,21 @@ test('conva/conve convert simp M <-> simp N (M != N) via the same general contai
     // sub-faces is selected - all 4 triangles are selected (all simp 2), so the one simp-3 [0,1,2,3]
     // qualifies.
     const conveSel = parseSelector('(conve simp 3 (all simp 2))');
-    assert.deepEqual(selectSimp(k4Adj, k4Pos, conveSel), [{ nodes: [0, 1, 2, 3] }]);
+    assert.deepEqual(selectSimp(k4Adj, k4Pos, conveSel, random), [{ nodes: [0, 1, 2, 3] }]);
     // conva(simp 2, all simp 3): a simp-2 (triangle) is selected iff ALL of its associated simp-3
     // objects are selected - every triangle here is contained in the one simp-3 [0,1,2,3], which is
     // itself selected (all simp 3), so all 4 triangles qualify.
     const convaSel = parseSelector('(conva simp 2 (all simp 3))');
     assert.deepEqual(
-        selectSimp(k4Adj, k4Pos, convaSel),
+        selectSimp(k4Adj, k4Pos, convaSel, random),
         [{ nodes: [0, 1, 2] }, { nodes: [0, 1, 3] }, { nodes: [0, 2, 3] }, { nodes: [1, 2, 3] }]);
     // Restricting to just ONE selected triangle ([0,1,2]): conva(simp 3, ...) needs ALL of the
     // simp-3's own sub-faces selected, so the one simp-3 [0,1,2,3] (which has 4 sub-faces, only one
     // selected) is excluded; conve(simp 3, ...) only needs AT LEAST ONE, so it's still included.
     const justOneTriangle = { op: 'raw' as const, type: simpType(2), items: { kind: 'simp' as const, n: 2, value: [{ nodes: [0, 1, 2] }] } };
-    assert.deepEqual(selectSimp(k4Adj, k4Pos, { op: 'conva' as const, type: simpType(3), from: simpType(2), a: justOneTriangle }), []);
+    assert.deepEqual(selectSimp(k4Adj, k4Pos, { op: 'conva' as const, type: simpType(3), from: simpType(2), a: justOneTriangle }, random), []);
     assert.deepEqual(
-        selectSimp(k4Adj, k4Pos, { op: 'conve' as const, type: simpType(3), from: simpType(2), a: justOneTriangle }),
+        selectSimp(k4Adj, k4Pos, { op: 'conve' as const, type: simpType(3), from: simpType(2), a: justOneTriangle }, random),
         [{ nodes: [0, 1, 2, 3] }]);
 });
 

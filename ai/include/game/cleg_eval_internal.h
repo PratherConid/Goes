@@ -21,12 +21,18 @@
 
 using UserFuncTable = std::unordered_map<std::string, const FunctionDecl*>;
 
+// Mirrors shared/clegEval.ts's GlobalInfo.
+struct GlobalInfo {
+    UserFuncTable funcs;
+    ClegRandom random;
+};
+
 // Mirrors shared/clegEval.ts's BuiltinFunction.
 using CheckCallFn = std::function<ClegType(const std::string&, const std::vector<ClegType>&)>;
-// `funcs` is only ever needed by a builtin that itself calls a `func`-typed argument back (e.g.
-// sub_hcublat's own `cond`, via call_user_function) - every other builtin's own `call` simply
-// ignores it.
-using CallFn = std::function<ClegValue(const std::vector<ClegValue>&, UserFuncTable&)>;
+// `globals` is only ever needed by a builtin that calls a `func`-typed argument back (e.g.
+// sub_hcublat's own `cond`, via call_user_function) or draws randomness (`globals.random`) - every
+// other builtin's own `call` simply ignores it.
+using CallFn = std::function<ClegValue(const std::vector<ClegValue>&, GlobalInfo&)>;
 struct BuiltinFunction { CheckCallFn check_call; CallFn call; };
 
 // Mirrors shared/clegEval.ts's BUILTIN_FUNCTIONS - built once via a function-local static

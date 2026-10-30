@@ -25,7 +25,7 @@
 // Forward-declared here (real definitions live in the Evaluation section below, their own more
 // natural spot) purely so sub_hcublat's own call lambda - defined further down in THIS section, but
 // needing to call back into a func-typed argument - can use them.
-static ClegValue call_user_function(const FunctionDecl& fn, const std::vector<ClegValue>& args, UserFuncTable& funcs);
+static ClegValue call_user_function(const FunctionDecl& fn, const std::vector<ClegValue>& args, GlobalInfo& globals);
 static std::vector<ClegValue> fill_holes(
     const std::vector<std::optional<ClegValue>>& bound_args, const std::vector<ClegValue>& supplied_args);
 
@@ -332,14 +332,14 @@ static std::vector<int> tuple_of_full_index(const FullProductIndex& fpi, long lo
 
 // Mirrors shared/clegEval.ts's restrictBoardBySelector().
 struct RestrictResult { BoardConfig bc; std::vector<int> survivors; };
-static RestrictResult restrict_board_by_selector(const BoardConfig& board, const Selector& sel) {
+static RestrictResult restrict_board_by_selector(const BoardConfig& board, const Selector& sel, ClegRandom& random) {
     if (sel.type == SelectorType{SelectorKind::Node}) {
-        auto kept = select_node(board.adj, board.embed, sel);
+        auto kept = select_node(board.adj, board.embed, sel, random);
         std::vector<int> survivors(kept.begin(), kept.end()); // std::set already ascending
         return {node_induced_subgraph(board, kept), std::move(survivors)};
     }
     if (sel.type == SelectorType{SelectorKind::Edge}) {
-        auto edges = select_edge(board.adj, board.embed, sel);
+        auto edges = select_edge(board.adj, board.embed, sel, random);
         std::set<int> kept;
         for (auto& e : edges) { kept.insert(e.n1); kept.insert(e.n2); }
         std::vector<int> survivors(kept.begin(), kept.end());
@@ -357,10 +357,10 @@ static RestrictResult restrict_board_by_selector(const BoardConfig& board, const
 // edge_sel's own edge-induced subgraph, plus whichever extra nodes node_sel selects (see
 // node_edge_induced_subgraph). Mirrors shared/clegEval.ts's restrictBoardByNodeAndEdgeSelector().
 static RestrictResult restrict_board_by_node_and_edge_selector(
-    const BoardConfig& board, const Selector& node_sel, const Selector& edge_sel)
+    const BoardConfig& board, const Selector& node_sel, const Selector& edge_sel, ClegRandom& random)
 {
-    auto extra_nodes = select_node(board.adj, board.embed, node_sel);
-    auto edges = select_edge(board.adj, board.embed, edge_sel);
+    auto extra_nodes = select_node(board.adj, board.embed, node_sel, random);
+    auto edges = select_edge(board.adj, board.embed, edge_sel, random);
     std::set<int> kept = extra_nodes;
     for (auto& e : edges) { kept.insert(e.n1); kept.insert(e.n2); }
     std::vector<int> survivors(kept.begin(), kept.end());
@@ -474,24 +474,24 @@ static BuiltResult combine_restricted_factor(
 // adjacency - this is what lets an edge a selector deliberately dropped (PSelOp::BaseNE's own
 // edge_sel, or an edge-typed PSelOp::Base) stay dropped once combined with another selector.
 static BuiltResult eval_prod_selector(
-    const std::vector<BoardConfig>& boards, const FullProductIndex& fpi, const ProdSelector& psel)
+    const std::vector<BoardConfig>& boards, const FullProductIndex& fpi, const ProdSelector& psel, ClegRandom& random)
 {
     switch (psel.op) {
         case PSelOp::All:
             return full_product_result(boards, fpi);
         case PSelOp::Base: {
-            auto restricted = restrict_board_by_selector(boards[psel.number], *psel.sel);
+            auto restricted = restrict_board_by_selector(boards[psel.number], *psel.sel, random);
             return combine_restricted_factor(boards, fpi, psel.number, restricted.bc, restricted.survivors);
         }
         case PSelOp::BaseNE: {
-            auto restricted = restrict_board_by_node_and_edge_selector(boards[psel.number], *psel.node_sel, *psel.edge_sel);
+            auto restricted = restrict_board_by_node_and_edge_selector(boards[psel.number], *psel.node_sel, *psel.edge_sel, random);
             return combine_restricted_factor(boards, fpi, psel.number, restricted.bc, restricted.survivors);
         }
         case PSelOp::Union: {
             std::set<long long> nodes;
             std::set<std::string> edges;
             for (auto& item : psel.items) {
-                auto r = eval_prod_selector(boards, fpi, item);
+                auto r = eval_prod_selector(boards, fpi, item, random);
                 nodes.insert(r.orig_index.begin(), r.orig_index.end());
                 auto item_edges = original_edge_keys_of(r.bc, r.orig_index);
                 edges.insert(item_edges.begin(), item_edges.end());
@@ -500,11 +500,11 @@ static BuiltResult eval_prod_selector(
         }
         case PSelOp::Inter: {
             if (psel.items.empty()) return full_product_result(boards, fpi);
-            auto first = eval_prod_selector(boards, fpi, psel.items[0]);
+            auto first = eval_prod_selector(boards, fpi, psel.items[0], random);
             std::set<long long> nodes(first.orig_index.begin(), first.orig_index.end());
             std::set<std::string> edges = original_edge_keys_of(first.bc, first.orig_index);
             for (size_t i = 1; i < psel.items.size(); i++) {
-                auto next = eval_prod_selector(boards, fpi, psel.items[i]);
+                auto next = eval_prod_selector(boards, fpi, psel.items[i], random);
                 std::set<long long> next_nodes(next.orig_index.begin(), next.orig_index.end());
                 std::set<long long> kept_nodes;
                 for (long long idx : nodes) if (next_nodes.count(idx)) kept_nodes.insert(idx);
@@ -517,8 +517,8 @@ static BuiltResult eval_prod_selector(
             return build_from_nodes_and_edges(boards, fpi, nodes, edges);
         }
         case PSelOp::Diff: {
-            auto ra = eval_prod_selector(boards, fpi, *psel.a);
-            auto rb = eval_prod_selector(boards, fpi, *psel.b);
+            auto ra = eval_prod_selector(boards, fpi, *psel.a, random);
+            auto rb = eval_prod_selector(boards, fpi, *psel.b, random);
             std::set<long long> b_nodes(rb.orig_index.begin(), rb.orig_index.end());
             std::set<long long> nodes;
             for (long long idx : ra.orig_index) if (!b_nodes.count(idx)) nodes.insert(idx);
@@ -579,7 +579,7 @@ static void parse_hcublat_bounds(const ClegValue& bounds_val, std::vector<int>& 
 // embedding-constrained to be non-negative.
 static ClegValue build_sub_hcublat(
     const ClegValue& bounds_val, const ClegValue& cond_val,
-    const std::function<bool(const std::vector<int>&, const std::vector<int>&)>& econd, UserFuncTable& funcs
+    const std::function<bool(const std::vector<int>&, const std::vector<int>&)>& econd, GlobalInfo& globals
 ) {
     std::vector<int> lo, dims;
     parse_hcublat_bounds(bounds_val, lo, dims);
@@ -610,7 +610,7 @@ static ClegValue build_sub_hcublat(
         ClegValue point_arg; point_arg.kind = CTKind::Array; point_arg.elem = NUMBER_TYPE;
         for (int c : point) point_arg.arr_v.push_back(make_number(c));
         bool keep = call_user_function(
-            *funcs.at(cond_val.func_name), fill_holes(cond_val.func_bound_args, {point_arg}), funcs).boolean;
+            *globals.funcs.at(cond_val.func_name), fill_holes(cond_val.func_bound_args, {point_arg}), globals).boolean;
         if (!keep) continue;
         board_idx_of[n] = static_cast<int>(surviving_local.size());
         surviving_local.push_back(local);
@@ -674,7 +674,7 @@ static std::string hcublat_point_key(const std::vector<int>& point) {
 // with) is the real, possibly-negative absolute coordinate.
 static ClegValue build_sub_hcublat_custom_adj(
     const ClegValue& bounds_val, const ClegValue& cond_val,
-    const std::function<std::vector<std::vector<int>>(const std::vector<int>&)>& adj_fn, UserFuncTable& funcs
+    const std::function<std::vector<std::vector<int>>(const std::vector<int>&)>& adj_fn, GlobalInfo& globals
 ) {
     std::vector<int> lo, dims;
     parse_hcublat_bounds(bounds_val, lo, dims);
@@ -698,7 +698,7 @@ static ClegValue build_sub_hcublat_custom_adj(
         ClegValue point_arg; point_arg.kind = CTKind::Array; point_arg.elem = NUMBER_TYPE;
         for (int c : point) point_arg.arr_v.push_back(make_number(c));
         bool keep = call_user_function(
-            *funcs.at(cond_val.func_name), fill_holes(cond_val.func_bound_args, {point_arg}), funcs).boolean;
+            *globals.funcs.at(cond_val.func_name), fill_holes(cond_val.func_bound_args, {point_arg}), globals).boolean;
         if (!keep) continue;
         board_idx_of_point[hcublat_point_key(point)] = static_cast<int>(abs_pos.size());
         std::vector<unsigned> p(k);
@@ -720,6 +720,25 @@ static ClegValue build_sub_hcublat_custom_adj(
     return make_egr(BoardConfig{N, std::move(adj), static_cast<unsigned>(k), std::move(pos)});
 }
 
+// Mirrors shared/clegEval.ts's compareClegSetElems(), as a std::sort-style "less" predicate. Strings
+// compare by UTF-8 byte rather than UTF-16 code unit - the same order except between U+E000-U+FFFF
+// and astral characters.
+static bool cleg_set_elem_less(const ClegValue& a, const ClegValue& b) {
+    switch (a.kind) {
+        case CTKind::Number: return a.number < b.number;
+        case CTKind::String: return a.str < b.str;
+        case CTKind::Bool: return !a.boolean && b.boolean;
+        case CTKind::Edge:
+            return std::vector<int>{a.edge_v.n1, a.edge_v.n2} < std::vector<int>{b.edge_v.n1, b.edge_v.n2};
+        case CTKind::Simp: return a.simp_v.nodes < b.simp_v.nodes;
+        case CTKind::Quad:
+            return std::vector<int>{a.quad_v.n1, a.quad_v.n2, a.quad_v.n3, a.quad_v.n4} <
+                   std::vector<int>{b.quad_v.n1, b.quad_v.n2, b.quad_v.n3, b.quad_v.n4};
+        default:
+            throw std::runtime_error("cleg: '" + type_to_string(cleg_value_type(a)) + "' cannot be a set element");
+    }
+}
+
 // Mirrors shared/clegEval.ts's BUILTIN_FUNCTIONS - built once via a function-local static (thread-safety
 // is a non-issue for this single-threaded CLI tooling), one lambda per row instead of TS's top-level
 // `BUILTIN_FUNCTIONS['x'] = {...}` assignments.
@@ -737,7 +756,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             std::vector<BoardArgKind> arg_kinds = entry.arg_kinds;
             m[cleg_name] = BuiltinFunction{
                 fixed_signature(params, EGR_TYPE),
-                [old_kind, arg_kinds](const std::vector<ClegValue>& args, UserFuncTable&) {
+                [old_kind, arg_kinds](const std::vector<ClegValue>& args, GlobalInfo&) {
                     std::vector<BoardArgEntry> board_args;
                     for (size_t i = 0; i < arg_kinds.size(); i++)
                         board_args.push_back(value_to_board_arg_entry(arg_kinds[i], args[i]));
@@ -754,7 +773,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                     throw std::runtime_error("cleg: '" + callee + "' argument 1: expected an array or set, got " + type_to_string(arg_types[0]));
                 return NUMBER_TYPE;
             },
-            [](const std::vector<ClegValue>& args, UserFuncTable&) { return make_number(static_cast<double>(args[0].arr_v.size())); },
+            [](const std::vector<ClegValue>& args, GlobalInfo&) { return make_number(static_cast<double>(args[0].arr_v.size())); },
         };
 
         // `has(x, e)`: whether `x` (a `T[]` or `T{}`) contains `e` (a `T`), as a `bool` - like `len`,
@@ -782,7 +801,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                         "argument 1), got " + type_to_string(arg_types[1]));
                 return ClegType{CTKind::Bool, nullptr};
             },
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 std::string key = cleg_set_key(args[1]);
                 for (auto& v : args[0].arr_v) if (cleg_set_key(v) == key) return make_bool(true);
                 return make_bool(false);
@@ -806,7 +825,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                         "equality - only number/string/bool/edge/tri/quad elements are supported");
                 return ClegType{CTKind::Set, std::make_shared<ClegType>(elem)};
             },
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 return make_cleg_set(args[0].elem, args[0].arr_v);
             },
         };
@@ -822,23 +841,23 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["randRmN"] = BuiltinFunction{
             rand_rm_check_call,
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo& globals) {
                 double count = args[1].number;
                 if (count != std::floor(count) || count < 0)
                     throw std::runtime_error("cleg: 'randRmN' count must be a nonnegative integer, got " + format_number_display(count));
-                auto kept = randomly_remove(args[0].arr_v, static_cast<int>(count));
+                auto kept = randomly_remove(args[0].arr_v, static_cast<int>(count), cleg_set_elem_less, globals.random);
                 ClegValue v; v.kind = CTKind::Set; v.elem = args[0].elem; v.arr_v = std::move(kept);
                 return v;
             },
         };
         m["randRmP"] = BuiltinFunction{
             rand_rm_check_call,
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo& globals) {
                 double frac = args[1].number;
                 if (!std::isfinite(frac) || frac < 0)
                     throw std::runtime_error("cleg: 'randRmP' portion must be a nonnegative number, got " + format_number_display(frac));
                 int remove_count = static_cast<int>(std::floor(frac * static_cast<double>(args[0].arr_v.size())));
-                auto kept = randomly_remove(args[0].arr_v, remove_count);
+                auto kept = randomly_remove(args[0].arr_v, remove_count, cleg_set_elem_less, globals.random);
                 ClegValue v; v.kind = CTKind::Set; v.elem = args[0].elem; v.arr_v = std::move(kept);
                 return v;
             },
@@ -850,23 +869,23 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         // shared/clegEval.ts's BUILTIN_FUNCTIONS['randTakeN']/['randTakeP'].
         m["randTakeN"] = BuiltinFunction{
             rand_rm_check_call,
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo& globals) {
                 double count = args[1].number;
                 if (count != std::floor(count) || count < 0)
                     throw std::runtime_error("cleg: 'randTakeN' count must be a nonnegative integer, got " + format_number_display(count));
-                auto kept = randomly_take(args[0].arr_v, static_cast<int>(count));
+                auto kept = randomly_take(args[0].arr_v, static_cast<int>(count), cleg_set_elem_less, globals.random);
                 ClegValue v; v.kind = CTKind::Set; v.elem = args[0].elem; v.arr_v = std::move(kept);
                 return v;
             },
         };
         m["randTakeP"] = BuiltinFunction{
             rand_rm_check_call,
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo& globals) {
                 double frac = args[1].number;
                 if (!std::isfinite(frac) || frac < 0)
                     throw std::runtime_error("cleg: 'randTakeP' portion must be a nonnegative number, got " + format_number_display(frac));
                 int take_count = static_cast<int>(std::floor(frac * static_cast<double>(args[0].arr_v.size())));
-                auto kept = randomly_take(args[0].arr_v, take_count);
+                auto kept = randomly_take(args[0].arr_v, take_count, cleg_set_elem_less, globals.random);
                 ClegValue v; v.kind = CTKind::Set; v.elem = args[0].elem; v.arr_v = std::move(kept);
                 return v;
             },
@@ -878,11 +897,11 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         // check.
         m["abs"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE}, NUMBER_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) { return make_number(std::abs(args[0].number)); },
+            [](const std::vector<ClegValue>& args, GlobalInfo&) { return make_number(std::abs(args[0].number)); },
         };
         m["sqrt"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE}, NUMBER_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 double v = args[0].number;
                 if (v < 0) throw std::runtime_error("cleg: 'sqrt' argument must be nonnegative, got " + format_number_display(v));
                 return make_number(std::sqrt(v));
@@ -891,7 +910,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         // `pow(a, b)`: a^b. Mirrors shared/clegEval.ts's BUILTIN_FUNCTIONS['pow'].
         m["pow"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE, NUMBER_TYPE}, NUMBER_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) { return make_number(std::pow(args[0].number, args[1].number)); },
+            [](const std::vector<ClegValue>& args, GlobalInfo&) { return make_number(std::pow(args[0].number, args[1].number)); },
         };
 
         // `sin`/`cos`/`tan`/`cot`/`sec`/`csc`: fixed-signature `number -> number` (radians). Mirrors
@@ -901,7 +920,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         auto trig_builtin = [](double (*f)(double)) {
             return BuiltinFunction{
                 fixed_signature({NUMBER_TYPE}, NUMBER_TYPE),
-                [f](const std::vector<ClegValue>& args, UserFuncTable&) { return make_number(f(args[0].number)); },
+                [f](const std::vector<ClegValue>& args, GlobalInfo&) { return make_number(f(args[0].number)); },
             };
         };
         m["sin"] = trig_builtin([](double x) { return std::sin(x); });
@@ -937,7 +956,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         auto make_min_max = [min_max_check_call](std::string name, double (*reduce)(double, double)) {
             return BuiltinFunction{
                 min_max_check_call,
-                [name, reduce](const std::vector<ClegValue>& args, UserFuncTable&) {
+                [name, reduce](const std::vector<ClegValue>& args, GlobalInfo&) {
                     std::vector<double> nums;
                     if (args.size() == 1 && args[0].kind == CTKind::Array) {
                         if (args[0].arr_v.empty())
@@ -971,7 +990,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                             type_to_string(arg_types[i]));
                 return ClegType{CTKind::Array, std::make_shared<ClegType>(NUMBER_TYPE)};
             },
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 std::vector<double> nums;
                 for (auto& a : args) nums.push_back(a.number);
                 for (size_t i = 0; i < nums.size(); i++)
@@ -993,7 +1012,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
 
         m["mkEdge"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE, NUMBER_TYPE}, EDGE_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 return make_edge_v(make_board_edge(static_cast<int>(args[0].number), static_cast<int>(args[1].number)));
             },
         };
@@ -1001,7 +1020,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         // own doc comment on both.
         m["mkTri"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE, NUMBER_TYPE, NUMBER_TYPE}, SIMP_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 return make_simp_v(make_board_simplex(
                     {static_cast<int>(args[0].number), static_cast<int>(args[1].number), static_cast<int>(args[2].number)}));
             },
@@ -1023,7 +1042,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                             type_to_string(arg_types[i]));
                 return SIMP_TYPE;
             },
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 std::vector<int> nodes;
                 for (auto& a : args) nodes.push_back(static_cast<int>(a.number));
                 return make_simp_v(make_board_simplex(std::move(nodes)));
@@ -1031,7 +1050,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["mkQuad"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE, NUMBER_TYPE, NUMBER_TYPE, NUMBER_TYPE}, QUAD_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 return make_quad_v(make_board_quad(
                     static_cast<int>(args[0].number), static_cast<int>(args[1].number),
                     static_cast<int>(args[2].number), static_cast<int>(args[3].number)));
@@ -1040,7 +1059,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
 
         m["prod"] = BuiltinFunction{
             fixed_signature({EGR_TYPE, EGR_TYPE}, EGR_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) { return make_egr(product(*args[0].egr_v, *args[1].egr_v)); },
+            [](const std::vector<ClegValue>& args, GlobalInfo&) { return make_egr(product(*args[0].egr_v, *args[1].egr_v)); },
         };
 
         m["mkSel"] = BuiltinFunction{
@@ -1051,7 +1070,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                     throw std::runtime_error("cleg: '" + callee + "' argument 1: expected string or set, got " + type_to_string(arg_types[0]));
                 return ClegType{CTKind::Sel, nullptr};
             },
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 Selector sel = resolve_any_kind_selector_arg("mkSel", args[0]);
                 ClegValue v; v.kind = CTKind::Sel; v.sel_type = sel.type; v.sel_v = std::move(sel);
                 return v;
@@ -1059,31 +1078,31 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
 
         m["rectify"] = BuiltinFunction{
-            fixed_signature({}, MOD_TYPE), [](const std::vector<ClegValue>&, UserFuncTable&) { return make_mod(BoardModifier{ModifierKind::Rectify}); },
+            fixed_signature({}, MOD_TYPE), [](const std::vector<ClegValue>&, GlobalInfo&) { return make_mod(BoardModifier{ModifierKind::Rectify}); },
         };
         m["truncate"] = BuiltinFunction{
-            fixed_signature({}, MOD_TYPE), [](const std::vector<ClegValue>&, UserFuncTable&) { return make_mod(BoardModifier{ModifierKind::Truncate}); },
+            fixed_signature({}, MOD_TYPE), [](const std::vector<ClegValue>&, GlobalInfo&) { return make_mod(BoardModifier{ModifierKind::Truncate}); },
         };
         m["globalCentralize"] = BuiltinFunction{
-            fixed_signature({}, MOD_TYPE), [](const std::vector<ClegValue>&, UserFuncTable&) { return make_mod(BoardModifier{ModifierKind::GlobalCentralize}); },
+            fixed_signature({}, MOD_TYPE), [](const std::vector<ClegValue>&, GlobalInfo&) { return make_mod(BoardModifier{ModifierKind::GlobalCentralize}); },
         };
         m["edgeSplit"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE}, MOD_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 BoardModifier bm{ModifierKind::EdgeSplit}; bm.split_n = static_cast<int>(args[0].number);
                 return make_mod(bm);
             },
         };
         m["mergeClose"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE}, MOD_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 BoardModifier bm{ModifierKind::MergeClose}; bm.dist = args[0].number;
                 return make_mod(bm);
             },
         };
         m["scale"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE}, MOD_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 BoardModifier bm{ModifierKind::Scale}; bm.dist = args[0].number;
                 return make_mod(bm);
             },
@@ -1098,7 +1117,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["nis"] = BuiltinFunction{
             induced_subgraph_mod_check_call,
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 BoardModifier bm{ModifierKind::NodeInducedSubgraph};
                 bm.sel = resolve_selector_arg("nis", args[0], SelectorType{SelectorKind::Node}, parse_node_selector);
                 return make_mod(bm);
@@ -1106,7 +1125,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["eis"] = BuiltinFunction{
             induced_subgraph_mod_check_call,
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 BoardModifier bm{ModifierKind::EdgeInducedSubgraph};
                 bm.sel = resolve_selector_arg("eis", args[0], SelectorType{SelectorKind::Edge}, parse_edge_selector);
                 return make_mod(bm);
@@ -1126,10 +1145,10 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["selectNode"] = BuiltinFunction{
             select_set_check_call(NUMBER_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo& globals) {
                 Selector sel = resolve_selector_arg("selectNode", args[0], SelectorType{SelectorKind::Node}, parse_node_selector);
                 const BoardConfig& bc = *args[1].egr_v;
-                auto nodes = select_node(bc.adj, bc.embed, sel);
+                auto nodes = select_node(bc.adj, bc.embed, sel, globals.random);
                 std::vector<ClegValue> values;
                 for (int n : nodes) values.push_back(make_number(n));
                 return make_cleg_set(NUMBER_TYPE, std::move(values));
@@ -1137,10 +1156,10 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["selectEdge"] = BuiltinFunction{
             select_set_check_call(EDGE_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo& globals) {
                 Selector sel = resolve_selector_arg("selectEdge", args[0], SelectorType{SelectorKind::Edge}, parse_edge_selector);
                 const BoardConfig& bc = *args[1].egr_v;
-                auto edges = select_edge(bc.adj, bc.embed, sel);
+                auto edges = select_edge(bc.adj, bc.embed, sel, globals.random);
                 std::vector<ClegValue> values;
                 for (auto& e : edges) values.push_back(make_edge_v(e));
                 return make_cleg_set(EDGE_TYPE, std::move(values));
@@ -1148,10 +1167,10 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["selectTriangle"] = BuiltinFunction{
             select_set_check_call(SIMP_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo& globals) {
                 Selector sel = resolve_selector_arg("selectTriangle", args[0], simp_type(2), parse_triangle_selector);
                 const BoardConfig& bc = *args[1].egr_v;
-                auto tris = select_triangle(bc.adj, bc.embed, sel);
+                auto tris = select_triangle(bc.adj, bc.embed, sel, globals.random);
                 std::vector<ClegValue> values;
                 for (auto& t : tris) values.push_back(make_simp_v(t));
                 return make_cleg_set(SIMP_TYPE, std::move(values));
@@ -1164,13 +1183,13 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         // shared/clegEval.ts's BUILTIN_FUNCTIONS['selectSimp'].
         m["selectSimp"] = BuiltinFunction{
             select_set_check_call(SIMP_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo& globals) {
                 Selector sel = resolve_any_kind_selector_arg("selectSimp", args[0]);
                 if (simp_n(sel.type) < 0)
                     throw std::runtime_error(
                         "cleg: 'selectSimp' expects a simp selector, got a '" + selector_type_word(sel.type) + "' selector");
                 const BoardConfig& bc = *args[1].egr_v;
-                auto simps = select_simp(bc.adj, bc.embed, sel);
+                auto simps = select_simp(bc.adj, bc.embed, sel, globals.random);
                 std::vector<ClegValue> values;
                 for (auto& t : simps) values.push_back(make_simp_v(t));
                 return make_cleg_set(SIMP_TYPE, std::move(values));
@@ -1178,10 +1197,10 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["selectQuad"] = BuiltinFunction{
             select_set_check_call(QUAD_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo& globals) {
                 Selector sel = resolve_selector_arg("selectQuad", args[0], SelectorType{SelectorKind::Quad}, parse_quad_selector);
                 const BoardConfig& bc = *args[1].egr_v;
-                auto quads = select_quad(bc.adj, bc.embed, sel);
+                auto quads = select_quad(bc.adj, bc.embed, sel, globals.random);
                 std::vector<ClegValue> values;
                 for (auto& q : quads) values.push_back(make_quad_v(q));
                 return make_cleg_set(QUAD_TYPE, std::move(values));
@@ -1199,7 +1218,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["triangleForm"] = BuiltinFunction{
             form_mod_check_call,
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 BoardModifier bm{ModifierKind::TriangleForm};
                 bm.split_n = static_cast<int>(args[0].number);
                 if (args.size() == 2) bm.form_sel = resolve_selector_arg("triangleForm", args[1], simp_type(2), parse_triangle_selector);
@@ -1208,7 +1227,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["quadForm"] = BuiltinFunction{
             form_mod_check_call,
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 BoardModifier bm{ModifierKind::QuadForm};
                 bm.split_n = static_cast<int>(args[0].number);
                 if (args.size() == 2) bm.form_sel = resolve_selector_arg("quadForm", args[1], SelectorType{SelectorKind::Quad}, parse_quad_selector);
@@ -1217,7 +1236,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["quadDiagForm"] = BuiltinFunction{
             form_mod_check_call,
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 BoardModifier bm{ModifierKind::QuadDiagForm};
                 bm.split_n = static_cast<int>(args[0].number);
                 if (args.size() == 2) bm.form_sel = resolve_selector_arg("quadDiagForm", args[1], SelectorType{SelectorKind::Quad}, parse_quad_selector);
@@ -1226,7 +1245,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["quadKnightForm"] = BuiltinFunction{
             form_mod_check_call,
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 BoardModifier bm{ModifierKind::QuadKnightForm};
                 bm.split_n = static_cast<int>(args[0].number);
                 if (args.size() == 2) bm.form_sel = resolve_selector_arg("quadKnightForm", args[1], SelectorType{SelectorKind::Quad}, parse_quad_selector);
@@ -1235,7 +1254,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["quadBishopForm"] = BuiltinFunction{
             form_mod_check_call,
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 BoardModifier bm{ModifierKind::QuadBishopForm};
                 bm.split_n = static_cast<int>(args[0].number);
                 if (args.size() == 2) bm.form_sel = resolve_selector_arg("quadBishopForm", args[1], SelectorType{SelectorKind::Quad}, parse_quad_selector);
@@ -1277,7 +1296,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["mkFormSel"] = BuiltinFunction{
             mk_form_sel_check_call,
-            [is_form_sel_type_string, form_sel_kind_of](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [is_form_sel_type_string, form_sel_kind_of](const std::vector<ClegValue>& args, GlobalInfo&) {
                 const std::string& type_str = args[0].str;
                 if (!is_form_sel_type_string(type_str))
                     throw std::runtime_error("cleg: 'mkFormSel' argument 1: unknown form selector type '" + type_str + "'");
@@ -1299,7 +1318,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         // shared/clegEval.ts's BUILTIN_FUNCTIONS['form'].
         m["form"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE, ClegType{CTKind::Array, std::make_shared<ClegType>(FORMSEL_TYPE)}}, MOD_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 BoardModifier bm{ModifierKind::Form};
                 bm.split_n = static_cast<int>(args[0].number);
                 for (auto& v : args[1].arr_v) bm.form_sels.push_back(v.form_sel_v);
@@ -1346,7 +1365,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["mkLRS"] = BuiltinFunction{
             mk_lrs_check_call,
-            [is_lrs_type_string, quad_lrs_kind_of, simp_lrs_kind_of](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [is_lrs_type_string, quad_lrs_kind_of, simp_lrs_kind_of](const std::vector<ClegValue>& args, GlobalInfo&) {
                 const std::string& type_str = args[0].str;
                 if (!is_lrs_type_string(type_str))
                     throw std::runtime_error("cleg: 'mkLRS' argument 1: unknown lrs type '" + type_str + "'");
@@ -1379,7 +1398,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         // analogous precedent than a variadic argument list would be.
         m["localReplace"] = BuiltinFunction{
             fixed_signature({ClegType{CTKind::Array, std::make_shared<ClegType>(LRS_TYPE)}}, MOD_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 BoardModifier bm{ModifierKind::LocalReplace};
                 for (auto& v : args[0].arr_v) bm.selectors.push_back(v.lrs_v);
                 return make_mod(bm);
@@ -1409,7 +1428,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["quadCentralize"] = BuiltinFunction{
             local_replace_mod_check_call,
-            [one_shape_mod](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [one_shape_mod](const std::vector<ClegValue>& args, GlobalInfo&) {
                 std::optional<Selector> sel;
                 if (args.size() == 1) sel = resolve_selector_arg("quadCentralize", args[0], SelectorType{SelectorKind::Quad}, parse_quad_selector);
                 return one_shape_mod(LocalReplaceKind::QuadCentralize, sel);
@@ -1417,7 +1436,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["quadCentering"] = BuiltinFunction{
             local_replace_mod_check_call,
-            [one_shape_mod](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [one_shape_mod](const std::vector<ClegValue>& args, GlobalInfo&) {
                 std::optional<Selector> sel;
                 if (args.size() == 1) sel = resolve_selector_arg("quadCentering", args[0], SelectorType{SelectorKind::Quad}, parse_quad_selector);
                 return one_shape_mod(LocalReplaceKind::QuadCentering, sel);
@@ -1425,7 +1444,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["quadOctarize"] = BuiltinFunction{
             local_replace_mod_check_call,
-            [one_shape_mod](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [one_shape_mod](const std::vector<ClegValue>& args, GlobalInfo&) {
                 std::optional<Selector> sel;
                 if (args.size() == 1) sel = resolve_selector_arg("quadOctarize", args[0], SelectorType{SelectorKind::Quad}, parse_quad_selector);
                 return one_shape_mod(LocalReplaceKind::QuadOctarize, sel);
@@ -1448,7 +1467,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["simpCentralize"] = BuiltinFunction{
             simp_centralize_mod_check_call,
-            [one_shape_simp_mod](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [one_shape_simp_mod](const std::vector<ClegValue>& args, GlobalInfo&) {
                 int n = static_cast<int>(args[0].number);
                 std::optional<Selector> sel;
                 if (args.size() == 2)
@@ -1459,7 +1478,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["simpCentering"] = BuiltinFunction{
             simp_centralize_mod_check_call,
-            [one_shape_simp_mod](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [one_shape_simp_mod](const std::vector<ClegValue>& args, GlobalInfo&) {
                 int n = static_cast<int>(args[0].number);
                 std::optional<Selector> sel;
                 if (args.size() == 2)
@@ -1470,7 +1489,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["triCentralize"] = BuiltinFunction{
             local_replace_mod_check_call,
-            [one_shape_simp_mod](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [one_shape_simp_mod](const std::vector<ClegValue>& args, GlobalInfo&) {
                 std::optional<Selector> sel;
                 if (args.size() == 1) sel = resolve_selector_arg("triCentralize", args[0], simp_type(2), parse_triangle_selector);
                 return one_shape_simp_mod(LocalReplaceKind::SimpCentralize, 2, sel);
@@ -1478,7 +1497,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["triCentering"] = BuiltinFunction{
             local_replace_mod_check_call,
-            [one_shape_simp_mod](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [one_shape_simp_mod](const std::vector<ClegValue>& args, GlobalInfo&) {
                 std::optional<Selector> sel;
                 if (args.size() == 1) sel = resolve_selector_arg("triCentering", args[0], simp_type(2), parse_triangle_selector);
                 return one_shape_simp_mod(LocalReplaceKind::SimpCentering, 2, sel);
@@ -1487,15 +1506,15 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
 
         m["modify"] = BuiltinFunction{
             fixed_signature({ClegType{CTKind::Array, std::make_shared<ClegType>(MOD_TYPE)}, EGR_TYPE}, EGR_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo& globals) {
                 std::vector<BoardModifier> mods;
                 for (auto& v : args[0].arr_v) mods.push_back(v.mod_v);
-                return make_egr(apply_modifiers(*args[1].egr_v, mods));
+                return make_egr(apply_modifiers(*args[1].egr_v, mods, globals.random));
             },
         };
 
         m["psAll"] = BuiltinFunction{
-            fixed_signature({}, PSEL_TYPE), [](const std::vector<ClegValue>&, UserFuncTable&) { return make_psel(ProdSelector{PSelOp::All}); },
+            fixed_signature({}, PSEL_TYPE), [](const std::vector<ClegValue>&, GlobalInfo&) { return make_psel(ProdSelector{PSelOp::All}); },
         };
         m["psBase"] = BuiltinFunction{
             [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
@@ -1507,7 +1526,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                     throw std::runtime_error("cleg: '" + callee + "' argument 2: expected sel, string, or set, got " + type_to_string(arg_types[1]));
                 return PSEL_TYPE;
             },
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 double number = args[0].number;
                 if (number != std::floor(number) || number < 0)
                     throw std::runtime_error("cleg: psBase: number must be a nonnegative integer, got " + format_number_display(number));
@@ -1534,7 +1553,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                     throw std::runtime_error("cleg: '" + callee + "' argument 3: expected sel, string, or set, got " + type_to_string(arg_types[2]));
                 return PSEL_TYPE;
             },
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 double number = args[0].number;
                 if (number != std::floor(number) || number < 0)
                     throw std::runtime_error("cleg: psBaseNE: number must be a nonnegative integer, got " + format_number_display(number));
@@ -1548,7 +1567,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["psUnion"] = BuiltinFunction{
             fixed_signature({ClegType{CTKind::Array, std::make_shared<ClegType>(PSEL_TYPE)}}, PSEL_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 ProdSelector ps; ps.op = PSelOp::Union;
                 for (auto& v : args[0].arr_v) ps.items.push_back(v.psel_v);
                 return make_psel(ps);
@@ -1556,7 +1575,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["psInter"] = BuiltinFunction{
             fixed_signature({ClegType{CTKind::Array, std::make_shared<ClegType>(PSEL_TYPE)}}, PSEL_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 ProdSelector ps; ps.op = PSelOp::Inter;
                 for (auto& v : args[0].arr_v) ps.items.push_back(v.psel_v);
                 return make_psel(ps);
@@ -1564,7 +1583,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["psDiff"] = BuiltinFunction{
             fixed_signature({PSEL_TYPE, PSEL_TYPE}, PSEL_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 ProdSelector ps; ps.op = PSelOp::Diff;
                 ps.a = std::make_shared<ProdSelector>(args[0].psel_v);
                 ps.b = std::make_shared<ProdSelector>(args[1].psel_v);
@@ -1573,12 +1592,12 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         };
         m["multiProd"] = BuiltinFunction{
             fixed_signature({ClegType{CTKind::Array, std::make_shared<ClegType>(EGR_TYPE)}, PSEL_TYPE}, EGR_TYPE),
-            [](const std::vector<ClegValue>& args, UserFuncTable&) {
+            [](const std::vector<ClegValue>& args, GlobalInfo& globals) {
                 std::vector<BoardConfig> boards;
                 for (auto& v : args[0].arr_v) boards.push_back(*v.egr_v);
                 if (boards.empty()) throw std::runtime_error("cleg: multiProd: boards must be non-empty");
                 FullProductIndex fpi = make_full_product_index(boards);
-                auto result = eval_prod_selector(boards, fpi, args[1].psel_v);
+                auto result = eval_prod_selector(boards, fpi, args[1].psel_v, globals.random);
                 return make_egr(std::move(result.bc));
             },
         };
@@ -1609,31 +1628,31 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                         type_to_string(HCUBLAT_ADJFN_TYPE) + ", got " + type_to_string(arg_types[2]));
                 return EGR_TYPE;
             },
-            [](const std::vector<ClegValue>& args, UserFuncTable& funcs) {
+            [](const std::vector<ClegValue>& args, GlobalInfo& globals) {
                 if (args.size() == 2) {
                     auto econd = [](const std::vector<int>&, const std::vector<int>&) { return true; };
-                    return build_sub_hcublat(args[0], args[1], econd, funcs);
+                    return build_sub_hcublat(args[0], args[1], econd, globals);
                 }
                 if (args[2].func_params.size() == 2) {
                     std::function<bool(const std::vector<int>&, const std::vector<int>&)> econd =
-                        [&args, &funcs](const std::vector<int>& a, const std::vector<int>& b) {
+                        [&args, &globals](const std::vector<int>& a, const std::vector<int>& b) {
                             const ClegValue& econd_val = args[2];
                             ClegValue a_arg; a_arg.kind = CTKind::Array; a_arg.elem = NUMBER_TYPE;
                             for (int c : a) a_arg.arr_v.push_back(make_number(c));
                             ClegValue b_arg; b_arg.kind = CTKind::Array; b_arg.elem = NUMBER_TYPE;
                             for (int c : b) b_arg.arr_v.push_back(make_number(c));
                             return call_user_function(
-                                *funcs.at(econd_val.func_name), fill_holes(econd_val.func_bound_args, {a_arg, b_arg}), funcs).boolean;
+                                *globals.funcs.at(econd_val.func_name), fill_holes(econd_val.func_bound_args, {a_arg, b_arg}), globals).boolean;
                         };
-                    return build_sub_hcublat(args[0], args[1], econd, funcs);
+                    return build_sub_hcublat(args[0], args[1], econd, globals);
                 }
                 std::function<std::vector<std::vector<int>>(const std::vector<int>&)> adj_fn =
-                    [&args, &funcs](const std::vector<int>& point) {
+                    [&args, &globals](const std::vector<int>& point) {
                         const ClegValue& adj_fn_val = args[2];
                         ClegValue point_arg; point_arg.kind = CTKind::Array; point_arg.elem = NUMBER_TYPE;
                         for (int c : point) point_arg.arr_v.push_back(make_number(c));
                         ClegValue result = call_user_function(
-                            *funcs.at(adj_fn_val.func_name), fill_holes(adj_fn_val.func_bound_args, {point_arg}), funcs);
+                            *globals.funcs.at(adj_fn_val.func_name), fill_holes(adj_fn_val.func_bound_args, {point_arg}), globals);
                         std::vector<std::vector<int>> targets;
                         for (auto& inner : result.arr_v) {
                             std::vector<int> t;
@@ -1642,7 +1661,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                         }
                         return targets;
                     };
-                return build_sub_hcublat_custom_adj(args[0], args[1], adj_fn, funcs);
+                return build_sub_hcublat_custom_adj(args[0], args[1], adj_fn, globals);
             },
         };
 
@@ -1737,10 +1756,10 @@ struct ReturnSignal { ClegValue value; };
 struct BreakSignal {};
 struct ContinueSignal {};
 
-static void eval_block(const Stmt& block, ValueEnv* parent, UserFuncTable& funcs);
-static void eval_stmt(const Stmt& stmt, ValueEnv& env, UserFuncTable& funcs);
-static ClegValue eval_expr(const Expr& expr, ValueEnv& env, UserFuncTable& funcs);
-static ClegValue call_user_function(const FunctionDecl& fn, const std::vector<ClegValue>& args, UserFuncTable& funcs);
+static void eval_block(const Stmt& block, ValueEnv* parent, GlobalInfo& globals);
+static void eval_stmt(const Stmt& stmt, ValueEnv& env, GlobalInfo& globals);
+static ClegValue eval_expr(const Expr& expr, ValueEnv& env, GlobalInfo& globals);
+static ClegValue call_user_function(const FunctionDecl& fn, const std::vector<ClegValue>& args, GlobalInfo& globals);
 
 // Mirrors shared/clegEval.ts's mergeBoundArgs() - merges a partial-application CallExpr's own `args` (at
 // least one is a HoleExpr) into `bound_args`' own currently-open (nullopt) slots, in order -
@@ -1751,7 +1770,7 @@ static ClegValue call_user_function(const FunctionDecl& fn, const std::vector<Cl
 // same operation, just a different starting point.
 static std::vector<std::optional<ClegValue>> merge_bound_args(
     const std::vector<std::optional<ClegValue>>& bound_args, const std::vector<Expr>& args,
-    ValueEnv& env, UserFuncTable& funcs)
+    ValueEnv& env, GlobalInfo& globals)
 {
     std::vector<std::optional<ClegValue>> out;
     out.reserve(bound_args.size());
@@ -1760,23 +1779,23 @@ static std::vector<std::optional<ClegValue>> merge_bound_args(
         if (b) { out.push_back(b); continue; }
         const Expr& a = args[j++];
         if (a.kind == ExprKind::HoleExpr) out.push_back(std::nullopt);
-        else out.push_back(clone_array_value(eval_expr(a, env, funcs)));
+        else out.push_back(clone_array_value(eval_expr(a, env, globals)));
     }
     return out;
 }
 
-static void eval_block(const Stmt& block, ValueEnv* parent, UserFuncTable& funcs) {
+static void eval_block(const Stmt& block, ValueEnv* parent, GlobalInfo& globals) {
     ValueEnv env; env.parent = parent;
-    for (auto& stmt : block.stmts) eval_stmt(stmt, env, funcs);
+    for (auto& stmt : block.stmts) eval_stmt(stmt, env, globals);
 }
 
-static void eval_stmt(const Stmt& stmt, ValueEnv& env, UserFuncTable& funcs) {
+static void eval_stmt(const Stmt& stmt, ValueEnv& env, GlobalInfo& globals) {
     switch (stmt.kind) {
         case StmtKind::VarDecl:
-            env.vars[stmt.name] = clone_array_value(eval_expr(*stmt.expr, env, funcs));
+            env.vars[stmt.name] = clone_array_value(eval_expr(*stmt.expr, env, globals));
             return;
         case StmtKind::AssignStmt: {
-            ClegValue value = clone_array_value(eval_expr(*stmt.expr, env, funcs));
+            ClegValue value = clone_array_value(eval_expr(*stmt.expr, env, globals));
             if (stmt.indices.empty()) {
                 set_value(env, stmt.name, std::move(value));
                 return;
@@ -1791,21 +1810,21 @@ static void eval_stmt(const Stmt& stmt, ValueEnv& env, UserFuncTable& funcs) {
             // Unreachable in a program that has passed typecheck_cleg - see lookup_value's own comment.
             if (!target) throw std::runtime_error("cleg: undeclared variable '" + stmt.name + "'");
             for (size_t i = 0; i + 1 < stmt.indices.size(); i++) {
-                double idx_value = eval_expr(stmt.indices[i], env, funcs).number;
+                double idx_value = eval_expr(stmt.indices[i], env, globals).number;
                 size_t idx = validate_array_index(idx_value, target->arr_v.size());
                 target = &target->arr_v[idx];
             }
-            double last_idx_value = eval_expr(stmt.indices.back(), env, funcs).number;
+            double last_idx_value = eval_expr(stmt.indices.back(), env, globals).number;
             size_t last_idx = validate_array_index(last_idx_value, target->arr_v.size());
             target->arr_v[last_idx] = std::move(value);
             return;
         }
         case StmtKind::IfStmt: {
-            ClegValue cond = eval_expr(*stmt.cond, env, funcs);
-            if (cond.boolean) eval_block(*stmt.then_stmt, &env, funcs);
+            ClegValue cond = eval_expr(*stmt.cond, env, globals);
+            if (cond.boolean) eval_block(*stmt.then_stmt, &env, globals);
             else if (stmt.else_stmt) {
-                if (stmt.else_stmt->kind == StmtKind::Block) eval_block(*stmt.else_stmt, &env, funcs);
-                else eval_stmt(*stmt.else_stmt, env, funcs);
+                if (stmt.else_stmt->kind == StmtKind::Block) eval_block(*stmt.else_stmt, &env, globals);
+                else eval_stmt(*stmt.else_stmt, env, globals);
             }
             return;
         }
@@ -1817,24 +1836,24 @@ static void eval_stmt(const Stmt& stmt, ValueEnv& env, UserFuncTable& funcs) {
             // `for_update` before the next `cond` check, exactly like real C++; `break` skips straight
             // past the loop entirely, never running `for_update` again.
             ValueEnv loop_env; loop_env.parent = &env;
-            if (stmt.for_init) eval_stmt(*stmt.for_init, loop_env, funcs);
-            while (!stmt.cond || eval_expr(*stmt.cond, loop_env, funcs).boolean) {
+            if (stmt.for_init) eval_stmt(*stmt.for_init, loop_env, globals);
+            while (!stmt.cond || eval_expr(*stmt.cond, loop_env, globals).boolean) {
                 try {
-                    eval_block(*stmt.body, &loop_env, funcs);
+                    eval_block(*stmt.body, &loop_env, globals);
                 } catch (BreakSignal&) {
                     break;
                 } catch (ContinueSignal&) {
                     // fall through to for_update below
                 }
-                if (stmt.for_update) eval_stmt(*stmt.for_update, loop_env, funcs);
+                if (stmt.for_update) eval_stmt(*stmt.for_update, loop_env, globals);
             }
             return;
         }
         case StmtKind::WhileStmt: {
             // Same BreakStmt/ContinueStmt unwind target as ForStmt above - see its own comment.
-            while (eval_expr(*stmt.cond, env, funcs).boolean) {
+            while (eval_expr(*stmt.cond, env, globals).boolean) {
                 try {
-                    eval_block(*stmt.body, &env, funcs);
+                    eval_block(*stmt.body, &env, globals);
                 } catch (BreakSignal&) {
                     break;
                 } catch (ContinueSignal&) {
@@ -1848,17 +1867,17 @@ static void eval_stmt(const Stmt& stmt, ValueEnv& env, UserFuncTable& funcs) {
         case StmtKind::ContinueStmt:
             throw ContinueSignal{};
         case StmtKind::ReturnStmt:
-            throw ReturnSignal{eval_expr(*stmt.expr, env, funcs)};
+            throw ReturnSignal{eval_expr(*stmt.expr, env, globals)};
         case StmtKind::ExprStmt:
-            eval_expr(*stmt.expr, env, funcs);
+            eval_expr(*stmt.expr, env, globals);
             return;
         case StmtKind::Block:
-            eval_block(stmt, &env, funcs);
+            eval_block(stmt, &env, globals);
             return;
     }
 }
 
-static ClegValue eval_expr(const Expr& expr, ValueEnv& env, UserFuncTable& funcs) {
+static ClegValue eval_expr(const Expr& expr, ValueEnv& env, GlobalInfo& globals) {
     switch (expr.kind) {
         case ExprKind::NumberLit: return make_number(expr.number_value);
         case ExprKind::StringLit: return make_string(expr.string_value);
@@ -1868,7 +1887,7 @@ static ClegValue eval_expr(const Expr& expr, ValueEnv& env, UserFuncTable& funcs
             if (v) return *v;
             // Not a variable - a bare reference to one of program's own top-level functions, used as
             // a function-pointer value (check_expr already confirmed this resolves and is func-typed).
-            const FunctionDecl* fn = funcs.at(expr.string_value);
+            const FunctionDecl* fn = globals.funcs.at(expr.string_value);
             ClegValue fv; fv.kind = CTKind::Func; fv.func_name = expr.string_value;
             for (auto& p : fn->params) { fv.func_params.push_back(p.type); fv.func_bound_args.push_back(std::nullopt); }
             fv.func_return_type = fn->return_type;
@@ -1876,7 +1895,7 @@ static ClegValue eval_expr(const Expr& expr, ValueEnv& env, UserFuncTable& funcs
         }
         case ExprKind::ArrayLit: {
             std::vector<ClegValue> values;
-            for (auto& e : expr.elements) values.push_back(eval_expr(e, env, funcs));
+            for (auto& e : expr.elements) values.push_back(eval_expr(e, env, globals));
             // typecheck_cleg already rejected an empty or mixed-element-type literal, so the first
             // value's own type is always the array's element type.
             ClegValue v; v.kind = CTKind::Array; v.elem = cleg_value_type(values[0]); v.arr_v = std::move(values);
@@ -1884,7 +1903,7 @@ static ClegValue eval_expr(const Expr& expr, ValueEnv& env, UserFuncTable& funcs
         }
         case ExprKind::SetLit: {
             std::vector<ClegValue> values;
-            for (auto& e : expr.elements) values.push_back(eval_expr(e, env, funcs));
+            for (auto& e : expr.elements) values.push_back(eval_expr(e, env, globals));
             // Same evaluation-order hazard as game/cleg_parser.cpp's own parse_expr precedence chain
             // (see its own comment) - cleg_value_type(values[0]) must be computed in its own
             // statement, before std::move(values) is ever handed to make_cleg_set as a sibling
@@ -1902,39 +1921,39 @@ static ClegValue eval_expr(const Expr& expr, ValueEnv& env, UserFuncTable& funcs
                 // what lets this further-apply an already-partial closure.
                 ClegValue* var_value = lookup_value_ptr(env, expr.string_value);
                 const std::string& name = var_value ? var_value->func_name : expr.string_value;
-                const FunctionDecl* fn = funcs.at(name);
+                const FunctionDecl* fn = globals.funcs.at(name);
                 std::vector<std::optional<ClegValue>> starting_bound_args = var_value
                     ? var_value->func_bound_args
                     : std::vector<std::optional<ClegValue>>(fn->params.size());
-                auto bound_args = merge_bound_args(starting_bound_args, expr.elements, env, funcs);
+                auto bound_args = merge_bound_args(starting_bound_args, expr.elements, env, globals);
                 ClegValue fv; fv.kind = CTKind::Func; fv.func_name = name; fv.func_bound_args = bound_args;
                 for (size_t i = 0; i < fn->params.size(); i++) if (!bound_args[i]) fv.func_params.push_back(fn->params[i].type);
                 fv.func_return_type = fn->return_type;
                 return fv;
             }
             std::vector<ClegValue> args;
-            for (auto& a : expr.elements) args.push_back(eval_expr(a, env, funcs));
+            for (auto& a : expr.elements) args.push_back(eval_expr(a, env, globals));
             auto& builtins = builtin_functions();
             auto bit = builtins.find(expr.string_value);
-            if (bit != builtins.end()) return bit->second.call(args, funcs);
+            if (bit != builtins.end()) return bit->second.call(args, globals);
             // A local variable of func type shadows a same-named top-level function - see
             // check_expr's own CallExpr case, which already required this to resolve the same way.
             // fill_holes handles a plain (never-partially-applied) function value transparently,
             // since its own bound_args is all nullopt.
             ClegValue* var_value = lookup_value_ptr(env, expr.string_value);
-            if (var_value) return call_user_function(*funcs.at(var_value->func_name), fill_holes(var_value->func_bound_args, args), funcs);
-            return call_user_function(*funcs.at(expr.string_value), args, funcs);
+            if (var_value) return call_user_function(*globals.funcs.at(var_value->func_name), fill_holes(var_value->func_bound_args, args), globals);
+            return call_user_function(*globals.funcs.at(expr.string_value), args, globals);
         }
         case ExprKind::BinaryExpr: {
             // `&&`/`||` short-circuit here, before ever reaching binary_operator_overloads() below -
             // see logical_overload's own doc comment (game/cleg_base.cpp).
             if (expr.op == "&&" || expr.op == "||") {
-                bool l = eval_expr(*expr.left, env, funcs).boolean;
-                if (expr.op == "&&") return l ? eval_expr(*expr.right, env, funcs) : make_bool(false);
-                return l ? make_bool(true) : eval_expr(*expr.right, env, funcs);
+                bool l = eval_expr(*expr.left, env, globals).boolean;
+                if (expr.op == "&&") return l ? eval_expr(*expr.right, env, globals) : make_bool(false);
+                return l ? make_bool(true) : eval_expr(*expr.right, env, globals);
             }
-            ClegValue l = eval_expr(*expr.left, env, funcs);
-            ClegValue r = eval_expr(*expr.right, env, funcs);
+            ClegValue l = eval_expr(*expr.left, env, globals);
+            ClegValue r = eval_expr(*expr.right, env, globals);
             ClegType lt = cleg_value_type(l), rt = cleg_value_type(r);
             for (auto& overload : binary_operator_overloads().at(expr.op)) {
                 auto m = overload.match(lt, rt);
@@ -1944,15 +1963,15 @@ static ClegValue eval_expr(const Expr& expr, ValueEnv& env, UserFuncTable& funcs
             throw std::runtime_error("cleg: operator '" + expr.op + "' has no overload for these operand types at runtime");
         }
         case ExprKind::UnaryExpr:
-            if (expr.op == "-") return make_number(-eval_expr(*expr.operand, env, funcs).number);
-            return make_bool(!eval_expr(*expr.operand, env, funcs).boolean);
+            if (expr.op == "-") return make_number(-eval_expr(*expr.operand, env, globals).number);
+            return make_bool(!eval_expr(*expr.operand, env, globals).boolean);
         case ExprKind::NilExpr: {
             ClegValue v; v.kind = CTKind::Array; v.elem = expr.nil_type;
             return v;
         }
         case ExprKind::IndexExpr: {
-            ClegValue arr = eval_expr(*expr.left, env, funcs);
-            double idx_value = eval_expr(*expr.right, env, funcs).number;
+            ClegValue arr = eval_expr(*expr.left, env, globals);
+            double idx_value = eval_expr(*expr.right, env, globals).number;
             size_t idx = validate_array_index(idx_value, arr.arr_v.size());
             return arr.arr_v[idx];
         }
@@ -1960,14 +1979,14 @@ static ClegValue eval_expr(const Expr& expr, ValueEnv& env, UserFuncTable& funcs
     throw std::runtime_error("cleg: eval_expr: unexpected ExprKind");
 }
 
-static ClegValue call_user_function(const FunctionDecl& fn, const std::vector<ClegValue>& args, UserFuncTable& funcs) {
+static ClegValue call_user_function(const FunctionDecl& fn, const std::vector<ClegValue>& args, GlobalInfo& globals) {
     ValueEnv env;
     // clone_array_value here (not just at the call site's own VarDecl/AssignStmt) is what makes an
     // array argument a genuine value-copy rather than a reference to the caller's own array, exactly
     // like passing one to another variable - see clone_array_value's own doc comment.
     for (size_t i = 0; i < fn.params.size(); i++) env.vars[fn.params[i].name] = clone_array_value(args[i]);
     try {
-        eval_block(fn.body, &env, funcs);
+        eval_block(fn.body, &env, globals);
     } catch (ReturnSignal& r) {
         return std::move(r.value);
     }
@@ -1977,24 +1996,25 @@ static ClegValue call_user_function(const FunctionDecl& fn, const std::vector<Cl
 // Mirrors shared/clegEval.ts's runClegProgram() - always re-typechecks even though every public entry
 // point here (typecheck_cleg_as_board, build_board_from_cleg) already does too on its own path, same
 // "cheap relative to actually evaluating" reasoning as the TS side's own doc comment.
-static ClegValue run_cleg_program(const ClegProgram& program) {
+static ClegValue run_cleg_program(const ClegProgram& program, uint32_t seed) {
     typecheck_cleg(program);
     UserFuncTable funcs;
     for (auto& fn : program.functions) funcs[fn.name] = &fn;
+    GlobalInfo globals{std::move(funcs), ClegRandom(seed)};
 
     ValueEnv env;
     std::optional<ClegValue> result;
     for (auto& stmt : program.stmts) {
-        if (stmt.kind == StmtKind::ExprStmt) result = eval_expr(*stmt.expr, env, funcs);
-        else eval_stmt(stmt, env, funcs);
+        if (stmt.kind == StmtKind::ExprStmt) result = eval_expr(*stmt.expr, env, globals);
+        else eval_stmt(stmt, env, globals);
     }
     return std::move(*result); // typecheck_cleg already required the last top-level statement to be an ExprStmt
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-BoardConfig build_board_from_cleg(const ClegProgram& program) {
+BoardConfig build_board_from_cleg(const ClegProgram& program, uint32_t seed) {
     typecheck_cleg_as_board(program);
-    ClegValue result = run_cleg_program(program);
+    ClegValue result = run_cleg_program(program, seed);
     return std::move(*result.egr_v);
 }

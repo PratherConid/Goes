@@ -1,8 +1,9 @@
 #pragma once
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <memory>
 #include <optional>
-#include <random>
 #include <set>
 #include <string>
 #include <vector>
@@ -156,43 +157,47 @@ struct Selector {
     bool operator==(const Selector& other) const;
 };
 
-// Returns a NEW vector with exactly remove_count (clamped to [0, items.size()], since removing more
-// than exist isn't meaningful) uniformly-randomly-chosen elements dropped, via a partial
-// Fisher-Yates shuffle (only the first remove_count positions need to be randomized to pick which
-// elements to drop) - mirrors shared/selector.ts's randomlyRemove(). A public header-only template
-// (rather than selector.cpp-private) so game/cleg_eval.cpp's randRmN/randRmP builtins can reuse it over
-// a generic ClegValue too, not just Selector's own BoardEdge/BoardSimplex/BoardQuad - matches that
-// TS builtin's own doc comment ("reuses that file's own randomlyRemove() rather than
-// reimplementing"). Shares one process-wide RNG with select_node/select_edge/etc.'s own Rrmn/Rrmp
-// cases (below) via cleg_selector_rng() - an inline function's local static is merged across
-// translation units under the One Definition Rule, so this is the same generator either way.
-inline std::mt19937& cleg_selector_rng() {
-    static std::mt19937 rng(std::random_device{}());
-    return rng;
-}
-template <typename T>
-std::vector<T> randomly_remove(std::vector<T> items, int remove_count) {
+// Mirrors shared/selector.ts's ClegRandom - the same mulberry32 generator in uint32_t arithmetic, so
+// both sides draw the same sequence from the same seed. Passed by non-const reference, since every
+// draw advances it.
+class ClegRandom {
+public:
+    explicit ClegRandom(uint32_t seed) : state_(seed) {}
+
+    double next() {
+        state_ += 0x6D2B79F5u;
+        uint32_t t = (state_ ^ (state_ >> 15)) * (state_ | 1u);
+        t = (t + (t ^ (t >> 7)) * (t | 61u)) ^ t;
+        return static_cast<double>(t ^ (t >> 14)) / 4294967296.0;
+    }
+
+private:
+    uint32_t state_;
+};
+
+// Mirror shared/selector.ts's randomlyRemove()/randomlyTake() - `less` is a std::sort-style
+// predicate in place of TS's three-way `compare`. Header-only templates so game/cleg_eval.cpp's
+// randRmN/randRmP/randTakeN/randTakeP builtins can reuse them over ClegValue too.
+template <typename T, typename Less>
+std::vector<T> randomly_remove(std::vector<T> items, int remove_count, Less less, ClegRandom& random) {
     int n = static_cast<int>(items.size());
     int to_remove = std::min(std::max(remove_count, 0), n);
+    std::sort(items.begin(), items.end(), less);
     for (int i = 0; i < to_remove; i++) {
-        std::uniform_int_distribution<int> dist(i, n - 1);
-        int j = dist(cleg_selector_rng());
+        int j = i + static_cast<int>(std::floor(random.next() * (n - i)));
         std::swap(items[i], items[j]);
     }
     items.erase(items.begin(), items.begin() + to_remove);
     return items;
 }
 
-// The take-instead-of-remove counterpart of randomly_remove just above - same partial Fisher-Yates
-// shuffle (the first take_count positions become the randomized ones), but keeps THOSE positions
-// (the taken elements) rather than erasing them - mirrors shared/selector.ts's randomlyTake().
-template <typename T>
-std::vector<T> randomly_take(std::vector<T> items, int take_count) {
+template <typename T, typename Less>
+std::vector<T> randomly_take(std::vector<T> items, int take_count, Less less, ClegRandom& random) {
     int n = static_cast<int>(items.size());
     int to_take = std::min(std::max(take_count, 0), n);
+    std::sort(items.begin(), items.end(), less);
     for (int i = 0; i < to_take; i++) {
-        std::uniform_int_distribution<int> dist(i, n - 1);
-        int j = dist(cleg_selector_rng());
+        int j = i + static_cast<int>(std::floor(random.next() * (n - i)));
         std::swap(items[i], items[j]);
     }
     items.erase(items.begin() + to_take, items.end());
@@ -242,14 +247,14 @@ std::string format_selector(const Selector& sel);
 // mirrors shared/selector.ts's selectNode() exactly, including this same unused-for-now parameter.
 std::set<int> select_node(const std::vector<std::vector<int>>& adj,
                            const std::vector<std::vector<unsigned>>& pos,
-                           const Selector& sel);
+                           const Selector& sel, ClegRandom& random);
 
 // Evaluates an edge Selector against a board's adjacency matrix, returning the list of selected
 // edges as BoardEdge values (deduplicated). Mutually recursive with select_node()/select_simp()/
 // select_quad() via the conva/conve operators. Mirrors shared/selector.ts's selectEdge().
 std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
                                     const std::vector<std::vector<unsigned>>& pos,
-                                    const Selector& sel);
+                                    const Selector& sel, ClegRandom& random);
 
 // Evaluates a simp Selector of any arity N (sel.type.kind == Simp) against a board's adjacency
 // matrix, returning the list of selected N-simplices as BoardSimplex values (deduplicated) - the
@@ -259,7 +264,7 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
 // shared/selector.ts's selectSimp().
 std::vector<BoardSimplex> select_simp(const std::vector<std::vector<int>>& adj,
                                        const std::vector<std::vector<unsigned>>& pos,
-                                       const Selector& sel);
+                                       const Selector& sel, ClegRandom& random);
 
 // Parses `s` as a triangle (simp 2) selector and evaluates it - select_simp()'s own N=2 special
 // case, kept as a thin sugar wrapper for callers that only ever deal in triangles
@@ -267,7 +272,7 @@ std::vector<BoardSimplex> select_simp(const std::vector<std::vector<int>>& adj,
 // (not just any simp N). Mirrors shared/selector.ts's selectTriangle().
 std::vector<BoardSimplex> select_triangle(const std::vector<std::vector<int>>& adj,
                                            const std::vector<std::vector<unsigned>>& pos,
-                                           const Selector& sel);
+                                           const Selector& sel, ClegRandom& random);
 
 // Evaluates a quad Selector against a board's adjacency matrix, returning the list of selected
 // quads as BoardQuad values (deduplicated) - the quad counterpart of select_simp above.
@@ -275,4 +280,4 @@ std::vector<BoardSimplex> select_triangle(const std::vector<std::vector<int>>& a
 // select_node() via the conva/conve operators. Mirrors shared/selector.ts's selectQuad().
 std::vector<BoardQuad> select_quad(const std::vector<std::vector<int>>& adj,
                                     const std::vector<std::vector<unsigned>>& pos,
-                                    const Selector& sel);
+                                    const Selector& sel, ClegRandom& random);

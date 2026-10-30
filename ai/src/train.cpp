@@ -1060,8 +1060,11 @@ int main(int argc, char* argv[]) {
     // rather than part of --game-config.
     game_cfg.linear_move_bound = args.linear_move_bound;
 
-    auto bc = build_board_from_cleg(*parse_cleg(game_cfg.board_descr));
-    std::cout << "Board:\n" << game_cfg.board_descr << "  N=" << bc.N << std::endl;
+    // One board per run, from a fresh random seed (game_cfg.board_seed is ignored) - every model
+    // and batch here assumes a single board, so games can't each get their own yet.
+    const uint32_t board_seed = std::random_device{}();
+    auto bc = build_board_from_cleg(*parse_cleg(game_cfg.board_descr), board_seed);
+    std::cout << "Board:\n" << game_cfg.board_descr << "  N=" << bc.N << "  seed=" << board_seed << std::endl;
 
     const std::string arch = effective_arch(args, game_cfg.board_descr, bc.emb_dim);
 

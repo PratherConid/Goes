@@ -4,6 +4,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { rectangularBoard, mergeClose, applyModifier } from '../shared/boardConfig.ts';
+import { ClegRandom } from '../shared/selector.ts';
+
+// The generator every selector/board-modifier call in this file draws from.
+const random = new ClegRandom(0);
 
 test('a chain of collinear nodes each 1 apart all merge into one node when dist > 1', () => {
     const bc = rectangularBoard(3, 1); // nodes at x=-1, 0, 1 - each adjacent pair 1 apart
@@ -32,7 +36,7 @@ test('a 2x2 grid fully collapses into one node once dist exceeds the edge length
     assert.equal(merged.N, 1);
 });
 
-test('applyModifier("MergeClose", ...) matches calling mergeClose directly', () => {
+test('applyModifier("MergeClose", ..., random) matches calling mergeClose directly', () => {
     const bc = rectangularBoard(3, 1);
-    assert.deepEqual(applyModifier(bc, { kind: 'MergeClose', dist: 1.1 }), mergeClose(bc, 1.1));
+    assert.deepEqual(applyModifier(bc, { kind: 'MergeClose', dist: 1.1 }, random), mergeClose(bc, 1.1));
 });
