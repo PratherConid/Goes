@@ -892,7 +892,7 @@ export function selectSimp(adj: number[][], pos: number[][], sel: Selector, rand
     }
 }
 
-/** Parses `s` as a triangle (simp 2) selector and evaluates it - selectSimp()'s own N=2 special
+/** Evaluates `sel` as a triangle (simp 2) selector - selectSimp()'s own N=2 special
  * case, kept as a thin sugar wrapper (see this file's own top comment) for callers that only ever
  * deal in triangles (shared/boardConfig.ts's triangleForm/triCentralize). Throws if `sel` isn't
  * specifically simp 2 (not just any simp N). */

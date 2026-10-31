@@ -489,6 +489,7 @@ const FractalDescr& menger_fractal_descr(int dim, const std::vector<int>& indica
     static std::map<int, std::map<int, FractalDescr>> cache;
     assert(dim >= 1 && "dim must be a positive integer");
     assert(static_cast<int>(indicator.size()) == dim + 1 &&
+           std::all_of(indicator.begin(), indicator.end(), [](int b) { return b == 0 || b == 1; }) &&
         "indicator must be a length-(dim+1) list of 0/1 entries");
 
     int indicator_bits = 0;

@@ -1,5 +1,6 @@
 #include "game/cleg_check.h"
 #include "game/cleg_eval_internal.h"
+#include "game/cleg_parser.h"
 #include <algorithm>
 #include <optional>
 #include <stdexcept>
@@ -98,13 +99,10 @@ static void check_stmt(const Stmt& stmt, TypeEnv& env, FuncTable& funcs, const C
                 target_type = *target_type.elem;
             }
             ClegType value_type = check_expr(*stmt.expr, env, funcs);
-            if (!type_equals(value_type, target_type)) {
-                std::string target_name = stmt.name;
-                for (size_t i = 0; i < stmt.indices.size(); i++) target_name += "[]";
+            if (!type_equals(value_type, target_type))
                 throw std::runtime_error(
-                    "cleg: cannot assign a value of type " + type_to_string(value_type) + " to '" + target_name +
-                    "' of type " + type_to_string(target_type));
-            }
+                    "cleg: cannot assign a value of type " + type_to_string(value_type) + " to '" +
+                    unparse_assign_target(stmt, 0) + "' of type " + type_to_string(target_type));
             return;
         }
         case StmtKind::IfStmt: {
@@ -198,7 +196,7 @@ static ClegType check_expr(const Expr& expr, TypeEnv& env, FuncTable& funcs) {
             if (!is_set_elem_kind(elem_types[0].kind))
                 throw std::runtime_error(
                     "cleg: '" + type_to_string(elem_types[0]) + "' is not a supported set element type - only "
-                    "number/string/bool/edge/tri/quad may be set elements");
+                    "number/string/bool/edge/simp/quad may be set elements");
             return ClegType{CTKind::Set, std::make_shared<ClegType>(elem_types[0])};
         }
         case ExprKind::CallExpr: {

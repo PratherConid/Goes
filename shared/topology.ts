@@ -122,7 +122,7 @@ function unionFindClasses(N: number, pairs: [number, number][]): number[] {
  * resolved in one batch via unionFindClasses(), not board-by-board, so callers never need to fold
  * boards in one at a time just to keep every merge target "already placed": a merge between two
  * boards that haven't been introduced to each other by any other merge is handled exactly like any
- * other. The merged node keeps whichever input position is encountered first (callers are expected
+ * other. The merged node keeps the position of its last input, in board order (callers are expected
  * to only merge pairs whose positions already coincide, e.g. two recursive `sierpinskiSimplex`
  * sub-copies sharing a corner). Returns the combined board plus, for each input board (in the same
  * order as `boards`), a map from that board's own local indices to its final index in the combined

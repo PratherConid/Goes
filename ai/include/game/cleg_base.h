@@ -9,7 +9,7 @@
 
 // Mirrors shared/clegBase.ts. C++ differences that hold across all of game/cleg_*:
 //   - Only cleg's own files include this header; game/cleg_parser.h/game/cleg_eval.h (what
-//     train.cpp/server.cpp include) forward-declare `ClegProgram` instead.
+//     train.cpp/server.cpp include) forward-declare the AST types they need instead.
 //   - No garbage collector: std::shared_ptr where substructures are genuinely shared (Expr/Stmt
 //     children, ClegValue's `egr_v`), plain std::vector/value members elsewhere (Array/Set contents,
 //     Selector/BoardModifier/ProdSelector payloads).
@@ -17,7 +17,6 @@
 //     (mkEdge/mkTri/mkQuad, board-arg conversion, psBase's index), via an explicit conversion.
 //   - Every ClegType/ClegValue/AST field has a default member initializer, so a default-constructed
 //     instance is always well-defined.
-//   - unparseCleg has no port (nothing in ai/ shows a cleg program back as text).
 
 // ── Types ────────────────────────────────────────────────────────────────────
 

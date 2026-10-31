@@ -1,6 +1,9 @@
 #include "game/cleg_parser.h"
 #include "game/cleg_base.h"
+#include <algorithm>
 #include <cctype>
+#include <charconv>
+#include <cmath>
 #include <set>
 #include <stdexcept>
 
@@ -164,7 +167,7 @@ static ClegType parse_type(TokenCursor& c) {
     } else {
         std::string base = c.expect_ident();
         if (!type_keywords().count(base))
-            throw std::runtime_error("cleg: expected a type (egr/number/string/bool/edge/simp/tri/quad/sel/mod/formsel/lrs), got '" + base + "'");
+            throw std::runtime_error("cleg: expected a type (egr/number/string/bool/edge/simp/quad/sel/mod/formsel/lrs), got '" + base + "'");
         type = ClegType{base_type_kind(base), nullptr};
         if (c.is_punct("{")) {
             if (!set_elem_kind_words().count(base))
@@ -614,4 +617,174 @@ static ClegProgram parse_cleg_impl(const std::string& source) {
 
 std::shared_ptr<ClegProgram> parse_cleg(const std::string& source) {
     return std::make_shared<ClegProgram>(parse_cleg_impl(source));
+}
+
+// ── Unparsing ────────────────────────────────────────────────────────────────
+
+static std::string unparse_function_decl(const FunctionDecl& fn, int indent);
+static std::string unparse_block(const Stmt& block, int indent);
+static std::string unparse_stmt(const Stmt& stmt, int indent);
+static std::string unparse_for_clause(const Stmt& stmt, int indent);
+static std::string unparse_expr(const Expr& expr, int indent);
+static std::string unparse_bracketed(const std::string& open, const std::string& close, const std::vector<Expr>& items,
+                                     int indent, size_t extra_width);
+static std::string escape_cleg_string(const std::string& s);
+
+std::string unparse_cleg(const ClegProgram& program) {
+    std::string out;
+    for (auto& fn : program.functions) { if (!out.empty()) out += "\n"; out += unparse_function_decl(fn, 0); }
+    for (auto& s : program.stmts) { if (!out.empty()) out += "\n"; out += unparse_stmt(s, 0); }
+    return out;
+}
+
+// Mirrors shared/clegParser.ts's unparseFunctionDecl().
+static std::string unparse_function_decl(const FunctionDecl& fn, int indent) {
+    std::string params;
+    for (size_t i = 0; i < fn.params.size(); i++) {
+        if (i) params += ", ";
+        params += type_to_string(fn.params[i].type) + " " + fn.params[i].name;
+    }
+    return type_to_string(fn.return_type) + " " + fn.name + "(" + params + ") " + unparse_block(fn.body, indent);
+}
+
+// Mirrors shared/clegParser.ts's unparseBlock().
+static std::string unparse_block(const Stmt& block, int indent) {
+    if (block.stmts.empty()) return "{}";
+    int inner = indent + 2;
+    std::string out = "{\n";
+    for (size_t i = 0; i < block.stmts.size(); i++) {
+        if (i) out += "\n";
+        out += std::string(inner, ' ') + unparse_stmt(block.stmts[i], inner);
+    }
+    return out + "\n" + std::string(indent, ' ') + "}";
+}
+
+std::string unparse_assign_target(const Stmt& stmt, int indent) {
+    std::string out = stmt.name;
+    for (auto& idx : stmt.indices) out += "[" + unparse_expr(idx, indent) + "]";
+    return out;
+}
+
+// Mirrors shared/clegParser.ts's unparseStmt().
+static std::string unparse_stmt(const Stmt& stmt, int indent) {
+    switch (stmt.kind) {
+        case StmtKind::VarDecl:
+            return type_to_string(stmt.decl_type) + " " + stmt.name + " = " + unparse_expr(*stmt.expr, indent) + ";";
+        case StmtKind::AssignStmt:
+            return unparse_assign_target(stmt, indent) + " = " + unparse_expr(*stmt.expr, indent) + ";";
+        case StmtKind::IfStmt: {
+            std::string else_part = !stmt.else_stmt ? std::string()
+                : stmt.else_stmt->kind == StmtKind::Block ? " else " + unparse_block(*stmt.else_stmt, indent)
+                : " else " + unparse_stmt(*stmt.else_stmt, indent);
+            return "if (" + unparse_expr(*stmt.cond, indent) + ") " + unparse_block(*stmt.then_stmt, indent) + else_part;
+        }
+        case StmtKind::ForStmt: {
+            std::string init = stmt.for_init ? unparse_for_clause(*stmt.for_init, indent) : "";
+            std::string cond = stmt.cond ? unparse_expr(*stmt.cond, indent) : "";
+            std::string update = stmt.for_update ? unparse_for_clause(*stmt.for_update, indent) : "";
+            return "for (" + init + "; " + cond + "; " + update + ") " + unparse_block(*stmt.body, indent);
+        }
+        case StmtKind::WhileStmt: return "while (" + unparse_expr(*stmt.cond, indent) + ") " + unparse_block(*stmt.body, indent);
+        case StmtKind::BreakStmt: return "break;";
+        case StmtKind::ContinueStmt: return "continue;";
+        case StmtKind::ReturnStmt: return "return " + unparse_expr(*stmt.expr, indent) + ";";
+        case StmtKind::ExprStmt: return unparse_expr(*stmt.expr, indent) + ";";
+        case StmtKind::Block: return unparse_block(stmt, indent);
+    }
+    return "";
+}
+
+// Mirrors shared/clegParser.ts's unparseForClause().
+static std::string unparse_for_clause(const Stmt& stmt, int indent) {
+    switch (stmt.kind) {
+        case StmtKind::VarDecl:
+            return type_to_string(stmt.decl_type) + " " + stmt.name + " = " + unparse_expr(*stmt.expr, indent);
+        case StmtKind::AssignStmt: return unparse_assign_target(stmt, indent) + " = " + unparse_expr(*stmt.expr, indent);
+        default: return unparse_expr(*stmt.expr, indent);   // ExprStmt
+    }
+}
+
+// TS's String(number) (ECMAScript Number::toString): shortest round-trip digits, written out in
+// full for a decimal exponent in (-7, 21] and in exponential form otherwise.
+static std::string js_number_string(double d) {
+    if (std::isnan(d)) return "NaN";
+    if (std::isinf(d)) return d < 0 ? "-Infinity" : "Infinity";
+    if (d == 0) return "0";
+    if (d < 0) return "-" + js_number_string(-d);
+    char buf[64];
+    auto res = std::to_chars(buf, buf + sizeof buf, d, std::chars_format::scientific);
+    std::string sci(buf, res.ptr);                     // e.g. "1.2345e+02"
+    size_t e = sci.find('e');
+    std::string digits = sci.substr(0, e);
+    digits.erase(std::remove(digits.begin(), digits.end(), '.'), digits.end());
+    int k = static_cast<int>(digits.size());
+    int n = std::stoi(sci.substr(e + 1)) + 1;          // d == 0.<digits> * 10^n
+    if (k <= n && n <= 21) return digits + std::string(n - k, '0');
+    if (0 < n && n <= 21) return digits.substr(0, n) + "." + digits.substr(n);
+    if (-6 < n && n <= 0) return "0." + std::string(-n, '0') + digits;
+    return digits.substr(0, 1) + (k > 1 ? "." + digits.substr(1) : "") + "e" + (n - 1 > 0 ? "+" : "-") +
+           std::to_string(std::abs(n - 1));
+}
+
+// TS's string `.length`: UTF-16 code units, where std::string holds UTF-8 bytes.
+static size_t utf16_length(const std::string& s) {
+    size_t n = 0;
+    for (unsigned char c : s)
+        if ((c & 0xC0) != 0x80) n += c >= 0xF0 ? 2 : 1;   // a 4-byte sequence is a surrogate pair
+    return n;
+}
+
+// Mirrors shared/clegParser.ts's unparseExpr() - NumberLit via js_number_string (TS's String()).
+static std::string unparse_expr(const Expr& expr, int indent) {
+    switch (expr.kind) {
+        case ExprKind::NumberLit: return js_number_string(expr.number_value);
+        case ExprKind::StringLit: return "\"" + escape_cleg_string(expr.string_value) + "\"";
+        case ExprKind::BoolLit: return expr.bool_value ? "true" : "false";
+        case ExprKind::ArrayLit: return unparse_bracketed("[", "]", expr.elements, indent, 0);
+        case ExprKind::SetLit: return unparse_bracketed("{", "}", expr.elements, indent, 0);
+        case ExprKind::Identifier: return expr.string_value;
+        case ExprKind::CallExpr:
+            return expr.string_value + unparse_bracketed("(", ")", expr.elements, indent, utf16_length(expr.string_value));
+        case ExprKind::BinaryExpr:
+            return "(" + unparse_expr(*expr.left, indent) + " " + expr.op + " " + unparse_expr(*expr.right, indent) + ")";
+        case ExprKind::UnaryExpr: return "(" + expr.op + unparse_expr(*expr.operand, indent) + ")";
+        case ExprKind::NilExpr: return "nil(" + type_to_string(expr.nil_type) + ")";
+        case ExprKind::IndexExpr: return unparse_expr(*expr.left, indent) + "[" + unparse_expr(*expr.right, indent) + "]";
+        case ExprKind::HoleExpr: return "#";
+    }
+    return "";
+}
+
+// Mirrors shared/clegParser.ts's LINE_WIDTH_BUDGET.
+static constexpr size_t LINE_WIDTH_BUDGET = 64;
+
+// Mirrors shared/clegParser.ts's unparseBracketed(), measuring widths with utf16_length (TS's
+// `.length`).
+static std::string unparse_bracketed(const std::string& open, const std::string& close, const std::vector<Expr>& items,
+                                     int indent, size_t extra_width) {
+    if (items.empty()) return open + close;
+    std::string flat = open;
+    for (size_t i = 0; i < items.size(); i++) { if (i) flat += ", "; flat += unparse_expr(items[i], indent); }
+    flat += close;
+    if (flat.find('\n') == std::string::npos && extra_width + utf16_length(flat) <= LINE_WIDTH_BUDGET) return flat;
+    int inner = indent + 2;
+    std::string out = open + "\n";
+    for (size_t i = 0; i < items.size(); i++) {
+        if (i) out += ",\n";
+        out += std::string(inner, ' ') + unparse_expr(items[i], inner);
+    }
+    return out + "\n" + std::string(indent, ' ') + close;
+}
+
+// Mirrors shared/clegParser.ts's escapeClegString(), in one pass.
+static std::string escape_cleg_string(const std::string& s) {
+    std::string out;
+    for (char ch : s) {
+        if (ch == '\\') out += "\\\\";
+        else if (ch == '"') out += "\\\"";
+        else if (ch == '\n') out += "\\n";
+        else if (ch == '\t') out += "\\t";
+        else out += ch;
+    }
+    return out;
 }

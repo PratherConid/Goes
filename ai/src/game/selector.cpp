@@ -937,10 +937,7 @@ std::vector<BoardQuad> select_quad(const std::vector<std::vector<int>>& adj,
                 auto s = select_quad(adj, pos, item, random);
                 all.insert(all.end(), s.begin(), s.end());
             }
-            std::set<std::string> seen;
-            std::vector<BoardQuad> deduped;
-            for (auto& s : all) if (seen.insert(quad_key(s)).second) deduped.push_back(s);
-            return deduped;
+            return dedupe_by_key<BoardQuad, std::string>(all, quad_key);
         }
         case SelectorOp::Inter: {
             if (sel.items.empty()) return select_quad(adj, pos, Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}}, random);

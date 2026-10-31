@@ -597,8 +597,11 @@ BoardConfig node_induced_subgraph(const BoardConfig& bc, const std::set<int>& no
     return make_bc(std::move(adj), bc.emb_dim, std::move(embed));
 }
 
-BoardConfig edge_induced_subgraph(const BoardConfig& bc, const std::vector<BoardEdge>& edges) {
-    std::set<int> touched;
+// Mirrors shared/boardConfig.ts's inducedSubgraphFromEdges().
+static BoardConfig induced_subgraph_from_edges(
+    const BoardConfig& bc, std::set<int> initially_touched, const std::vector<BoardEdge>& edges)
+{
+    std::set<int> touched = std::move(initially_touched);
     for (auto& e : edges) { touched.insert(e.n1); touched.insert(e.n2); }
     std::vector<int> kept;
     for (int i = 0; i < bc.N; i++) if (touched.count(i)) kept.push_back(i);
@@ -619,28 +622,14 @@ BoardConfig edge_induced_subgraph(const BoardConfig& bc, const std::vector<Board
     return make_bc(std::move(adj), bc.emb_dim, std::move(embed));
 }
 
+BoardConfig edge_induced_subgraph(const BoardConfig& bc, const std::vector<BoardEdge>& edges) {
+    return induced_subgraph_from_edges(bc, {}, edges);
+}
+
 BoardConfig node_edge_induced_subgraph(
     const BoardConfig& bc, const std::set<int>& nodes, const std::vector<BoardEdge>& edges)
 {
-    std::set<int> touched = nodes;
-    for (auto& e : edges) { touched.insert(e.n1); touched.insert(e.n2); }
-    std::vector<int> kept;
-    for (int i = 0; i < bc.N; i++) if (touched.count(i)) kept.push_back(i);
-    std::vector<int> new_idx(bc.N, -1);
-    for (size_t i = 0; i < kept.size(); i++) new_idx[kept[i]] = static_cast<int>(i);
-
-    std::vector<std::vector<unsigned>> embed;
-    embed.reserve(kept.size());
-    for (int i : kept) embed.push_back(bc.embed[i]);
-
-    auto adj = zero_adj(static_cast<int>(kept.size()));
-    for (auto& e : edges) {
-        int a = new_idx[e.n1], b = new_idx[e.n2];
-        adj[a][b] = 1;
-        adj[b][a] = 1;
-    }
-
-    return make_bc(std::move(adj), bc.emb_dim, std::move(embed));
+    return induced_subgraph_from_edges(bc, nodes, edges);
 }
 
 BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier, ClegRandom& random) {
@@ -1090,18 +1079,36 @@ static std::vector<std::vector<double>> sign_variants(const std::vector<double>&
     return out;
 }
 
-static void add_perms(const std::vector<std::vector<double>>& perms,
-                       std::vector<std::vector<double>>& raw, std::set<std::string>& seen) {
-    for (auto& p : perms)
-        for (auto& s : sign_variants(p)) {
-            std::string key;
-            // Round to 2 decimal places before keying - the smallest nonzero gap between any two
-            // distinct family values here is ~0.38, so 2 decimals (matching
-            // shared/boardConfig.ts's own toFixed(2)) is far more than enough margin against
-            // floating-point noise without needing anywhere near llround's own overflow headroom.
-            for (double x : s) key += std::to_string(std::llround(x * 1e2)) + ",";
-            if (seen.insert(key).second) raw.push_back(s);
+// Mirrors shared/boardConfig.ts's signedPermutationVertices(), keying by llround(x * 100) in place of
+// TS's toFixed(2) - the same 2-decimal rounding, as integers rather than strings.
+static std::vector<std::vector<double>> signed_permutation_vertices(
+    const std::vector<std::vector<std::vector<double>>>& perm_groups)
+{
+    std::vector<std::vector<double>> raw;
+    std::set<std::string> seen;
+    for (auto& perms : perm_groups)
+        for (auto& p : perms)
+            for (auto& v : sign_variants(p)) {
+                std::string key;
+                for (double x : v) key += std::to_string(std::llround(x * 1e2)) + ",";
+                if (seen.insert(key).second) raw.push_back(v);
+            }
+    return raw;
+}
+
+// Mirrors shared/boardConfig.ts's adjacencyAtDistance().
+static std::vector<std::vector<int>> adjacency_at_distance(const std::vector<std::vector<double>>& raw,
+                                                           double edge_dist2) {
+    int N = static_cast<int>(raw.size());
+    auto adj = zero_adj(N);
+    const double EPS = 1e-6;
+    for (int a = 0; a < N; a++)
+        for (int b = a + 1; b < N; b++) {
+            double d2 = 0;
+            for (size_t k = 0; k < raw[a].size(); k++) { double diff = raw[a][k] - raw[b][k]; d2 += diff * diff; }
+            if (std::abs(d2 - edge_dist2) < EPS) { adj[a][b] = 1; adj[b][a] = 1; }
         }
+    return adj;
 }
 
 // Mirrors shared/boardConfig.ts's reg120CellBoard(). Coordinates are a `double`-only intermediate
@@ -1114,28 +1121,17 @@ BoardConfig reg_120_cell_board() {
     const double IPHI2 = 1.0 / (PHI * PHI);
     const double SQRT5 = std::sqrt(5.0);
 
-    std::vector<std::vector<double>> raw;
-    std::set<std::string> seen;
-    add_perms(perms_of({0, 0, 2, 2}), raw, seen);
-    add_perms(perms_of({PHI, PHI, PHI, IPHI2}), raw, seen);
-    add_perms(perms_of({1, 1, 1, SQRT5}), raw, seen);
-    add_perms(perms_of({IPHI, IPHI, IPHI, PHI2}), raw, seen);
-    add_perms(even_perms_of({0, IPHI, PHI, SQRT5}), raw, seen);
-    add_perms(even_perms_of({0, IPHI2, 1, PHI2}), raw, seen);
-    add_perms(even_perms_of({IPHI, 1, PHI, 2}), raw, seen);
-
-    int N = static_cast<int>(raw.size());
-    double edge_dist2 = (3.0 - std::sqrt(5.0)) * (3.0 - std::sqrt(5.0));
-    const double EPS = 1e-6;
-    auto adj = zero_adj(N);
-    for (int a = 0; a < N; a++)
-        for (int b = a + 1; b < N; b++) {
-            double d2 = 0;
-            for (int k = 0; k < 4; k++) { double diff = raw[a][k] - raw[b][k]; d2 += diff * diff; }
-            if (std::abs(d2 - edge_dist2) < EPS) { adj[a][b] = 1; adj[b][a] = 1; }
-        }
-
-    std::vector<std::vector<unsigned>> embed(N); // emb_dim=0
+    auto raw = signed_permutation_vertices({
+        perms_of({0, 0, 2, 2}),
+        perms_of({PHI, PHI, PHI, IPHI2}),
+        perms_of({1, 1, 1, SQRT5}),
+        perms_of({IPHI, IPHI, IPHI, PHI2}),
+        even_perms_of({0, IPHI, PHI, SQRT5}),
+        even_perms_of({0, IPHI2, 1, PHI2}),
+        even_perms_of({IPHI, 1, PHI, 2}),
+    });
+    auto adj = adjacency_at_distance(raw, (3.0 - std::sqrt(5.0)) * (3.0 - std::sqrt(5.0)));
+    std::vector<std::vector<unsigned>> embed(raw.size()); // emb_dim=0
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
@@ -1145,24 +1141,13 @@ BoardConfig reg_600_cell_board() {
     const double PHI = (1.0 + std::sqrt(5.0)) / 2.0;
     const double IPHI = 1.0 / PHI;
 
-    std::vector<std::vector<double>> raw;
-    std::set<std::string> seen;
-    add_perms(perms_of({0, 0, 0, 2}), raw, seen);
-    add_perms(perms_of({1, 1, 1, 1}), raw, seen);
-    add_perms(even_perms_of({PHI, 1, IPHI, 0}), raw, seen);
-
-    int N = static_cast<int>(raw.size());
-    double edge_dist2 = (2.0 / PHI) * (2.0 / PHI);
-    const double EPS = 1e-6;
-    auto adj = zero_adj(N);
-    for (int a = 0; a < N; a++)
-        for (int b = a + 1; b < N; b++) {
-            double d2 = 0;
-            for (int k = 0; k < 4; k++) { double diff = raw[a][k] - raw[b][k]; d2 += diff * diff; }
-            if (std::abs(d2 - edge_dist2) < EPS) { adj[a][b] = 1; adj[b][a] = 1; }
-        }
-
-    std::vector<std::vector<unsigned>> embed(N); // emb_dim=0
+    auto raw = signed_permutation_vertices({
+        perms_of({0, 0, 0, 2}),
+        perms_of({1, 1, 1, 1}),
+        even_perms_of({PHI, 1, IPHI, 0}),
+    });
+    auto adj = adjacency_at_distance(raw, (2.0 / PHI) * (2.0 / PHI));
+    std::vector<std::vector<unsigned>> embed(raw.size()); // emb_dim=0
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
@@ -1188,53 +1173,20 @@ BoardConfig antiprism_board(int n) {
 // Mirrors shared/boardConfig.ts's dodecahedronBoard(), adjacency only (emb_dim=0 - see
 // board_config.h).
 BoardConfig dodecahedron_board() {
-    auto x_idx = [](int sa, int sb, int sc) { return sa * 4 + sb * 2 + sc; };
-    auto y_idx = [](int sb, int sc) { return 8 + sb * 2 + sc; };
-    auto z_idx = [](int sa, int sb) { return 12 + sa * 2 + sb; };
-    auto w_idx = [](int sa, int sc) { return 16 + sa * 2 + sc; };
-
-    auto adj = zero_adj(20);
-    auto connect = [&](int i, int j) { adj[i][j] = 1; adj[j][i] = 1; };
-    for (int sa = 0; sa < 2; sa++)
-        for (int sb = 0; sb < 2; sb++)
-            for (int sc = 0; sc < 2; sc++) {
-                int x = x_idx(sa, sb, sc);
-                connect(x, y_idx(sb, sc));
-                connect(x, z_idx(sa, sb));
-                connect(x, w_idx(sa, sc));
-            }
-    for (int sc = 0; sc < 2; sc++) connect(y_idx(0, sc), y_idx(1, sc));
-    for (int sb = 0; sb < 2; sb++) connect(z_idx(0, sb), z_idx(1, sb));
-    for (int sa = 0; sa < 2; sa++) connect(w_idx(sa, 0), w_idx(sa, 1));
-
-    std::vector<std::vector<unsigned>> embed(20); // emb_dim=0
+    const FractalDescr& descr = dodecahedron_fractal_descr();
+    auto adj = zero_adj(descr.num_leaf);
+    for (auto [a, b] : descr.leaf_conn) { adj[a][b] = 1; adj[b][a] = 1; }
+    std::vector<std::vector<unsigned>> embed(descr.num_leaf); // emb_dim=0
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
 // Mirrors shared/boardConfig.ts's icosahedronBoard(), adjacency only (emb_dim=0 - see
 // board_config.h).
 BoardConfig icosahedron_board() {
-    auto a_idx = [](int sp, int sq) { return sp * 2 + sq; };
-    auto b_idx = [](int sp, int sq) { return 4 + sp * 2 + sq; };
-    auto c_idx = [](int sp, int sq) { return 8 + sp * 2 + sq; };
-
-    auto adj = zero_adj(12);
-    auto connect = [&](int i, int j) { adj[i][j] = 1; adj[j][i] = 1; };
-
-    for (int sq = 0; sq < 2; sq++) {
-        connect(a_idx(0, sq), a_idx(1, sq));
-        connect(b_idx(0, sq), b_idx(1, sq));
-        connect(c_idx(0, sq), c_idx(1, sq));
-    }
-    for (int sp = 0; sp < 2; sp++)
-        for (int sq = 0; sq < 2; sq++)
-            for (int free = 0; free < 2; free++) {
-                connect(a_idx(sp, sq), b_idx(free, sp));
-                connect(b_idx(sp, sq), c_idx(free, sp));
-                connect(c_idx(sp, sq), a_idx(free, sp));
-            }
-
-    std::vector<std::vector<unsigned>> embed(12); // emb_dim=0
+    const FractalDescr& descr = icosahedron_fractal_descr();
+    auto adj = zero_adj(descr.num_leaf);
+    for (auto [a, b] : descr.leaf_conn) { adj[a][b] = 1; adj[b][a] = 1; }
+    std::vector<std::vector<unsigned>> embed(descr.num_leaf); // emb_dim=0
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
@@ -1302,119 +1254,67 @@ BoardConfig menger_sponge_flake_board(int order, int dim, const std::vector<int>
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-BoardConfig triangular_hex_board(int d) {
-    assert(d >= 0 && "d must be non-negative");
-    std::vector<std::pair<int,int>> coords;
-    for (int q = -d; q <= d; q++) {
-        int r_lo = std::max(-d, -d - q);
-        int r_hi = std::min(d, d - q);
-        for (int r = r_lo; r <= r_hi; r++)
-            coords.push_back({q, r});
-    }
+// Mirrors shared/boardConfig.ts's AXIAL_DIRS.
+static constexpr int AXIAL_DIRS[6][2] = {{1,0},{1,-1},{0,-1},{-1,0},{-1,1},{0,1}};
+
+// Mirrors shared/boardConfig.ts's triangularLatticeBoard(), embedding each axial (q, r) as the exact
+// integers (q + offset, r + offset) in place of TS's real-valued (q + r/2, rowDist*r) - each caller
+// passes the offset that makes its own coordinates non-negative (see board_config.h).
+static BoardConfig triangular_lattice_board(const std::vector<std::pair<int,int>>& coords, int offset) {
     int N = static_cast<int>(coords.size());
-    std::vector<std::vector<unsigned>> pos(N);
     std::map<std::pair<int,int>, int> idx;
+    for (int i = 0; i < N; i++) idx[coords[i]] = i;
+    std::vector<std::vector<unsigned>> pos(N);
     for (int i = 0; i < N; i++) {
         auto [q, r] = coords[i];
-        pos[i] = {static_cast<unsigned>(q + d), static_cast<unsigned>(r + d)};
-        idx[{q, r}] = i;
+        pos[i] = {static_cast<unsigned>(q + offset), static_cast<unsigned>(r + offset)};
     }
     auto adj = zero_adj(N);
-    const int dirs[6][2] = {{1,0},{1,-1},{0,-1},{-1,0},{-1,1},{0,1}};
     for (int i = 0; i < N; i++) {
         auto [q, r] = coords[i];
-        for (auto& dv : dirs) {
+        for (auto& dv : AXIAL_DIRS) {
             auto it = idx.find({q + dv[0], r + dv[1]});
             if (it != idx.end()) adj[i][it->second] = 1;
         }
     }
     return make_bc(std::move(adj), 2u, std::move(pos));
+}
+
+BoardConfig triangular_hex_board(int d) {
+    assert(d >= 0 && "d must be non-negative");
+    std::vector<std::pair<int,int>> coords;
+    for (int q = -d; q <= d; q++)
+        for (int r = std::max(-d, -d - q); r <= std::min(d, d - q); r++)
+            coords.push_back({q, r});
+    return triangular_lattice_board(coords, d);
 }
 
 BoardConfig hex_board(int d) {
     assert(d >= 0 && "d must be non-negative");
-    const int dirs[6][2] = {{1,0},{1,-1},{0,-1},{-1,0},{-1,1},{0,1}};
-
-    // Hexagon centers - mirrors shared/boardConfig.ts's hexBoard().
     std::vector<std::pair<int,int>> centers;
-    for (int a = -d; a <= d; a++) {
-        int b_lo = std::max(-d, -d - a);
-        int b_hi = std::min(d, d - a);
-        for (int b = b_lo; b <= b_hi; b++)
-            centers.push_back({a + 2*b, a - b});
-    }
-
-    std::map<std::pair<int,int>, int> idx;
-    std::vector<std::pair<int,int>> coords;
-    auto add_vertex = [&](int q, int r) {
-        auto key = std::make_pair(q, r);
-        if (idx.count(key)) return;
-        idx[key] = static_cast<int>(coords.size());
-        coords.push_back(key);
-    };
+    for (int a = -d; a <= d; a++)
+        for (int b = std::max(-d, -d - a); b <= std::min(d, d - a); b++)
+            centers.push_back({a + 2 * b, a - b});
+    std::set<std::pair<int,int>> seen;
+    std::vector<std::pair<int,int>> vertices;
     for (auto& [q, r] : centers)
-        for (auto& dv : dirs)
-            add_vertex(q + dv[0], r + dv[1]);
-
-    int N = static_cast<int>(coords.size());
-    int offset = 2*d + 1;
-    std::vector<std::vector<unsigned>> pos(N);
-    for (int i = 0; i < N; i++) {
-        auto [q, r] = coords[i];
-        pos[i] = {static_cast<unsigned>(q + offset), static_cast<unsigned>(r + offset)};
-    }
-    auto adj = zero_adj(N);
-    for (int i = 0; i < N; i++) {
-        auto [q, r] = coords[i];
-        for (auto& dv : dirs) {
-            auto it = idx.find({q + dv[0], r + dv[1]});
-            if (it != idx.end()) adj[i][it->second] = 1;
-        }
-    }
-    return make_bc(std::move(adj), 2u, std::move(pos));
+        for (auto& dv : AXIAL_DIRS)
+            if (seen.insert({q + dv[0], r + dv[1]}).second) vertices.push_back({q + dv[0], r + dv[1]});
+    return triangular_lattice_board(vertices, 2 * d + 1);
 }
 
 BoardConfig trihex_board(int d) {
     assert(d >= 0 && "d must be non-negative");
-    const int dirs[6][2] = {{1,0},{1,-1},{0,-1},{-1,0},{-1,1},{0,1}};
-
-    // Hexagon centers - mirrors shared/boardConfig.ts's trihexBoard().
     std::vector<std::pair<int,int>> centers;
-    for (int a = -d; a <= d; a++) {
-        int b_lo = std::max(-d, -d - a);
-        int b_hi = std::min(d, d - a);
-        for (int b = b_lo; b <= b_hi; b++)
-            centers.push_back({2*a, 2*b});
-    }
-
-    std::map<std::pair<int,int>, int> idx;
-    std::vector<std::pair<int,int>> coords;
-    auto add_vertex = [&](int q, int r) {
-        auto key = std::make_pair(q, r);
-        if (idx.count(key)) return;
-        idx[key] = static_cast<int>(coords.size());
-        coords.push_back(key);
-    };
+    for (int a = -d; a <= d; a++)
+        for (int b = std::max(-d, -d - a); b <= std::min(d, d - a); b++)
+            centers.push_back({2 * a, 2 * b});
+    std::set<std::pair<int,int>> seen;
+    std::vector<std::pair<int,int>> vertices;
     for (auto& [q, r] : centers)
-        for (auto& dv : dirs)
-            add_vertex(q + dv[0], r + dv[1]);
-
-    int N = static_cast<int>(coords.size());
-    int offset = 2*d + 1;
-    std::vector<std::vector<unsigned>> pos(N);
-    for (int i = 0; i < N; i++) {
-        auto [q, r] = coords[i];
-        pos[i] = {static_cast<unsigned>(q + offset), static_cast<unsigned>(r + offset)};
-    }
-    auto adj = zero_adj(N);
-    for (int i = 0; i < N; i++) {
-        auto [q, r] = coords[i];
-        for (auto& dv : dirs) {
-            auto it = idx.find({q + dv[0], r + dv[1]});
-            if (it != idx.end()) adj[i][it->second] = 1;
-        }
-    }
-    return make_bc(std::move(adj), 2u, std::move(pos));
+        for (auto& dv : AXIAL_DIRS)
+            if (seen.insert({q + dv[0], r + dv[1]}).second) vertices.push_back({q + dv[0], r + dv[1]});
+    return triangular_lattice_board(vertices, 2 * d + 1);
 }
 
 // gap=0.0 → glue_twisted_square_board, gap=1.0 → twisted_square_board

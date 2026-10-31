@@ -3,6 +3,7 @@
 #include "game/cleg_check.h"
 #include "game/topology.h"
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <functional>
 #include <optional>
@@ -691,7 +692,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                 if (!is_set_elem_kind(elem.kind))
                     throw std::runtime_error(
                         "cleg: '" + callee + "' argument 1: element type " + type_to_string(elem) + " has no defined "
-                        "equality - only number/string/bool/edge/tri/quad elements are supported");
+                        "equality - only number/string/bool/edge/simp/quad elements are supported");
                 if (!type_equals(arg_types[1], elem))
                     throw std::runtime_error(
                         "cleg: '" + callee + "' argument 2: expected " + type_to_string(elem) + " (the element type of "
@@ -716,7 +717,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                 if (!is_set_elem_kind(elem.kind))
                     throw std::runtime_error(
                         "cleg: '" + callee + "' argument 1: element type " + type_to_string(elem) + " has no defined "
-                        "equality - only number/string/bool/edge/tri/quad elements are supported");
+                        "equality - only number/string/bool/edge/simp/quad elements are supported");
                 return ClegType{CTKind::Set, std::make_shared<ClegType>(elem)};
             },
             [](const std::vector<ClegValue>& args, GlobalInfo&) {
@@ -1475,11 +1476,17 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                         for (int c : point) point_arg.arr_v.push_back(make_number(c));
                         ClegValue result = call_user_function(
                             *globals.funcs.at(adj_fn_val.func_name), fill_holes(adj_fn_val.func_bound_args, {point_arg}), globals);
+                        // TS's string key never matches a target with a non-integer coordinate; an
+                        // int point can't hold one, so such a target is dropped here instead.
                         std::vector<std::vector<int>> targets;
                         for (auto& inner : result.arr_v) {
                             std::vector<int> t;
-                            for (auto& c : inner.arr_v) t.push_back(static_cast<int>(std::llround(c.number)));
-                            targets.push_back(std::move(t));
+                            bool on_lattice = true;
+                            for (auto& c : inner.arr_v) {
+                                if (c.number != std::floor(c.number) || std::abs(c.number) > INT_MAX) { on_lattice = false; break; }
+                                t.push_back(static_cast<int>(c.number));
+                            }
+                            if (on_lattice) targets.push_back(std::move(t));
                         }
                         return targets;
                     };

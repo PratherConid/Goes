@@ -96,8 +96,8 @@ static std::vector<TurnInfo> parse_turn_list(const json& j) {
         TurnInfo ti;
         ti.player = t.at("player").get<int>();
         ti.stones = t.at("stones").get<std::vector<int>>();
-        ti.is_protected = t.value("protected", std::vector<int>(ti.stones.size(), 0));
-        ti.friendly     = t.value("friendly",  std::vector<int>(ti.stones.size(), 0));
+        ti.is_protected = t.at("protected").get<std::vector<int>>();
+        ti.friendly     = t.at("friendly").get<std::vector<int>>();
         out.push_back(std::move(ti));
     }
     return out;
@@ -158,7 +158,7 @@ GameConfig parse_game_cfg(const json& cfg) {
     game_cfg.global_stone_place_limit = parse_global_stone_place_limit(
         cfg.value("globalStonePlaceLimit", json(nullptr)), game_cfg.num_stones);
     game_cfg.stone_to_player_map = parse_stone_to_player_map(cfg.at("stoneToPlayerMap"));
-    game_cfg.forced_pass_only = cfg.value("forcedPassOnly", true);
+    game_cfg.forced_pass_only = cfg.at("forcedPassOnly").get<bool>();
     game_cfg.score_rule       = cfg.value("scoreRule", std::string("area"));
     game_cfg.komi             = cfg.value("komi", std::vector<float>());
     game_cfg.ko_rule          = (cfg.value("koRule", std::string("situational")) == "positional")
