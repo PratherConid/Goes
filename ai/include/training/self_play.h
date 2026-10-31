@@ -234,8 +234,8 @@ GameRecord trajectory_to_record(
 // stored into the replay buffer via the caller's trajectory_and_result_to_record().
 //
 // evaluators: model id -> Evaluator, keyed to match BoardState::player_model_id (each state in
-// `states` is routed to the model its own next_turn.player is assigned to - see
-// MCTS::evaluate_batch()). Copied into the MCTS instance constructed internally.
+// `states` is searched by the model its own next_turn.player is assigned to - see MCTS's class
+// comment). Copied into the MCTS instance constructed internally.
 //
 // history_descr, when non-null, additionally captures each ply's minimal history features
 // (PlyResult::history_features) via a second board_to_features() call under that descriptor -

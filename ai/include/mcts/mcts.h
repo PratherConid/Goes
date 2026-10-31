@@ -51,11 +51,16 @@ struct NoiseConfig {
 // per-player reward map and reads the value for each node's own player. Terminal
 // rewards come from compute_player_rewards(); model leaves contribute only the value
 // for the leaf's current player (others get 0 for that simulation).
+//
+// Each root's tree is searched with one model throughout: the root mover's own
+// (models.at(root->player_model_id[next_turn.player-1])), which also stands in for the
+// opponents at their nodes. A game between different models is then a contest of each model's
+// own search - routing an opponent's nodes to the opponent's model instead would let each
+// search consult the other side's network, so tournament results would measure that mixture
+// rather than either model.
 class MCTS {
 public:
-    // models: model id -> Evaluator (see BoardState::player_model_id's doc comment) - every state
-    // passed to evaluate_batch() below is routed to models.at(state->player_model_id[player-1]),
-    // where player is whoever's next_turn.player it is at that state.
+    // models: model id -> Evaluator (see BoardState::player_model_id's doc comment).
     MCTS(std::map<int, Evaluator> models, float c_puct, uint64_t seed = 42);
 
     // Move-count truncation is read per-state from BoardState::max_plies
@@ -72,14 +77,12 @@ private:
     float c_puct_;
     std::mt19937 rng_;
 
-    // Tallies `states` by which model evaluates them (models_.at(state->player_model_id[player-1]),
-    // player = state->next_turn.player - every state reaching this point is already known
-    // non-terminal, so next_turn is always well-defined), dispatches one sub-batch per distinct
-    // model, then rearranges the per-model results back into full-size (policy, ownership) tensors
-    // in the caller's original order. Replaces the single model_.evaluate_batch(states) call this
-    // codebase used before multi-model support - same shape/semantics either way, so callers don't
-    // need to know how many distinct models were actually involved.
-    std::pair<torch::Tensor, torch::Tensor> evaluate_batch(const std::vector<const BoardState*>& states);
+    // Evaluates states[i] with models_.at(model_ids[i]) - one sub-batch per distinct model, then
+    // rearranges the per-model results back into full-size (policy, ownership) tensors in the
+    // caller's original order, so callers don't need to know how many distinct models were
+    // involved.
+    std::pair<torch::Tensor, torch::Tensor> evaluate_batch(
+        const std::vector<const BoardState*>& states, const std::vector<int>& model_ids);
 
     // Returns (path, leaf, per-player-rewards-or-nullopt)
     std::tuple<std::vector<std::pair<MCTSNode*, int>>,
@@ -87,7 +90,7 @@ private:
                std::optional<std::unordered_map<int,float>>>
     select(MCTSNode* root);
 
-    MCTSTiming simulate_batch(const std::vector<MCTSNode*>& roots);
+    MCTSTiming simulate_batch(const std::vector<MCTSNode*>& roots, const std::vector<int>& root_model_ids);
     void backup(const std::vector<std::pair<MCTSNode*, int>>& path,
                 const std::unordered_map<int,float>& rewards);
 

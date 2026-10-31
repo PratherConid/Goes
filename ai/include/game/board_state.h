@@ -359,10 +359,10 @@ public:
     // Training/self-play concept only - server.cpp's per-request /move inference path never reads
     // this (a session's BoardState always gets the default all-1s from new_state(), and the server
     // always evaluates with a single model regardless of this field's contents). Which model
-    // evaluates each player's turns during self-play - 1-indexed via player_model_id[p-1], an id
+    // searches each player's turns during self-play - 1-indexed via player_model_id[p-1], an id
     // key into MCTS::models_ (mcts.h). Lets different players in the same self-play game be
-    // evaluated by different models (e.g. a candidate checkpoint vs. a previous one), routed off
-    // whoever's next_turn.player it is at each state (see MCTS::evaluate_batch()). new_state()
+    // played by different models (e.g. a candidate checkpoint vs. a previous one); a player's
+    // model evaluates every node of the search it runs on its turn (see MCTS's class comment). new_state()
     // starts every player at id 1; train.cpp then reassigns them per game from the currently-active
     // snapshot set (assign_random_models()/refresh_player()/assign_by_sequence()).
     std::vector<int> player_model_id;

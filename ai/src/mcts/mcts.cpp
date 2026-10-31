@@ -106,15 +106,11 @@ MCTS::MCTS(std::map<int, Evaluator> models, float c_puct, uint64_t seed)
       rng_(static_cast<unsigned>(seed))
 {}
 
-std::pair<torch::Tensor, torch::Tensor> MCTS::evaluate_batch(const std::vector<const BoardState*>& states) {
-    // model id -> indices into `states` assigned to that model (the model belonging to whoever's
-    // next_turn.player it is at each state).
+std::pair<torch::Tensor, torch::Tensor> MCTS::evaluate_batch(
+    const std::vector<const BoardState*>& states, const std::vector<int>& model_ids) {
+    // model id -> indices into `states` that model evaluates.
     std::map<int, std::vector<int>> groups;
-    for (int i = 0; i < (int)states.size(); i++) {
-        int player = states[i]->next_turn.player;
-        int model_id = states[i]->player_model_id[player - 1];
-        groups[model_id].push_back(i);
-    }
+    for (int i = 0; i < (int)states.size(); i++) groups[model_ids[i]].push_back(i);
 
     torch::Tensor policy, ownership;
     for (auto& [model_id, idxs] : groups) {
@@ -262,9 +258,11 @@ void MCTS::backup(const std::vector<std::pair<MCTSNode*, int>>& path,
 // call. Backup looks up per-player rewards so each node's Q-value reflects its
 // own player's outcome rather than relying on a zero-sum negation.
 //
+// root_model_ids[i] is the model that searches roots[i]'s tree (see search_batch()).
+//
 // Returns timing: seconds spent in MCTS::select (all roots) and evaluate_batch
 //                 (eval=0.0 if all leaves were terminal and no model call was needed)
-MCTSTiming MCTS::simulate_batch(const std::vector<MCTSNode*>& roots) {
+MCTSTiming MCTS::simulate_batch(const std::vector<MCTSNode*>& roots, const std::vector<int>& root_model_ids) {
     int n = static_cast<int>(roots.size());
     std::vector<std::vector<std::pair<MCTSNode*, int>>> paths(n);
     std::vector<MCTSNode*> nodes(n);
@@ -300,11 +298,16 @@ MCTSTiming MCTS::simulate_batch(const std::vector<MCTSNode*>& roots) {
     double eval_time = 0.0;
     if (!eval_indices.empty()) {
         std::vector<const BoardState*> batch_states;
+        std::vector<int> batch_model_ids;
         batch_states.reserve(eval_indices.size());
-        for (int i : eval_indices) batch_states.push_back(&nodes[i]->state);
+        batch_model_ids.reserve(eval_indices.size());
+        for (int i : eval_indices) {
+            batch_states.push_back(&nodes[i]->state);
+            batch_model_ids.push_back(root_model_ids[i]);
+        }
 
         auto t0 = std::chrono::high_resolution_clock::now();
-        auto [policy_t, ownership_t] = evaluate_batch(batch_states);
+        auto [policy_t, ownership_t] = evaluate_batch(batch_states, batch_model_ids);
         auto t1 = std::chrono::high_resolution_clock::now();
         eval_time = std::chrono::duration<double>(t1 - t0).count();
 
@@ -409,8 +412,13 @@ MCTS::search_batch(
 
     // Initial root-prior batch evaluation
     std::vector<const BoardState*> cstates(states.begin(), states.end());
+    // The model that searches from each root: the root mover's own, used for every node of that
+    // root's tree.
+    std::vector<int> root_model_ids;
+    root_model_ids.reserve(n);
+    for (const BoardState* s : cstates) root_model_ids.push_back(s->player_model_id[s->next_turn.player - 1]);
     auto t0 = std::chrono::high_resolution_clock::now();
-    auto [policy_t, ownership_t] = evaluate_batch(cstates);
+    auto [policy_t, ownership_t] = evaluate_batch(cstates, root_model_ids);
     auto t1 = std::chrono::high_resolution_clock::now();
     MCTSTiming total;
     total.eval = std::chrono::duration<double>(t1 - t0).count();
@@ -455,7 +463,7 @@ MCTS::search_batch(
 
     auto t_sim0 = std::chrono::high_resolution_clock::now();
     for (int s = 0; s < num_simulations; s++)
-        total.add(simulate_batch(root_ptrs));
+        total.add(simulate_batch(root_ptrs, root_model_ids));
 
     std::vector<std::pair<std::vector<float>, int>> results;
     results.reserve(n);
