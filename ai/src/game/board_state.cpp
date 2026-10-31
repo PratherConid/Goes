@@ -154,9 +154,6 @@ GroupDict group_liberty(const std::vector<int>& board,
         color_gid[color] = gid + 1;
     }
 
-    // liberties: empty neighbors, plus occupied neighbors of a different but
-    // friendly-this-turn color. non_liberties: occupied neighbors of a
-    // different, non-friendly color.
     std::unordered_map<int, std::vector<std::unordered_set<int>>> lib_sets;
     std::unordered_map<int, std::vector<std::unordered_set<int>>> non_lib_sets;
     for (auto& [c, grps] : groups) {
@@ -177,9 +174,6 @@ GroupDict group_liberty(const std::vector<int>& board,
         }
     }
 
-    // Note: a group may legitimately have zero liberties here - a protected
-    // color (see calculate_legal_moves) can be left on the board at zero
-    // liberties instead of being captured.
     GroupDict result;
     for (auto& [c, grps] : groups) {
         GroupLib entries;
@@ -196,22 +190,16 @@ GroupDict group_liberty(const std::vector<int>& board,
 
 // ── Legal move calculation ────────────────────────────────────────────────────
 
-// The ply_mod component of a HistoryManager (ply_mod, board) key: the real
-// turn-cycle position for 'situational' (a repeat only "counts" when the
-// player-to-move also matches), or a constant for 'positional' (any repeated
-// board is a violation regardless of ply) - mirrors shared/boardState.ts's
-// compareState(), which skips the ply-mod comparison entirely under
-// 'positional'. Collapsing to a constant is sufficient (rather than needing a
-// separate board-only keying scheme) because HistoryManager's key already
-// embeds the full board content, so two positional-mode entries only collide
-// when their boards are actually identical.
+// The ply_mod component of a HistoryManager (ply_mod, board) key - stands in for
+// shared/boardState.ts's compareState() ko-rule handling: the turn-cycle position for
+// 'situational', or a constant for 'positional'. A constant suffices because the key already
+// embeds the full board, so two positional-mode entries only collide when their boards match.
 static int ko_ply_mod(KoRule ko_rule, int ply, int ltl) {
     return ko_rule == KoRule::Situational ? (ply % ltl) : 0;
 }
 
-// Mirrors shared/boardState.ts's calculateLegalMoves() - see LegalMovesData (board_state.h) for the
-// returned shape. Same num_stones+1-wide, 1-indexed captures table as the TS side; unoffered stones
-// are all-nullopt rather than all-null.
+// Mirrors shared/boardState.ts's calculateLegalMoves(). The ko check uses HistoryManager lookup +
+// `history_id_set` in place of sortedSituations.
 static LegalMovesData calculate_legal_moves(
     const std::vector<int>& board_in,
     const std::vector<std::vector<int>>& adj,
@@ -226,9 +214,6 @@ static LegalMovesData calculate_legal_moves(
     const std::vector<std::optional<int>>& global_stone_place_limit,
     const std::vector<std::vector<int>>& player_stone_place_cnt)
 {
-    // Private mutable copy: this function speculatively mutates a working
-    // board below and must never touch the caller's live array before a move
-    // is actually committed via make_move().
     std::vector<int> board = board_in;
     int N = static_cast<int>(board.size());
     int ltl = static_cast<int>(turn_list.size());
@@ -239,11 +224,6 @@ static LegalMovesData calculate_legal_moves(
     for (int s = 1; s <= num_stones; s++)
         if (turn_info.stones[s - 1] == 1) offered_stones.push_back(s);
 
-    // A stone the mover has already placed as many times as their per-player
-    // limit allows, or that's already been placed (by anyone) as many times as
-    // its global limit allows, is treated exactly as if it were never offered
-    // this turn. The global count isn't separately tracked - it's derived by
-    // summing player_stone_place_cnt[stone-1] across every player.
     {
         std::vector<int> filtered;
         for (int s : offered_stones) {
@@ -267,9 +247,6 @@ static LegalMovesData calculate_legal_moves(
 
     GroupDict group_dict = group_liberty(board, adj, N, friendly_stones);
 
-    // Nodes captured by a pass: every non-protected zero-liberty group on the
-    // board, regardless of color - this doesn't depend on which stone the
-    // mover could have played.
     std::vector<int> pass_capture;
     for (auto& [color, groups] : group_dict) {
         if (is_protected(color)) continue;
@@ -284,12 +261,6 @@ static LegalMovesData calculate_legal_moves(
     int place_legals = 0;
 
     for (int next_player : offered_stones) {
-        // A group may be sitting at zero liberties because it was protected on
-        // some earlier turn and was never actually removed. If it's no longer
-        // protected and isn't this candidate's own color, it's captured by
-        // whichever move actually gets played, regardless of position -
-        // equivalent to (and cheaply derived from) pass_capture, minus this
-        // candidate's own color's contribution.
         std::unordered_set<int> early_opp_capture;
         for (int n : pass_capture) if (board[n] != next_player) early_opp_capture.insert(n);
 
@@ -302,11 +273,6 @@ static LegalMovesData calculate_legal_moves(
             }
         }
 
-        // `me` groups whose only remaining liberty (if any) is illusory: one of
-        // their occupied neighbors is in early_opp_capture, which will actually
-        // be vacated once applied (see make_move) - so such a group isn't
-        // really down to just its current raw liberty count, and connecting to
-        // it is safe.
         std::unordered_set<GroupEntry*> early_self_liberation;
         for (auto* g : me) {
             for (int n : g->non_liberties) {
@@ -317,7 +283,6 @@ static LegalMovesData calculate_legal_moves(
         for (int i = 0; i < N; i++) {
             if (board[i] != 0) continue;
 
-            // whether the newly placed stone is adjacent to an empty node
             bool i_lib = false;
             for (int j = 0; j < N && !i_lib; j++)
                 if (adj[i][j] && board[j] == 0) i_lib = true;
@@ -325,10 +290,6 @@ static LegalMovesData calculate_legal_moves(
             std::vector<int> nb = board;
             nb[i] = next_player;
 
-            // Theorem: if any opponent group is captured, the move must be
-            // legal. (Protected-colored groups are never captured. If the
-            // mover's own color is friendly this turn, the new stone doesn't
-            // take away anyone's liberty, so no capture happens here at all.)
             bool capture = false;
             std::unordered_set<int> pos_captures;
             if (!is_friendly(next_player)) {
@@ -344,10 +305,6 @@ static LegalMovesData calculate_legal_moves(
             }
 
             if (!i_lib && !capture) {
-                // the new stone may connect previous friendly groups; if any
-                // such group has >1 liberty, the move is still legal - or
-                // exactly 1 (about to be filled by this placement), if that
-                // group is in early_self_liberation.
                 bool ok = false;
                 for (auto* g : me) {
                     auto& libs = g->liberties;
@@ -357,17 +314,10 @@ static LegalMovesData calculate_legal_moves(
                 }
                 if (!ok) {
                     if (is_protected(next_player)) {
-                        // The mover's own color can't be removed either: the
-                        // placed stone (and any connected group) simply stays
-                        // on the board at zero liberties, legal regardless of
-                        // allow_suicide - nothing to capture.
+                        // Legal: the protected mover's stones stay at zero liberties.
                     } else if (!allow_suicide) {
                         continue;
                     } else {
-                        // Suicide: the new stone and any friendly group(s) it
-                        // connects to (per the check above, none have another
-                        // liberty) form one zero-liberty group - captured
-                        // immediately, mirroring the opponent-capture case above.
                         nb[i] = 0;
                         pos_captures.insert(i);
                         for (auto* g : me) {
@@ -383,11 +333,6 @@ static LegalMovesData calculate_legal_moves(
             auto new_id_opt = hm->lookup(ko_ply_mod(ko_rule, len_history, ltl), nb);
             if (new_id_opt.has_value() && history_id_set.count(*new_id_opt)) continue;
 
-            // A leftover zero-liberty `me` group might additionally be freed by
-            // THIS candidate's own captures - e.g. one of its occupied
-            // neighbors is an opponent group this specific placement captures.
-            // If none of its neighbors were freed (by this move's own captures
-            // or by early_opp_capture), it's still dead and is captured too.
             std::unordered_set<int> early_self_captures;
             if (!is_protected(next_player)) {
                 for (auto* g : me) {
@@ -425,13 +370,7 @@ void BoardState::after_move(MoveInfo move_info, std::vector<std::vector<int>> ne
     uint64_t board_id = hm_->store_board(ko_ply_mod(ko_rule, ply, ltl), board);
     history_ids_.push_back(board_id);
     history_id_set_[board_id]++;
-    // Takes move_info.all_passed/new_player_stone_place_cnt as parameters (rather than reading
-    // them back via all_passed()/player_stone_place_cnt()) since the new HistoryEntry isn't
-    // interned yet - it's only stored once, below, alongside score.
     LegalMovesData legal_moves = compute_legal_moves(move_info.all_passed, new_player_stone_place_cnt);
-    // count_score() is pure/board-only (like TS's territory flood-fill), so
-    // capture_count - a running total, not derivable from the board - is
-    // merged in from the caller, the same way new_player_stone_place_cnt is.
     ScoreData sd = count_score();
     sd.capture_count = std::move(new_capture_count);
     HistoryEntry entry{std::move(move_info), std::move(legal_moves), std::move(sd),
@@ -455,10 +394,6 @@ LegalMovesData BoardState::compute_legal_moves(
         player_stone_place_limit, global_stone_place_limit, player_stone_place_cnt);
 }
 
-// Territory is found by flood-filling each maximal connected region of empty
-// nodes (same multi-frontier BFS pattern as group_liberty): a region belongs
-// to a stone type only if every node bordering it is that same type; regions
-// bordering zero or several distinct types are neutral (dame) and score nobody.
 ScoreData BoardState::count_score() const {
     ScoreData sd;
     for (int s = 1; s <= num_stones; s++) {
@@ -644,9 +579,6 @@ void BoardState::resign(int player) {
     if (std::find(rp.begin(), rp.end(), player) != rp.end()) return;
     int ply = static_cast<int>(history_ids_.size()) - 1;
     resigns_[ply].push_back(player);
-    // Resigning may end the game (too few non-resigned players remain) or
-    // change who counts as a winner if it's already over - game_over()
-    // checks resigned_players() live, so nothing needs stamping onto a move.
     refresh_winners();
 }
 
@@ -659,10 +591,7 @@ void BoardState::advance_resigned() {
 }
 
 bool BoardState::make_move(std::optional<int> k, std::optional<int> stone) {
-    // No computation needed here: history_entry_ids_'s last entry is
-    // never stale (see compute_legal_moves()), so there's nothing to refresh.
     if (game_over()) return false;
-    // A resigned player may only pass, and always may (ignoring forced_pass_only).
     auto rp = resigned_players();
     bool resigned = std::find(rp.begin(), rp.end(), next_turn.player) != rp.end();
     if (resigned && k.has_value()) return false;
@@ -690,24 +619,18 @@ bool BoardState::make_move(std::optional<int> k, std::optional<int> stone) {
         if (!legal_moves_data().captures[*stone][*k].has_value()) return false;
     }
 
-    // A PLACE move's captures are fully precomputed (see calculate_legal_moves);
-    // a (non-terminal) pass's captures are simply pass_capture.
     const std::vector<int>& captures = !k.has_value() ? legal_moves_data().pass_capture
                                                         : *legal_moves_data().captures[*stone][*k];
     std::vector<int> nb = board;
     if (k.has_value()) nb[*k] = *stone;
     for (int c : captures) nb[c] = 0;
     board = std::move(nb);
-    // Must read next_turn.player (the mover) before it's reassigned below.
     auto new_cnt = player_stone_place_cnt();
     if (k.has_value()) new_cnt[*stone - 1][next_turn.player - 1]++;
     auto new_capture_cnt = capture_count();
     new_capture_cnt[next_turn.player - 1] += static_cast<int>(captures.size());
     next_turn = turn_list[history_ids_.size() % turn_list.size()];
     MoveType move_type = k.has_value() ? MoveType::PLACE : MoveType::PASS;
-    // all_passed is always false here: this branch is only reached for a PLACE move or a
-    // non-round-completing PASS (the round-completing case returns early above) - max_plies
-    // ending the game is handled entirely by game_over()'s own live check, no stamping needed.
     MoveInfo move_info{move_type, k, k.has_value() ? stone : std::nullopt, captures,
                         k.has_value() ? 0 : consecutive_passes, false};
     after_move(std::move(move_info), std::move(new_cnt), std::move(new_capture_cnt));
@@ -723,12 +646,6 @@ void BoardState::withdraw_move() {
     int prev_ply = static_cast<int>(history_ids_.size()) - 1;
     board = hm_->board_of(history_ids_.back());
     next_turn = turn_list[prev_ply % turn_list.size()];
-    // No recompute needed: history_entry_ids_'s entries never go stale (see
-    // compute_legal_moves()) - game_over()'s resigned_players()/max_plies checks are
-    // live/derived rather than stamped onto MoveInfo, and all_passed is a
-    // per-ply-intrinsic fact that's never retroactively mutated, so the entry
-    // this pop uncovers is already exactly correct. A resignation is permanent
-    // (never un-resigned by withdraw_move) and game_over() reflects that live too.
     refresh_winners();
 }
 

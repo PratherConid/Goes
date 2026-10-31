@@ -6,12 +6,9 @@
 #include <numeric>
 #include <set>
 
-// Mirrors shared/fractal.ts's computeFlakeGlue(): for each base edge (i, j), exhaustively finds the
-// unique pair of other base edges - (m1, m2) within the copy at i, (n1, n2) within the copy at j -
-// whose S_i/S_j-transformed endpoints coincide two-for-two (S_i(x) = r*x + c*verts[i]). `verts` here
-// are plain doubles used ONLY as scratch data for this one-time search - unlike BoardConfig::embed
-// elsewhere in this codebase, they are never required to be exact integers, and are never exposed as
-// a board's own position data (see fractal.h's own top comment).
+// Mirrors shared/fractal.ts's computeFlakeGlue(). `verts` are plain doubles used only as scratch
+// data for this one-time search - unlike BoardConfig::embed, they need not be exact integers and are
+// never exposed as board positions.
 static std::vector<std::array<int, 6>> compute_flake_glue(
     const std::vector<std::vector<double>>& verts, const std::vector<std::pair<int, int>>& edges,
     double r, double c) {
@@ -39,7 +36,6 @@ static std::vector<std::array<int, 6>> compute_flake_glue(
                             dist(transform(i, mab.second), transform(j, nab.second)) < 1e-9)
                             matches.push_back({ mab.first, mab.second, nab.first, nab.second });
 
-        // Dedupe representations that differ only by swapping (ma,mb)<->(na,nb) together.
         std::set<std::array<int, 4>> seen;
         std::vector<std::array<int, 4>> canon;
         for (const auto& m : matches) {
@@ -54,12 +50,7 @@ static std::vector<std::array<int, 6>> compute_flake_glue(
     return glue;
 }
 
-// Mirrors shared/fractal.ts's computeNodeGlue(): for each base edge (i, j), exhaustively finds the
-// unique pair of vertices (m, p) - m within the copy at i, p within the copy at j - whose
-// S_i/S_j-transformed positions coincide. Unlike compute_flake_glue()'s own edge-to-edge (2-point)
-// search, this is a single-point search - regular_polygon_fractal_descr()'s own non-multiple-of-4
-// case (see fractal.h's own doc comment): node-merge copies share exactly one point per base edge,
-// not a whole growing edge, so there is no second point to match and no chain to track.
+// Mirrors shared/fractal.ts's computeNodeGlue(); same scratch-only `verts` as compute_flake_glue().
 static std::vector<std::array<int, 4>> compute_node_glue(
     const std::vector<std::vector<double>>& verts, const std::vector<std::pair<int, int>>& edges,
     double r, double c) {
@@ -88,9 +79,7 @@ static std::vector<std::array<int, 4>> compute_node_glue(
     return glue;
 }
 
-// Mirrors shared/fractal.ts's POINT_GLUE_OBJECT/EDGE_GLUE_OBJECT - see fractal.h's own doc comment
-// for why these are plain shared constants (stateless, no captures), unlike
-// menger_hyperface_glue_object() below.
+// Mirrors shared/fractal.ts's POINT_GLUE_OBJECT/EDGE_GLUE_OBJECT.
 const GlueObjectType POINT_GLUE_OBJECT{ [](const std::vector<int>& tags) -> std::vector<GlueStep> {
     int v = tags[0];
     return { GlueStep{ v, { v } } };
@@ -135,11 +124,8 @@ SubFlakeResult node_edge_merge_flake_rec(int n, const FractalDescr& descr) {
             merges.push_back({ { p, subs[p].labels.at(self_addrs[i]) }, { q, subs[q].labels.at(other_addrs[i]) } });
     }
 
-    // Each sub's own addresses are relative to ITS OWN numbering - prepend its slot index so they
-    // become valid addresses at THIS level, before combining (mirrors shared/fractal.ts's own
-    // nodeEdgeMergeFlakeRec() doc comment). merge_boards() is (pos, adj, labels)-shaped - pass empty
-    // per-node positions (emb_dim=0 convention, see zero_adj's own callers) since these boards track
-    // no position at all, and discard the result's own (unused) pos.
+    // RawBoard carries `pos`: pass empty per-node positions (these boards track none) and ignore the
+    // merged result's.
     std::vector<RawBoard> boards_for_merge;
     for (int slot = 0; slot < descr.num_subs; slot++) {
         std::map<std::string, int> relabeled;
@@ -265,15 +251,6 @@ const FractalDescr& icosahedron_fractal_descr() {
     return descr;
 }
 
-// Vertex `2k`/`2k+1` are the `+-1` points on axis `k` (matching octahedron_board()'s own
-// orthoplex_board(3) indexing) and are each other's antipode; every non-antipodal pair is an edge.
-// Unlike dodeca/icosahedron, octahedron's own non-edges (the 3 antipodal pairs) are deliberately
-// left out of compute_flake_glue()'s search entirely - not because they don't coincide (they do:
-// every copy's own antipodal-attachment corner lands on the same shared center point, since
-// `S_i(v_{antipode(i)}) = r*(-v_i) + c*v_i = (c-r)*v_i = 0` once `c = r`, for every `i`), but
-// because that coincidence needs no glue entry of its own: it already follows transitively from the
-// 12 real-edge glue relations, resolved automatically by node_edge_merge_flake_rec()'s own
-// merge_boards() call (see that function's own doc comment).
 const FractalDescr& octahedron_fractal_descr() {
     static FractalDescr descr;
     static bool computed = false;
@@ -304,11 +281,8 @@ const FractalDescr& octahedron_fractal_descr() {
     return descr;
 }
 
-// Mirrors shared/fractal.ts's regularPolygonFlakeRC() - see its own doc comment for the full
-// derivation: r+c=1 (a copy's own self vertex stays exactly where the outer polygon's vertex was)
-// plus a closed-form coincidence ratio `c/r = 1 + 2*sum_{j=1}^{k} cos(2*pi*j/n_sides)`, for
-// `k = n_sides/4 - 1` (merge by edge, `n_sides` a multiple of 4) or `k = n_sides/4` truncated (merge
-// by node, otherwise - C++ integer division already floors for positive `n_sides`).
+// Mirrors shared/fractal.ts's regularPolygonFlakeRC(); C++ integer division stands in for
+// Math.floor() (equivalent for positive `n_sides`).
 static std::pair<double, double> regular_polygon_flake_rc(int n_sides) {
     const double pi = std::acos(-1.0);
     bool is_edge_merge = n_sides % 4 == 0;
@@ -320,13 +294,10 @@ static std::pair<double, double> regular_polygon_flake_rc(int n_sides) {
     return { r, c };
 }
 
-// Raw base edges + glue relations shared by regular_polygon_fractal_descr()/
-// central_pentagon_fractal_descr() - a distinct caching layer with no direct TS counterpart:
-// shared/fractal.ts's own regularPolygonFractalDescr()/centralPentagonFractalDescr() each
-// independently recompute their own verts/edges/glue (a JS Map cache per function is cheap enough
-// there), whereas here central_pentagon_fractal_descr() needs the exact same base pentagon
-// edges/node_glue regular_polygon_fractal_descr(5, ...) does, so this avoids a second distance
-// search for identical data.
+// Base edges + glue relations shared by regular_polygon_fractal_descr()/
+// central_pentagon_fractal_descr(), cached per `n_sides` - no TS counterpart (the TS functions each
+// recompute their own verts/edges/glue): central_pentagon_fractal_descr() needs the same pentagon
+// edges/node_glue as regular_polygon_fractal_descr(5, ...), so this avoids a second distance search.
 struct RegularPolygonRawData {
     std::vector<std::pair<int, int>> edges;
     std::vector<std::array<int, 6>> edge_glue; // populated iff n_sides % 4 == 0
@@ -417,8 +388,7 @@ const FractalDescr& central_pentagon_fractal_descr() {
     return descr;
 }
 
-// Mirrors shared/fractal.ts's radixTuples(): all `base^k` length-`k` tuples with entries in
-// `0..base-1`, in mixed-radix counting order.
+// Mirrors shared/fractal.ts's radixTuples().
 static std::vector<std::vector<int>> radix_tuples(int k, int base) {
     std::vector<std::vector<int>> tuples = { {} };
     for (int d = 0; d < k; d++) {
@@ -446,9 +416,7 @@ static std::vector<int> decode_menger_vertex(int dim, int v) {
     return coords;
 }
 
-// Mirrors shared/fractal.ts's mengerFaceTags() - the general form, taking a SET of fixed axes (see
-// that TS function's own doc comment for why a single glue object needs to handle any fixed-axis-set
-// size, from 1 up to `dim`).
+// Mirrors shared/fractal.ts's mengerFaceTags().
 static std::vector<int> menger_face_tags(int dim, const std::vector<int>& fixed_axes, const std::vector<int>& fixed_vals) {
     std::vector<int> free_axes;
     for (int a = 0; a < dim; a++)
@@ -472,20 +440,15 @@ static bool is_menger_grid_kept(const std::vector<int>& grid, const std::vector<
     return indicator[off_center] == 1;
 }
 
-// Mirrors shared/fractal.ts's grid.join(',') string-keying of `slotOf` - `positions`' own grid
-// position -> subDescr slot lookup, closed over by menger_hyperface_glue_object() below.
+// Mirrors shared/fractal.ts's `grid.join(',')` keying of `slotOf`.
 static std::string join_grid(const std::vector<int>& grid) {
     std::string s;
     for (size_t i = 0; i < grid.size(); i++) { if (i) s += ","; s += std::to_string(grid[i]); }
     return s;
 }
 
-// Mirrors shared/fractal.ts's mengerHyperfaceGlueObject() - see its own doc comment for the full
-// derivation (finding the FULL SET of axes every input tag agrees on, rather than just the first,
-// is what lets one implementation handle every possible shared sub-face dimension uniformly, down to
-// a single shared corner point). Closes over `dim`/`indicator`/`slot_of` by value (mirroring the TS
-// side's own JS closure) - see fractal.h's own doc comment for why this, unlike
-// POINT_GLUE_OBJECT/EDGE_GLUE_OBJECT above, cannot be a stateless shared constant.
+// Mirrors shared/fractal.ts's mengerHyperfaceGlueObject(); the lambda captures
+// `dim`/`indicator`/`slot_of` by value.
 static GlueObjectType menger_hyperface_glue_object(int dim, std::vector<int> indicator, std::map<std::string, int> slot_of) {
     return GlueObjectType{
         [dim, indicator, slot_of](const std::vector<int>& tags) -> std::vector<GlueStep> {
@@ -555,9 +518,6 @@ const FractalDescr& menger_fractal_descr(int dim, const std::vector<int>& indica
     descr.num_subs = static_cast<int>(positions.size());
     descr.leaf_conn = std::move(leaf_conn);
 
-    // One glue_map entry per pair of surviving grid positions that TOUCH (every axis differs by at
-    // most 1, at least one axis differs) - mirrors shared/fractal.ts's mengerFractalDescr() own
-    // `glueMap`-building loop.
     for (size_t i = 0; i < positions.size(); i++)
         for (size_t j = i + 1; j < positions.size(); j++) {
             const auto& gi = positions[i];

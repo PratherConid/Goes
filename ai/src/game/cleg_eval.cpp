@@ -11,20 +11,15 @@
 #include <stdexcept>
 #include <unordered_map>
 
-// Mirrors shared/clegEval.ts - the builtin-function table and the tree-walking evaluator, plus the
-// build_board_from_cleg entry point - see game/cleg_eval.h's own top comment for the full context.
-// This file only points out where the C++ port differs from the TS source; the TS comments are the
-// canonical reference for WHAT each piece does, not repeated here.
-//   - TypeEnv/ValueEnv's parent chain (ValueEnv is this file's own; TypeEnv is game/cleg_check.cpp's)
-//     uses raw pointers into the enclosing call's own stack frames (safe here: every env is
-//     stack-allocated and never outlives the recursive check/eval call that owns it) rather than TS's
-//     GC'd object graph.
+// Mirrors shared/clegEval.ts (see game/cleg_eval.h's top comment). The TS comments are the canonical
+// reference; comments here only note where the port differs.
+//   - ValueEnv's (and game/cleg_check.cpp's TypeEnv's) parent chain uses raw pointers into the
+//     enclosing call's stack frames (safe: every env is stack-allocated and never outlives the
+//     recursive check/eval call that owns it) rather than TS's GC'd object graph.
 
 // ── Predefined (board-construction) functions ─────────────────────────────────
 
-// Forward-declared here (real definitions live in the Evaluation section below, their own more
-// natural spot) purely so sub_hcublat's own call lambda - defined further down in THIS section, but
-// needing to call back into a func-typed argument - can use them.
+// Defined in the Evaluation section below; forward-declared for the subHcublatB builders here.
 static ClegValue call_user_function(const FunctionDecl& fn, const std::vector<ClegValue>& args, GlobalInfo& globals);
 static std::vector<ClegValue> fill_holes(
     const std::vector<std::optional<ClegValue>>& bound_args, const std::vector<ClegValue>& supplied_args);
@@ -49,22 +44,18 @@ static const ClegType NUMBER_TYPE{CTKind::Number, nullptr};
 static const ClegType STRING_TYPE{CTKind::String, nullptr};
 const ClegType EGR_TYPE{CTKind::Egr, nullptr};
 static const ClegType EDGE_TYPE{CTKind::Edge, nullptr};
-// The one ClegType for a simp value of any arity - see cleg_base.h's own doc comment on why it
-// carries no arity. Mirrors shared/clegEval.ts's SIMP_TYPE.
+// Mirrors shared/clegEval.ts's SIMP_TYPE.
 static const ClegType SIMP_TYPE{CTKind::Simp, nullptr};
 static const ClegType QUAD_TYPE{CTKind::Quad, nullptr};
 static const ClegType MOD_TYPE{CTKind::Mod, nullptr};
-// The one ClegType for a formsel (FormSelector) value of any branch. Mirrors shared/clegEval.ts's
-// FORMSEL_TYPE.
+// Mirrors shared/clegEval.ts's FORMSEL_TYPE.
 static const ClegType FORMSEL_TYPE{CTKind::Formsel, nullptr};
-// The one ClegType for an lrs (LocalReplaceSelector) value of any branch. Mirrors shared/clegEval.ts's
-// LRS_TYPE.
+// Mirrors shared/clegEval.ts's LRS_TYPE.
 static const ClegType LRS_TYPE{CTKind::Lrs, nullptr};
 static const ClegType PSEL_TYPE{CTKind::Psel, nullptr};
 
-// Argument/return types shared by subHcublatB's three overloads (build_sub_hcublat/
-// build_sub_hcublat_custom_adj/its own BuiltinFunction entry below). Mirrors shared/clegEval.ts's
-// HCUBLAT_BOUNDS_TYPE/HCUBLAT_POINT_TYPE/HCUBLAT_COND_TYPE/HCUBLAT_ECOND_TYPE/HCUBLAT_ADJFN_TYPE.
+// Mirrors shared/clegEval.ts's HCUBLAT_BOUNDS_TYPE/HCUBLAT_POINT_TYPE/HCUBLAT_COND_TYPE/
+// HCUBLAT_ECOND_TYPE/HCUBLAT_ADJFN_TYPE.
 static const ClegType HCUBLAT_BOUNDS_TYPE{
     CTKind::Array, std::make_shared<ClegType>(ClegType{CTKind::Array, std::make_shared<ClegType>(NUMBER_TYPE)})};
 static const ClegType HCUBLAT_POINT_TYPE{CTKind::Array, std::make_shared<ClegType>(NUMBER_TYPE)};
@@ -73,22 +64,19 @@ static const ClegType HCUBLAT_COND_TYPE{
 static const ClegType HCUBLAT_ECOND_TYPE{
     CTKind::Func, nullptr, {HCUBLAT_POINT_TYPE, HCUBLAT_POINT_TYPE},
     std::make_shared<ClegType>(ClegType{CTKind::Bool, nullptr})};
-// `adj_fn`'s own type (build_sub_hcublat_custom_adj below): one point in, the list of OTHER points
-// (as their own absolute coordinates) it should connect to, out.
 static const ClegType HCUBLAT_ADJFN_TYPE{
     CTKind::Func, nullptr, {HCUBLAT_POINT_TYPE},
     std::make_shared<ClegType>(ClegType{CTKind::Array, std::make_shared<ClegType>(HCUBLAT_POINT_TYPE)})};
 
-// CTKind-based counterpart of set_elem_kind_words() (game/cleg_parser.cpp) - used by the type
-// checker's SetLit case (game/cleg_check.cpp).
+// Mirrors shared/clegBase.ts's SET_ELEM_KINDS membership test, on CTKind (game/cleg_parser.cpp's
+// set_elem_kind_words() is the keyword-string counterpart).
 bool is_set_elem_kind(CTKind k) {
     return k == CTKind::Number || k == CTKind::String || k == CTKind::Bool ||
            k == CTKind::Edge || k == CTKind::Simp || k == CTKind::Quad;
 }
 
-// Mirrors the TS side's own direct-string-interpolation of a SelectorType (a template-literal string
-// there, e.g. 'simp2' - no space) - used everywhere resolve_selector_arg/resolve_any_kind_selector_arg
-// below report a SelectorType in an error message.
+// Stands in for TS's direct template-literal interpolation of a SelectorType string (e.g. 'simp2',
+// no space) in error messages.
 static std::string selector_type_word(const SelectorType& t) {
     switch (t.kind) {
         case SelectorKind::Node: return "node";
@@ -106,9 +94,8 @@ static CTKind selector_set_elem_kind(const SelectorType& t) {
     return CTKind::Simp;
 }
 
-// Mirrors shared/clegEval.ts's setValueToSelectedVals() - builds a `raw` Selector wrapping `values`
-// (a `set`'s own deduplicated ClegValue vector) directly, populating whichever of Selector's own
-// raw_nodes/raw_edges/raw_simps/raw_quads (game/selector.h) matches want_kind.
+// Mirrors shared/clegEval.ts's setValueToSelectedVals(), but returns the whole `raw` Selector (TS's
+// callers build it), filling the raw_* field (game/selector.h) that matches want_kind.
 static Selector raw_selector_from_set(const SelectorType& want_kind, const std::vector<ClegValue>& values) {
     Selector sel; sel.op = SelectorOp::Raw; sel.type = want_kind;
     switch (want_kind.kind) {
@@ -128,9 +115,8 @@ static Selector raw_selector_from_set(const SelectorType& want_kind, const std::
     return sel;
 }
 
-// std::function (not a plain function pointer) since simp_centralize's own resolve_selector_arg call
-// below needs a closure capturing `n` (parse_simp_selector's own leading arity argument) - mirrors
-// shared/clegEval.ts's own `(s) => parseSimpSelector(n, s)` inline closure.
+// std::function rather than a function pointer, since simpCentralize/simpCentering pass a closure
+// capturing `n` (TS's inline `(s) => parseSimpSelector(n, s)`).
 using SelectorParseFn = std::function<Selector(const std::string&)>;
 
 // Mirrors shared/clegEval.ts's resolveSelectorArg().
@@ -143,9 +129,6 @@ static Selector resolve_selector_arg(
             throw std::runtime_error(
                 "cleg: '" + callee + "' expects a " + selector_type_word(want_kind) + " selector, got a set of " +
                 type_to_string(arg.elem));
-        // simp's own ClegType is erased (no arity), so unlike edge/quad, matching elem.kind alone
-        // doesn't guarantee every element is actually simp want_kind.n - each element's own real
-        // arity (nodes.size() - 1) is checked directly instead.
         if (want_kind.kind == SelectorKind::Simp)
             for (auto& v : arg.arr_v) {
                 int actual_n = static_cast<int>(v.simp_v.nodes.size()) - 1;
@@ -164,12 +147,9 @@ static Selector resolve_selector_arg(
     return arg.sel_v;
 }
 
-// One entry per shared/boardConfig.ts's own PrescribedBoardMap row - old_kind is build_board_config's
-// own dispatch string (e.g. "rect"); the cleg name registered below is always old_kind + "B" (e.g.
-// "rectB"), matching PrescribedBoardMap's own cleg-name field exactly, so this table alone (rather
-// than a separate PrescribedBoard enum/PrescribedBoardMap/PrescribedBoardFns trio like the TS side
-// has) is enough to drive registration - no UI here needs PrescribedBoardMap's own display-only
-// argStr/desc fields.
+// One entry per shared/boardConfig.ts's PrescribedBoardMap row, standing in for TS's
+// PrescribedBoard/PrescribedBoardMap/PrescribedBoardFns trio (nothing here needs the display-only
+// argStr/desc). old_kind is build_board_config's dispatch string; the cleg name is old_kind + "B".
 struct PrescribedEntry { std::string old_kind; std::vector<BoardArgKind> arg_kinds; };
 static const std::vector<PrescribedEntry>& prescribed_boards() {
     static const std::vector<PrescribedEntry> table = {
@@ -236,8 +216,7 @@ static BoardArgEntry value_to_board_arg_entry(BoardArgKind kind, const ClegValue
         case BoardArgKind::ZeroOneList: {
             if (val.kind != CTKind::String)
                 throw std::runtime_error("cleg: expected a string argument, got " + type_to_string(cleg_value_type(val)));
-            // Reuses shared/types.ts's own ZeroOneList validation, mirrored directly here (a plain
-            // 0/1-character string, each char becoming one int element).
+            // Inlines shared/types.ts's parseBoardArgToken(ZeroOneList, ...) validation.
             std::vector<int> values;
             for (char ch : val.str) {
                 if (ch != '0' && ch != '1')
@@ -252,14 +231,8 @@ static BoardArgEntry value_to_board_arg_entry(BoardArgKind kind, const ClegValue
 
 // ── multiProd: N-ary Cartesian board product, restricted by a ProdSelector ────
 
-// Inverse of selector_set_elem_kind above, for the three SelectorType kinds it CAN determine purely
-// from the CTKind - used only by resolve_any_kind_selector_arg below, which (unlike
-// resolve_selector_arg) has no fixed want_kind of its own to check a set's element type against, so
-// it has to recover a SelectorType FROM the set's own element type instead. CTKind::Simp is handled
-// separately there (see its own comment) - simp's own ClegType is erased (no arity), so unlike
-// node/edge/quad, kind == Simp alone can't determine which SelectorType (simp 2 vs simp 3 vs ...) it
-// corresponds to; only the set's own actual VALUES can. Mirrors shared/clegEval.ts's
-// selectorTypeBySetElem() - returns false (TS: null) for anything it can't determine.
+// Mirrors shared/clegEval.ts's selectorTypeBySetElem(), writing `out` and returning false (TS: null)
+// when the kind can't be determined.
 static bool selector_type_by_set_elem(CTKind k, SelectorType& out) {
     if (k == CTKind::Number) { out = SelectorType{SelectorKind::Node}; return true; }
     if (k == CTKind::Edge) { out = SelectorType{SelectorKind::Edge}; return true; }
@@ -267,12 +240,7 @@ static bool selector_type_by_set_elem(CTKind k, SelectorType& out) {
     return false;
 }
 
-// Mirrors shared/clegEval.ts's resolveAnyKindSelectorArg() - a `sel` value (used directly), a
-// `string` (parsed via game/selector.h's own context-free parse_selector, whichever kind the text
-// itself turns out to be), or a `set` (of number/edge/simp/quad, wrapped into a `raw` Selector, its
-// own kind read off the set's own element type). For a set of simp values specifically, the arity
-// can't be read off the set's own (erased) elem type - it's read off the first VALUE's own actual
-// arity instead, and every other value is checked to share it.
+// Mirrors shared/clegEval.ts's resolveAnyKindSelectorArg().
 static Selector resolve_any_kind_selector_arg(const std::string& callee, const ClegValue& arg) {
     if (arg.kind == CTKind::Sel) return arg.sel_v;
     if (arg.kind == CTKind::String) return parse_selector(arg.str);
@@ -302,9 +270,9 @@ static Selector resolve_any_kind_selector_arg(const std::string& callee, const C
     throw std::runtime_error("cleg: '" + callee + "': expected sel, string, or set, got " + type_to_string(cleg_value_type(arg)));
 }
 
-// Mirrors shared/clegEval.ts's FullProductIndex/makeFullProductIndex/fullIndexOf/tupleOfFullIndex - a
-// long long index space (rather than TS's own double, which is exact up to 2^53) since the full,
-// unrestricted product of several sizable boards can exceed 32-bit int range.
+// Mirrors shared/clegEval.ts's FullProductIndex/makeFullProductIndex/fullIndexOf/tupleOfFullIndex,
+// with a long long index space (TS's double is exact up to 2^53) since an unrestricted product of
+// several sizable boards can exceed 32-bit int range.
 struct FullProductIndex { std::vector<int> Ns; std::vector<long long> stride; long long total; };
 
 static FullProductIndex make_full_product_index(const std::vector<BoardConfig>& boards) {
@@ -350,12 +318,7 @@ static RestrictResult restrict_board_by_selector(const BoardConfig& board, const
         selector_type_word(sel.type) + "' selector");
 }
 
-// psBaseNE's own restriction (eval_prod_selector's own PSelOp::BaseNE case) - unlike
-// restrict_board_by_selector above (one selector, kind decides the whole strategy), `node_sel`/
-// `edge_sel` are already fixed to node/edge respectively (checked by psBaseNE's own
-// resolve_selector_arg calls, not here), so there's no kind dispatch: the restricted board is always
-// edge_sel's own edge-induced subgraph, plus whichever extra nodes node_sel selects (see
-// node_edge_induced_subgraph). Mirrors shared/clegEval.ts's restrictBoardByNodeAndEdgeSelector().
+// Mirrors shared/clegEval.ts's restrictBoardByNodeAndEdgeSelector().
 static RestrictResult restrict_board_by_node_and_edge_selector(
     const BoardConfig& board, const Selector& node_sel, const Selector& edge_sel, ClegRandom& random)
 {
@@ -369,16 +332,13 @@ static RestrictResult restrict_board_by_node_and_edge_selector(
 
 struct BuiltResult { BoardConfig bc; std::vector<long long> orig_index; };
 
-// Mirrors shared/clegEval.ts's edgeKey() - canonical (order-independent) string key for an edge
-// between two ORIGINAL flat indices.
+// Mirrors shared/clegEval.ts's edgeKey().
 static std::string edge_key(long long a, long long b) {
     if (a > b) std::swap(a, b);
     return std::to_string(a) + "," + std::to_string(b);
 }
 
-// Mirrors shared/clegEval.ts's originalEdgeKeysOf() - the exact edge set a BuiltResult denotes, in
-// ORIGINAL-flat-index terms, read directly off `bc`'s own local adjacency rather than re-derived
-// from any per-factor board.
+// Mirrors shared/clegEval.ts's originalEdgeKeysOf().
 static std::set<std::string> original_edge_keys_of(const BoardConfig& bc, const std::vector<long long>& orig_index) {
     std::set<std::string> keys;
     for (int i = 0; i < bc.N; i++)
@@ -387,10 +347,7 @@ static std::set<std::string> original_edge_keys_of(const BoardConfig& bc, const 
     return keys;
 }
 
-// Mirrors shared/clegEval.ts's fullProductResult() - the full, entirely unrestricted N-ary product
-// ('all', and 'inter' with zero operands both denote this); origIndex is simply 0..fpi.total-1, no
-// remapping needed (see combineRestrictedFactor's own doc comment on why an unrestricted factor's
-// own local index already equals the full flat index).
+// Mirrors shared/clegEval.ts's fullProductResult().
 static BuiltResult full_product_result(const std::vector<BoardConfig>& boards, const FullProductIndex& fpi) {
     BoardConfig bc = boards[0];
     for (size_t i = 1; i < boards.size(); i++) bc = product(bc, boards[i]);
@@ -399,13 +356,7 @@ static BuiltResult full_product_result(const std::vector<BoardConfig>& boards, c
     return {std::move(bc), std::move(orig_index)};
 }
 
-// Mirrors shared/clegEval.ts's buildFromNodesAndEdges() - builds a BoardConfig directly from an
-// explicit node set AND edge set (both in ORIGINAL flat-index terms), never re-deriving adjacency
-// from any per-factor board's own unrestricted adjacency; `edge_keys` is already the complete,
-// authoritative edge list (see eval_prod_selector's own doc comment for why this - not
-// re-derivation - is what lets an edge a selector deliberately dropped stay dropped through
-// PSelOp::Union/Inter/Diff). No defaultProductProjMat/Embedding here (unlike TS, C++'s BoardConfig
-// has no projection-matrix field at all - it never renders, see board_config.h's own top comment).
+// Mirrors shared/clegEval.ts's buildFromNodesAndEdges().
 static BuiltResult build_from_nodes_and_edges(
     const std::vector<BoardConfig>& boards, const FullProductIndex& fpi,
     const std::set<long long>& kept_original, const std::set<std::string>& edge_keys)
@@ -439,10 +390,7 @@ static BuiltResult build_from_nodes_and_edges(
     return {std::move(bc), std::move(orig_index)};
 }
 
-// Shared by eval_prod_selector's own PSelOp::Base/BaseNE cases - see eval_prod_selector's own doc
-// comment for the full algorithm (folding product() across every factor, `number`'s own replaced by
-// `restricted`, then translating the fold's local node indices back into the fixed full-product
-// index space via `survivors`/`fpi`). Mirrors shared/clegEval.ts's combineRestrictedFactor().
+// Mirrors shared/clegEval.ts's combineRestrictedFactor().
 static BuiltResult combine_restricted_factor(
     const std::vector<BoardConfig>& boards, const FullProductIndex& fpi, int number,
     const BoardConfig& restricted, const std::vector<int>& survivors)
@@ -468,11 +416,7 @@ static BuiltResult combine_restricted_factor(
     return {std::move(bc), std::move(orig_index)};
 }
 
-// Mirrors shared/clegEval.ts's evalProdSelector() - see its own doc comment for the full algorithm.
-// PSelOp::Union/Inter/Diff track nodes AND edges separately (original_edge_keys_of, read off each
-// operand's own BuiltResult) rather than re-deriving adjacency from `boards[k]`'s own unrestricted
-// adjacency - this is what lets an edge a selector deliberately dropped (PSelOp::BaseNE's own
-// edge_sel, or an edge-typed PSelOp::Base) stay dropped once combined with another selector.
+// Mirrors shared/clegEval.ts's evalProdSelector().
 static BuiltResult eval_prod_selector(
     const std::vector<BoardConfig>& boards, const FullProductIndex& fpi, const ProdSelector& psel, ClegRandom& random)
 {
@@ -536,9 +480,7 @@ static BuiltResult eval_prod_selector(
     throw std::runtime_error("cleg: eval_prod_selector: unexpected PSelOp");
 }
 
-// Parses/validates `bounds_val` into per-dimension `lo`/`dims` - shared by every subHcublatB
-// overload's own construction function (build_sub_hcublat/build_sub_hcublat_custom_adj below).
-// Mirrors shared/clegEval.ts's parseHcublatBounds.
+// Mirrors shared/clegEval.ts's parseHcublatBounds(), returning `lo`/`dims` through out-params.
 static void parse_hcublat_bounds(const ClegValue& bounds_val, std::vector<int>& lo, std::vector<int>& dims) {
     const auto& bounds_arr = bounds_val.arr_v;
     size_t k = bounds_arr.size();
@@ -550,9 +492,6 @@ static void parse_hcublat_bounds(const ClegValue& bounds_val, std::vector<int>& 
             throw std::runtime_error(
                 "cleg: 'subHcublatB' bounds[" + std::to_string(i) + "] must have exactly 2 entries "
                 "(lower, upper), got " + std::to_string(pair.size()));
-        // `lo`/`hi` need not themselves be integers - rounded to the nearest integer lattice
-        // point INWARD (lo up, hi down) before use, so e.g. [0.5, 2.5] becomes the integer
-        // range [1, 2], not an error.
         double a = std::ceil(pair[0].number), b = std::floor(pair[1].number);
         if (a > b)
             throw std::runtime_error(
@@ -564,19 +503,10 @@ static void parse_hcublat_bounds(const ClegValue& bounds_val, std::vector<int>& 
     }
 }
 
-// The general construction shared by `subHcublatB(bounds, cond)`/`subHcublatB(bounds, cond,
-// econd)` (its own BuiltinFunction entry below) - mirrors shared/clegEval.ts's buildSubHcublat
-// exactly (bounds/cond semantics, stride bookkeeping, delta=+1-only/canonical-order edge scan with
-// econd's verdict mirrored into both adjacency cells), with ONE deviation, scoped to the embedding
-// only (see this file's own top comment on why a deviation like this is sometimes needed): TS
-// re-centers the final embedding by subtracting each dimension's own (generally negative, or a
-// half-integer) midpoint, but BoardConfig::embed here is exact non-negative-integer-only - so,
-// exactly like hypercuboid_board's own convention, each surviving node's embedding position (`pos`,
-// appended to BoardConfig) is simply its own LOCAL (0-based, always a non-negative integer) lattice
-// coordinate, never `lo`-shifted or re-centered. `cond`/`econd` are still always called with the
-// point's real ABSOLUTE coordinates (`abs_pos`, a separate signed array from `pos`), exactly
-// matching the TS side - this matters for `econd` in particular, since (unlike `pos`) it's never
-// embedding-constrained to be non-negative.
+// Mirrors shared/clegEval.ts's buildSubHcublat(), except for the embedding: BoardConfig::embed is
+// non-negative-integer-only, so instead of recenterPositions() each surviving node's position
+// (`pos`) is its local, 0-based lattice coordinate (hypercuboid_board's convention). `cond`/`econd`
+// still receive the real absolute coordinates (`abs_pos`), as in TS.
 static ClegValue build_sub_hcublat(
     const ClegValue& bounds_val, const ClegValue& cond_val,
     const std::function<bool(const std::vector<int>&, const std::vector<int>&)>& econd, GlobalInfo& globals
@@ -596,9 +526,6 @@ static ClegValue build_sub_hcublat(
         return coords;
     };
 
-    // Only surviving (cond-kept) nodes get a board index (compacted, in ascending
-    // full-lattice-index order) - board_idx_of maps a full-lattice index to that
-    // compacted index, absent for a point cond rejected.
     std::unordered_map<long long, int> board_idx_of;
     std::vector<std::vector<int>> surviving_local;
     std::vector<std::vector<int>> abs_pos;
@@ -621,10 +548,6 @@ static ClegValue build_sub_hcublat(
     }
     int N = static_cast<int>(surviving_local.size());
 
-    // Only the delta=+1 direction is scanned (rather than both +1/-1, as a "does A have neighbor B"
-    // check alone would need) - each structural edge is a candidate exactly once this way, in a
-    // canonical (lower-coordinate-first) order, with `econd`'s own verdict mirrored into both
-    // adjacency cells.
     auto adj = zero_adj(N);
     for (int bi = 0; bi < N; bi++) {
         const auto& local = surviving_local[bi];
@@ -646,32 +569,15 @@ static ClegValue build_sub_hcublat(
     return make_egr(BoardConfig{N, std::move(adj), static_cast<unsigned>(k), std::move(pos)});
 }
 
-// Joins an absolute-coordinate point into a string key - mirrors shared/clegEval.ts's own
-// `point.join(',')`, used by build_sub_hcublat_custom_adj below to look surviving nodes up by
-// coordinate rather than by full-lattice index.
+// Mirrors shared/clegEval.ts's `point.join(',')` key in buildSubHcublatCustomAdj().
 static std::string hcublat_point_key(const std::vector<int>& point) {
     std::string key;
     for (size_t i = 0; i < point.size(); i++) { if (i) key += ','; key += std::to_string(point[i]); }
     return key;
 }
 
-// The construction behind subHcublatB's third, `adj_fn` overload - mirrors shared/clegEval.ts's
-// buildSubHcublatCustomAdj: deliberately a SEPARATE function from build_sub_hcublat above, not
-// another parameter threaded into it, because it discards that function's whole structural-edge
-// notion rather than merely gating it: `cond` still decides which lattice points become nodes (via
-// parse_hcublat_bounds + call_user_function, same as build_sub_hcublat's own), but adjacency comes
-// ENTIRELY from `adj_fn` - the cubical lattice's own "differs by 1 in one dimension" structure plays
-// no role in which edges exist. `adj_fn(point)` names, for one surviving node, the exact list of
-// OTHER points (as their own absolute coordinates) it should connect to; each is looked up directly
-// by coordinate (hcublat_point_key above) rather than by full-lattice index/stride, since a named
-// target may be anywhere, not just structurally adjacent - a target that doesn't match any
-// surviving node (out of `bounds`, cond-rejected, or simply not a real point) is silently skipped,
-// and naming a node's own coordinates back is silently ignored too (no self-loops). Every edge
-// `adj_fn` names is added as undirected (mirrored into both adjacency cells) regardless of whether
-// the target's own adj_fn(...) call names it back. Same LOCAL-vs-ABSOLUTE-coordinate embedding
-// deviation as build_sub_hcublat's own (see its doc comment) - `pos` (the actual BoardConfig
-// embedding) stays local/non-negative, while `abs_pos` (what `cond`/`adj_fn` are actually called
-// with) is the real, possibly-negative absolute coordinate.
+// Mirrors shared/clegEval.ts's buildSubHcublatCustomAdj(), with the same local-coordinate embedding
+// deviation as build_sub_hcublat above (`cond`/`adj_fn` still receive absolute `abs_pos`).
 static ClegValue build_sub_hcublat_custom_adj(
     const ClegValue& bounds_val, const ClegValue& cond_val,
     const std::function<std::vector<std::vector<int>>(const std::vector<int>&)>& adj_fn, GlobalInfo& globals
@@ -739,15 +645,13 @@ static bool cleg_set_elem_less(const ClegValue& a, const ClegValue& b) {
     }
 }
 
-// Mirrors shared/clegEval.ts's BUILTIN_FUNCTIONS - built once via a function-local static (thread-safety
-// is a non-issue for this single-threaded CLI tooling), one lambda per row instead of TS's top-level
-// `BUILTIN_FUNCTIONS['x'] = {...}` assignments.
+// Mirrors shared/clegEval.ts's BUILTIN_FUNCTIONS - populated inside one function-local static
+// initializer rather than by TS's top-level `BUILTIN_FUNCTIONS['x'] = {...}` assignments.
 const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
     static const std::unordered_map<std::string, BuiltinFunction> table = [] {
         std::unordered_map<std::string, BuiltinFunction> m;
 
-        // One builtin per shared/boardConfig.ts's own PrescribedBoardMap/PrescribedBoardFns entry -
-        // see prescribed_boards()'s own doc comment above.
+        // Mirrors the TS PrescribedBoardMap registration loop - see prescribed_boards() above.
         for (auto& entry : prescribed_boards()) {
             std::string cleg_name = entry.old_kind + "B";
             std::vector<ClegType> params;
@@ -776,14 +680,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             [](const std::vector<ClegValue>& args, GlobalInfo&) { return make_number(static_cast<double>(args[0].arr_v.size())); },
         };
 
-        // `has(x, e)`: whether `x` (a `T[]` or `T{}`) contains `e` (a `T`), as a `bool` - like `len`,
-        // its result depends on the actual argument types (here, argument 2's own required type,
-        // taken from argument 1's element type), hence the hand-written check_call/call pair. `T` is
-        // restricted to is_set_elem_kind (number/string/bool/edge/tri/quad) for BOTH `T[]` and `T{}`
-        // - even though an array's own element type is normally unrestricted, nothing outside
-        // is_set_elem_kind has a defined equality in this language, so `has` can't be given a
-        // well-defined meaning for one either. Compares by cleg_set_key, the same equality every set
-        // operation already uses.
+        // Mirrors shared/clegEval.ts's hasCheckCall()/BUILTIN_FUNCTIONS['has'].
         m["has"] = BuiltinFunction{
             [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
                 if (arg_types.size() != 2)
@@ -808,10 +705,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
         };
 
-        // `toSet(arr)`: `T[] -> T{}` for any T with a defined equality (is_set_elem_kind, same
-        // restriction as `has` above) - deduplicates via make_cleg_set, the same helper every other
-        // set-building operation already uses. Mirrors shared/clegEval.ts's toSetCheckCall/
-        // BUILTIN_FUNCTIONS['toSet'].
+        // Mirrors shared/clegEval.ts's toSetCheckCall()/BUILTIN_FUNCTIONS['toSet'].
         m["toSet"] = BuiltinFunction{
             [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
                 if (arg_types.size() != 1)
@@ -863,10 +757,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
         };
 
-        // `randTakeN`/`randTakeP`: the take-instead-of-remove counterparts of randRmN/randRmP just
-        // above - same (T{}, number) -> T{} shape (reuses rand_rm_check_call), same wording of every
-        // check, but calls selector.h's own randomly_take() instead of randomly_remove(). Mirrors
-        // shared/clegEval.ts's BUILTIN_FUNCTIONS['randTakeN']/['randTakeP'].
+        // Mirrors shared/clegEval.ts's BUILTIN_FUNCTIONS['randTakeN']/['randTakeP'].
         m["randTakeN"] = BuiltinFunction{
             rand_rm_check_call,
             [](const std::vector<ClegValue>& args, GlobalInfo& globals) {
@@ -891,10 +782,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
         };
 
-        // Mirrors shared/clegEval.ts's `abs`/`sqrt` - fixed-signature `number -> number`. `sqrt`
-        // throws at evaluation time for a negative argument (not statically knowable from `number`'s
-        // type alone) rather than returning NaN, matching every other cleg evaluation-time validity
-        // check.
+        // Mirrors shared/clegEval.ts's BUILTIN_FUNCTIONS['abs']/['sqrt'].
         m["abs"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE}, NUMBER_TYPE),
             [](const std::vector<ClegValue>& args, GlobalInfo&) { return make_number(std::abs(args[0].number)); },
@@ -907,16 +795,13 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                 return make_number(std::sqrt(v));
             },
         };
-        // `pow(a, b)`: a^b. Mirrors shared/clegEval.ts's BUILTIN_FUNCTIONS['pow'].
+        // Mirrors shared/clegEval.ts's BUILTIN_FUNCTIONS['pow'].
         m["pow"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE, NUMBER_TYPE}, NUMBER_TYPE),
             [](const std::vector<ClegValue>& args, GlobalInfo&) { return make_number(std::pow(args[0].number, args[1].number)); },
         };
 
-        // `sin`/`cos`/`tan`/`cot`/`sec`/`csc`: fixed-signature `number -> number` (radians). Mirrors
-        // shared/clegEval.ts's trigFn/BUILTIN_FUNCTIONS['sin'/'cos'/.../'csc'] - cot/sec/csc are each
-        // the reciprocal of tan/cos/sin, left unchecked for a zero denominator (matches pow's own
-        // unchecked division-like edge cases) rather than throwing the way sqrt's does.
+        // Mirrors shared/clegEval.ts's trigFn()/BUILTIN_FUNCTIONS['sin'/'cos'/.../'csc'].
         auto trig_builtin = [](double (*f)(double)) {
             return BuiltinFunction{
                 fixed_signature({NUMBER_TYPE}, NUMBER_TYPE),
@@ -930,11 +815,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         m["sec"] = trig_builtin([](double x) { return 1.0 / std::cos(x); });
         m["csc"] = trig_builtin([](double x) { return 1.0 / std::sin(x); });
 
-        // `max(a, b, ...)`/`min(a, b, ...)`: either one-or-more `number` arguments, or a single
-        // `number[]` argument. Mirrors shared/clegEval.ts's minMaxCheckCall/makeMinMax - the array
-        // form's own nonemptiness can't be checked in check_call (an array's length isn't known
-        // until evaluation), so a zero-argument call is rejected right away (neither shape accepts
-        // it) while a zero-length array is only caught in `call` below.
+        // Mirrors shared/clegEval.ts's minMaxCheckCall().
         CheckCallFn min_max_check_call = [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
             if (arg_types.size() == 1 && arg_types[0].kind == CTKind::Array &&
                 arg_types[0].elem && arg_types[0].elem->kind == CTKind::Number)
@@ -951,8 +832,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                 "cleg: '" + callee + "' expects one or more number arguments, or a single number[] argument, got (" +
                 joined + ")");
         };
-        // Builds max/min's own `call`, parameterized by `reduce` (std::max/std::min) and `name` (for
-        // the empty-array error message, since `call` itself isn't handed the callee name).
+        // Mirrors shared/clegEval.ts's makeMinMax().
         auto make_min_max = [min_max_check_call](std::string name, double (*reduce)(double, double)) {
             return BuiltinFunction{
                 min_max_check_call,
@@ -974,11 +854,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
         m["max"] = make_min_max("max", [](double a, double b) { return std::max(a, b); });
         m["min"] = make_min_max("min", [](double a, double b) { return std::min(a, b); });
 
-        // `range(stop)`/`range(start, stop)`/`range(start, stop, step)`: builds a number[] with the
-        // same Python range() semantics as shared/clegEval.ts's own rangeCheckCall/
-        // BUILTIN_FUNCTIONS['range'] - variable arity (1 to 3 args), every argument must be an
-        // integer, step must be nonzero (both checked at evaluation time, same as sqrt's own
-        // nonnegativity check above).
+        // Mirrors shared/clegEval.ts's rangeCheckCall()/BUILTIN_FUNCTIONS['range'].
         m["range"] = BuiltinFunction{
             [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
                 if (arg_types.size() < 1 || arg_types.size() > 3)
@@ -1016,8 +892,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                 return make_edge_v(make_board_edge(static_cast<int>(args[0].number), static_cast<int>(args[1].number)));
             },
         };
-        // mkTri is kept as fixed-3-argument sugar for mkSimp (below). Mirrors shared/clegEval.ts's
-        // own doc comment on both.
+        // Mirrors shared/clegEval.ts's BUILTIN_FUNCTIONS['mkTri'].
         m["mkTri"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE, NUMBER_TYPE, NUMBER_TYPE}, SIMP_TYPE),
             [](const std::vector<ClegValue>& args, GlobalInfo&) {
@@ -1025,10 +900,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                     {static_cast<int>(args[0].number), static_cast<int>(args[1].number), static_cast<int>(args[2].number)}));
             },
         };
-        // `mkSimp(n1, ..., nK)`: builds a simp (K-1)-simplex from K >= 3 node indices - the general
-        // counterpart of mkTri above; its own arity is only known at the VALUE level
-        // (BoardSimplex.nodes.size()), so the return ClegType is always the same erased SIMP_TYPE
-        // regardless of K. Mirrors shared/clegEval.ts's mkSimpCheckCall/BUILTIN_FUNCTIONS['mkSimp'].
+        // Mirrors shared/clegEval.ts's mkSimpCheckCall()/BUILTIN_FUNCTIONS['mkSimp'].
         m["mkSimp"] = BuiltinFunction{
             [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
                 if (arg_types.size() < 3)
@@ -1176,11 +1048,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                 return make_cleg_set(SIMP_TYPE, std::move(values));
             },
         };
-        // `selectSimp(X, bc)`: the general, any-arity counterpart of selectTriangle above - X is
-        // resolved via resolve_any_kind_selector_arg (like mkSel/form/psBase), whichever arity
-        // its own text/value turns out to be, then checked (at evaluation time, not statically) to
-        // actually be SOME simp N and not e.g. a node/edge/quad selector. Mirrors
-        // shared/clegEval.ts's BUILTIN_FUNCTIONS['selectSimp'].
+        // Mirrors shared/clegEval.ts's BUILTIN_FUNCTIONS['selectSimp'].
         m["selectSimp"] = BuiltinFunction{
             select_set_check_call(SIMP_TYPE),
             [](const std::vector<ClegValue>& args, GlobalInfo& globals) {
@@ -1262,9 +1130,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
         };
 
-        // The 5 real FormSelector branches, as their own cleg-facing type strings - lowercase-first,
-        // same convention lrs_type_strings below uses. Mirrors shared/clegEval.ts's
-        // FORMSEL_TYPE_STRINGS.
+        // Mirrors shared/clegEval.ts's FORMSEL_TYPE_STRINGS/isFormSelTypeString()/FORMSEL_KIND_OF.
         static const std::vector<std::string> form_sel_type_strings =
             {"triForm", "quadForm", "quadDiagForm", "quadKnightForm", "quadBishopForm"};
         auto is_form_sel_type_string = [](const std::string& s) {
@@ -1278,13 +1144,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             return FormSelKind::QuadBishopForm;
         };
 
-        // `mkFormSel(typeStr, selArg?)`: builds a `formsel` value (a FormSelector) of the branch
-        // named by `typeStr` ("triForm", "quadForm", "quadDiagForm", "quadKnightForm", or
-        // "quadBishopForm") - `selArg` (a `sel`, `string`, or `set`, resolved via
-        // resolve_any_kind_selector_arg since the wanted kind
-        // depends on `typeStr`'s own runtime value) restricts which faces it names; omitted, every
-        // one found is named. Mirrors shared/clegEval.ts's mkFormSelCheckCall/
-        // BUILTIN_FUNCTIONS['mkFormSel'].
+        // Mirrors shared/clegEval.ts's mkFormSelCheckCall()/BUILTIN_FUNCTIONS['mkFormSel'].
         CheckCallFn mk_form_sel_check_call = [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
             if (arg_types.size() != 1 && arg_types.size() != 2)
                 throw std::runtime_error("cleg: '" + callee + "' expects 1 or 2 argument(s), got " + std::to_string(arg_types.size()));
@@ -1311,11 +1171,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
         };
 
-        // `form(w, formsel[])`: builds a Form BoardModifier - `w` plus an array of `formsel` values
-        // (each built by mkFormSel above), mirroring board_config.h's own generic_form(bc, w, sels)
-        // signature. A plain `formsel[]` array parameter (fixed_signature(...), same as
-        // `localReplace`'s own `lrs[]`) rather than variadic raw selector arguments. Mirrors
-        // shared/clegEval.ts's BUILTIN_FUNCTIONS['form'].
+        // Mirrors shared/clegEval.ts's BUILTIN_FUNCTIONS['form'].
         m["form"] = BuiltinFunction{
             fixed_signature({NUMBER_TYPE, ClegType{CTKind::Array, std::make_shared<ClegType>(FORMSEL_TYPE)}}, MOD_TYPE),
             [](const std::vector<ClegValue>& args, GlobalInfo&) {
@@ -1326,10 +1182,8 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
         };
 
-        // The 5 real LocalReplaceSelector branches, as their own cleg-facing type strings -
-        // lowercase-first. `simpCentralize`/`simpCentering` carry no arity of their own here (unlike
-        // LocalReplaceSelector's own `n` field) - see mk_lrs's own doc comment for why. Mirrors
-        // shared/clegEval.ts's LRS_TYPE_STRINGS.
+        // Mirrors shared/clegEval.ts's LRS_TYPE_STRINGS/isLRSTypeString()/QUAD_LRS_KIND_OF/
+        // SIMP_LRS_KIND_OF.
         static const std::vector<std::string> lrs_type_strings =
             {"quadCentralize", "quadCentering", "quadOctarize", "simpCentralize", "simpCentering"};
         auto is_lrs_type_string = [](const std::string& s) {
@@ -1344,16 +1198,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             return s == "simpCentralize" ? LocalReplaceKind::SimpCentralize : LocalReplaceKind::SimpCentering;
         };
 
-        // `mkLRS(typeStr, selArg?)`: builds an `lrs` value (a LocalReplaceSelector - see
-        // board_config.h's own doc comment and cleg_base.h's own top comment on why this is a
-        // separate step from building the actual `mod`) of the branch named by `typeStr` (one of
-        // lrs_type_strings above) - `selArg` (resolved via resolve_any_kind_selector_arg since the
-        // wanted kind depends on `typeStr`'s own runtime value) restricts which faces it names;
-        // omitted, every one found is named - EXCEPT for `simpCentralize`/`simpCentering`, whose own
-        // simplex arity (LocalReplaceSelector's own `n` field) is read off `selArg`'s own resolved
-        // kind (simp_n(sel->type)) rather than a separate numeric argument, so `selArg` is only truly
-        // optional for the three Quad-family types - omitting it for a Simp-family `typeStr` throws.
-        // Mirrors shared/clegEval.ts's mkLRSCheckCall/BUILTIN_FUNCTIONS['mkLRS'].
+        // Mirrors shared/clegEval.ts's mkLRSCheckCall()/BUILTIN_FUNCTIONS['mkLRS'].
         CheckCallFn mk_lrs_check_call = [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
             if (arg_types.size() != 1 && arg_types.size() != 2)
                 throw std::runtime_error("cleg: '" + callee + "' expects 1 or 2 argument(s), got " + std::to_string(arg_types.size()));
@@ -1390,12 +1235,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
         };
 
-        // `localReplace(lrs[])`: builds a LocalReplace BoardModifier from an array of `lrs` values
-        // (each built by mkLRS above) - the one builtin that turns a list of `lrs` into the actual
-        // `mod`, mirroring board_config.h's own generic_local_replace(bc, selectors) signature. Every
-        // `lrs` argument here already shares the exact same type, so a plain `lrs[]` array parameter
-        // (fixed_signature(...), same as `modify`'s own `mod[]`) is both simpler and the more directly
-        // analogous precedent than a variadic argument list would be.
+        // Mirrors shared/clegEval.ts's BUILTIN_FUNCTIONS['localReplace'].
         m["localReplace"] = BuiltinFunction{
             fixed_signature({ClegType{CTKind::Array, std::make_shared<ClegType>(LRS_TYPE)}}, MOD_TYPE),
             [](const std::vector<ClegValue>& args, GlobalInfo&) {
@@ -1405,15 +1245,8 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
         };
 
-        // `quadCentralize([selArg])`/`quadCentering([selArg])`/`quadOctarize([selArg])`/
-        // `simpCentralize(n[, selArg])`/`simpCentering(n[, selArg])`/`triCentralize([selArg])`/
-        // `triCentering([selArg])`: one-step shortcuts, each building a LocalReplace `mod` directly
-        // for its own single fixed shape - exactly localReplace([mkLRS("...", selArg)]) (or, for the
-        // Simp-family two, with selArg carrying its own arity n), skipping the lrs/localReplace step
-        // entirely, the same "just build the mod, no separate combinator step" convenience
-        // triangle_form/quad_form already have over generic_form/form. tri_centralize/tri_centering
-        // are simp_centralize/simp_centering's own fixed-n=2 special cases, kept as their own named
-        // builtins for backward compatibility. Mirrors shared/clegEval.ts's own doc comment.
+        // Mirrors shared/clegEval.ts's localReplaceModCheckCall()/oneShapeMod() and the
+        // quadCentralize/.../triCentering builtins.
         CheckCallFn local_replace_mod_check_call = [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
             if (arg_types.size() != 0 && arg_types.size() != 1)
                 throw std::runtime_error("cleg: '" + callee + "' expects 0 or 1 argument(s), got " + std::to_string(arg_types.size()));
@@ -1535,12 +1368,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                 return make_psel(ps);
             },
         };
-        // `psBaseNE(number, nodeX, edgeX)`: like `psBase` above, but takes two selectors instead of
-        // one - `nodeX` (a node selector) and `edgeX` (an edge selector), each resolved against its
-        // own FIXED want_kind (resolve_selector_arg, same as nis/eis - unlike `psBase`'s own single,
-        // any-kind argument). The restricted board is edgeX's own edge-induced subgraph, plus
-        // whichever extra nodes nodeX selects (see restrict_board_by_node_and_edge_selector).
-        // Mirrors shared/clegEval.ts's BUILTIN_FUNCTIONS['psBaseNE'].
+        // Mirrors shared/clegEval.ts's psBaseNECheckCall()/BUILTIN_FUNCTIONS['psBaseNE'].
         m["psBaseNE"] = BuiltinFunction{
             [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
                 if (arg_types.size() != 3)
@@ -1602,14 +1430,8 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
         };
 
-        // `subHcublatB(bounds, cond)` / `subHcublatB(bounds, cond, econd)` / `subHcublatB(bounds,
-        // cond, adj_fn)`: the first two build via build_sub_hcublat (the 2-arg overload with a
-        // trivial econd, i.e. unchanged behavior from before econd existed; the econd overload with
-        // a real one, evaluated the same closure-aware way `cond` already is), the third via the
-        // wholly separate build_sub_hcublat_custom_adj - see its own doc comment for why it isn't
-        // just a third mode of build_sub_hcublat. The 3rd argument's own arity (func_params.size():
-        // 1 vs. 2) is what tells the econd/adj_fn overloads apart, same as shared/clegEval.ts's own
-        // subHcublatCheckCall/call.
+        // Mirrors shared/clegEval.ts's subHcublatCheckCall()/BUILTIN_FUNCTIONS['subHcublatB'], with
+        // econdCallback()/adjFnCallback() inlined as the lambdas below.
         m["subHcublatB"] = BuiltinFunction{
             [](const std::string& callee, const std::vector<ClegType>& arg_types) -> ClegType {
                 if (arg_types.size() != 2 && arg_types.size() != 3)
@@ -1672,8 +1494,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
 
 // ── Evaluation ───────────────────────────────────────────────────────────────
 
-// Mirrors shared/clegEval.ts's ValueEnv - same raw-pointer parent-chain convention as game/cleg_check.cpp's
-// own TypeEnv.
+// Mirrors shared/clegEval.ts's ValueEnv (raw-pointer parent chain - see this file's top comment).
 struct ValueEnv {
     std::unordered_map<std::string, ClegValue> vars;
     ValueEnv* parent = nullptr;
@@ -1685,32 +1506,20 @@ static ClegValue* lookup_value_ptr(ValueEnv& env, const std::string& name) {
     }
     return nullptr;
 }
-// Unreachable in a program that has passed typecheck_cleg - every Identifier there already resolved
-// to a declared variable. Mirrors shared/clegEval.ts's lookupValue().
+// Mirrors shared/clegEval.ts's lookupValue().
 static ClegValue lookup_value(ValueEnv& env, const std::string& name) {
     ClegValue* v = lookup_value_ptr(env, name);
     if (!v) throw std::runtime_error("cleg: undeclared variable '" + name + "'");
     return *v;
 }
-// Mirrors shared/clegEval.ts's setValue() - mutates `name`'s existing binding in whichever env of the
-// chain declared it.
+// Mirrors shared/clegEval.ts's setValue().
 static void set_value(ValueEnv& env, const std::string& name, ClegValue value) {
     ClegValue* v = lookup_value_ptr(env, name);
     if (!v) throw std::runtime_error("cleg: undeclared variable '" + name + "'");
     *v = std::move(value);
 }
 
-// Deep-clones an array value's own array structure (recursively, for a nested `T[][]`) so indexed
-// mutation (`arr[i] = x;`, see eval_stmt's own AssignStmt case) can never be observed through
-// another variable that was previously assigned `= arr` or received it as a function argument -
-// this language's arrays are value types, not shared references (see shared/clegBase.ts's own top
-// comment). Every other ClegValue kind either can't be mutated in place at all, or (an array
-// ELEMENT that isn't itself an array - a number/egr/sel/set/...) can only ever be wholesale
-// REPLACED via an indexed assignment, never mutated internally - so only the array *structure*
-// itself needs a fresh copy, not every value reachable from it; called at every site a value is
-// bound to a (potentially long-lived, aliasable) variable - VarDecl's init, a whole-value
-// AssignStmt, and a function argument's own param binding - a no-op passthrough for anything that
-// isn't (or doesn't contain) an array.
+// Mirrors shared/clegEval.ts's cloneArrayValue().
 static ClegValue clone_array_value(const ClegValue& v) {
     if (v.kind != CTKind::Array) return v;
     ClegValue out = v;
@@ -1720,9 +1529,7 @@ static ClegValue clone_array_value(const ClegValue& v) {
     return out;
 }
 
-// Validates that `idx` is a usable index into an array of `length` elements, returning it as a
-// size_t - shared by eval_expr's own IndexExpr (read) case and eval_stmt's own indexed AssignStmt
-// (write) case, so both report an out-of-bounds index the same way.
+// Mirrors shared/clegEval.ts's validateArrayIndex(), returning the index as a size_t.
 static size_t validate_array_index(double idx, size_t length) {
     if (idx != std::floor(idx) || idx < 0 || idx >= static_cast<double>(length))
         throw std::runtime_error(
@@ -1731,12 +1538,7 @@ static size_t validate_array_index(double idx, size_t length) {
     return static_cast<size_t>(idx);
 }
 
-// Mirrors shared/clegEval.ts's fillHoles() - interleaves `supplied_args` (in order) into `bound_args`'
-// own nullopt ("still uninstantiated") slots, producing the full argument list the original function
-// actually needs - used by eval_expr's own CallExpr case whenever it calls through a func value,
-// whether that value is a plain function-pointer reference (every slot nullopt, so this is just
-// `supplied_args` unchanged) or a partial application (see ClegValue's own 'func' doc comment) - one
-// shared interleaving rule for both, rather than treating them as two different cases.
+// Mirrors shared/clegEval.ts's fillHoles(), with std::nullopt for TS's null slots.
 static std::vector<ClegValue> fill_holes(
     const std::vector<std::optional<ClegValue>>& bound_args, const std::vector<ClegValue>& supplied_args)
 {
@@ -1747,12 +1549,9 @@ static std::vector<ClegValue> fill_holes(
     return out;
 }
 
-// Mirrors shared/clegEval.ts's ReturnSignal - thrown to unwind out of nested blocks/if-statements on
-// `return`, always caught by call_user_function below.
+// Mirrors shared/clegEval.ts's ReturnSignal.
 struct ReturnSignal { ClegValue value; };
-// Mirrors shared/clegEval.ts's BreakSignal/ContinueSignal - thrown by BreakStmt/ContinueStmt, caught by
-// the innermost enclosing ForStmt/WhileStmt's own try/catch (see eval_stmt's own cases). A
-// ReturnSignal thrown from inside a loop body is neither of these, so it passes through untouched.
+// Mirrors shared/clegEval.ts's BreakSignal/ContinueSignal.
 struct BreakSignal {};
 struct ContinueSignal {};
 
@@ -1761,13 +1560,7 @@ static void eval_stmt(const Stmt& stmt, ValueEnv& env, GlobalInfo& globals);
 static ClegValue eval_expr(const Expr& expr, ValueEnv& env, GlobalInfo& globals);
 static ClegValue call_user_function(const FunctionDecl& fn, const std::vector<ClegValue>& args, GlobalInfo& globals);
 
-// Mirrors shared/clegEval.ts's mergeBoundArgs() - merges a partial-application CallExpr's own `args` (at
-// least one is a HoleExpr) into `bound_args`' own currently-open (nullopt) slots, in order -
-// evaluating each non-hole argument now (once, eagerly) and leaving each hole slot open, producing
-// the NEW bound_args for the resulting (possibly still-partial) closure. Starting from a fresh
-// all-nullopt bound_args (a bare top-level function name, nothing bound yet) or an existing value's
-// own bound_args (a plain pointer, still all-nullopt, or an already-partial closure) is the exact
-// same operation, just a different starting point.
+// Mirrors shared/clegEval.ts's mergeBoundArgs(), with std::nullopt for TS's null slots.
 static std::vector<std::optional<ClegValue>> merge_bound_args(
     const std::vector<std::optional<ClegValue>>& bound_args, const std::vector<Expr>& args,
     ValueEnv& env, GlobalInfo& globals)
@@ -1800,14 +1593,10 @@ static void eval_stmt(const Stmt& stmt, ValueEnv& env, GlobalInfo& globals) {
                 set_value(env, stmt.name, std::move(value));
                 return;
             }
-            // Walk down into the array named `stmt.name`, following every index but the last (each
-            // of which - check_stmt's own AssignStmt case already guarantees - lands on another
-            // array), then mutate the final slot in place. `target` points into the SAME object
-            // stored in `env` (lookup_value_ptr never copies), which is safe to mutate directly
-            // precisely because clone_array_value already guarantees nothing else aliases it (see
-            // that function's own doc comment).
+            // `target` points into the value stored in `env` (lookup_value_ptr never copies), so the
+            // final slot below is mutated in place.
             ClegValue* target = lookup_value_ptr(env, stmt.name);
-            // Unreachable in a program that has passed typecheck_cleg - see lookup_value's own comment.
+            // Unreachable in a program that has passed typecheck_cleg.
             if (!target) throw std::runtime_error("cleg: undeclared variable '" + stmt.name + "'");
             for (size_t i = 0; i + 1 < stmt.indices.size(); i++) {
                 double idx_value = eval_expr(stmt.indices[i], env, globals).number;
@@ -1829,12 +1618,6 @@ static void eval_stmt(const Stmt& stmt, ValueEnv& env, GlobalInfo& globals) {
             return;
         }
         case StmtKind::ForStmt: {
-            // One scope for the whole loop (init's own variable, if any, persists across every
-            // iteration) - body gets its own further-nested scope each iteration via eval_block, same
-            // as any other BLOCK - see ForStmt's own doc comment (shared/clegBase.ts). The try/catch
-            // around eval_block is BreakStmt/ContinueStmt's own unwind target - `continue` still runs
-            // `for_update` before the next `cond` check, exactly like real C++; `break` skips straight
-            // past the loop entirely, never running `for_update` again.
             ValueEnv loop_env; loop_env.parent = &env;
             if (stmt.for_init) eval_stmt(*stmt.for_init, loop_env, globals);
             while (!stmt.cond || eval_expr(*stmt.cond, loop_env, globals).boolean) {
@@ -1850,7 +1633,6 @@ static void eval_stmt(const Stmt& stmt, ValueEnv& env, GlobalInfo& globals) {
             return;
         }
         case StmtKind::WhileStmt: {
-            // Same BreakStmt/ContinueStmt unwind target as ForStmt above - see its own comment.
             while (eval_expr(*stmt.cond, env, globals).boolean) {
                 try {
                     eval_block(*stmt.body, &env, globals);
@@ -1904,21 +1686,15 @@ static ClegValue eval_expr(const Expr& expr, ValueEnv& env, GlobalInfo& globals)
         case ExprKind::SetLit: {
             std::vector<ClegValue> values;
             for (auto& e : expr.elements) values.push_back(eval_expr(e, env, globals));
-            // Same evaluation-order hazard as game/cleg_parser.cpp's own parse_expr precedence chain
-            // (see its own comment) - cleg_value_type(values[0]) must be computed in its own
-            // statement, before std::move(values) is ever handed to make_cleg_set as a sibling
-            // argument.
+            // Computed in its own statement, before std::move(values): sibling-argument evaluation
+            // order is unspecified (same hazard as game/cleg_parser.cpp's parse_expr chain).
             ClegType elem = cleg_value_type(values[0]);
             return make_cleg_set(std::move(elem), std::move(values));
         }
         case ExprKind::CallExpr: {
             if (std::any_of(expr.elements.begin(), expr.elements.end(),
                              [](const Expr& a) { return a.kind == ExprKind::HoleExpr; })) {
-                // Partial application - check_expr already confirmed expr.string_value names either
-                // a top-level function or a local func-typed variable (never a builtin) whenever any
-                // arg is '#'. merge_bound_args evaluates each non-hole argument now (once, eagerly).
-                // Starting from a variable's own bound_args (rather than a fresh all-nullopt one) is
-                // what lets this further-apply an already-partial closure.
+                // Partial application - check_expr already ruled out a builtin callee.
                 ClegValue* var_value = lookup_value_ptr(env, expr.string_value);
                 const std::string& name = var_value ? var_value->func_name : expr.string_value;
                 const FunctionDecl* fn = globals.funcs.at(name);
@@ -1936,10 +1712,7 @@ static ClegValue eval_expr(const Expr& expr, ValueEnv& env, GlobalInfo& globals)
             auto& builtins = builtin_functions();
             auto bit = builtins.find(expr.string_value);
             if (bit != builtins.end()) return bit->second.call(args, globals);
-            // A local variable of func type shadows a same-named top-level function - see
-            // check_expr's own CallExpr case, which already required this to resolve the same way.
-            // fill_holes handles a plain (never-partially-applied) function value transparently,
-            // since its own bound_args is all nullopt.
+            // A local func-typed variable shadows a same-named top-level function (see check_expr).
             ClegValue* var_value = lookup_value_ptr(env, expr.string_value);
             if (var_value) return call_user_function(*globals.funcs.at(var_value->func_name), fill_holes(var_value->func_bound_args, args), globals);
             return call_user_function(*globals.funcs.at(expr.string_value), args, globals);
@@ -1981,9 +1754,6 @@ static ClegValue eval_expr(const Expr& expr, ValueEnv& env, GlobalInfo& globals)
 
 static ClegValue call_user_function(const FunctionDecl& fn, const std::vector<ClegValue>& args, GlobalInfo& globals) {
     ValueEnv env;
-    // clone_array_value here (not just at the call site's own VarDecl/AssignStmt) is what makes an
-    // array argument a genuine value-copy rather than a reference to the caller's own array, exactly
-    // like passing one to another variable - see clone_array_value's own doc comment.
     for (size_t i = 0; i < fn.params.size(); i++) env.vars[fn.params[i].name] = clone_array_value(args[i]);
     try {
         eval_block(fn.body, &env, globals);
@@ -1993,9 +1763,7 @@ static ClegValue call_user_function(const FunctionDecl& fn, const std::vector<Cl
     throw std::runtime_error("cleg: function '" + fn.name + "' fell off its own end without a 'return'");
 }
 
-// Mirrors shared/clegEval.ts's runClegProgram() - always re-typechecks even though every public entry
-// point here (typecheck_cleg_as_board, build_board_from_cleg) already does too on its own path, same
-// "cheap relative to actually evaluating" reasoning as the TS side's own doc comment.
+// Mirrors shared/clegEval.ts's runClegProgram().
 static ClegValue run_cleg_program(const ClegProgram& program, uint32_t seed) {
     typecheck_cleg(program);
     UserFuncTable funcs;

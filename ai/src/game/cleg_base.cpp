@@ -4,12 +4,7 @@
 #include <sstream>
 #include <stdexcept>
 
-// Mirrors shared/clegBase.ts - see game/cleg_base.h's own top comment for the full context. This
-// file only implements the declarations in that header; every function here that isn't declared
-// there (ctkind_word, type_to_string_for_suffix, format_number_exact, edge_key_str/tri_key_str/
-// quad_key_str, set_union_vals/set_intersect_vals/set_diff_vals, and the number_overload()/etc.
-// overload builders) is a private implementation detail of this one file, same as it was a private
-// (`static`) detail of the single cleg.cpp this was split out of.
+// Mirrors shared/clegBase.ts - see game/cleg_base.h's top comment for C++-wide differences.
 
 bool type_equals(const ClegType& a, const ClegType& b) {
     if (a.kind != b.kind) return false;
@@ -41,11 +36,7 @@ static std::string ctkind_word(CTKind k) {
     throw std::runtime_error("cleg: ctkind_word: unexpected kind");
 }
 
-// A func type printed directly before a `[]`/`{}` suffix needs its own extra parens (matching
-// game/cleg_parser.cpp's own parse_paren_type grouping rule) - otherwise the suffix would silently
-// re-parse as binding to the func type's own return type instead of to the func type as a whole
-// (`(number, number) -> bool[]` means "returns bool[]", not "an array of these functions" - see
-// game/cleg_base.h's own top comment). Every other ClegType kind is unambiguous either way.
+// Mirrors shared/clegBase.ts's typeToStringForSuffix().
 static std::string type_to_string_for_suffix(const ClegType& t) {
     return t.kind == CTKind::Func ? "(" + type_to_string(t) + ")" : type_to_string(t);
 }
@@ -89,9 +80,7 @@ static std::string format_number_exact(double d) {
 static std::string edge_key_str(const BoardEdge& e) {
     return std::to_string(e.n1) + "," + std::to_string(e.n2);
 }
-// A plain comma-join of nodes.size()-many indices is already an unambiguous, collision-free key
-// across every arity - mirrors shared/clegBase.ts's own clegSetKey 'simp' case doc comment on why no
-// separate arity tag is needed.
+// Mirrors the 'simp' case of shared/clegBase.ts's clegSetKey().
 static std::string simp_key_str(const BoardSimplex& t) {
     std::string key;
     for (size_t i = 0; i < t.nodes.size(); i++) {
@@ -136,9 +125,7 @@ static ClegValue set_union_vals(const ClegValue& a, const ClegValue& b) {
     combined.insert(combined.end(), b.arr_v.begin(), b.arr_v.end());
     return make_cleg_set(a.elem, std::move(combined));
 }
-// Intersection/difference only ever remove elements from `a`, which is already deduplicated, so
-// unlike set_union_vals neither needs to go through make_cleg_set again - mirrors
-// shared/clegBase.ts's setIntersect()/setDiff().
+// Mirrors shared/clegBase.ts's setIntersect()/setDiff().
 static ClegValue set_intersect_vals(const ClegValue& a, const ClegValue& b) {
     std::set<std::string> b_keys;
     for (auto& v : b.arr_v) b_keys.insert(cleg_set_key(v));
@@ -224,8 +211,7 @@ static BinaryOverload array_concat_overload() {
     };
 }
 
-// Mirrors shared/clegBase.ts's requireRepeatCount() - `n` isn't statically known, checked here at
-// evaluation time.
+// Mirrors shared/clegBase.ts's requireRepeatCount().
 static int require_repeat_count(double n) {
     if (n != std::floor(n) || n < 0)
         throw std::runtime_error("cleg: '*' replication count must be a nonnegative integer, got " + format_number_display(n));
@@ -291,7 +277,7 @@ static BinaryOverload set_overload(std::string signature, SetCombineFn combine) 
     };
 }
 
-// Mirrors shared/clegBase.ts's toComparable() - bool compares via C++'s own false=0/true=1 convention.
+// Mirrors shared/clegBase.ts's toComparable().
 static double to_comparable(const ClegValue& v) { return v.kind == CTKind::Bool ? (v.boolean ? 1.0 : 0.0) : v.number; }
 
 static BinaryOverload comparison_overload(CTKind elem_kind, std::function<bool(double, double)> compute) {
@@ -308,9 +294,7 @@ static BinaryOverload comparison_overload(CTKind elem_kind, std::function<bool(d
     };
 }
 
-// Mirrors shared/clegBase.ts's logicalOverload() - `eval` here is never actually reached at runtime
-// (game/cleg_eval.cpp's own eval_expr BinaryExpr case short-circuits `&&`/`||` itself), kept only for
-// interface consistency with every other overload and so check_expr can type both operands regardless.
+// Mirrors shared/clegBase.ts's logicalOverload().
 static BinaryOverload logical_overload(std::function<bool(bool, bool)> compute) {
     return BinaryOverload{
         "bool, bool -> bool",

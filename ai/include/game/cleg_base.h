@@ -7,32 +7,17 @@
 #include <unordered_map>
 #include <vector>
 
-// Mirrors shared/clegBase.ts - the data-structure declarations shared by game/cleg_parser.*,
-// game/cleg_check.*, and game/cleg_eval.* (see shared/clegBase.ts's own top comment for the cleg
-// language itself - grammar, semantics, the four-file split this is one part of; this header only
-// points out where the C++ port differs from the TS source, same convention as every other cleg_*
-// file). Structural differences that hold throughout cleg's own four C++ files, not mentioned
-// per-function below:
-//   - `ClegProgram`/`ClegType`/`ClegValue`/the whole AST are declared here (rather than kept private
-//     to a single .cpp, as this port did before this split) purely so game/cleg_parser.cpp,
-//     game/cleg_check.cpp, and game/cleg_eval.cpp can all share them - exactly like TS's own
-//     clegBase.ts, nothing OUTSIDE cleg's own four files ever includes this header or inspects them
-//     (game/cleg_parser.h/game/cleg_check.h/game/cleg_eval.h forward-declare `ClegProgram` only, for
-//     their own public entry points - see each header's own top comment).
-//   - No garbage collector: recursive AST/value substructures use std::shared_ptr for genuine
-//     sharing (Expr/Stmt children, ClegValue's `egr` payload) or plain std::vector/value members
-//     where TS's own object-reference semantics never actually needed sharing (Array/Set contents,
-//     Selector/BoardModifier/ProdSelector payloads - each already cheap to copy, since
-//     Selector/ProdSelector use shared_ptr internally for their own recursive children).
-//   - TS's `number` (a JS double) is a C++ `double` throughout; an int is only ever produced at the
-//     C++/board-primitive boundary (mkEdge/mkTri/mkQuad, board-arg conversion, psBase's index), via
-//     an explicit int conversion - a data-type constraint the TS side doesn't have.
-//   - Every ClegType/ClegValue/AST struct gives EVERY field a default member initializer, even ones
-//     TS's own type only ever reads after unconditionally setting it - a defensive C++-only
-//     precaution making every default-constructed instance well-defined on its own, not a behavioral
-//     difference.
-//   - unparseCleg has no port - nothing in ai/ ever needs to show a cleg program back as text (no
-//     UI), unlike the TS side's Configure Board popup.
+// Mirrors shared/clegBase.ts. C++ differences that hold across all of game/cleg_*:
+//   - Only cleg's own files include this header; game/cleg_parser.h/game/cleg_eval.h (what
+//     train.cpp/server.cpp include) forward-declare `ClegProgram` instead.
+//   - No garbage collector: std::shared_ptr where substructures are genuinely shared (Expr/Stmt
+//     children, ClegValue's `egr_v`), plain std::vector/value members elsewhere (Array/Set contents,
+//     Selector/BoardModifier/ProdSelector payloads).
+//   - TS's `number` is a C++ `double`; an int is only produced at the board-primitive boundary
+//     (mkEdge/mkTri/mkQuad, board-arg conversion, psBase's index), via an explicit conversion.
+//   - Every ClegType/ClegValue/AST field has a default member initializer, so a default-constructed
+//     instance is always well-defined.
+//   - unparseCleg has no port (nothing in ai/ shows a cleg program back as text).
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -40,9 +25,8 @@ enum class CTKind {
     Egr, Number, String, Bool, Edge, Simp, Quad, Sel, Mod, Formsel, Lrs, Psel, Array, Set, Func
 };
 
-// Mirrors shared/clegBase.ts's ClegType - `elem` meaningful iff kind == Array/Set; `params`/
-// `return_type` meaningful iff kind == Func (a monomorphic function-pointer type, e.g.
-// `(number, number) -> bool`).
+// Mirrors shared/clegBase.ts's ClegType as one flat struct - `elem` meaningful iff kind ==
+// Array/Set, `params`/`return_type` iff kind == Func.
 struct ClegType {
     CTKind kind = CTKind::Number;
     std::shared_ptr<ClegType> elem;
@@ -68,11 +52,9 @@ struct ProdSelector {
 
 // ── Values ───────────────────────────────────────────────────────────────────
 
-// Mirrors shared/clegBase.ts's ClegValue - one flat tagged struct (same "meaningful iff kind == X"
-// convention board_config.h's own BoardModifier/Selector already use in this codebase), rather than
-// TS's discriminated union, since C++ has no such union without std::variant's own added ceremony.
-// `egr` is the one payload big enough to warrant its own indirection (std::shared_ptr<BoardConfig> -
-// an N×N adjacency matrix) - every other payload is cheap enough to hold by value.
+// Mirrors shared/clegBase.ts's ClegValue - one flat tagged struct ("meaningful iff kind == X", like
+// board_config.h's BoardModifier/Selector) instead of a discriminated union. Only `egr_v` is held
+// via std::shared_ptr (a whole BoardConfig); every other payload is held by value.
 struct ClegValue {
     CTKind kind = CTKind::Number;
     ClegType elem;                                  // Array/Set only
@@ -89,22 +71,9 @@ struct ClegValue {
     FormSelector form_sel_v; // Formsel only
     LocalReplaceSelector lrs_v; // Lrs only
     ProdSelector psel_v;
-    std::vector<ClegValue> arr_v;                    // Array or Set (Set: deduplicated by cleg_set_key)
-    // Func only - mirrors shared/clegBase.ts's ClegValue own 'func' variant: a function-pointer value
-    // is a reference to one of `program`'s own top-level functions, held by `func_name` (looked up in
-    // `funcs`/UserFuncTable again at call time - see game/cleg_eval.cpp's eval_expr own CallExpr
-    // case) rather than a direct FunctionDecl pointer, matching the TS side's own reasoning for doing
-    // the same (keeps this type free of any dependency on the AST shape below). `func_bound_args` has
-    // one slot per entry of the ORIGINAL function's own full parameter list - std::nullopt at every
-    // still-uninstantiated ('#') position, the actual (already-evaluated) argument everywhere else -
-    // so a plain, uncalled reference (built from a bare Identifier) is simply the all-nullopt case,
-    // and a partial application (`f(a, #, b)`, see CallExpr's own doc comment) is the general one;
-    // calling either kind of value later interleaves the caller's own supplied arguments into the
-    // nullopt slots, in order (see game/cleg_eval.cpp's fill_holes). `func_params`/`func_return_type`
-    // describe this VALUE's own callable signature, not the original function's - for a plain
-    // reference the two coincide, but a partial application's `func_params` is only the '#'
-    // positions' types, in order. Cached here (rather than re-derived on every use) purely so
-    // cleg_value_type can report this value's own ClegType without needing a funcs-table lookup.
+    std::vector<ClegValue> arr_v;                    // Array or Set
+    // Func only - the 'func' variant's params/returnType/name/boundArgs (std::nullopt where TS uses
+    // null for a '#' slot).
     std::vector<ClegType> func_params;
     ClegType func_return_type;
     std::string func_name;
@@ -127,17 +96,14 @@ inline ClegValue make_form_sel_v(FormSelector s) { ClegValue v; v.kind = CTKind:
 inline ClegValue make_lrs_v(LocalReplaceSelector s) { ClegValue v; v.kind = CTKind::Lrs; v.lrs_v = std::move(s); return v; }
 inline ClegValue make_psel(ProdSelector p) { ClegValue v; v.kind = CTKind::Psel; v.psel_v = std::move(p); return v; }
 
-// Renders a double for error messages/number-string concatenation - an integral value prints with
-// no decimal point/trailing zeros (matching JS's own Number->string for the plain integers cleg
-// programs actually interpolate, e.g. biTemple's `(d + 1)`); otherwise 15 significant digits.
+// Stands in for JS's Number->string (error messages, number/string concatenation) - an integral
+// value prints with no decimal point, matching JS; otherwise 15 significant digits.
 std::string format_number_display(double d);
 
-// Mirrors shared/clegBase.ts's clegSetKey() - a canonical string key for a set element (edge/tri/quad
-// have no reference equality of their own, same reasoning as that file's own doc comment).
+// Mirrors shared/clegBase.ts's clegSetKey().
 std::string cleg_set_key(const ClegValue& v);
 
-// Mirrors shared/clegBase.ts's makeClegSet() - collapses duplicates by cleg_set_key, first occurrence
-// wins.
+// Mirrors shared/clegBase.ts's makeClegSet().
 ClegValue make_cleg_set(ClegType elem, std::vector<ClegValue> values);
 
 // ── Binary operators ─────────────────────────────────────────────────────────
@@ -152,8 +118,8 @@ struct BinaryOverload {
     std::function<std::optional<MatchResult>(const ClegType&, const ClegType&)> match;
 };
 
-// Mirrors shared/clegBase.ts's BINARY_OPERATOR_OVERLOADS - keyed by the operator's own punctuation
-// text (matching the parser's own token, rather than introducing a separate BinOp enum).
+// Mirrors shared/clegBase.ts's BINARY_OPERATOR_OVERLOADS - keyed by the operator's token text (no
+// BinOp enum).
 const std::unordered_map<std::string, std::vector<BinaryOverload>>& binary_operator_overloads();
 
 // ── AST ──────────────────────────────────────────────────────────────────────
@@ -164,9 +130,8 @@ enum class ExprKind { NumberLit, StringLit, BoolLit, ArrayLit, SetLit, Identifie
 
 // Mirrors shared/clegBase.ts's Expr union - one flat tagged struct, same convention as ClegValue
 // above. `string_value` doubles as StringLit's text, Identifier's name, and CallExpr's callee;
-// `elements` doubles as ArrayLit/SetLit's own elements and CallExpr's own args; `left`/`right` double
-// as BinaryExpr's own operands and IndexExpr's own array/index respectively (each kind uses only one
-// of these roles, never two at once).
+// `elements` as ArrayLit/SetLit's elements and CallExpr's args; `left`/`right` as BinaryExpr's
+// operands and IndexExpr's array/index.
 struct Expr {
     ExprKind kind = ExprKind::NumberLit;
     double number_value = 0;
@@ -181,11 +146,8 @@ struct Expr {
 enum class StmtKind { VarDecl, AssignStmt, IfStmt, ForStmt, WhileStmt, BreakStmt, ContinueStmt, ReturnStmt, ExprStmt, Block };
 
 // Mirrors shared/clegBase.ts's Stmt union - same flat-struct convention as Expr above. `expr` doubles
-// as VarDecl's init, AssignStmt's value, ReturnStmt's value, and ExprStmt's own expr. WhileStmt
-// reuses ForStmt's own `cond`/`body` fields (a WhileStmt has no init/update). AssignStmt's own
-// `indices` (empty for a plain `x = expr`) - see shared/clegBase.ts's AssignStmt doc comment - lets
-// it mutate one element of an already-declared array in place (`arr[i] = expr`, `arr[i][j] = expr`,
-// ...).
+// as VarDecl's init, AssignStmt's value, ReturnStmt's value, and ExprStmt's expr; WhileStmt reuses
+// ForStmt's `cond`/`body`.
 struct Stmt {
     StmtKind kind = StmtKind::Block;
     ClegType decl_type;                     // VarDecl only
@@ -210,10 +172,8 @@ struct FunctionDecl {
     Stmt body; // kind == Block
 };
 
-// A whole cleg program - functions is order-independent (see shared/clegBase.ts's own doc comment),
-// stmts (a TopStmt subset: VarDecl/AssignStmt/ExprStmt) is order-dependent. game/cleg_parser.h,
-// game/cleg_check.h, and game/cleg_eval.h each forward-declare this same struct (pimpl-style) for
-// their own public entry points, rather than including this header - see each one's own top comment.
+// Mirrors shared/clegBase.ts's ClegProgram - `stmts` holds only TopStmt kinds
+// (VarDecl/AssignStmt/ExprStmt), as plain Stmts.
 struct ClegProgram {
     std::vector<FunctionDecl> functions;
     std::vector<Stmt> stmts;

@@ -5,13 +5,10 @@
 // Also reads GOES_CHECKPOINT_DIR, GOES_NUM_SIMS, and GOES_TEMPERATURE env vars.
 //
 // POST /move - JSON body fields:
-//   config            object with game configuration:
-//     boardDescr        string - a cleg program as source text, e.g. "rectB(9, 9);" (see
-//                        shared/clegBase.ts's own top comment for the language; parse_cleg
-//                        (game/cleg_parser.h) + build_board_from_cleg (game/cleg_eval.h) are
-//                        what turn it into a BoardConfig here)
-//     boardSeed         int in [0, 2^32) - seeds boardDescr's random builtins, so the board
-//                        built here matches the game's own; not part of weak_equal()
+//   config            object - shared/gameConfig.ts's GameConfig.toJSON() shape (see
+//                      parse_game_cfg()):
+//     boardDescr        string - cleg source text, e.g. "rectB(9, 9);"
+//     boardSeed         int in [0, 2^32) - required here; not part of weak_equal()
 //     numStones         int
 //     numPlayers        int
 //     turnList          [{player, stones, protected, friendly}] - see shared/types.ts's TurnInfo
@@ -20,40 +17,19 @@
 //     globalStonePlaceLimit  (int|null)[] (optional, default all-null) - [stone-1]
 //     maxPlies          int|null (optional, default null)
 //     forcedPassOnly    bool
-//     allowSuicide      bool (optional, default false) - whether a move that leaves
-//                        the mover's own group with zero liberties is legal (self-
-//                        captures that group immediately, rather than being rejected);
-//                        like the other config fields, part of weak_equal() (self_play.h)
-//                        - see parse_game_cfg() and find_checkpoint_dir(), below.
+//     allowSuicide      bool (optional, default false)
 //     scoreRule         "stone"|"territoryonly"|"area"|"territory" (optional, default
-//                        "area") - see BoardState::compute_points(); affects the
-//                        terminal/estimated reward MCTS backs up (compute_player_rewards(),
-//                        estimate_player_rewards()), so - like the other config fields -
-//                        it's part of weak_equal() and selects which checkpoint is
-//                        loaded. "territory" (real-world Japanese-style
-//                        scoring) additionally folds each player's
-//                        BoardState::capture_count() (stones captured so far) into both
-//                        reward formulas and compute_winners(), the same way komi is.
-//     komi              float[] (optional, default all-zero) - per-player scoring
-//                        handicap added before winner determination and before both
-//                        reward formulas above (see BoardState::komi); part of
-//                        weak_equal().
-//     koRule            "positional"|"situational" (optional, default "situational") -
-//                        superko variant (see BoardState::ko_rule); part of
-//                        weak_equal().
+//                        "area") - also shapes the reward MCTS backs up
+//                        (compute_player_rewards(), estimate_player_rewards())
+//     komi              float[] (optional, default all-zero)
+//     koRule            "positional"|"situational" (optional, default "situational")
 //   moves             array - full move history; each entry is EITHER a legacy
 //                      int|null (null = pass, int = board index; stone auto-picked
-//                      if the turn offers exactly one) OR an object
-//                      {"pos": int|null, "stone": int|null} for turns offering
-//                      several stones - see shared/types.ts's ReplayMove.
-//   resigns           array (optional, default none) - [[ply, [player, ...]], ...],
-//                      the players (1-indexed) who resigned at each ply - same shape as
-//                      shared/types.ts's FinishedGame.toJSON()'s `resigns` field
-//                      ([...Map.entries()]). Replayed interleaved with `moves` (see
-//                      replay_tail()) since a resigned player may always pass even under
-//                      forcedPassOnly, but resignation must be applied at the correct ply -
-//                      applying it before replaying a player's own earlier real placements
-//                      would incorrectly reject those too.
+//                      if the turn offers exactly one) OR a shared/types.ts
+//                      ReplayMove object {"pos": int|null, "stone": int|null}.
+//   resigns           array (optional, default none) - shared/gameConfig.ts's
+//                      FinishedGame.toJSON()'s `resigns` shape, [[ply, [player, ...]], ...];
+//                      replayed interleaved with `moves` (see replay_tail()).
 //   board             int[]        - current stone array (length N); used to verify
 //                                    the replayed state matches the client's state
 //   session_id        string|null  - opaque token returned by a previous response;
@@ -206,9 +182,7 @@ static MoveRef parse_move_ref(const json& m) {
     return {m.is_null() ? -1 : m.get<int>(), 0};
 }
 
-// [[ply, [player, player, ...]], ...] - mirrors shared/types.ts's FinishedGame.toJSON()'s
-// `resigns` shape ([...Map.entries()]). Absent "resigns" in the request means no resignations -
-// see the /move doc comment above and replay_tail() below.
+// Mirrors shared/gameConfig.ts's FinishedGame.fromJSON()'s `resigns` parsing, into a std::map.
 static std::map<int, std::vector<int>> parse_resigns(const json& j) {
     std::map<int, std::vector<int>> result;
     for (const auto& entry : j)
@@ -216,11 +190,8 @@ static std::map<int, std::vector<int>> parse_resigns(const json& j) {
     return result;
 }
 
-// Replays moves[from..] onto `state`, interleaving resignations at the correct ply - mirrors
-// shared/boardState.ts's BoardState.fromFinishedGame() exactly. A resigned player may always
-// pass, even under forced_pass_only, but resign() must be called at the ply it actually happened:
-// calling it any earlier would make that same player's own earlier real placements (made before
-// they resigned) fail the "resigned players may only pass" check during replay too.
+// Mirrors shared/boardState.ts's BoardState.fromFinishedGame()'s replay loop, but onto an existing
+// `state` from moves[from] onward, and throws on a rejected move.
 static void replay_tail(BoardState& state, const std::vector<MoveRef>& moves, size_t from,
                          const std::map<int, std::vector<int>>& resigns) {
     for (size_t i = from; i < moves.size(); i++) {
@@ -452,7 +423,7 @@ int main(int argc, char* argv[]) {
                 if (stored.size() < 2 * lcp) {
                     // Withdraw to the common prefix. Resignations recorded at earlier plies are
                     // never undone (permanent on both the TS client and this session's state), so
-                    // no un-resigning is needed here - see replay_tail()'s doc comment.
+                    // no un-resigning is needed here.
                     size_t to_withdraw = stored.size() - lcp;
                     for (size_t i = 0; i < to_withdraw; i++)
                         sess->state->withdraw_move();
@@ -498,9 +469,8 @@ int main(int argc, char* argv[]) {
             auto reward_t = estimate_player_rewards(ownership_t, {sess->state->capture_count()},
                                                     sess->state->score_rule, sess->state->stone_to_player_map,
                                                     sess->state->num_players, sess->state->komi);
-            // Turn ownership (who is moving) is independent of stone_to_player_map
-            // (scoring-only, and now potentially multi-valued) - next_turn.player
-            // is the sole source of truth, mirrors shared/boardState.ts.
+            // Mover is next_turn.player, not stone_to_player_map (scoring-only - see
+            // shared/types.ts's TurnInfo).
             int pid = sess->state->next_turn.player;
             float value = reward_t[0][pid - 1].item<float>();
 

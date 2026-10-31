@@ -5,15 +5,12 @@
 #include <stdexcept>
 #include <unordered_map>
 
-// Mirrors shared/clegCheck.ts - the static type checker - see game/cleg_check.h's own top comment
-// for the full context. This file only points out where the C++ port differs from the TS source;
-// the TS comments are the canonical reference for WHAT each piece does, not repeated here.
+// Mirrors shared/clegCheck.ts.
 
 // ── Type checking ──────────────────────────────────────────────────────────────
 
-// Mirrors shared/clegCheck.ts's TypeEnv - `parent` is a raw pointer into an enclosing stack frame
-// (safe here: every env is stack-allocated and never outlives the recursive check call that owns
-// it), not a GC'd reference.
+// Mirrors shared/clegCheck.ts's TypeEnv - `parent` is a raw pointer to an enclosing stack-allocated
+// env, which always outlives it.
 struct TypeEnv {
     std::unordered_map<std::string, ClegType> vars;
     TypeEnv* parent = nullptr;
@@ -29,9 +26,7 @@ static const ClegType* lookup_var_type(TypeEnv& env, const std::string& name) {
 struct FunctionSignature { std::vector<ClegType> params; ClegType return_type; };
 using FuncTable = std::unordered_map<std::string, FunctionSignature>;
 
-// Shared arg-count/arg-type check for calling a (params, return_type) signature by name - used by
-// check_expr's own CallExpr case for both a top-level function and a local func-typed variable's
-// value, so the two share one error-message format instead of duplicating it.
+// Mirrors shared/clegCheck.ts's checkCallArgs().
 static void check_call_args(const std::string& callee, const std::vector<ClegType>& arg_types, const std::vector<ClegType>& params) {
     if (arg_types.size() != params.size())
         throw std::runtime_error(
@@ -48,14 +43,7 @@ static void check_block(const Stmt& block, TypeEnv* parent, FuncTable& funcs, co
 static void check_stmt(const Stmt& stmt, TypeEnv& env, FuncTable& funcs, const ClegType& return_type, bool in_loop);
 static ClegType check_expr(const Expr& expr, TypeEnv& env, FuncTable& funcs);
 
-// Mirrors shared/clegCheck.ts's checkPartialApplication() - type-checks a partial-application
-// CallExpr's own `args` (at least one is a HoleExpr) against `ref_params`, the currently-callable
-// parameter list of whatever `callee` refers to, one entry per `args` position. Shared by both
-// partial-application sources (see CallExpr's own doc comment, shared/clegBase.ts): a bare top-level
-// function name (`ref_params` is its own full signature, since nothing is bound yet) and an existing
-// local variable holding a func value, itself possibly already a partial application (`ref_params`
-// is that value's own, already-reduced, params - the positions still open). Returns the resulting
-// closure's own new params - the subset of `ref_params` at exactly the hole positions, in order.
+// Mirrors shared/clegCheck.ts's checkPartialApplication().
 static std::vector<ClegType> check_partial_application(
     const std::string& callee, const std::vector<Expr>& args, const std::vector<ClegType>& ref_params,
     TypeEnv& env, FuncTable& funcs)
@@ -81,8 +69,7 @@ static void check_block(const Stmt& block, TypeEnv* parent, FuncTable& funcs, co
     for (auto& stmt : block.stmts) check_stmt(stmt, env, funcs, return_type, in_loop);
 }
 
-// Mirrors shared/clegCheck.ts's checkStmt() - `in_loop` is true while checking a ForStmt/WhileStmt's
-// own `body` (or anything nested inside it), required by BreakStmt/ContinueStmt (see their own cases).
+// Mirrors shared/clegCheck.ts's checkStmt().
 static void check_stmt(const Stmt& stmt, TypeEnv& env, FuncTable& funcs, const ClegType& return_type, bool in_loop) {
     switch (stmt.kind) {
         case StmtKind::VarDecl: {
@@ -99,9 +86,6 @@ static void check_stmt(const Stmt& stmt, TypeEnv& env, FuncTable& funcs, const C
         case StmtKind::AssignStmt: {
             const ClegType* var_type = lookup_var_type(env, stmt.name);
             if (!var_type) throw std::runtime_error("cleg: assignment to undeclared variable '" + stmt.name + "'");
-            // Walk one 'array' level per index (see shared/clegBase.ts's own AssignStmt doc comment)
-            // - `target_type` ends up being `*var_type` itself when `indices` is empty (the plain
-            // whole-value reassignment case), exactly like before this field existed.
             ClegType target_type = *var_type;
             for (auto& idx : stmt.indices) {
                 if (target_type.kind != CTKind::Array)
@@ -135,9 +119,6 @@ static void check_stmt(const Stmt& stmt, TypeEnv& env, FuncTable& funcs, const C
             return;
         }
         case StmtKind::ForStmt: {
-            // A fresh scope for init's own declared variable (if any), enclosing cond/update/body -
-            // NOT the same scope as body's own (check_block below gives body its own further-nested
-            // scope, same as every other BLOCK) - see ForStmt's own doc comment (shared/clegBase.ts).
             TypeEnv loop_env; loop_env.parent = &env;
             if (stmt.for_init) check_stmt(*stmt.for_init, loop_env, funcs, return_type, in_loop);
             if (stmt.cond) {
@@ -178,6 +159,7 @@ static void check_stmt(const Stmt& stmt, TypeEnv& env, FuncTable& funcs, const C
     }
 }
 
+// Mirrors shared/clegCheck.ts's checkExpr().
 static ClegType check_expr(const Expr& expr, TypeEnv& env, FuncTable& funcs) {
     switch (expr.kind) {
         case ExprKind::NumberLit: return ClegType{CTKind::Number, nullptr};
@@ -186,11 +168,6 @@ static ClegType check_expr(const Expr& expr, TypeEnv& env, FuncTable& funcs) {
         case ExprKind::Identifier: {
             const ClegType* t = lookup_var_type(env, expr.string_value);
             if (t) return *t;
-            // Not a variable - maybe a bare reference to one of program's own top-level functions,
-            // used as a function-pointer value (e.g. passing a comparator by name) rather than being
-            // called directly. A builtin can't be referenced this way (see ClegType's own Func doc
-            // comment on why), so it gets its own clearer error instead of falling through to the
-            // generic "undeclared variable" below.
             auto fit = funcs.find(expr.string_value);
             if (fit != funcs.end())
                 return ClegType{CTKind::Func, nullptr, fit->second.params, std::make_shared<ClegType>(fit->second.return_type)};
@@ -227,10 +204,6 @@ static ClegType check_expr(const Expr& expr, TypeEnv& env, FuncTable& funcs) {
         case ExprKind::CallExpr: {
             if (std::any_of(expr.elements.begin(), expr.elements.end(),
                              [](const Expr& a) { return a.kind == ExprKind::HoleExpr; })) {
-                // Partial application - a bare top-level function name, or an existing local
-                // variable holding a func value (a plain pointer, or itself already a partial
-                // application - see check_partial_application's own doc comment) - never a builtin
-                // (no single fixed signature to close over for the generic/overloaded ones).
                 const ClegType* var_type = lookup_var_type(env, expr.string_value);
                 if (var_type) {
                     if (var_type->kind != CTKind::Func)
@@ -252,9 +225,6 @@ static ClegType check_expr(const Expr& expr, TypeEnv& env, FuncTable& funcs) {
             auto& builtins = builtin_functions();
             auto bit = builtins.find(expr.string_value);
             if (bit != builtins.end()) return bit->second.check_call(expr.string_value, arg_types);
-            // A local variable (almost always a parameter) of func type shadows a same-named
-            // top-level function here - the whole point of passing a comparator by name is to call
-            // it through the parameter that received it (see shared/clegBase.ts's own top comment).
             const ClegType* var_type = lookup_var_type(env, expr.string_value);
             if (var_type) {
                 if (var_type->kind != CTKind::Func)
@@ -305,8 +275,7 @@ static ClegType check_expr(const Expr& expr, TypeEnv& env, FuncTable& funcs) {
     throw std::runtime_error("cleg: check_expr: unexpected ExprKind");
 }
 
-// Mirrors shared/clegCheck.ts's typecheckCleg() - internal (unlike TS, no consumer here needs the
-// checked result type directly; typecheck_cleg_as_board (public, below) just needs to know it's egr).
+// Mirrors shared/clegCheck.ts's typecheckCleg().
 ClegType typecheck_cleg(const ClegProgram& program) {
     FuncTable funcs;
     for (auto& fn : program.functions) {

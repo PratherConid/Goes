@@ -4,10 +4,7 @@
 #include <set>
 #include <stdexcept>
 
-// Mirrors shared/clegParser.ts - see game/cleg_base.h's own top comment for the full context and
-// shared/clegBase.ts's own top comment for the grammar itself. This file only points out where the
-// C++ port differs from the TS source; the TS comments are the canonical reference for WHAT each
-// piece does, not repeated here.
+// Mirrors shared/clegParser.ts.
 
 // ── Lexer ────────────────────────────────────────────────────────────────────
 
@@ -71,9 +68,6 @@ static std::vector<Token> tokenize(const std::string& src) {
         }
         if (c == '&' && i + 1 < n && src[i + 1] == '&') { tokens.push_back({TokKind::Punct, "&&", i}); i += 2; continue; }
         if (c == '|' && i + 1 < n && src[i + 1] == '|') { tokens.push_back({TokKind::Punct, "||", i}); i += 2; continue; }
-        // '->' (FUNCTYPE's own arrow, e.g. `(number, number) -> bool`) - checked before the generic
-        // PUNCTUATION fallback below, same as '&&'/'||' above, since '-' alone is already in
-        // PUNCTUATION (arithmetic/unary minus).
         if (c == '-' && i + 1 < n && src[i + 1] == '>') { tokens.push_back({TokKind::Punct, "->", i}); i += 2; continue; }
         if (PUNCTUATION.find(c) != std::string::npos) {
             tokens.push_back({TokKind::Punct, std::string(1, c), i});
@@ -88,12 +82,9 @@ static std::vector<Token> tokenize(const std::string& src) {
 
 // ── Parser ───────────────────────────────────────────────────────────────────
 
-// Mirrors shared/clegParser.ts's TokenCursor. peek_at clamps an out-of-range offset to the trailing
-// Eof token (tokenize() always appends exactly one) rather than TS's own unchecked array index
-// (which would read `undefined` for a maximally short/malformed program) - strictly safer, and
-// behaviorally identical for every syntactically-plausible lookahead this parser ever performs
-// (peek_at is only used for 1-2 token disambiguation, where "ran out of tokens" and "next token is
-// Eof" mean the same thing).
+// Mirrors shared/clegParser.ts's TokenCursor, except peek_at clamps an out-of-range offset to the
+// trailing Eof token instead of reading past the end (TS reads `undefined`) - equivalent for the
+// parser's 1-2 token lookaheads.
 class TokenCursor {
 public:
     explicit TokenCursor(std::vector<Token> tokens) : tokens_(std::move(tokens)) {}
@@ -108,10 +99,6 @@ public:
     bool is_punct(const std::string& p) const { auto& t = peek(); return t.kind == TokKind::Punct && t.text == p; }
     bool is_keyword(const std::string& k) const { auto& t = peek(); return t.kind == TokKind::Ident && t.text == k; }
 
-    // Saves the cursor's current position, to be handed back to restore() later - lets a caller
-    // (is_type_start/is_function_decl_start/is_assign_start below) speculatively run a real parse
-    // function purely to see what follows, then roll back as if it had never looked, regardless of
-    // whether that parse succeeded.
     size_t save() const { return pos_; }
     void restore(size_t pos) { pos_ = pos; }
 
@@ -140,16 +127,14 @@ static const std::set<std::string>& type_keywords() {
     };
     return kws;
 }
-// String-keyed variant of is_set_elem_kind (game/cleg_eval.cpp) - the parser's own parse_type needs
-// to check the raw base-type TOKEN (a string) before any ClegType/CTKind exists yet, unlike the type
-// checker's own SetLit case, which already has a resolved CTKind to check instead.
+// Mirrors shared/clegBase.ts's SET_ELEM_KINDS, keyed by base-type token for parse_type;
+// is_set_elem_kind (game/cleg_eval.cpp) is the CTKind-keyed counterpart for check_expr.
 static const std::set<std::string>& set_elem_kind_words() {
     static const std::set<std::string> kws = {"number", "string", "bool", "edge", "simp", "tri", "quad"};
     return kws;
 }
 
-// "tri" is an older spelling of the same (now-erased) simp type - both map to CTKind::Simp. Mirrors
-// shared/clegBase.ts's own "tri means the same type as simp" note (its own top comment).
+// Mirrors shared/clegParser.ts's parseType() keyword-to-kind mapping ('tri' -> simp).
 static CTKind base_type_kind(const std::string& base) {
     if (base == "egr") return CTKind::Egr;
     if (base == "number") return CTKind::Number;
@@ -166,8 +151,7 @@ static CTKind base_type_kind(const std::string& base) {
     throw std::runtime_error("cleg: base_type_kind: unknown base type '" + base + "'");
 }
 
-// Forward-declared (a template, defined in full further below alongside its own other callers) so
-// parse_paren_type can use it without moving that definition up here.
+// Forward-declared so parse_paren_type can use it ahead of its definition below.
 template <typename T, typename F>
 static std::vector<T> parse_comma_separated(TokenCursor& c, const std::string& close, F parse_one);
 
@@ -200,23 +184,7 @@ static ClegType parse_type(TokenCursor& c) {
     return type;
 }
 
-// A leading '(' starts either FUNCTYPE's own param list (immediately followed by '->' once the list
-// closes, e.g. `(number, number) -> bool`) or a parenthesized GROUPING of a single already-complete
-// func type - needed so a trailing `[]` can bind to a func type as a WHOLE rather than (per
-// FUNCTYPE's own recursive-return-type parsing, see below) to its return type: `((number) ->
-// number)[]` is an array of comparator-shaped functions, vs. `(number) -> number[]` (no outer
-// grouping), a single function returning `number[]`. The two are told apart only after the closing
-// ')' of the parenthesized list: '->' immediately after means FUNCTYPE (consume it and parse the
-// return type - recursing through parse_type this way, rather than a separate parse_func_type, is
-// also what lets a func type itself take/return another func type, higher-order, still fully
-// concrete/non-generic, for free); anything else means the list must have held exactly one, itself
-// func-typed, item, unwrapped as plain grouping. Deliberately NOT extended to grouping any other
-// single type (`(number)` alone is rejected, not accepted as a redundant-parens `number`) even
-// though that would be unambiguous in isolation - is_type_start's own speculative parse_type call
-// (see below) needs "this fully parses as a TYPE" to never accidentally also describe a valid EXPR,
-// and a bare grouped BASETYPE like `(number)` can collide with `(number) + 1` where `number` names
-// an ordinary variable that happens to share a type keyword's spelling; a grouped FUNCTYPE can't
-// collide this way, since no EXPR production can ever contain FUNCTYPE's own mandatory '->' token.
+// Mirrors shared/clegParser.ts's parseParenType().
 static ClegType parse_paren_type(TokenCursor& c) {
     c.expect_punct("(");
     std::vector<ClegType> items = parse_comma_separated<ClegType>(c, ")", [&]() { return parse_type(c); });
@@ -229,13 +197,7 @@ static ClegType parse_paren_type(TokenCursor& c) {
     throw std::runtime_error("cleg: expected '->' after a parenthesized parameter list");
 }
 
-// True at a TYPE's own first token - either a BASETYPE keyword, or '(' starting a FUNCTYPE (see
-// parse_type/parse_paren_type above). A bare '(' can also start a grouped EXPR at some of
-// is_type_start's own call sites (parse_for_init's/parse_cleg_impl's own bare-EXPR fallback) - since
-// a real EXPR can never contain FUNCTYPE's own mandatory '->' token, the two can only be told apart
-// by actually trying to parse a TYPE. Rather than re-deriving parse_type's own grammar here,
-// speculatively run parse_type for real via TokenCursor's own save/restore, always rolling back
-// afterward (success or failure) so the cursor ends up exactly where it started either way.
+// Mirrors shared/clegParser.ts's isTypeStart().
 static bool is_type_start(TokenCursor& c) {
     auto& t = c.peek();
     if (t.kind == TokKind::Ident && type_keywords().count(t.text) > 0) return true;
@@ -251,15 +213,7 @@ static bool is_type_start(TokenCursor& c) {
     }
 }
 
-// A FUNCDECL and a top-level VARDECL both start with a TYPE (is_type_start above, true for either) -
-// the tokens right after the TYPE tell them apart: IDENT '(' for a function declaration ('tri
-// makeTri() {...}', 'number[] mk() {...}', '(number)->bool makeCmp() {...}'), IDENT '=' for a
-// variable declaration ('tri x = ...;'). Only meaningful at top level - parse_stmt (inside a
-// function body) never sees a FUNCDECL, so is_type_start alone already means VARDECL there.
-// Speculatively runs the real parse_type directly (same save/restore technique as is_type_start
-// above, rather than re-deriving its own grammar) since a TYPE isn't always one token; a malformed
-// type here just means "not a function decl start" - whichever of parse_var_decl/
-// parse_function_decl actually runs next will surface the same error for real.
+// Mirrors shared/clegParser.ts's isFunctionDeclStart().
 static bool is_function_decl_start(TokenCursor& c) {
     size_t pos = c.save();
     try {
@@ -310,16 +264,7 @@ static Stmt parse_block(TokenCursor& c) {
     return block;
 }
 
-// An identifier, optionally followed by one or more '[' EXPR ']' index brackets, immediately
-// followed by '=' is an assignment (as opposed to, say, a bare call-expression statement or a bare
-// indexing expression like `arr[i];`) - shared by parse_stmt and the for-loop's own
-// parse_for_init/parse_for_update. The zero-index case (`x =`) is checked by a cheap fixed 2-token
-// lookahead; since the number of indices isn't bounded, telling `arr[i] = ...` apart from a bare
-// `arr[i];`/`arr[i] + 1;` expression needs the same speculative-parse-then-restore technique as
-// is_type_start/is_function_decl_start above (consuming the index brackets for real via
-// TokenCursor's own save/restore, rather than re-deriving their own grammar here) - a malformed
-// index expression here just means "not an assignment start"; whichever of parse_assign_stmt/the
-// EXPRSTMT fallback actually runs next will surface the same error for real.
+// Mirrors shared/clegParser.ts's isAssignStart().
 static bool is_assign_start(TokenCursor& c) {
     if (c.peek().kind != TokKind::Ident) return false;
     if (c.peek_at(1).kind == TokKind::Punct && c.peek_at(1).text == "=") return true;
@@ -497,13 +442,10 @@ static Expr parse_unary(TokenCursor& c);
 static Expr parse_postfix(TokenCursor& c);
 static Expr parse_atom(TokenCursor& c);
 
-// Precedence chain mirrors shared/clegParser.ts's own parseExpr/parseLogicalAnd/parseEquality/
-// parseRelational/parseAdditive/parseMultiplicative/parseUnary exactly (`||` loosest, then `&&`,
-// then `==`, then `< > <= >=`, then `+ -`, then `* / %` tightest, all left-associative).
-// Each loop body consumes the operator into a local BEFORE calling the next precedence level down -
-// C++ function-call argument evaluation order is unspecified (unlike JS's own strict left-to-right),
-// so folding both into one make_binary(...) call let the compiler legally evaluate the recursive
-// parse before c.next() ever advanced past the operator token, parsing the wrong thing entirely.
+// These mirror shared/clegParser.ts's parseExpr()...parseUnary() chain. Each loop consumes the
+// operator into a local before parsing the right operand: C++ leaves function-argument evaluation
+// order unspecified (JS is left-to-right), so doing both inside one make_binary(...) call could parse
+// the right operand before c.next() advanced past the operator.
 static Expr parse_expr(TokenCursor& c) {
     static const std::set<std::string> OR_OPS = {"||"};
     Expr left = parse_logical_and(c);
@@ -578,8 +520,7 @@ static Expr parse_unary(TokenCursor& c) {
     return parse_postfix(c);
 }
 
-// Postfix `[]` indexing (`arr[i]`, `arr[i][j]`, `f()[0]`, ...) - binds tighter than unary `-`/`!`,
-// left-associative (each `[...]` wraps the result of everything to its left so far).
+// Mirrors shared/clegParser.ts's parsePostfix().
 static Expr parse_postfix(TokenCursor& c) {
     Expr e = parse_atom(c);
     while (c.is_punct("[")) {
@@ -594,6 +535,7 @@ static Expr parse_postfix(TokenCursor& c) {
     return e;
 }
 
+// Mirrors shared/clegParser.ts's parseAtom().
 static Expr parse_atom(TokenCursor& c) {
     const Token& tok = c.peek();
     if (tok.kind == TokKind::Number) {
@@ -613,8 +555,6 @@ static Expr parse_atom(TokenCursor& c) {
         return e;
     }
     if (c.is_punct("{")) {
-        // Unambiguous with a Block's own '{' - parse_stmt/parse_block never call parse_expr where a
-        // Block could appear instead (function/if/for bodies).
         c.next();
         Expr e; e.kind = ExprKind::SetLit;
         e.elements = parse_comma_separated<Expr>(c, "}", [&]() { return parse_expr(c); });
@@ -640,10 +580,6 @@ static Expr parse_atom(TokenCursor& c) {
         std::string name = c.expect_ident();
         if (c.is_punct("(")) {
             c.next();
-            // Each argument is either a real EXPR or a bare '#' (HoleExpr) - only ever meaningful
-            // for a partial application (see CallExpr's own doc comment, shared/clegBase.ts), but
-            // that isn't known yet at parse time, so '#' is always syntactically accepted here and
-            // rejected later by check_expr (game/cleg_check.cpp) if `name` doesn't qualify.
             Expr e; e.kind = ExprKind::CallExpr; e.string_value = name;
             e.elements = parse_comma_separated<Expr>(c, ")", [&]() -> Expr {
                 if (c.is_punct("#")) { c.next(); Expr h; h.kind = ExprKind::HoleExpr; return h; }
@@ -658,8 +594,7 @@ static Expr parse_atom(TokenCursor& c) {
         "cleg: unexpected token '" + (tok.text.empty() ? "<eof>" : tok.text) + "' at position " + std::to_string(tok.pos));
 }
 
-// Mirrors shared/clegParser.ts's parseCleg() - the internal AST builder; the public parse_cleg()
-// wrapper (below) is what game/cleg_parser.h actually declares.
+// Mirrors shared/clegParser.ts's parseCleg(); parse_cleg() below wraps the result in a shared_ptr.
 static ClegProgram parse_cleg_impl(const std::string& source) {
     TokenCursor c(tokenize(source));
     ClegProgram program;

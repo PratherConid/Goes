@@ -60,10 +60,6 @@ bool linear_feasible(const LPProblem& problem) {
         basis[r] = num_art_start + r;
     }
 
-    // Phase-one objective: minimize sum of artificials. Reduced-cost row = c - c_B^T*T, with
-    // c_j = 1 for artificial columns (0 elsewhere) and c_B = all-ones (every basic var is an
-    // artificial initially) - so the row is initialized to c and then each constraint row is
-    // subtracted off, zeroing out the (basic) artificial columns as required.
     for (int j = num_art_start; j < num_cols; j++) T[num_rows][j] = 1;
     for (int r = 0; r < num_rows; r++)
         for (int j = 0; j <= num_cols; j++) T[num_rows][j] -= T[r][j];

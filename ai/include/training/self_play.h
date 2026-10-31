@@ -15,13 +15,9 @@
 #include <string>
 
 struct GameConfig {
-    // Mirrors shared/gameConfig.ts's GameConfig.boardDescr - cleg source text (see
-    // game/cleg_parser.h's parse_cleg and game/cleg_eval.h's build_board_from_cleg), not a parsed
-    // program: unlike the TS side
-    // (which keeps the parsed ClegProgram in memory for its UI to show back via unparseCleg), a
-    // GameConfig here is built once per training run/request and only ever needs a board built from
-    // it once, so there's no benefit to persisting the AST - re-parsing this string is cheap enough
-    // to do on demand wherever a board is actually needed.
+    // Mirrors shared/gameConfig.ts's GameConfig.boardDescr, but held as cleg source text (its
+    // toJSON() form), not a parsed ClegProgram - re-parsed on demand (game/cleg_parser.h's
+    // parse_cleg) wherever a board is needed, since nothing here keeps the AST around.
     std::string board_descr;
     // Mirrors shared/gameConfig.ts's GameConfig.boardSeed; nullopt = null. server.cpp requires it on
     // a /move request's config. train.cpp ignores it and draws its own seed per run.
@@ -29,42 +25,33 @@ struct GameConfig {
     int num_stones;
     int num_players;
     std::vector<TurnInfo> turn_list;
-    // [stone-1][player-1]; nullopt = unlimited. If left empty, new_state()
-    // defaults to all-unlimited, sized to num_stones x num_players.
+    // Mirrors shared/gameConfig.ts's GameConfig.playerStonePlaceLimit; nullopt = null. If left
+    // empty, new_state() defaults to all-unlimited, sized to num_stones x num_players.
     std::vector<std::vector<std::optional<int>>> player_stone_place_limit;
-    // [stone-1]; nullopt = unlimited. If left empty, new_state() defaults to
-    // all-unlimited, sized to num_stones.
+    // Mirrors shared/gameConfig.ts's GameConfig.globalStonePlaceLimit; nullopt = null. If left
+    // empty, new_state() defaults to all-unlimited, sized to num_stones.
     std::vector<std::optional<int>> global_stone_place_limit;
     std::unordered_map<int, std::vector<int>> stone_to_player_map;
     bool forced_pass_only = true;
-    // Scoring rule ("stone" | "territoryonly" | "area" | "territory") - see
-    // BoardState::compute_points().
+    // Mirrors shared/gameConfig.ts's GameConfig.scoreRule, as a plain string.
     std::string score_rule = "area";
-    // Per-player scoring handicap (see BoardState::komi). If left empty,
-    // new_state() defaults to all-zero, sized to num_players.
+    // Mirrors shared/gameConfig.ts's GameConfig.komi. If left empty, new_state() defaults to
+    // all-zero, sized to num_players.
     std::vector<float> komi;
-    // Superko variant (see BoardState::ko_rule). Situational matches the
-    // engine's pre-existing (and only) behavior before koRule was ported.
+    // Mirrors shared/gameConfig.ts's GameConfig.koRule.
     KoRule ko_rule = KoRule::Situational;
-    // Whether a move that leaves the mover's own group with zero liberties is
-    // legal (captures that own group immediately, rather than being rejected).
+    // Mirrors shared/gameConfig.ts's GameConfig.allowSuicide.
     bool allow_suicide = false;
-    // Fixed cap on BoardState::max_plies (nullopt = no fixed cap) - primarily
-    // for server.cpp's /move endpoint, which receives this directly from the
-    // client rather than sampling it. Combines with linear_move_bound (below)
-    // rather than being overridden by it: new_state() takes the smaller of
-    // this and any linear_move_bound sample, so a game-generation run that
-    // sets both is still bounded by whichever is tighter.
+    // Mirrors shared/gameConfig.ts's GameConfig.maxPlies; nullopt = null. new_state() takes the
+    // smaller of this and any linear_move_bound sample (below).
     std::optional<int> max_plies;
     // If set, new_state() samples a bound uniformly between {k1,k2}.first*N
     // and {k1,k2}.second*N and applies it to the fresh game's
     // BoardState::max_plies (see max_plies, above, for how the two combine).
     std::optional<std::pair<float,float>> linear_move_bound;
 
-    // Serialises to the same wire shape as shared/gameConfig.ts's GameConfig.toJSON()
-    // (the mirror of parse_game_cfg, below) - used by train.cpp's checkpoint
-    // config.json. GameConfig has no `players` field (the engine doesn't track
-    // PlayerInfo), so that TS-side key is omitted; every other key matches by name.
+    // Mirrors shared/gameConfig.ts's GameConfig.toJSON(), minus `players` (the engine doesn't
+    // track PlayerInfo). Used for train.cpp's checkpoint config.json.
     nlohmann::json to_json() const;
 };
 
@@ -91,13 +78,10 @@ bool weak_equal(const GameConfig& a, const GameConfig& b);
 // subset.
 bool strong_equal(const GameConfig& a, const GameConfig& b);
 
-// Parses a GameConfig-shaped JSON object into a GameConfig, matching
-// shared/gameConfig.ts's GameConfig.toJSON() wire shape - the same parser used by
-// server.cpp's /move handler (its request `config` object) and train.cpp's
-// --game-config file, so there's one JSON->GameConfig implementation instead
-// of two independently-maintained copies. linear_move_bound has no
-// shared/gameConfig.ts analog (a self-play-only max_plies sampling knob), so it's
-// never set here - callers that want it set it explicitly afterward.
+// Mirrors shared/gameConfig.ts's GameConfig.fromJSON(), minus `players`. Shared by server.cpp's
+// /move handler (its request `config` object) and train.cpp's --game-config file.
+// linear_move_bound has no TS analog, so it's never set here - callers that want it set it
+// explicitly afterward.
 GameConfig parse_game_cfg(const nlohmann::json& cfg);
 
 // Resolves an empty player_stone_place_limit/global_stone_place_limit

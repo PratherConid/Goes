@@ -8,12 +8,7 @@ std::vector<std::vector<int>> zero_adj(int N) {
     return std::vector<std::vector<int>>(N, std::vector<int>(N, 0));
 }
 
-// Mirrors shared/topology.ts's own module-private unionFindClasses(): given N nodes and a list of
-// pairs to merge, returns each node's equivalence-class index, compressed to a dense 0..M-1 range
-// (M = number of distinct classes) in ascending order of each class's lowest original member.
-// Internal to merge_boards() (below) - resolves every merge instruction at once, so a chain like
-// (0,3)~(1,5) and (1,5)~(2,7) correctly collapses (0,3) and (2,7) into the same node too, even
-// though no single instruction names both directly.
+// Mirrors shared/topology.ts's unionFindClasses().
 static std::vector<int> union_find_classes(int n, const std::vector<std::pair<int,int>>& pairs) {
     std::vector<int> parent(n);
     std::iota(parent.begin(), parent.end(), 0);
@@ -91,13 +86,6 @@ AdjacencyList to_adjacency_list(const std::vector<std::vector<int>>& adj) {
     return list;
 }
 
-// Mirrors shared/topology.ts's findSimplices(): does an increasing-order DFS to depth n+1 - at each
-// level, `candidates` is the current chain's own common-neighbor set (already filtered to be > the
-// chain's own last member), so extending the chain by picking v from candidates and re-filtering
-// candidates itself down to {x in candidates : x > v, adj_list[v] has x} for the next level is
-// exactly "every vertex adjacent to the WHOLE chain so far, in increasing order" - fixing this
-// increasing order (same trick this used to use directly for n=2) is what guarantees each simplex
-// is found exactly once, with no separate deduplication pass needed.
 std::vector<BoardSimplex> find_simplices(const std::vector<std::vector<int>>& adj, int n) {
     assert(n >= 1 && "find_simplices: n must be at least 1");
     int N = (int)adj.size();

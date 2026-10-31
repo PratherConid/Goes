@@ -12,9 +12,7 @@
 
 // ── parsing ──────────────────────────────────────────────────────────────────
 
-// '(' and ')' are always their own token, even with no surrounding whitespace (e.g. "(deg eq 5)");
-// every other maximal run of non-whitespace, non-paren characters is one token. Mirrors
-// shared/selector.ts's tokenize().
+// Mirrors shared/selector.ts's tokenize().
 static std::vector<std::string> tokenize(const std::string& s) {
     std::vector<std::string> tokens;
     size_t i = 0;
@@ -53,9 +51,7 @@ private:
     size_t pos_ = 0;
 };
 
-// Shared numeric-argument validation for (deg .../rrmn ...)'s count and (rrmp ...)'s portion -
-// `context` names the argument in the thrown error (e.g. "(deg ...) argument"). Mirrors
-// shared/selector.ts's nextNonnegInt()/nextNonnegNumber().
+// Mirror shared/selector.ts's nextNonnegInt()/nextNonnegNumber().
 static int next_nonneg_int(ParseCursor& c, const std::string& context) {
     std::string tok = c.next();
     size_t end = 0;
@@ -80,14 +76,10 @@ static double next_nonneg_number(ParseCursor& c, const std::string& context) {
 
 static Selector parse_sel_expr(ParseCursor& c);
 
-// True iff `type` is some simp N (of any N) - the general stand-in every place that used to check
-// for the fixed old Tri kind specifically now needs. Mirrors shared/selector.ts's isSimpType().
+// Mirrors shared/selector.ts's isSimpType().
 static bool is_simp_type(const SelectorType& type) { return type.kind == SelectorKind::Simp; }
 
-// Display name for `type` used in parse_sel_expr's own rejection messages and
-// describe_selector_type below - simp N reads as "simp N" (N=2 still reads as "triangle", since
-// that's the name every existing triangle-specific error message already uses). Mirrors
-// shared/selector.ts's selectorKindName().
+// Mirrors shared/selector.ts's selectorKindName().
 static std::string selector_kind_name(const SelectorType& type) {
     switch (type.kind) {
         case SelectorKind::Node: return "node";
@@ -98,16 +90,13 @@ static std::string selector_kind_name(const SelectorType& type) {
     throw std::runtime_error("selector_kind_name: unknown type");
 }
 
-// "a node"/"an edge"/"a simp 3"/"a quad" - shared by parse_top_level's own wrong-result-kind message
-// below, and by each evaluator's own wrong-kind error message further down.
+// Mirrors shared/selector.ts's describeSelectorType().
 static std::string describe_selector_type(const SelectorType& type) {
     std::string name = selector_kind_name(type);
     return (type.kind == SelectorKind::Edge ? "an " : "a ") + name;
 }
 
-// The grammar's own op keyword for `op` - shared by parse_top_level's own wrong-result-kind message
-// below (mirrors shared/selector.ts's own `(op '${sel.op}')` suffix, which reads the op straight off
-// the TS string-literal union `op` field; this reconstructs the same text from the enum).
+// The grammar keyword for `op` - TS reads it straight off Selector's string-literal `op` field.
 static std::string selector_op_keyword(SelectorOp op) {
     switch (op) {
         case SelectorOp::Union: return "union";
@@ -135,10 +124,8 @@ static std::string selector_op_keyword(SelectorOp op) {
     throw std::runtime_error("selector_op_keyword: unknown op");
 }
 
-// Parses a node/edge/quad/tri/"simp N" kind token (the shape (all ...)/(none ...)/conva/conve's own
-// leading token all share) - 'tri' is sugar for simp_type(2); 'simp' consumes one more token from
-// `c`, an integer >= 2, and builds simp_type(n). `op`/`noun` name the production in the thrown
-// error. Mirrors shared/selector.ts's parseSelectorTypeToken().
+// Mirrors shared/selector.ts's parseSelectorTypeToken() - `op`/`noun` in place of its single
+// `context` string.
 static SelectorType parse_kind_token(ParseCursor& c, const std::string& op, const std::string& noun) {
     std::string tok = c.next();
     if (tok == "node") return SelectorType{SelectorKind::Node};
@@ -160,9 +147,7 @@ static SelectorType parse_kind_token(ParseCursor& c, const std::string& op, cons
         "selector: (" + op + " ...) " + noun + " must be 'node', 'edge', 'simp <n>', 'tri', or 'quad', got '" + tok + "'");
 }
 
-// Mirrors shared/selector.ts's parseConversion() - the leading kind token now names the "to"/result
-// kind (see selector.h's own top comment); the operand is parsed via the ordinary context-free
-// parse_sel_expr(c), and its own bottom-up-inferred `type` is the "from" kind.
+// Mirrors shared/selector.ts's parseConversion().
 static Selector parse_conversion(ParseCursor& c, SelectorOp op) {
     std::string op_name = op == SelectorOp::Conva ? "conva" : "conve";
     SelectorType to_type = parse_kind_token(c, op_name, "result kind");
@@ -179,11 +164,7 @@ static Selector parse_conversion(ParseCursor& c, SelectorOp op) {
     return sel;
 }
 
-// Mirrors shared/selector.ts's parseConvCmp() - reads convlt/conveq/convgt/convclt/convceq/
-// convcgt's own leading kind token (the "to"/result kind, same as parse_conversion above), then the
-// threshold `<num>`, then the operand - unlike parse_conversion, there's no same-kind-is-a-no-op
-// shortcut (see conv_cmp_params()'s own doc comment below for why that doesn't generalize to an
-// arbitrary threshold), so every case builds a real node.
+// Mirrors shared/selector.ts's parseConvCmp().
 static Selector parse_conv_cmp(ParseCursor& c, SelectorOp op, const std::string& op_name) {
     SelectorType to_type = parse_kind_token(c, op_name, "result kind");
     int n = next_nonneg_int(c, "(" + op_name + " ...) count");
@@ -199,16 +180,7 @@ static Selector parse_conv_cmp(ParseCursor& c, SelectorOp op, const std::string&
     return sel;
 }
 
-// Parses one SEL, inferring its own `type` bottom-up rather than being told what to expect (see
-// selector.h's own top comment and shared/selector.ts's own top comment) - context-free, unlike the
-// old parse_sel_expr(c, type). Every case below either propagates an operand's own already-parsed
-// `type` unchanged (union/inter/diff/compl/rrmn/rrmp/rpkn/rpkp - diff/union/inter also check their
-// operands agree with each other), reads an explicit leading token because nothing else could supply the kind
-// (all/none's own kind; conva/conve's own "to" kind, via parse_conversion above), or is hardcoded to
-// a single always-valid kind (deg: always Node). deg/more reject a mismatched kind (deg implicitly,
-// by always being Node regardless of context; more explicitly, by checking its own operand's
-// inferred `type` after the fact) - there's no longer a `type` context to check against up front the
-// way the old top-down version did. Mirrors shared/selector.ts's parseSelExpr().
+// Mirrors shared/selector.ts's parseSelExpr().
 static Selector parse_sel_expr(ParseCursor& c) {
     c.expect("(");
     std::string op = c.next();
@@ -343,11 +315,7 @@ Selector parse_selector(const std::string& s) {
     return sel;
 }
 
-// Shared by parse_node_selector/parse_edge_selector/parse_triangle_selector/parse_quad_selector:
-// parses s via parse_selector() above, then checks the result's own bottom-up-inferred `type`
-// against `want` (the mirror image of the old top-down scheme, where `want` was threaded in as
-// parsing context and this check was unreachable). Mirrors shared/selector.ts's
-// parseSelectorAsType().
+// Mirrors shared/selector.ts's parseSelectorAsType().
 static Selector parse_top_level(const std::string& s, SelectorType want) {
     Selector sel = parse_selector(s);
     if (sel.type != want)
@@ -375,11 +343,7 @@ static std::string format_double(double d) {
     return oss.str();
 }
 
-// Renders a SelectorType back into its own grammar token(s) - "node"/"edge"/"quad" as-is, or
-// "simp N" (two tokens) for a simp type - used by format_selector's own All/None/Conva/Conve cases
-// below (the inverse of parse_kind_token above). Always uses the canonical "simp N" spelling, even
-// for simp 2 - round-tripping doesn't preserve "tri" sugar, only meaning (the same simp 2 Selector
-// results either way). Mirrors shared/selector.ts's formatSelectorType().
+// Mirrors shared/selector.ts's formatSelectorType().
 static std::string format_selector_type(const SelectorType& type) {
     switch (type.kind) {
         case SelectorKind::Node: return "node";
@@ -390,7 +354,7 @@ static std::string format_selector_type(const SelectorType& type) {
     throw std::runtime_error("format_selector_type: unknown type");
 }
 
-// Mirrors shared/selector.ts's formatSelector() - the inverse of parsing.
+// Mirrors shared/selector.ts's formatSelector().
 std::string format_selector(const Selector& sel) {
     switch (sel.op) {
         case SelectorOp::Union: case SelectorOp::Inter: {
@@ -416,15 +380,10 @@ std::string format_selector(const Selector& sel) {
         }
         case SelectorOp::Conva: case SelectorOp::Conve: {
             std::string name = sel.op == SelectorOp::Conva ? "conva" : "conve";
-            // sel.type is the "to"/result kind - see selector.h's own top comment on why that's what
-            // the explicit token now names (sel.from, the "to" kind's mirror, is read off sel.a's own
-            // type instead, so it doesn't need spelling out here).
             return "(" + name + " " + format_selector_type(sel.type) + " " + format_selector(*sel.a) + ")";
         }
         case SelectorOp::ConvLt: case SelectorOp::ConvEq: case SelectorOp::ConvGt:
         case SelectorOp::ConvClt: case SelectorOp::ConvCeq: case SelectorOp::ConvCgt:
-            // Same shape as Conva/Conve just above, plus the threshold sel.n right after the kind
-            // token.
             return "(" + selector_op_keyword(sel.op) + " " + format_selector_type(sel.type) + " " +
                 std::to_string(sel.n) + " " + format_selector(*sel.a) + ")";
         case SelectorOp::Rrmn: return "(rrmn " + std::to_string(sel.count) + " " + format_selector(*sel.a) + ")";
@@ -467,11 +426,8 @@ static int degree(const std::vector<std::vector<int>>& adj, int i) {
     return d;
 }
 
-// BoardEdge/BoardSimplex/BoardQuad aren't valid std::set/std::unordered_map keys themselves (two
-// structurally-equal values are different objects, and none has an operator< or std::hash), so
-// union/inter/diff/compl below key them by these canonical string ids (n1 < n2 < ...`/`nodes`
-// ascending already makes each one unique per object) whenever they need set-like membership tests.
-// Mirrors shared/selector.ts's edgeKey()/simpKey()/quadKey().
+// Mirror shared/selector.ts's edgeKey()/simpKey()/quadKey() - kept as string keys since
+// BoardEdge/BoardSimplex/BoardQuad have no operator< or std::hash.
 static std::string edge_key(const BoardEdge& e) {
     return std::to_string(e.n1) + "," + std::to_string(e.n2);
 }
@@ -487,10 +443,8 @@ static std::string quad_key(const BoardQuad& s) {
     return std::to_string(s.n1) + "," + std::to_string(s.n2) + "," + std::to_string(s.n3) + "," + std::to_string(s.n4);
 }
 
-// Mirrors shared/selector.ts's compareNodes/compareEdges/compareSimps/compareQuads (its
-// compareIndexLists() order) as std::sort-style "less" predicates - the order randomly_remove/
-// randomly_take sort into before shuffling. std::vector<int>'s own operator< is the same
-// lexicographic, shorter-prefix-first order.
+// Mirror shared/selector.ts's compareNodes/compareEdges/compareSimps/compareQuads as std::sort-style
+// "less" predicates; std::vector<int>'s operator< gives compareIndexLists()'s order.
 static bool node_less(const int& a, const int& b) { return a < b; }
 static bool edge_less(const BoardEdge& a, const BoardEdge& b) {
     return std::vector<int>{a.n1, a.n2} < std::vector<int>{b.n1, b.n2};
@@ -500,12 +454,8 @@ static bool quad_less(const BoardQuad& a, const BoardQuad& b) {
     return std::vector<int>{a.n1, a.n2, a.n3, a.n4} < std::vector<int>{b.n1, b.n2, b.n3, b.n4};
 }
 
-// Generic Map-based dedupe, keyed by key(item) - the last item seen for a given key overwrites the
-// value, but the FIRST occurrence's position in iteration order is kept (matches a JS Map's own
-// set-on-existing-key semantics, which shared/selector.ts's own dedupeByKey() relies on) - reproduced
-// here via an index-into-`out` map alongside `out` itself, rather than plain std::map/unordered_map
-// keyed directly by K (which would drop that first-seen ordering). Shared by every object kind's own
-// `union` case below.
+// Mirrors shared/selector.ts's dedupeByKey() - a key -> index-into-`out` map reproduces JS Map's
+// first-position, last-value semantics.
 template <typename T, typename K>
 static std::vector<T> dedupe_by_key(const std::vector<T>& items, K (*key)(const T&)) {
     std::unordered_map<K, size_t> first_seen;
@@ -519,17 +469,11 @@ static std::vector<T> dedupe_by_key(const std::vector<T>& items, K (*key)(const 
     return out;
 }
 
-// Mirrors shared/selector.ts's node member/key convention for edge/triangle/quad (a plain node
-// index is its own key; a single-element member list) - used wherever "node" is conva/conve/convlt/
-// .../convcgt's own "from" or "to" kind in convert_objects_cmp below.
+// Mirror the inline `i => [i]`/`i => i` node member/key lambdas in shared/selector.ts's evaluators.
 static std::vector<int> node_members(const int& n) { return { n }; }
 static int node_key(const int& n) { return n; }
 
-// True iff `a`'s own members are completely contained in `b`'s, or vice versa - the general
-// "association" test conva/conve rely on (see selector.h's own top comment). Every object kind here
-// has a fixed arity (node 1, edge 2, simp N N+1, quad 4) and every object's own members are
-// distinct node indices, so containment can only ever run from the smaller-arity list into the
-// larger one; this checks whichever direction applies rather than assuming a fixed order.
+// Mirrors shared/selector.ts's isAssociated().
 static bool is_associated(const std::vector<int>& a, const std::vector<int>& b) {
     const std::vector<int>& small = a.size() <= b.size() ? a : b;
     const std::vector<int>& large = a.size() <= b.size() ? b : a;
@@ -537,14 +481,8 @@ static bool is_associated(const std::vector<int>& a, const std::vector<int>& b) 
     return std::all_of(small.begin(), small.end(), [&](int x) { return large_set.count(x) > 0; });
 }
 
-// Mirrors shared/selector.ts's convCmpParams() - maps any of Conva/Conve/ConvLt/ConvEq/ConvGt/
-// ConvClt/ConvCeq/ConvCgt to its own (cmp, complement, n) triple (`cmp` reuses DegCmp's own Eq/Gt/Lt
-// tags rather than a redundant new three-way enum - `n` here is unrelated to Deg's own `n` field
-// meaning, just the same tag values). Conva is exactly ConvCeq with n 0 (the count of NOT-selected
-// associated objects is zero - i.e. every one of them IS selected); Conve is exactly ConvGt with n 0
-// (the count of selected associated objects is more than zero). Shared by every evaluator's own
-// single case for all 8 of these ops below - Conva/Conve are genuinely just this function's own two
-// fixed-n special cases, not separately implemented.
+// Mirrors shared/selector.ts's convCmpParams() - `cmp` reuses DegCmp's tags for TS's
+// 'lt' | 'eq' | 'gt'.
 struct ConvCmpParams { DegCmp cmp; bool complement; int n; };
 static ConvCmpParams conv_cmp_params(const Selector& sel) {
     switch (sel.op) {
@@ -560,13 +498,8 @@ static ConvCmpParams conv_cmp_params(const Selector& sel) {
     }
 }
 
-// Mirrors shared/selector.ts's convertObjectsCmp() - the sole implementation shared by every
-// evaluator's own single case for Conva/Conve/ConvLt/ConvEq/ConvGt/ConvClt/ConvCeq/ConvCgt (see
-// conv_cmp_params above): `all_to`/`to_members` enumerate every object of THIS evaluator's own kind
-// (the "to" kind) in the whole graph; `all_from`/`from_members`/`from_key` do the same for SEL's own
-// declared source kind, and `selected_from_keys` is which of those SEL's own operand selects. A "to"
-// object is kept iff the count of its associated "from" objects (per is_associated above) that ARE
-// selected (`complement` false) or are NOT (`complement` true) compares as `cmp` to `n`.
+// Mirrors shared/selector.ts's convertObjectsCmp() - the key type K is a template parameter in
+// place of TS's `string | number`.
 template <typename F, typename T, typename K>
 static std::vector<T> convert_objects_cmp(
     const std::vector<T>& all_to, std::vector<int> (*to_members)(const T&),
@@ -629,10 +562,6 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
         case SelectorOp::More: {
             auto a = select_node(adj, pos, *sel.a, random);
             std::set<int> out = a;
-            // Repeats the one-step expansion sel.steps times (default 1, see selector.h's own doc
-            // comment on Selector::steps) - each step only walks `frontier` (the nodes newly added by
-            // the PREVIOUS step, not the whole accumulated `out` again), since a node's own neighbors
-            // were already fully explored the one time it itself became part of the frontier.
             std::vector<int> frontier(a.begin(), a.end());
             int steps = sel.steps.value_or(1);
             for (int s = 0; s < steps && !frontier.empty(); s++) {
@@ -668,9 +597,6 @@ std::set<int> select_node(const std::vector<std::vector<int>>& adj,
             ConvCmpParams p = conv_cmp_params(sel);
             std::vector<int> to_nodes(N);
             for (int i = 0; i < N; i++) to_nodes[i] = i;
-            // Conva/Conve's own same-kind-is-a-no-op no longer needs a special-cased shortcut here -
-            // `sel.from == Node` still produces the right answer through the general formula (a
-            // node's only associated object is itself, so the count reduces to plain membership).
             if (sel.from == SelectorType{SelectorKind::Node}) {
                 std::set<int> selected_keys;
                 for (int i : select_node(adj, pos, *sel.a, random)) selected_keys.insert(i);
@@ -797,10 +723,7 @@ std::vector<BoardEdge> select_edge(const std::vector<std::vector<int>>& adj,
             for (auto& e : a) seen.insert(edge_key(e));
             std::set<int> touched_nodes;
             for (auto& e : a) { touched_nodes.insert(e.n1); touched_nodes.insert(e.n2); }
-            // Repeats the one-step expansion sel.steps times (default 1). Mirrors select_node's own
-            // frontier trick: `frontier` is only the nodes newly touched by the PREVIOUS step, since a
-            // node's own incident edges are all added to `out`/`seen` the one time it itself becomes
-            // part of the frontier - a later step never needs to re-scan an already-touched node.
+            // `out` + `seen` stand in for TS's insertion-ordered `outByKey` Map.
             std::vector<int> frontier(touched_nodes.begin(), touched_nodes.end());
             int steps = sel.steps.value_or(1);
             for (int s = 0; s < steps && !frontier.empty(); s++) {
@@ -940,8 +863,7 @@ std::vector<BoardSimplex> select_simp(const std::vector<std::vector<int>>& adj,
         case SelectorOp::ConvClt: case SelectorOp::ConvCeq: case SelectorOp::ConvCgt: {
             if (sel.from == SelectorType{SelectorKind::Quad})
                 throw std::runtime_error("select_simp: no association is defined between 'simp' and 'quad'");
-            // Named p.n (via ConvCmpParams), not `n`, since `n` above is already this function's own
-            // simp arity.
+            // p.n is TS's `threshold` (`n` above is the simp arity).
             ConvCmpParams p = conv_cmp_params(sel);
             auto all_to = select_simp(adj, pos, Selector{SelectorOp::All, sel.type}, random);
             auto simp_members = +[](const BoardSimplex& t) -> std::vector<int> { return t.nodes; };
@@ -962,10 +884,6 @@ std::vector<BoardSimplex> select_simp(const std::vector<std::vector<int>>& adj,
                     +[](const BoardEdge& e) -> std::vector<int> { return { e.n1, e.n2 }; },
                     edge_key, selected_keys, p.cmp, p.complement, p.n);
             }
-            // sel.from is some simp M (possibly M === this function's own arity - unlike Conva/Conve
-            // in isolation, there's no same-kind shortcut needed here, see conv_cmp_params's own doc
-            // comment on why the general formula already gives the right answer), via the same
-            // general containment rule as every other pair.
             auto all_from = select_simp(adj, pos, Selector{SelectorOp::All, sel.from}, random);
             std::set<std::string> selected_keys;
             for (auto& t : select_simp(adj, pos, *sel.a, random)) selected_keys.insert(simp_key(t));

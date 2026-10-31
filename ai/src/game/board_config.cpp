@@ -53,8 +53,7 @@ BoardConfig quotient_board(const BoardConfig& bc,
     std::vector<int> node_to_new(N);
     for (int i = 0; i < N; i++) node_to_new[i] = root_to_new[roots[i]];
 
-    // New positions: average of class members (all emb_dim coordinates, not just the first two -
-    // needed for merge_close to work on cubical/hypercube boards, not just 2D ones).
+    // New positions: average of class members, over all emb_dim coordinates.
     std::vector<std::vector<unsigned>> new_embed(new_n, std::vector<unsigned>(bc.emb_dim, 0u));
     std::vector<int> cnt(new_n, 0);
     for (int i = 0; i < N; i++) {
@@ -108,11 +107,9 @@ BoardConfig edge_split(const BoardConfig& bc, int split_n) {
 }
 
 BoardConfig rectify(const BoardConfig& bc) {
-    // A real (always-active) check, not assert() - rectify's connectivity is decided by the angular
-    // ordering of real edge directions around each vertex (see convex_hull_edges below), which is
-    // undefined for an emb_dim=0 board (e.g. dodeca/icosa/regpoly, or triform/sqform output -
-    // see board_config.h). Left unchecked, the convex-hull LP degenerates on 0-dimensional points and
-    // silently returns no edges at all, rather than failing loudly.
+    // A real (always-active) check, not assert(): an emb_dim=0 board (e.g. dodeca/icosa/regpoly, or
+    // triform/sqform output - see board_config.h) has no edge directions, and the convex-hull LP
+    // would silently return no edges on 0-dimensional points rather than failing loudly.
     if (bc.emb_dim == 0)
         throw std::runtime_error(
             "rectify: requires a real (non-zero) embedding, got emb_dim=0 - this board has no "
@@ -144,9 +141,7 @@ BoardConfig rectify(const BoardConfig& bc) {
     for (int v = 0; v < N; v++) {
         auto& mids = incident[v];
         if (mids.size() < 2) continue;
-        // pos[midIdx] is at the doubled scale (see above), so subtract 2*embed[v] (not embed[v]) to
-        // get a consistently-scaled direction vector before normalizing - mixing scales here would
-        // give the wrong direction entirely (this is the exact bug the TS port hit and fixed).
+        // pos[mid_idx] is at the doubled scale (see above), so subtract 2*embed[v] (TS's pos2[v]).
         std::vector<std::vector<double>> dirs;
         for (int mid_idx : mids) {
             std::vector<double> d(emb_dim);
@@ -168,17 +163,11 @@ BoardConfig rectify(const BoardConfig& bc) {
     return make_bc(std::move(adj), emb_dim, std::move(pos));
 }
 
-// Mirrors shared/boardConfig.ts's truncate()'s connectivity (two new nodes per original edge, one
-// near each endpoint, connected to each other and, via the same convex-hull-of-directions ring
-// construction rectify() above uses, to the other near-points around their own shared original
-// vertex) but not its position formula: the TS side solves for a per-vertex fraction t_v that
-// balances the shrunk-edge gap against the vertex-ring scale (irrational in general, no
-// exact-integer analog, and degenerate at a degree-1 vertex). Here every near-point instead sits at
-// a fixed 1/3 (near its own endpoint) or 2/3 (near the far endpoint) of the way along its edge,
-// which comes out exact-integer after scaling the whole board by 3 first: the "1/3 point" of edge
-// (i,j), on the tripled scale, is 3*embed[i] + (embed[j]-embed[i]) = 2*embed[i]+embed[j] (no
-// division needed, same trick edge_split/rectify use for their own exact splits); the "2/3 point"
-// is symmetrically embed[i]+2*embed[j].
+// Mirrors shared/boardConfig.ts's truncate()'s connectivity but not its position formula: TS's
+// per-vertex fraction t_v is irrational in general, so here every near-point instead sits a fixed
+// 1/3 of the way along its edge from its own endpoint, exact-integer after scaling the whole board
+// by 3: the near-i point of edge (i,j) is 3*embed[i] + (embed[j]-embed[i]) = 2*embed[i]+embed[j],
+// and symmetrically the near-j point is embed[i]+2*embed[j].
 BoardConfig truncate(const BoardConfig& bc) {
     // Same rationale as rectify's own real-embedding check above - the vertex-ring connectivity
     // needs real edge directions.
@@ -283,10 +272,7 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
     int N = bc.N;
 
     std::set<std::pair<int,int>> is_face_side; // (p,q), p<q - an original edge consumed by some face
-    // canonical (p,q), p<q -> one boundary-index getter per face that has this original edge as a
-    // side, each already reoriented (see add_side) to run from p (k=0) to q (k=w-1) regardless of
-    // that face's own corner order - the single generalization of the old triangle_form's
-    // edge_to_triangles and quad_form's edge_to_seqs, now spanning every face of every kind at once.
+    // canonical (p,q), p<q -> per-face boundary getters, oriented p (k=0) to q (k=w-1) by add_side.
     std::map<std::pair<int,int>, std::vector<std::function<int(int)>>> edge_to_seqs;
     std::vector<std::pair<int,int>> quot; // corner glues, plus cross-edge glues appended below
 
@@ -298,16 +284,11 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
         edge_to_seqs[key].push_back(std::move(oriented));
     };
 
-    // New nodes' own internal edges, collected face by face (a face's own global index range isn't
-    // known ahead of time, since it depends on how many triangles/quads each selector in `sels`
-    // selects) - merged into one adj array only once every face has been processed.
+    // TS's extraEdges; no extraPos counterpart, since the result is emb_dim=0 (see board_config.h).
     std::vector<std::pair<int,int>> extra_edges;
     int next_idx = N;
 
-    // Shared by QuadForm/QuadKnightForm/QuadBishopForm below - each puts the same w-by-w node grid
-    // (same corner positions, same corner/boundary gluing) over a selected quad, differing only in
-    // which pair of cells `dirs` connects: QuadForm's own axis-aligned neighbors, a knight's-move
-    // offset, or a diagonal neighbor (see generic_form's own doc comment for what each kind means).
+    // Mirrors genericForm()'s buildQuadGridLattice().
     auto build_quad_grid_lattice = [&](const std::vector<BoardQuad>& quads, const std::vector<std::pair<int,int>>& dirs) {
         int n_face = w * w;
         auto local_idx = [&](int i, int j) { return i * w + j; };
@@ -326,9 +307,6 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
             quot.push_back({B, global_idx(0, w - 1)});
             quot.push_back({C, global_idx(w - 1, w - 1)});
             quot.push_back({D, global_idx(w - 1, 0)});
-            // Same top/right/bottom/left convention as the old quad_form's own natural_seq -
-            // add_side itself handles the min/max reorientation, so these are always declared
-            // running from each side's first-listed corner to its second.
             add_side(A, B, [=](int k) { return global_idx(0, k); });
             add_side(B, C, [=](int k) { return global_idx(k, w - 1); });
             add_side(C, D, [=](int k) { return global_idx(w - 1, w - 1 - k); });
@@ -384,11 +362,6 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
                 next_idx += n_face;
                 auto global_primary = [=](int i, int j) { return offset + primary_idx(i, j); };
                 auto global_center = [=](int i, int j) { return offset + center_idx(i, j); };
-                // Every edge is primary-to-center (diagonal) - no primary-primary or center-center
-                // edge exists, unlike QuadForm's own axis-aligned grid above. No position data is
-                // computed here (unlike shared/boardConfig.ts's own bilinear-interpolated node
-                // positions) since generic_form always produces an emb_dim = 0 board - see this
-                // function's own doc comment (board_config.h).
                 for (int i = 0; i < w - 1; i++)
                     for (int j = 0; j < w - 1; j++) {
                         extra_edges.push_back({global_center(i, j), global_primary(i, j)});
@@ -452,17 +425,13 @@ BoardConfig quad_bishop_form(const BoardConfig& bc, int w, ClegRandom& random, s
     return generic_form(bc, w, { FormSelector{FormSelKind::QuadBishopForm, sel} }, random);
 }
 
-// Mirrors shared/boardConfig.ts's genericLocalReplace() - unlike the TS side, every branch here
-// always produces an emb_dim=0 board (see this function's own header doc comment on why), so unlike
-// the TS version there's no barycenter/apex-position computation or "pad every position with one
-// extra dimension for QuadOctarize" bookkeeping at all - only the consumed/extra_edges adjacency
-// logic itself needs porting.
+// Mirrors shared/boardConfig.ts's genericLocalReplace(), minus its position logic (barycenters,
+// apexes, QuadOctarize's extra-dimension padding): the result is always emb_dim=0 (see
+// board_config.h).
 BoardConfig generic_local_replace(const BoardConfig& bc, const std::vector<LocalReplaceSelector>& selectors, ClegRandom& random) {
     int N = bc.N;
     int next_idx = N;
-    // (i,j) i<j - a selected face's own original edge, excluded from bc.adj's straight copy below
-    // (and re-added explicitly, alongside every new-node edge, as extra_edges - except for the two
-    // Centering kinds, which never re-add it - see this function's own header doc comment).
+    // (i,j) i<j - a selected face's own original edge, excluded from bc.adj's straight copy below.
     std::set<std::pair<int,int>> consumed;
     auto mark_consumed = [&](int a, int b) { consumed.insert({std::min(a, b), std::max(a, b)}); };
     std::vector<std::pair<int,int>> extra_edges;
@@ -743,13 +712,9 @@ BoardConfig cube_lattice_board(int w, int h, int d) {
     return hypercuboid_board(3, {w, h, d});
 }
 
-// Mirrors shared/boardConfig.ts's hypercuboidBoard() exactly - see its own doc comment for what
-// `meshdim` means geometrically, the survival/adjacency rules, and worked examples. Unlike the TS
-// side (which centers positions at the origin via `- (dims[i]-1)/2`), this keeps the plain
-// uncentered [0, dims[i]) integer coordinates - same convention rectangular_board/cube_lattice_board
-// already used before becoming thin wrappers around this function (centering would need exact-
-// half-integer coordinates for an even-sized dimension, which this file's exact-integer embed[]
-// can't represent - see merge_close's own doc comment).
+// Mirrors shared/boardConfig.ts's hypercuboidBoard(), except positions are the uncentered
+// [0, dims[i]) integer coordinates rather than TS's `- (dims[i]-1)/2`-centered ones: centering
+// would need half-integers for an even-sized dimension, which exact-integer embed[] can't represent.
 BoardConfig hypercuboid_board(int meshdim, const std::vector<int>& dims) {
     assert(!dims.empty() && "dims must have at least 1 entry");
     for (int d : dims) assert(d > 0 && "every dimension must be positive");
@@ -829,9 +794,7 @@ BoardConfig triangular_board(int w) {
     return make_bc(std::move(adj), 2u, std::move(pos));
 }
 
-// Mirrors shared/boardConfig.ts's sierpinskiRec(), generalized from 3 fixed corners to dim+1 (same
-// as the TS side's own generalization). Returns (pos, adj, corners), corners being the
-// (possibly-merged) node index of each entry of `corners` (length dim+1), in the same order.
+// Mirrors shared/boardConfig.ts's sierpinskiRec(), returning (pos, adj, corners) as a tuple.
 static std::tuple<std::vector<std::vector<unsigned>>, std::vector<std::vector<int>>, std::vector<int>>
 sierpinski_rec(int n, const std::vector<std::vector<unsigned>>& corners) {
     int k = static_cast<int>(corners.size()); // dim + 1
@@ -871,13 +834,10 @@ sierpinski_rec(int n, const std::vector<std::vector<unsigned>>& corners) {
     return { std::move(combined.pos), std::move(combined.adj), std::move(outer_corners) };
 }
 
-// Mirrors shared/boardConfig.ts's sierpinskiSimplex(), with one simplification the TS side doesn't
-// have: BoardConfig::embed is exact-integer only, so rather than port sierpinskiSimplex's real-
-// valued, centroid-at-origin regularSimplexCoords() (irrational for dim >= 2), this instead places
-// corner 0 of the outer side-`side` simplex at the origin and corner k (1 <= k <= dim) at `side`
-// times the k-th standard basis vector - dim+1 affinely-independent corners with minimal edge
-// length `side` (corner 0 to any other corner). Recursive midpoints stay exact integers throughout
-// since `side` only ever appears as a power of 2 above the n=1 base case.
+// Mirrors shared/boardConfig.ts's sierpinskiSimplex(), except for the corner embedding: TS's
+// regularSimplexCoords() is irrational for dim >= 2, so here corner 0 of the outer simplex sits at
+// the origin and corner k (1 <= k <= dim) at `side` times the k-th standard basis vector.
+// Recursive midpoints stay exact integers since `side` = 2^(n-1).
 BoardConfig sierpinski_simplex_board(int dim, int n) {
     assert(dim >= 1 && "dim must be at least 1");
     assert(n >= 1 && "n must be at least 1");
@@ -891,12 +851,9 @@ BoardConfig sierpinski_simplex_board(int dim, int n) {
     return make_bc(std::move(adj), static_cast<unsigned>(dim), std::move(pos));
 }
 
-// Mirrors shared/boardConfig.ts's simplexBoard(), with the same exact-integer embedding deviation
-// sierpinski_simplex_board() above already uses: rather than regularSimplexCoords(dim) (irrational
-// for dim >= 2), corner 0 sits at the origin and corner k (1 <= k <= dim) at the k-th standard
-// basis vector, so a lattice point's own barycentric coordinates (c_0, ..., c_dim) embed as the
-// same c_i * corner_i sum the TS side uses, which here reduces to simply (c_1, ..., c_dim) -
-// corner 0 contributes nothing.
+// Mirrors shared/boardConfig.ts's simplexBoard(), with sierpinski_simplex_board()'s exact-integer
+// corners (corner 0 at the origin, corner k at the k-th standard basis vector) in place of
+// regularSimplexCoords(dim), so barycentric (c_0, ..., c_dim) embeds as simply (c_1, ..., c_dim).
 BoardConfig simplex_board(int meshdim, int dim, int w) {
     assert(dim >= 1 && "dim must be at least 1");
     assert(w >= 1 && "w must be at least 1");
@@ -973,9 +930,7 @@ BoardConfig regular_polygon_board(int n) {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// Mirrors shared/boardConfig.ts's starBoard() connectivity (adjacency only - no
-// position/embedding, see board_config.h's own doc comment on this function). Node 0 is the
-// center, nodes 1..n are the outer nodes.
+// Mirrors shared/boardConfig.ts's starBoard(), adjacency only (emb_dim=0 - see board_config.h).
 BoardConfig star_board(int n) {
     assert(n >= 1 && "n must be at least 1");
     auto adj = zero_adj(n + 1);
@@ -987,23 +942,18 @@ BoardConfig star_board(int n) {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// Mirrors shared/boardConfig.ts's tetrahedronBoard(), which now just calls simplexBoard(3, 3, 2) -
-// same delegation here, to simplex_board's own exact-integer embedding (see its doc comment).
+// Mirrors shared/boardConfig.ts's tetrahedronBoard().
 BoardConfig tetrahedron_board() {
     return simplex_board(3, 3, 2);
 }
 
-// Mirrors shared/boardConfig.ts's diamondCubicBoard() - see board_config.h's own doc comment for the
-// full derivation (one hub per "up" unit tetrahedron; "down" ones need no separate handling since
-// every original edge already belongs to some up-tetrahedron) and for why this always produces an
-// emb_dim=0 board, unlike the TS version.
+// Mirrors shared/boardConfig.ts's diamondCubicBoard(), adjacency only (emb_dim=0 - see
+// board_config.h).
 BoardConfig diamond_cubic_board(int w) {
     assert(w >= 1 && "w must be at least 1");
     int n = w - 1;
 
-    // Every (c0, c1, c2) with c0 + c1 + c2 <= n names one lattice point (c3 = n - c0 - c1 - c2,
-    // always implied by n rather than tracked separately below) - flat_key/node_idx give O(1) lookup
-    // via a plain bounded-integer index, mirroring shared/boardConfig.ts's own Map-based nodeIdx.
+    // flat_key/node_idx: a flat-array stand-in for TS's Map-based nodeIdx.
     int stride = n + 1;
     auto flat_key = [&](int c0, int c1, int c2) { return (c0 * stride + c1) * stride + c2; };
     std::vector<int> node_idx(static_cast<size_t>(stride) * stride * stride, -1);
@@ -1042,11 +992,9 @@ BoardConfig octahedron_board() {
     return orthoplex_board(3);
 }
 
-// Mirrors shared/boardConfig.ts's orthoplexBoard(), with one simplification: rather than the TS
-// side's real-valued +-1/sqrt(2) coordinates, this uses only the integer values {0, 1, 2} - vertex
-// 2k (the "+" pole on axis k) has coordinate k = 2, vertex 2k+1 (the "-" pole) has coordinate k =
-// 1, every other coordinate 0; connectivity (every vertex adjacent to every other except its own
-// antipode) is unaffected.
+// Mirrors shared/boardConfig.ts's orthoplexBoard(), but with integer coordinates in place of TS's
+// +-1/sqrt(2): vertex 2k (the "+" pole on axis k) has coordinate k = 2, vertex 2k+1 (the "-" pole)
+// has coordinate k = 1, every other coordinate 0; connectivity is unaffected.
 BoardConfig orthoplex_board(int n) {
     assert(n >= 1 && "n must be at least 1");
     int N = 2 * n;
@@ -1063,12 +1011,9 @@ BoardConfig orthoplex_board(int n) {
     return make_bc(std::move(adj), static_cast<unsigned>(n), std::move(pos));
 }
 
-// Mirrors shared/boardConfig.ts's reg24CellBoard(): the D4 root system (every point with exactly
-// two of 4 coordinates equal to +-1, the rest 0) - 24 vertices, adjacent iff their raw (pre-shift)
-// dot product is 1. embed[] coordinates must be non-negative here, so raw values in {-1,0,1} are
-// shifted by +1 to {0,1,2} for the stored positions (the same shift orthoplex_board above uses for
-// its own +-scale values) - adjacency is decided on the un-shifted raw values, since shifting would
-// change every dot product.
+// Mirrors shared/boardConfig.ts's reg24CellBoard(), except embed[] must be non-negative: stored
+// positions are the raw {-1,0,1} coordinates shifted by +1 to {0,1,2} (instead of TS's 1/sqrt(2)
+// scaling), while adjacency still uses the un-shifted raw dot product.
 BoardConfig reg_24_cell_board() {
     std::vector<std::vector<int>> raw;
     for (int i = 0; i < 4; i++)
@@ -1097,8 +1042,8 @@ BoardConfig reg_24_cell_board() {
     return make_bc(std::move(adj), 4u, std::move(pos));
 }
 
-// -- shared vertex-family-generation helpers for reg_120_cell_board()/reg_600_cell_board() below,
-// mirroring shared/boardConfig.ts's own permsOf/evenPermsOf/signVariants local closures. --
+// -- Helpers for reg_120_cell_board()/reg_600_cell_board() below, mirroring shared/boardConfig.ts's
+// permsOf/evenPermsOf/signVariants (add_perms: one group's worth of signedPermutationVertices). --
 
 static std::vector<std::vector<double>> perms_of(const std::vector<double>& arr) {
     if (arr.size() <= 1) return { arr };
@@ -1115,10 +1060,6 @@ static std::vector<std::vector<double>> perms_of(const std::vector<double>& arr)
     return out;
 }
 
-// Permutes an index array (rather than arr's own values directly) so parity is well-defined even
-// when arr has repeated magnitudes - not needed by the 3 families this is actually called with
-// (all 4 values distinct there), but keeps the helper correct in general, same as the TS side's own
-// evenPermsOf().
 static std::vector<std::vector<double>> even_perms_of(const std::vector<double>& arr) {
     std::vector<double> idx(arr.size());
     std::iota(idx.begin(), idx.end(), 0.0);
@@ -1163,12 +1104,9 @@ static void add_perms(const std::vector<std::vector<double>>& perms,
         }
 }
 
-// Mirrors shared/boardConfig.ts's reg120CellBoard() exactly for vertex-family generation and the
-// distance-threshold adjacency rule (see its own doc comment for the derivation, and the numerical
-// verification that (3-sqrt(5))^2 is the correct edge-distance threshold). Coordinates here use
-// `double` only as an intermediate - golden-ratio values have no exact-integer analog, unlike
-// reg_24_cell_board() above - and are discarded before returning: this always produces an
-// emb_dim = 0 board, same reasoning as dodecahedron_board/icosahedron_board (see board_config.h).
+// Mirrors shared/boardConfig.ts's reg120CellBoard(). Coordinates are a `double`-only intermediate
+// (golden-ratio values have no exact-integer analog) and are discarded before returning: the result
+// is emb_dim=0 (see board_config.h).
 BoardConfig reg_120_cell_board() {
     const double PHI = (1.0 + std::sqrt(5.0)) / 2.0;
     const double PHI2 = PHI * PHI;
@@ -1201,9 +1139,8 @@ BoardConfig reg_120_cell_board() {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// Mirrors shared/boardConfig.ts's reg600CellBoard() - same double-only-intermediate,
-// distance-threshold-adjacency, emb_dim=0 approach as reg_120_cell_board() above (see its own doc
-// comment; the two share this file's perms_of/even_perms_of/sign_variants/add_perms helpers).
+// Mirrors shared/boardConfig.ts's reg600CellBoard() - same double-only-intermediate, emb_dim=0
+// approach as reg_120_cell_board() above.
 BoardConfig reg_600_cell_board() {
     const double PHI = (1.0 + std::sqrt(5.0)) / 2.0;
     const double IPHI = 1.0 / PHI;
@@ -1229,12 +1166,8 @@ BoardConfig reg_600_cell_board() {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// Mirrors shared/boardConfig.ts's antiprismBoard() connectivity (adjacency only - no
-// position/embedding, see board_config.h's own doc comment on this function: R/h are inherently
-// irrational for essentially every n). 2n vertices - top n-gon at indices 0..n-1, bottom n-gon at
-// indices n..2n-1 - top k joined to top (k+1)%n, bottom k to bottom (k+1)%n, and top k to its two
-// nearest bottom neighbors, bottom k and bottom (k-1+n)%n (same reasoning as the TS side's own doc
-// comment for why those are the two nearest).
+// Mirrors shared/boardConfig.ts's antiprismBoard(), adjacency only (emb_dim=0 - see
+// board_config.h).
 BoardConfig antiprism_board(int n) {
     assert(n >= 3 && "n must be at least 3");
     int N = 2 * n;
@@ -1252,8 +1185,8 @@ BoardConfig antiprism_board(int n) {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// Mirrors shared/boardConfig.ts's dodecahedronBoard() connectivity (adjacency only - no
-// position/embedding, see board_config.h's own doc comment on this function).
+// Mirrors shared/boardConfig.ts's dodecahedronBoard(), adjacency only (emb_dim=0 - see
+// board_config.h).
 BoardConfig dodecahedron_board() {
     auto x_idx = [](int sa, int sb, int sc) { return sa * 4 + sb * 2 + sc; };
     auto y_idx = [](int sb, int sc) { return 8 + sb * 2 + sc; };
@@ -1278,8 +1211,8 @@ BoardConfig dodecahedron_board() {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// Mirrors shared/boardConfig.ts's icosahedronBoard() connectivity (adjacency only - no
-// position/embedding, see board_config.h's own doc comment on this function).
+// Mirrors shared/boardConfig.ts's icosahedronBoard(), adjacency only (emb_dim=0 - see
+// board_config.h).
 BoardConfig icosahedron_board() {
     auto a_idx = [](int sp, int sq) { return sp * 2 + sq; };
     auto b_idx = [](int sp, int sq) { return 4 + sp * 2 + sq; };
@@ -1305,19 +1238,10 @@ BoardConfig icosahedron_board() {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// --- dodecahedron_flake_board()/icosahedron_flake_board()/octahedron_flake_board()/
-// regular_polygon_flake_board()/central_regular_polygon_flake_board()/central_pentagon_flake_board()/
-// menger_sponge_flake_board(): mirrors shared/boardConfig.ts's dodecahedronFlake()/icosahedronFlake()/
-// octahedronFlake()/regularPolygonFlake()/centralRegularPolygonFlake()/centralPentagonFlake()/
-// mengerSpongeFlake() - see board_config.h's own doc comment on dodecahedron_flake_board() for why
-// these never compute or store node positions at all. The FractalDescr-equivalent recursive core and
-// each shape's own static glue-data builder live in fractal.h/fractal.cpp (mirrors shared/fractal.ts
-// - see that file's own top comment for why) - only the actual BoardConfig-returning functions below
-// stay here, each now just `build_fractal(n, some_fractal_descr())` wrapped in a BoardConfig, mirroring
-// shared/boardConfig.ts's own equally-thin wrappers exactly.
+// --- Flake boards: thin build_fractal() wrappers (fractal.h), adjacency only (emb_dim=0 - see
+// board_config.h's doc comment on dodecahedron_flake_board()). ---
 
-// Mirrors shared/boardConfig.ts's dodecahedronFlake() - see board_config.h's own doc comment for
-// the high-level construction (why there's no embedding at all here).
+// Mirrors shared/boardConfig.ts's dodecahedronFlake().
 BoardConfig dodecahedron_flake_board(int n) {
     assert(n >= 1 && "n must be at least 1");
     auto adj = build_fractal(n, dodecahedron_fractal_descr());
@@ -1325,8 +1249,7 @@ BoardConfig dodecahedron_flake_board(int n) {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// Mirrors shared/boardConfig.ts's icosahedronFlake() - see board_config.h's own doc comment on
-// dodecahedron_flake_board() for the high-level construction, which this shares in full.
+// Mirrors shared/boardConfig.ts's icosahedronFlake().
 BoardConfig icosahedron_flake_board(int n) {
     assert(n >= 1 && "n must be at least 1");
     auto adj = build_fractal(n, icosahedron_fractal_descr());
@@ -1334,9 +1257,7 @@ BoardConfig icosahedron_flake_board(int n) {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// Mirrors shared/boardConfig.ts's octahedronFlake() - see board_config.h's own doc comment on
-// dodecahedron_flake_board() for the high-level construction, which this shares in full, just with
-// 6 vertices/12 edges instead of 20 vertices/30 edges or 12 vertices/30 edges.
+// Mirrors shared/boardConfig.ts's octahedronFlake().
 BoardConfig octahedron_flake_board(int n) {
     assert(n >= 1 && "n must be at least 1");
     auto adj = build_fractal(n, octahedron_fractal_descr());
@@ -1344,9 +1265,7 @@ BoardConfig octahedron_flake_board(int n) {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// Mirrors shared/boardConfig.ts's regularPolygonFlake() - see board_config.h's own doc comment for
-// the high-level construction (why there's no embedding at all here, same as regular_polygon_board()
-// itself - both have inherently irrational coordinates for most `n_sides`).
+// Mirrors shared/boardConfig.ts's regularPolygonFlake().
 BoardConfig regular_polygon_flake_board(int n_sides, int order) {
     assert(n_sides >= 3 && "n_sides must be at least 3");
     assert(order >= 1 && "order must be at least 1");
@@ -1355,10 +1274,7 @@ BoardConfig regular_polygon_flake_board(int n_sides, int order) {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// Mirrors shared/boardConfig.ts's centralRegularPolygonFlake() - see board_config.h's own doc
-// comment for the high-level construction; regular_polygon_fractal_descr(n_sides, true) is the one
-// doing the actual work (see its own doc comment in fractal.cpp for the central-copy derivation and
-// the `n_sides` even/>4 condition, mirroring shared/boardConfig.ts's own).
+// Mirrors shared/boardConfig.ts's centralRegularPolygonFlake().
 BoardConfig central_regular_polygon_flake_board(int n_sides, int order) {
     assert(n_sides >= 3 && "n_sides must be at least 3");
     assert(order >= 1 && "order must be at least 1");
@@ -1367,9 +1283,7 @@ BoardConfig central_regular_polygon_flake_board(int n_sides, int order) {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// Mirrors shared/boardConfig.ts's centralPentagonFlake() - see board_config.h's own doc comment for
-// the high-level construction; central_pentagon_fractal_descr() (fractal.cpp) is the one doing the
-// actual work.
+// Mirrors shared/boardConfig.ts's centralPentagonFlake().
 BoardConfig central_pentagon_flake_board(int order) {
     assert(order >= 1 && "order must be at least 1");
     auto adj = build_fractal(order, central_pentagon_fractal_descr());
@@ -1377,9 +1291,7 @@ BoardConfig central_pentagon_flake_board(int order) {
     return make_bc(std::move(adj), 0u, std::move(embed));
 }
 
-// Mirrors shared/boardConfig.ts's mengerSpongeFlake() - see board_config.h's own doc comment for the
-// high-level construction; menger_fractal_descr(dim, indicator) (fractal.cpp) is the one doing the
-// actual work - {0, 0, 1, 1} at dim=3 is the classical Menger sponge itself.
+// Mirrors shared/boardConfig.ts's mengerSpongeFlake().
 BoardConfig menger_sponge_flake_board(int order, int dim, const std::vector<int>& indicator) {
     assert(order >= 1 && "order must be at least 1");
     assert(dim >= 1 && "dim must be at least 1");
@@ -1423,9 +1335,7 @@ BoardConfig hex_board(int d) {
     assert(d >= 0 && "d must be non-negative");
     const int dirs[6][2] = {{1,0},{1,-1},{0,-1},{-1,0},{-1,1},{0,1}};
 
-    // Hexagon centers: the (q, r) = (a+2b, a-b) sublattice (color (q-r) mod 3 == 0, since
-    // q-r = (a+2b)-(a-b) = 3b), restricted to hex-distance <= d in its own (a, b) coordinates -
-    // mirrors shared/boardConfig.ts's hexBoard().
+    // Hexagon centers - mirrors shared/boardConfig.ts's hexBoard().
     std::vector<std::pair<int,int>> centers;
     for (int a = -d; a <= d; a++) {
         int b_lo = std::max(-d, -d - a);
@@ -1468,9 +1378,7 @@ BoardConfig trihex_board(int d) {
     assert(d >= 0 && "d must be non-negative");
     const int dirs[6][2] = {{1,0},{1,-1},{0,-1},{-1,0},{-1,1},{0,1}};
 
-    // Hexagon centers: the (q, r) = (2a, 2b) sublattice (both axial coordinates even), restricted
-    // to hex-distance <= d in its own halved (a, b) coordinates - mirrors
-    // shared/boardConfig.ts's trihexBoard().
+    // Hexagon centers - mirrors shared/boardConfig.ts's trihexBoard().
     std::vector<std::pair<int,int>> centers;
     for (int a = -d; a <= d; a++) {
         int b_lo = std::max(-d, -d - a);
@@ -1591,10 +1499,7 @@ BoardConfig snub_square_board(int w, int h) {
         }
 
     // glue/tri corner indices per self-cell checkerboard parity and direction (H: dr=0,dc=1;
-    // V: dr=1,dc=0) - mirrors shared/boardConfig.ts's snubSquareBoard CONN table: each orthogonal
-    // neighbor shares one glued corner plus one new triangle-connecting edge between two of their
-    // other corners - that new edge, together with each square's own two boundary edges reaching its
-    // own glued/joined corners, closes into a genuine 3-node triangular gap face.
+    // V: dr=1,dc=0) - mirrors shared/boardConfig.ts's snubSquareBoard() CONN table.
     struct Conn { int glue_self, glue_other, tri_self, tri_other; };
     const Conn conn[2][2] = {
         // parity 0:   H (dc=1)        V (dr=1)
