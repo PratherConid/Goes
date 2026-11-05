@@ -78,10 +78,9 @@ private:
     std::mt19937 rng_;
 
     // Evaluates states[i] with models_.at(model_ids[i]) - one sub-batch per distinct model, then
-    // rearranges the per-model results back into full-size (policy, ownership) tensors in the
-    // caller's original order, so callers don't need to know how many distinct models were
-    // involved.
-    std::pair<torch::Tensor, torch::Tensor> evaluate_batch(
+    // rearranges the per-model results back into one full-size ModelOutput in the caller's
+    // original order, so callers don't need to know how many distinct models were involved.
+    ModelOutput evaluate_batch(
         const std::vector<const BoardState*>& states, const std::vector<int>& model_ids);
 
     // Returns (path, leaf, per-player-rewards-or-nullopt)

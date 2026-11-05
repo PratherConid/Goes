@@ -72,6 +72,7 @@ add_library(goes_core STATIC
   src/model/unet.cpp
   src/model/cnn.cpp
   src/model/transformer.cpp
+  src/model/rank_head.cpp
   src/mcts/mcts.cpp
   src/training/replay_buffer.cpp
   src/training/self_play.cpp

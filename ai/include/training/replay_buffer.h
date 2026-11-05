@@ -14,8 +14,11 @@ struct GameRecord {
                                      // (BoardState::board), 0 = empty
     torch::Tensor territory_owner;  // (N,) int64 - stone type whose territory each node is at game
                                      // end (ScoreData::territory_owner), 0 = none/dame/occupied
-    // stone_owner/territory_owner are shared by every ply of this game (only meaningful once the
-    // game ends). Stone-type indexed, matching the network's ownership head (see evaluator.h).
+    torch::Tensor rank_target;      // (num_rank_pairs,) int64 - per rank_pairs() pair, the game's
+                                     // RankOutcome (rank_head.h): which player finished ahead, or a tie
+    // stone_owner/territory_owner/rank_target are shared by every ply of this game (only meaningful
+    // once the game ends). stone_owner/territory_owner are stone-type indexed, matching the
+    // network's ownership head (see evaluator.h).
 
     // Minimal-descriptor per-ply features (TransformerConfig::history_descr's plyMod+stoneOccupancy
     // descriptor) - only populated for a Transformer run (see PlyResult::history_features,
@@ -36,6 +39,7 @@ struct HistoryBatch {
     torch::Tensor policy_target;    // (B, numStones*N+1) float32
     torch::Tensor stone_owner;      // (B, N) int64
     torch::Tensor territory_owner;  // (B, N) int64
+    torch::Tensor rank_target;      // (B, num_rank_pairs) int64
 };
 
 // Circular buffer of GameRecord objects (one per game).
@@ -63,13 +67,15 @@ public:
     int size() const { return static_cast<int>(live_ply_count_); }
     void add(GameRecord record);
 
-    // Returns (features, legal_mask, policy_target, stone_owner, territory_owner) batched tensors:
-    //   features        : (B, N, F)           float32
-    //   legal_mask      : (B, numStones*N+1)  bool
-    //   policy_target   : (B, numStones*N+1)  float32
-    //   stone_owner     : (B, N)              int64
-    //   territory_owner : (B, N)              int64
-    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+    // Returns (features, legal_mask, policy_target, stone_owner, territory_owner, rank_target)
+    // batched tensors:
+    //   features        : (B, N, F)              float32
+    //   legal_mask      : (B, numStones*N+1)     bool
+    //   policy_target   : (B, numStones*N+1)     float32
+    //   stone_owner     : (B, N)                 int64
+    //   territory_owner : (B, N)                 int64
+    //   rank_target     : (B, num_rank_pairs)    int64
+    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
     sample(int batch_size, std::mt19937& rng);
 
     // Same uniform-over-every-live-ply sampling distribution as sample(), but for each sampled

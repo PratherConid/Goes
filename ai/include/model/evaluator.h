@@ -1,22 +1,23 @@
 #pragma once
 #include <functional>
+#include <stdexcept>
 #include <vector>
 #include <utility>
 #include <string>
 #include <unordered_map>
 #include <torch/torch.h>
 #include "game/board_state.h"
+#include "model/model_output.h"
+#include "model/rank_head.h"
 
 // Type-erased neural-network evaluator used by MCTS and self-play. Wraps any of the four
 // architectures (see make_evaluator(), any_model.h) - for a MessagePassingGNN, its adj_norms are
-// captured inside fn, so every wrapped model presents the same states-in/(policy, ownership)-out
+// captured inside fn, so every wrapped model presents the same states-in/ModelOutput-out
 // interface regardless of what it needs internally.
 struct Evaluator {
-    std::function<std::pair<torch::Tensor, torch::Tensor>(
-        const std::vector<const BoardState*>&)> fn;
+    std::function<ModelOutput(const std::vector<const BoardState*>&)> fn;
 
-    std::pair<torch::Tensor, torch::Tensor>
-    evaluate_batch(const std::vector<const BoardState*>& states) const {
+    ModelOutput evaluate_batch(const std::vector<const BoardState*>& states) const {
         return fn(states);
     }
 };
@@ -42,18 +43,21 @@ inline torch::Tensor estimate_stone_points(const torch::Tensor& ownership, const
     return points_est.slice(-1, 1, S + 1).sum(1); // (B, num_stones)
 }
 
-// Derives a per-player backup scalar from estimate_stone_points(), using the
-// same rank+fraction reward formula as compute_player_rewards() (board_state.cpp),
-// but vectorized over continuous expected points instead of ground-truth integer
-// points. Since estimate_stone_points() already mirrors BoardState::compute_points(),
-// MCTS's non-terminal leaf evaluation stays consistent with the terminal ground
-// truth, whatever the game's scoring rule. MCTS batches always share one game's
-// config (see Evaluator::evaluate_batch's "all must share the same board"
-// contract), so a single rule/map per call is correct. Capture counts differ
-// between positions, though, so capture_counts holds one row per batch entry
-// (that state's BoardState::capture_count()).
+// The model's estimate of compute_player_rewards()'s (board_state.cpp) rank+fraction reward for
+// a non-terminal state, per player:
+//   - rank term: the expected rank_diff, from `rank` (ModelOutput::rank, a RankHead's pairwise
+//     outcome probabilities) - P(p ahead of q) - P(q ahead of p), summed over p's opponents q -
+//     rather than anything derived from the ownership head (see ai/Readme.md's "Rank Head"
+//     section for why).
+//   - point-fraction term: from estimate_stone_points() - expected per-stone-type points
+//     aggregated to players - which mirrors BoardState::compute_points(), so it stays consistent
+//     with the terminal ground truth whatever the game's scoring rule.
+// MCTS batches always share one game's config (see Evaluator::evaluate_batch's "all must share
+// the same board" contract), so a single rule/map per call is correct. Capture counts differ
+// between positions, though, so capture_counts holds one row per batch entry (that state's
+// BoardState::capture_count()).
 inline torch::Tensor estimate_player_rewards(
-    const torch::Tensor& ownership, const std::vector<std::vector<int>>& capture_counts,
+    const torch::Tensor& ownership, const torch::Tensor& rank, const std::vector<std::vector<int>>& capture_counts,
     const std::string& rule, const std::unordered_map<int, std::vector<int>>& stone_to_player_map,
     int num_players, const std::vector<float>& komi)
 {
@@ -106,8 +110,21 @@ inline torch::Tensor estimate_player_rewards(
     auto sum_total = total.sum(-1, /*keepdim=*/true);  // (B, 1)
     auto sf = total / sum_total.clamp_min(1e-8f);       // (B, P) - ~0 when sum_total ~ 0
 
-    auto diff = total.unsqueeze(2) - total.unsqueeze(1);   // (B, P, P): diff[b,p,q] = total[p]-total[q]
-    auto rank_diff = torch::sign(diff).sum(-1);             // (B, P)
+    auto pairs = rank_pairs(static_cast<int>(P));
+    if (rank.size(1) != (int64_t)pairs.size())
+        throw std::runtime_error("estimate_player_rewards: rank head scores " + std::to_string(rank.size(1)) +
+                                 " player pairs, but " + std::to_string(P) + " players have " +
+                                 std::to_string(pairs.size()));
+    // pair_sign[k][p-1] = +1 / -1 for pair k's first / second player - the margin
+    // P(first ahead) - P(second ahead) counts for the first and against the second.
+    auto pair_sign = torch::zeros({(int64_t)pairs.size(), P}, torch::kFloat32);
+    auto sign_a = pair_sign.accessor<float, 2>();
+    for (size_t k = 0; k < pairs.size(); k++) {
+        sign_a[k][pairs[k].first - 1] = 1.0f;
+        sign_a[k][pairs[k].second - 1] = -1.0f;
+    }
+    auto margin = rank.select(-1, FIRST_AHEAD) - rank.select(-1, SECOND_AHEAD);   // (B, pairs)
+    auto rank_diff = torch::matmul(margin, pair_sign.to(margin.device()));          // (B, P)
 
     float denom = static_cast<float>(2 * P - 1);
     auto rank_reward  = rank_diff * (2.0f / denom);

@@ -106,38 +106,42 @@ MCTS::MCTS(std::map<int, Evaluator> models, float c_puct, uint64_t seed)
       rng_(static_cast<unsigned>(seed))
 {}
 
-std::pair<torch::Tensor, torch::Tensor> MCTS::evaluate_batch(
+ModelOutput MCTS::evaluate_batch(
     const std::vector<const BoardState*>& states, const std::vector<int>& model_ids) {
     // model id -> indices into `states` that model evaluates.
     std::map<int, std::vector<int>> groups;
     for (int i = 0; i < (int)states.size(); i++) groups[model_ids[i]].push_back(i);
 
-    torch::Tensor policy, ownership;
+    ModelOutput out;
     for (auto& [model_id, idxs] : groups) {
         std::vector<const BoardState*> sub;
         sub.reserve(idxs.size());
         for (int i : idxs) sub.push_back(states[i]);
 
-        auto [pol_sub, own_sub] = models_.at(model_id).evaluate_batch(sub);
+        ModelOutput sub_out = models_.at(model_id).evaluate_batch(sub);
 
-        if (!policy.defined()) {
+        if (!out.policy.defined()) {
             // Allocate the full-size result tensors once we know shape/dtype/device, from the
-            // first group's sub-batch - every model in one run is assumed to share a device, same
-            // as the single-model path this replaces.
-            policy = torch::empty({(int64_t)states.size(), pol_sub.size(1)}, pol_sub.options());
-            ownership = torch::empty(
-                {(int64_t)states.size(), own_sub.size(1), own_sub.size(2), own_sub.size(3)},
-                own_sub.options());
+            // first group's sub-batch - every model in one run is assumed to share a device.
+            auto full = [&](const torch::Tensor& t) {
+                auto sizes = t.sizes().vec();
+                sizes[0] = (int64_t)states.size();
+                return torch::empty(sizes, t.options());
+            };
+            out.policy = full(sub_out.policy);
+            out.ownership = full(sub_out.ownership);
+            out.rank = full(sub_out.rank);
         }
 
         // index_copy_ requires the index tensor to be on the same device as the tensor it's
         // writing into - torch::tensor(idxs, torch::kLong) alone defaults to CPU, which throws
         // ("Expected all tensors to be on the same device") once policy/ownership live on CUDA.
-        auto idx_t = torch::tensor(idxs, torch::TensorOptions().dtype(torch::kLong).device(policy.device()));
-        policy.index_copy_(0, idx_t, pol_sub);
-        ownership.index_copy_(0, idx_t, own_sub);
+        auto idx_t = torch::tensor(idxs, torch::TensorOptions().dtype(torch::kLong).device(out.policy.device()));
+        out.policy.index_copy_(0, idx_t, sub_out.policy);
+        out.ownership.index_copy_(0, idx_t, sub_out.ownership);
+        out.rank.index_copy_(0, idx_t, sub_out.rank);
     }
-    return {policy, ownership};
+    return out;
 }
 
 std::vector<float> MCTS::dirichlet_sample(int n, float alpha) {
@@ -307,11 +311,12 @@ MCTSTiming MCTS::simulate_batch(const std::vector<MCTSNode*>& roots, const std::
         }
 
         auto t0 = std::chrono::high_resolution_clock::now();
-        auto [policy_t, ownership_t] = evaluate_batch(batch_states, batch_model_ids);
+        ModelOutput eval_out = evaluate_batch(batch_states, batch_model_ids);
+        const torch::Tensor& policy_t = eval_out.policy;
         auto t1 = std::chrono::high_resolution_clock::now();
         eval_time = std::chrono::duration<double>(t1 - t0).count();
 
-        auto reward_t = estimate_player_rewards(ownership_t, capture_counts_of(batch_states),
+        auto reward_t = estimate_player_rewards(eval_out.ownership, eval_out.rank, capture_counts_of(batch_states),
                                                 batch_states[0]->score_rule, batch_states[0]->stone_to_player_map,
                                                 batch_states[0]->num_players, batch_states[0]->komi);
         // Both tensors arrive on the model's device (see evaluate_batch()'s comment) -
@@ -418,12 +423,13 @@ MCTS::search_batch(
     root_model_ids.reserve(n);
     for (const BoardState* s : cstates) root_model_ids.push_back(s->player_model_id[s->next_turn.player - 1]);
     auto t0 = std::chrono::high_resolution_clock::now();
-    auto [policy_t, ownership_t] = evaluate_batch(cstates, root_model_ids);
+    ModelOutput root_out = evaluate_batch(cstates, root_model_ids);
+    const torch::Tensor& policy_t = root_out.policy;
     auto t1 = std::chrono::high_resolution_clock::now();
     MCTSTiming total;
     total.eval = std::chrono::duration<double>(t1 - t0).count();
 
-    auto reward_t = estimate_player_rewards(ownership_t, capture_counts_of(cstates),
+    auto reward_t = estimate_player_rewards(root_out.ownership, root_out.rank, capture_counts_of(cstates),
                                             states[0]->score_rule, states[0]->stone_to_player_map,
                                             states[0]->num_players, states[0]->komi);
     // Both tensors arrive on the model's device (see evaluate_batch()'s comment) -

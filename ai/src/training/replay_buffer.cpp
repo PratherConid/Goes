@@ -51,13 +51,13 @@ std::vector<std::pair<size_t, int64_t>> ReplayBuffer::pick_samples(int batch_siz
     return result;
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 ReplayBuffer::sample(int batch_size, std::mt19937& rng) {
     auto picks = pick_samples(batch_size, rng);
 
-    std::vector<torch::Tensor> feats, masks, policies, stone_owners, territory_owners;
+    std::vector<torch::Tensor> feats, masks, policies, stone_owners, territory_owners, rank_targets;
     feats.reserve(picks.size()); masks.reserve(picks.size()); policies.reserve(picks.size());
-    stone_owners.reserve(picks.size()); territory_owners.reserve(picks.size());
+    stone_owners.reserve(picks.size()); territory_owners.reserve(picks.size()); rank_targets.reserve(picks.size());
 
     for (auto& [slot, ply_offset] : picks) {
         const Slot& s = buf_[slot];
@@ -66,6 +66,7 @@ ReplayBuffer::sample(int batch_size, std::mt19937& rng) {
         policies.push_back(s.record.policy_target[ply_offset]);
         stone_owners.push_back(s.record.stone_owner);
         territory_owners.push_back(s.record.territory_owner);
+        rank_targets.push_back(s.record.rank_target);
     }
 
     auto x       = torch::stack(feats, 0);            // (B, N, F)
@@ -73,8 +74,9 @@ ReplayBuffer::sample(int batch_size, std::mt19937& rng) {
     auto p_tgt   = torch::stack(policies, 0);           // (B, N+1)
     auto so_tgt  = torch::stack(stone_owners, 0);       // (B, N)
     auto to_tgt  = torch::stack(territory_owners, 0);   // (B, N)
+    auto r_tgt   = torch::stack(rank_targets, 0);       // (B, num_rank_pairs)
 
-    return {x, mask, p_tgt, so_tgt, to_tgt};
+    return {x, mask, p_tgt, so_tgt, to_tgt, r_tgt};
 }
 
 HistoryBatch ReplayBuffer::sample_with_history(int batch_size, std::mt19937& rng) {
@@ -89,9 +91,9 @@ HistoryBatch ReplayBuffer::sample_with_history(int batch_size, std::mt19937& rng
 
     auto hist_features = torch::zeros({B, Tmax, N, F}, torch::kFloat32);
     auto hist_mask      = torch::ones({B, Tmax}, torch::kBool);  // True = pad
-    std::vector<torch::Tensor> cur_feats, masks, policies, stone_owners, territory_owners;
+    std::vector<torch::Tensor> cur_feats, masks, policies, stone_owners, territory_owners, rank_targets;
     cur_feats.reserve(B); masks.reserve(B); policies.reserve(B);
-    stone_owners.reserve(B); territory_owners.reserve(B);
+    stone_owners.reserve(B); territory_owners.reserve(B); rank_targets.reserve(B);
 
     for (int i = 0; i < B; i++) {
         auto [slot, ply_offset] = picks[i];
@@ -105,6 +107,7 @@ HistoryBatch ReplayBuffer::sample_with_history(int batch_size, std::mt19937& rng
         policies.push_back(s.record.policy_target[ply_offset]);
         stone_owners.push_back(s.record.stone_owner);
         territory_owners.push_back(s.record.territory_owner);
+        rank_targets.push_back(s.record.rank_target);
     }
 
     return HistoryBatch{
@@ -115,5 +118,6 @@ HistoryBatch ReplayBuffer::sample_with_history(int batch_size, std::mt19937& rng
         torch::stack(policies, 0),
         torch::stack(stone_owners, 0),
         torch::stack(territory_owners, 0),
+        torch::stack(rank_targets, 0),
     };
 }

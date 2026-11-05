@@ -3,7 +3,7 @@
 #include <cmath>
 #include <omp.h>
 
-MessagePassingGNNImpl::MessagePassingGNNImpl(const GNNConfig& cfg, int num_stones,
+MessagePassingGNNImpl::MessagePassingGNNImpl(const GNNConfig& cfg, int num_stones, int num_players,
                                               const AdjNorms& adj_norms)
     : cfg_(cfg), num_stones_(num_stones)
 {
@@ -38,6 +38,7 @@ MessagePassingGNNImpl::MessagePassingGNNImpl(const GNNConfig& cfg, int num_stone
         torch::nn::Linear(cfg_.hidden_dim, num_stones + 1)
     ));
     policy_head = register_module("policy_head", GNNPolicyHead(cfg_.hidden_dim, num_stones));
+    rank_head = register_module("rank_head", RankHead(cfg_.hidden_dim, num_rank_pairs(num_players)));
 }
 
 GNNPolicyHeadImpl::GNNPolicyHeadImpl(int hidden_dim, int num_stones)
@@ -62,7 +63,7 @@ torch::Tensor GNNPolicyHeadImpl::forward(const torch::Tensor& h) {
     return torch::cat({place_logits, pass_logit}, -1);            // (B, ns*N+1)
 }
 
-std::pair<torch::Tensor, torch::Tensor> MessagePassingGNNImpl::forward(
+ModelOutput MessagePassingGNNImpl::forward(
     torch::Tensor x,
     const AdjNorms& adj_norms,
     torch::Tensor legal_mask)
@@ -99,6 +100,7 @@ std::pair<torch::Tensor, torch::Tensor> MessagePassingGNNImpl::forward(
     auto stone_est     = torch::softmax(stone_head->forward(h), -1);      // (B, N, num_stones+1)
     auto territory_est = torch::softmax(territory_head->forward(h), -1);  // (B, N, num_stones+1)
     auto ownership = torch::stack({stone_est, territory_est}, 1);        // (B, 2, N, num_stones+1)
+    auto rank = rank_head->forward(h);                                   // (B, num_rank_pairs, 3)
 
     auto logits = policy_head->forward(h); // (B, num_stones*N+1)
 
@@ -111,14 +113,13 @@ std::pair<torch::Tensor, torch::Tensor> MessagePassingGNNImpl::forward(
 
     auto policy = torch::softmax(logits, -1); // (B, num_stones*N+1)
 
-    if (!batched) {
-        return {policy.squeeze(0), ownership.squeeze(0)};
-    }
-    return {policy, ownership};
+    if (!batched)
+        return {policy.squeeze(0), ownership.squeeze(0), rank.squeeze(0)};
+    return {policy, ownership, rank};
 }
 
 // Helper: run a batch of raw pointers
-static std::pair<torch::Tensor, torch::Tensor> run_batch(
+static ModelOutput run_batch(
     MessagePassingGNNImpl* self,
     const std::vector<const BoardState*>& states,
     const AdjNorms& adj_norms)
@@ -135,11 +136,10 @@ static std::pair<torch::Tensor, torch::Tensor> run_batch(
     }
     auto x    = torch::stack(feats, 0); // (B, N, F)
     auto mask = torch::stack(masks, 0); // (B, ns*N+1)
-    auto [policy, ownership] = self->forward(x, adj_norms, mask);
-    return {policy, ownership};
+    return self->forward(x, adj_norms, mask);
 }
 
-std::pair<torch::Tensor, torch::Tensor> MessagePassingGNNImpl::evaluate_batch(
+ModelOutput MessagePassingGNNImpl::evaluate_batch(
     const std::vector<BoardState*>& states,
     const AdjNorms& adj_norms)
 {
@@ -147,7 +147,7 @@ std::pair<torch::Tensor, torch::Tensor> MessagePassingGNNImpl::evaluate_batch(
     return run_batch(this, cstates, adj_norms);
 }
 
-std::pair<torch::Tensor, torch::Tensor> MessagePassingGNNImpl::evaluate_batch(
+ModelOutput MessagePassingGNNImpl::evaluate_batch(
     const std::vector<const BoardState*>& states,
     const AdjNorms& adj_norms)
 {

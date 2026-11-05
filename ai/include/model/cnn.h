@@ -4,6 +4,8 @@
 #include "game/board_config.h"
 #include "model/features.h"
 #include "model/model_config.h"
+#include "model/model_output.h"
+#include "model/rank_head.h"
 #include <vector>
 #include <utility>
 
@@ -50,6 +52,7 @@ TORCH_MODULE(CNNPolicyHead);
 //            final block output, then two independent Linear/ReLU/Linear softmax heads
 //            (stone estimate, territory estimate) - see MessagePassingGNN's ownership doc.
 // Policy: extracted from the final block output via CNNPolicyHead.
+// Rank: RankHead (rank_head.h) over the same per-node gather.
 // Requires bc.emb_dim == 2.
 struct CNNImpl : torch::nn::Module {
     torch::nn::Conv2d input_proj{nullptr};       // 1x1 conv: feature_dim+1 -> hidden_dim
@@ -57,6 +60,7 @@ struct CNNImpl : torch::nn::Module {
     torch::nn::Sequential stone_head{nullptr};
     torch::nn::Sequential territory_head{nullptr};
     CNNPolicyHead policy_head{nullptr};
+    RankHead rank_head{nullptr};
 
     CNNConfig cfg_;
     int num_stones_;
@@ -69,25 +73,24 @@ struct CNNImpl : torch::nn::Module {
     // cfg.feature_dim: per-node feature dimension F (as produced by board_to_features), NOT
     // the number of input channels to input_proj. features_to_grid appends
     // a validity channel, so input_proj actually receives feature_dim + 1 channels.
-    CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_stones);
+    CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_stones, int num_players);
 
     // x: (N,F) or (B,N,F) → (1,F+1,H,W) or (B,F+1,H,W)
     torch::Tensor features_to_grid(const torch::Tensor& x) const;
 
-    // Returns (policy, ownership).
-    //   Unbatched: x (N,F), legal_mask (numStones*N+1,)   → policy (numStones*N+1,), ownership (2,N,num_stones+1)
-    //   Batched:   x (B,N,F), legal_mask (B,numStones*N+1) → policy (B,numStones*N+1), ownership (B,2,N,num_stones+1)
-    std::pair<torch::Tensor, torch::Tensor> forward(
+    // Returns a ModelOutput (model_output.h).
+    //   Unbatched: x (N,F),   legal_mask (numStones*N+1,)
+    //   Batched:   x (B,N,F), legal_mask (B,numStones*N+1)
+    ModelOutput forward(
         torch::Tensor x,
         torch::Tensor legal_mask);
 
-    // Evaluate a batch of states in one forward pass (all must share the same board). Returns
-    // policy (B, numStones*N+1) and ownership (B, 2, N, num_stones+1), both left on the model's
-    // device - callers needing CPU access (e.g. via .accessor<T,N>()) must call .cpu() themselves
-    // at their point of use.
-    std::pair<torch::Tensor, torch::Tensor> evaluate_batch(
+    // Evaluate a batch of states in one forward pass (all must share the same board). Every
+    // ModelOutput tensor is left on the model's device - callers needing CPU access (e.g. via
+    // .accessor<T,N>()) must call .cpu() themselves at their point of use.
+    ModelOutput evaluate_batch(
         const std::vector<BoardState*>& states);
-    std::pair<torch::Tensor, torch::Tensor> evaluate_batch(
+    ModelOutput evaluate_batch(
         const std::vector<const BoardState*>& states);
 };
 

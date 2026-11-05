@@ -1,5 +1,6 @@
 #include "training/self_play.h"
 #include "model/features.h"
+#include "model/rank_head.h"
 #include <chrono>
 #include <iostream>
 #include <cassert>
@@ -287,13 +288,31 @@ static torch::Tensor to_int64_tensor(const std::vector<int>& stones) {
     return t;
 }
 
-GameRecord trajectory_and_result_to_record(
-    const std::vector<PlyResult>& trajectory,
-    const std::vector<int>& board,
-    const std::vector<int>& territory_owner_stone)
-{
-    auto stone_owner     = to_int64_tensor(board);
-    auto territory_owner = to_int64_tensor(territory_owner_stone);
+// The finished game's pairwise outcome per rank_pairs() pair: which of the two players ended with
+// the larger compute_player_totals() total, or a tie. A player stone_to_player_map credits nothing
+// is ranked on komi alone, as estimate_player_rewards() (evaluator.h) does.
+static torch::Tensor rank_targets(const BoardState& final_state) {
+    auto totals = compute_player_totals(
+        BoardState::compute_points(final_state.score_rule, final_state.score()),
+        final_state.stone_to_player_map, final_state.komi, final_state.score_rule, final_state.capture_count());
+    auto total_of = [&](int p) {
+        auto it = totals.find(p);
+        if (it != totals.end()) return it->second;
+        return p <= (int)final_state.komi.size() ? final_state.komi[p - 1] : 0.0f;
+    };
+    auto pairs = rank_pairs(final_state.num_players);
+    auto t = torch::empty({(int64_t)pairs.size()}, torch::kInt64);
+    auto a = t.accessor<int64_t, 1>();
+    for (size_t k = 0; k < pairs.size(); k++) {
+        float tp = total_of(pairs[k].first), tq = total_of(pairs[k].second);
+        a[k] = tp > tq ? FIRST_AHEAD : tp < tq ? SECOND_AHEAD : TIED;
+    }
+    return t;
+}
+
+GameRecord trajectory_and_result_to_record(const std::vector<PlyResult>& trajectory, const BoardState& final_state) {
+    auto stone_owner     = to_int64_tensor(final_state.board);
+    auto territory_owner = to_int64_tensor(final_state.score().territory_owner);
 
     std::vector<torch::Tensor> feats, masks, policies, history_feats;
     feats.reserve(trajectory.size());
@@ -314,6 +333,7 @@ GameRecord trajectory_and_result_to_record(
         torch::stack(policies, 0),  // (P, numStones*N+1)
         stone_owner,                 // (N,)
         territory_owner,             // (N,)
+        rank_targets(final_state),   // (num_rank_pairs,)
     };
 
     // history_features is only populated when the run passed a history_descr (Transformer only) -
@@ -360,7 +380,7 @@ GameRecord trajectory_to_record(
         bool ok = state.make_move(k, stone_opt);
         assert(ok && "trajectory_to_record: replay move rejected - trajectory/config/input_descr mismatch");
     }
-    return trajectory_and_result_to_record(replayed, state.board, state.score().territory_owner);
+    return trajectory_and_result_to_record(replayed, state);
 }
 
 // Not thread-safe: uses the file-scope std::mt19937 rng to seed each MCTS instance.

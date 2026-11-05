@@ -6,7 +6,7 @@
 #include <string>
 #include <omp.h>
 
-CNNImpl::CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_stones)
+CNNImpl::CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_stones, int num_players)
     : cfg_(cfg), num_stones_(num_stones)
 {
     // A real (always-active) check, not assert() - assert compiles out under NDEBUG (this project's
@@ -73,6 +73,7 @@ CNNImpl::CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_stones)
         torch::nn::Linear(cfg_.hidden_dim, num_stones + 1)));
 
     policy_head = register_module("policy_head", CNNPolicyHead(cfg_.hidden_dim, num_stones));
+    rank_head = register_module("rank_head", RankHead(cfg_.hidden_dim, num_rank_pairs(num_players)));
 }
 
 CNNPolicyHeadImpl::CNNPolicyHeadImpl(int hidden_dim, int num_stones)
@@ -117,7 +118,7 @@ torch::Tensor CNNImpl::features_to_grid(const torch::Tensor& x) const {
     return flat.view({B, F + 1, grid_h_, grid_w_});
 }
 
-std::pair<torch::Tensor, torch::Tensor> CNNImpl::forward(
+ModelOutput CNNImpl::forward(
     torch::Tensor x,
     torch::Tensor legal_mask)
 {
@@ -136,15 +137,16 @@ std::pair<torch::Tensor, torch::Tensor> CNNImpl::forward(
     }
     // h: (B, hidden_dim, H, W)
 
-    // Gather the final block output at each node's grid position - feeds both the ownership heads
-    // (stone/territory estimate) and the policy head, all of which operate purely on this per-node
-    // (B,N,hidden_dim) tensor rather than the raw grid.
+    // Gather the final block output at each node's grid position - feeds the ownership heads
+    // (stone/territory estimate), the policy head and the rank head, all of which operate purely on
+    // this per-node (B,N,hidden_dim) tensor rather than the raw grid.
     auto h_nodes = h.reshape({B, cfg_.hidden_dim, -1})
                     .index_select(2, lin_idx_)
                     .permute({0, 2, 1});                                  // (B, N, hidden_dim)
     auto stone_est     = torch::softmax(stone_head->forward(h_nodes), -1);      // (B, N, num_stones+1)
     auto territory_est = torch::softmax(territory_head->forward(h_nodes), -1);  // (B, N, num_stones+1)
     auto ownership = torch::stack({stone_est, territory_est}, 1);              // (B, 2, N, num_stones+1)
+    auto rank = rank_head->forward(h_nodes);                                   // (B, num_rank_pairs, 3)
 
     auto logits = policy_head->forward(h_nodes); // (B, num_stones*N+1)
     const float NEG_INF = -std::numeric_limits<float>::infinity();
@@ -153,11 +155,11 @@ std::pair<torch::Tensor, torch::Tensor> CNNImpl::forward(
     auto policy = torch::softmax(logits, -1);
 
     if (!batched)
-        return {policy.squeeze(0), ownership.squeeze(0)};
-    return {policy, ownership};
+        return {policy.squeeze(0), ownership.squeeze(0), rank.squeeze(0)};
+    return {policy, ownership, rank};
 }
 
-static std::pair<torch::Tensor, torch::Tensor> run_batch(
+static ModelOutput run_batch(
     CNNImpl* self,
     const std::vector<const BoardState*>& states)
 {
@@ -173,18 +175,17 @@ static std::pair<torch::Tensor, torch::Tensor> run_batch(
     }
     auto x    = torch::stack(feats, 0); // (B, N, F)
     auto mask = torch::stack(masks, 0); // (B, ns*N+1)
-    auto [policy, ownership] = self->forward(x, mask);
-    return {policy, ownership};
+    return self->forward(x, mask);
 }
 
-std::pair<torch::Tensor, torch::Tensor> CNNImpl::evaluate_batch(
+ModelOutput CNNImpl::evaluate_batch(
     const std::vector<BoardState*>& states)
 {
     std::vector<const BoardState*> cstates(states.begin(), states.end());
     return run_batch(this, cstates);
 }
 
-std::pair<torch::Tensor, torch::Tensor> CNNImpl::evaluate_batch(
+ModelOutput CNNImpl::evaluate_batch(
     const std::vector<const BoardState*>& states)
 {
     return run_batch(this, states);

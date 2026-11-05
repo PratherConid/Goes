@@ -47,7 +47,7 @@ torch::Tensor TransformerBlockImpl::forward(const torch::Tensor& q, const torch:
 }
 
 TransformerImpl::TransformerImpl(const BoardConfig& bc, const TransformerConfig& cfg,
-                                  int num_stones)
+                                  int num_stones, int num_players)
     : cfg_(cfg), num_stones_(num_stones), N_(bc.N),
       history_feature_dim_(cfg_.history_descr.at("totalDims").get<int>())
 {
@@ -77,9 +77,10 @@ TransformerImpl::TransformerImpl(const BoardConfig& bc, const TransformerConfig&
         torch::nn::ReLU(),
         torch::nn::Linear(D, num_stones + 1)));
     policy_head = register_module("policy_head", TransformerPolicyHead(D, num_stones));
+    rank_head = register_module("rank_head", RankHead(D, num_rank_pairs(num_players)));
 }
 
-std::pair<torch::Tensor, torch::Tensor> TransformerImpl::forward(
+ModelOutput TransformerImpl::forward(
     torch::Tensor hist_x, torch::Tensor hist_mask,
     torch::Tensor cur_x, torch::Tensor legal_mask)
 {
@@ -138,6 +139,7 @@ std::pair<torch::Tensor, torch::Tensor> TransformerImpl::forward(
     auto stone_est     = torch::softmax(stone_head->forward(h_nodes), -1);      // (B, N, num_stones+1)
     auto territory_est = torch::softmax(territory_head->forward(h_nodes), -1);  // (B, N, num_stones+1)
     auto ownership = torch::stack({stone_est, territory_est}, 1);              // (B, 2, N, num_stones+1)
+    auto rank = rank_head->forward(h_nodes);                                   // (B, num_rank_pairs, 3)
 
     auto logits = policy_head->forward(h_nodes); // (B, num_stones*N+1)
     const float NEG_INF = -std::numeric_limits<float>::infinity();
@@ -146,11 +148,11 @@ std::pair<torch::Tensor, torch::Tensor> TransformerImpl::forward(
     auto policy = torch::softmax(logits, -1);
 
     if (!batched)
-        return {policy.squeeze(0), ownership.squeeze(0)};
-    return {policy, ownership};
+        return {policy.squeeze(0), ownership.squeeze(0), rank.squeeze(0)};
+    return {policy, ownership, rank};
 }
 
-static std::pair<torch::Tensor, torch::Tensor> run_batch(
+static ModelOutput run_batch(
     TransformerImpl* self,
     const std::vector<const BoardState*>& states)
 {
@@ -192,14 +194,14 @@ static std::pair<torch::Tensor, torch::Tensor> run_batch(
     return self->forward(hist_x.to(dev), hist_mask.to(dev), cur_x, legal_mask);
 }
 
-std::pair<torch::Tensor, torch::Tensor> TransformerImpl::evaluate_batch(
+ModelOutput TransformerImpl::evaluate_batch(
     const std::vector<BoardState*>& states)
 {
     std::vector<const BoardState*> cstates(states.begin(), states.end());
     return run_batch(this, cstates);
 }
 
-std::pair<torch::Tensor, torch::Tensor> TransformerImpl::evaluate_batch(
+ModelOutput TransformerImpl::evaluate_batch(
     const std::vector<const BoardState*>& states)
 {
     return run_batch(this, states);

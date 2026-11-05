@@ -294,17 +294,17 @@ static AnyModel& load_model(ServerState& ss, const std::string& tag,
     // static_casts below are safe downcasts, not a real runtime type check.
     AnyModel model_any = [&]() -> AnyModel {
         if (arch == "cnn") {
-            return CNN(bc, static_cast<const CNNConfig&>(*model_cfg), game_cfg.num_stones);
+            return CNN(bc, static_cast<const CNNConfig&>(*model_cfg), game_cfg.num_stones, game_cfg.num_players);
         } else if (arch == "unet") {
-            return UNet(bc, static_cast<const UNetConfig&>(*model_cfg), game_cfg.num_stones);
+            return UNet(bc, static_cast<const UNetConfig&>(*model_cfg), game_cfg.num_stones, game_cfg.num_players);
         } else if (arch == "transformer") {
-            return Transformer(bc, static_cast<const TransformerConfig&>(*model_cfg), game_cfg.num_stones);
+            return Transformer(bc, static_cast<const TransformerConfig&>(*model_cfg), game_cfg.num_stones, game_cfg.num_players);
         } else {
             // adj_norms is only needed to size the GNN's neighbor-count embedding
             // table (max_degree); compute it locally rather than threading it
             // through load_model's signature for architectures that don't use it.
             auto adj_norms = compute_adj_norms(bc, torch::kCPU);
-            return MessagePassingGNN(static_cast<const GNNConfig&>(*model_cfg), game_cfg.num_stones, adj_norms);
+            return MessagePassingGNN(static_cast<const GNNConfig&>(*model_cfg), game_cfg.num_stones, game_cfg.num_players, adj_norms);
         }
     }();
 
@@ -465,8 +465,8 @@ int main(int argc, char* argv[]) {
                 {sess->state.get()}, num_sims, NoiseConfig{/*add_noise=*/false, 0.3f, 0.25f},
                 {temperature});
             auto& [policy_vec, move_idx] = results[0];
-            auto [_pol_t, ownership_t] = evaluator.evaluate_batch({sess->state.get()});
-            auto reward_t = estimate_player_rewards(ownership_t, {sess->state->capture_count()},
+            ModelOutput leaf = evaluator.evaluate_batch({sess->state.get()});
+            auto reward_t = estimate_player_rewards(leaf.ownership, leaf.rank, {sess->state->capture_count()},
                                                     sess->state->score_rule, sess->state->stone_to_player_map,
                                                     sess->state->num_players, sess->state->komi);
             // Mover is next_turn.player, not stone_to_player_map (scoring-only - see

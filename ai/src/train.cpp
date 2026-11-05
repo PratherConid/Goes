@@ -359,16 +359,16 @@ static std::string effective_arch(const Args& args, const std::string& board_des
 // not a real runtime type check.
 static AnyModel build_model(const BoardConfig& bc, const ModelConfig& cfg, const GameConfig& game_cfg) {
     if (cfg.model_type == "cnn")
-        return CNN(bc, static_cast<const CNNConfig&>(cfg), game_cfg.num_stones);
+        return CNN(bc, static_cast<const CNNConfig&>(cfg), game_cfg.num_stones, game_cfg.num_players);
     if (cfg.model_type == "unet")
-        return UNet(bc, static_cast<const UNetConfig&>(cfg), game_cfg.num_stones);
+        return UNet(bc, static_cast<const UNetConfig&>(cfg), game_cfg.num_stones, game_cfg.num_players);
     if (cfg.model_type == "transformer")
-        return Transformer(bc, static_cast<const TransformerConfig&>(cfg), game_cfg.num_stones);
+        return Transformer(bc, static_cast<const TransformerConfig&>(cfg), game_cfg.num_stones, game_cfg.num_players);
     // adj_norms is only needed to size the GNN's neighbor-count embedding
     // table (max_degree); compute it locally rather than threading it
     // through build_model's signature for architectures that don't use it.
     auto adj_norms = compute_adj_norms(bc, torch::kCPU);
-    return MessagePassingGNN(static_cast<const GNNConfig&>(cfg), game_cfg.num_stones, adj_norms);
+    return MessagePassingGNN(static_cast<const GNNConfig&>(cfg), game_cfg.num_stones, game_cfg.num_players, adj_norms);
 }
 
 // Returns a pointer to TransformerConfig::history_descr when cfg is a transformer config, else
@@ -853,17 +853,20 @@ static int resume(const fs::path& ckpt_dir, const ModelConfig& model_cfg, AnyMod
 // One training step's individual loss terms, plus their sum in `total` (the one that's
 // backpropagated) - see compute_losses() below for what each term measures.
 struct Losses {
-    torch::Tensor total, policy, stone, territory, point;
+    torch::Tensor total, policy, stone, territory, point, rank;
 };
 
 // Shared loss math for every architecture - factored out so the training loop's per-architecture
-// std::visit branch only differs in how (policy, ownership, p_tgt, so_tgt, to_tgt) are obtained,
-// not in how they're turned into a loss.
-static Losses compute_losses(const torch::Tensor& policy, const torch::Tensor& ownership,
+// std::visit branch only differs in how the ModelOutput and its targets (p_tgt, so_tgt, to_tgt,
+// r_tgt) are obtained, not in how they're turned into a loss.
+static Losses compute_losses(const ModelOutput& out,
                               const torch::Tensor& p_tgt, const torch::Tensor& so_tgt,
-                              const torch::Tensor& to_tgt, const std::string& score_rule,
-                              int num_stones, int N)
+                              const torch::Tensor& to_tgt, const torch::Tensor& r_tgt,
+                              const std::string& score_rule, int num_stones, int N)
 {
+    const torch::Tensor& policy = out.policy;
+    const torch::Tensor& ownership = out.ownership;
+
     // Policy loss: cross-entropy against MCTS visit distribution, scaled down by
     // log(action count) - cross-entropy over num_stones*N+1 actions grows with
     // both board size and stone count, so this keeps the loss magnitude
@@ -900,8 +903,15 @@ static Losses compute_losses(const torch::Tensor& policy, const torch::Tensor& o
     auto point_diff = (predicted_points - actual_points) / N * num_stones;              // (B,num_stones)
     auto point_loss = point_diff.pow(2).sum(-1).mean();
 
-    auto loss = policy_loss + stone_loss + territory_loss + point_loss;
-    return {loss, policy_loss, stone_loss, territory_loss, point_loss};
+    // Rank loss: cross-entropy of the rank head's pairwise outcome probabilities against the
+    // game's actual outcome per pair (r_tgt, RankOutcome class indices), averaged over pairs and
+    // batch and scaled by 1/log(3) - so a uniform guess scores 1, as the policy loss's own
+    // 1/log(action count) does.
+    auto p_actual = out.rank.gather(-1, r_tgt.unsqueeze(-1)).squeeze(-1);   // (B, pairs)
+    auto rank_loss = -torch::log(p_actual.clamp_min(1e-8f)).mean() / std::log(3.0f);
+
+    auto loss = policy_loss + stone_loss + territory_loss + point_loss + rank_loss;
+    return {loss, policy_loss, stone_loss, territory_loss, point_loss, rank_loss};
 }
 
 // Runs one iteration's worth of backprop against whatever is currently in
@@ -929,37 +939,38 @@ static bool run_training_iteration(
     }
 
     std::visit([](auto& m) { m->train(); }, model_var);
-    double total_loss = 0, total_pol = 0, total_stone = 0, total_territory = 0, total_point = 0;
+    double total_loss = 0, total_pol = 0, total_stone = 0, total_territory = 0, total_point = 0, total_rank = 0;
 
     int train_steps = static_cast<int>(
         std::ceil(train_fraction * buffer.size() / batch_size));
     int num_stones = game_cfg.num_stones;
 
     for (int step = 0; step < train_steps; step++) {
-        torch::Tensor policy, ownership, p_tgt, so_tgt, to_tgt;
+        ModelOutput out;
+        torch::Tensor p_tgt, so_tgt, to_tgt, r_tgt;
 
         std::visit([&](auto& m) {
             using M = std::decay_t<decltype(m)>;
             if constexpr (std::is_same_v<M, Transformer>) {
                 auto hb = buffer.sample_with_history(batch_size, rng);
-                std::tie(policy, ownership) = m->forward(hb.hist_features.to(device), hb.hist_mask.to(device),
-                                                          hb.cur_features.to(device), hb.legal_mask.to(device));
+                out = m->forward(hb.hist_features.to(device), hb.hist_mask.to(device),
+                                 hb.cur_features.to(device), hb.legal_mask.to(device));
                 p_tgt = hb.policy_target.to(device);
                 so_tgt = hb.stone_owner.to(device);
                 to_tgt = hb.territory_owner.to(device);
+                r_tgt = hb.rank_target.to(device);
             } else {
-                auto [x_, mask_, p_, so_, to_] = buffer.sample(batch_size, rng);
+                auto [x_, mask_, p_, so_, to_, r_] = buffer.sample(batch_size, rng);
                 torch::Tensor x = x_.to(device), mask = mask_.to(device);
-                p_tgt = p_.to(device); so_tgt = so_.to(device); to_tgt = to_.to(device);
+                p_tgt = p_.to(device); so_tgt = so_.to(device); to_tgt = to_.to(device); r_tgt = r_.to(device);
                 if constexpr (std::is_same_v<M, MessagePassingGNN>)
-                    std::tie(policy, ownership) = m->forward(x, adj_norms, mask);
+                    out = m->forward(x, adj_norms, mask);
                 else
-                    std::tie(policy, ownership) = m->forward(x, mask);
+                    out = m->forward(x, mask);
             }
         }, model_var);
 
-        auto losses = compute_losses(policy, ownership, p_tgt, so_tgt, to_tgt,
-                                      game_cfg.score_rule, num_stones, bc.N);
+        auto losses = compute_losses(out, p_tgt, so_tgt, to_tgt, r_tgt, game_cfg.score_rule, num_stones, bc.N);
 
         optimizer.zero_grad();
         losses.total.backward();
@@ -972,6 +983,7 @@ static bool run_training_iteration(
         total_stone    += losses.stone.item<double>();
         total_territory += losses.territory.item<double>();
         total_point    += losses.point.item<double>();
+        total_rank     += losses.rank.item<double>();
     }
 
     auto t1 = std::chrono::high_resolution_clock::now();
@@ -983,6 +995,7 @@ static bool run_training_iteration(
               << "  stone="    << total_stone/n
               << "  territory=" << total_territory/n
               << "  point="    << total_point/n
+              << "  rank="     << total_rank/n
               << "  buf="    << buffer.size()
               << "  time="   << std::setprecision(1) << elapsed << "s" << std::endl;
     return true;
@@ -1323,8 +1336,7 @@ int main(int argc, char* argv[]) {
                 bool done = pool[slot].game_over();
                 if (!done) continue;
 
-                auto record = trajectory_and_result_to_record(
-                    trajectories[slot], pool[slot].board, pool[slot].score().territory_owner);
+                auto record = trajectory_and_result_to_record(trajectories[slot], pool[slot]);
 
                 if (args.verbosity >= 1)
                     print_game_result("  ", games_this_iter + 1, args.self_play_games, pool[slot]);

@@ -155,17 +155,15 @@ nlohmann::json compute_input_descr(const GameConfig& cfg, int N);
 BoardState new_state(const GameConfig& cfg, const BoardConfig& bc);
 
 // Convert a completed game's trajectory to a single GameRecord with per-ply
-// tensors stacked along a new leading dimension, and stone_owner/territory_owner
-// ground truth (shared by the whole game) taken directly from the final board and
-// ScoreData::territory_owner - both already stone-type indexed, matching the
-// network's ownership head (see evaluator.h). Use this when the trajectory's
-// PlyResults already carry features/legal_mask (i.e. straight from self-play,
-// not round-tripped through PlyResult::to_json()/parse_ply_result()) and the
-// final board/territory ownership are already on hand.
-GameRecord trajectory_and_result_to_record(
-    const std::vector<PlyResult>& trajectory,
-    const std::vector<int>& board,
-    const std::vector<int>& territory_owner_stone);
+// tensors stacked along a new leading dimension, plus the ground truth shared by
+// the whole game, all taken from `final_state` (the game's last BoardState):
+// stone_owner/territory_owner from its board and ScoreData::territory_owner -
+// both already stone-type indexed, matching the network's ownership head (see
+// evaluator.h) - and rank_target from its compute_player_totals() (see
+// GameRecord::rank_target). Use this when the trajectory's PlyResults already
+// carry features/legal_mask (i.e. straight from self-play, not round-tripped
+// through PlyResult::to_json()/parse_ply_result()).
+GameRecord trajectory_and_result_to_record(const std::vector<PlyResult>& trajectory, const BoardState& final_state);
 
 // Reconstructs a GameRecord from a trajectory whose PlyResults only carry
 // move/stone/policy - e.g. parsed back from a trajectory dump via
@@ -174,8 +172,8 @@ GameRecord trajectory_and_result_to_record(
 // BoardState (built from cfg/bc) to regenerate each ply's features/legal_mask
 // via board_to_features() (descr must match whatever descriptor the original
 // game was actually recorded under - a mismatch produces a differently-shaped
-// or differently-populated tensor, not necessarily a crash) and to obtain the
-// game's final board/territory ownership, then delegates to
+// or differently-populated tensor, not necessarily a crash) and to reach the
+// game's final state, then delegates to
 // trajectory_and_result_to_record(). Used by train.cpp's resume() to rebuild
 // ReplayBuffer state from historical trajectory dumps.
 //

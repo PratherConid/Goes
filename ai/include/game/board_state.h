@@ -33,7 +33,18 @@ struct TurnInfo {
 // rank_reward  = (# opp with fewer points - # opp with more) * 2 / (2P-1)  [0 if P==1]
 // point_reward = (point_fraction - 1/P) / (2P-1)   [empty board: fraction = 0]
 // reward[p] = rank_reward + point_reward
+// The per-player totals both terms use come from compute_player_totals() (below).
 std::unordered_map<int,float> compute_player_rewards(
+    const std::unordered_map<int,int>& points,
+    const std::unordered_map<int, std::vector<int>>& stone_to_player_map,
+    const std::vector<float>& komi,
+    const std::string& score_rule,
+    const std::vector<int>& capture_count);
+
+// The komi- (and, under "territory", capture-) adjusted per-player point totals
+// compute_player_rewards() ranks, for every player stone_to_player_map credits - also the
+// source of the rank head's training targets (see self_play.cpp's rank_targets()).
+std::unordered_map<int,float> compute_player_totals(
     const std::unordered_map<int,int>& points,
     const std::unordered_map<int, std::vector<int>>& stone_to_player_map,
     const std::vector<float>& komi,

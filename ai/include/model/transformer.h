@@ -4,6 +4,8 @@
 #include "game/board_config.h"
 #include "model/features.h"
 #include "model/model_config.h"
+#include "model/model_output.h"
+#include "model/rank_head.h"
 #include <vector>
 #include <utility>
 
@@ -74,7 +76,8 @@ TORCH_MODULE(TransformerBlock);
 //          - the literal inverse of the encoder's flatten, no per-node operation anywhere in this
 //          path (unlike the other three architectures' topology-aware bodies).
 // Heads: the resulting (N, hidden_dim) tensor feeds the same stone_head/territory_head/policy
-//          head shapes CNN/UNet/GNN already share, unmodified.
+//          head shapes CNN/UNet/GNN already share, unmodified - and the shared RankHead
+//          (rank_head.h) too.
 //
 // Known cost tradeoff: unlike the other three architectures' O(1)-per-leaf evaluation, this is
 // O(ply_count) per leaf (loops every historical ply via history_features_at_ply()) - materially
@@ -99,6 +102,7 @@ struct TransformerImpl : torch::nn::Module {
     torch::nn::Sequential stone_head{nullptr};
     torch::nn::Sequential territory_head{nullptr};
     TransformerPolicyHead policy_head{nullptr};
+    RankHead rank_head{nullptr};
 
     TransformerConfig cfg_;
     int num_stones_;
@@ -106,21 +110,21 @@ struct TransformerImpl : torch::nn::Module {
     int history_feature_dim_;  // cfg_.history_descr's totalDims, cached at construction time
     static constexpr int kNumHeads = 4;  // hardcoded, not CLI-configurable - see .cpp ctor
 
-    TransformerImpl(const BoardConfig& bc, const TransformerConfig& cfg, int num_stones);
+    TransformerImpl(const BoardConfig& bc, const TransformerConfig& cfg, int num_stones, int num_players);
 
     // hist_x: (B,T,N,F) or (T,N,F) float32 (T past plies, zero-padded to the batch's own max);
     // hist_mask: (B,T) or (T,) bool, True = padded/invalid slot; cur_x: (B,N,F) or (N,F) - the
     // current ply; legal_mask: (B,numStones*N+1) or (numStones*N+1,).
-    // Returns (policy, ownership) - same shapes as CNN/UNet/GNN's forward().
-    std::pair<torch::Tensor, torch::Tensor> forward(
+    // Returns a ModelOutput (model_output.h) - same shapes as CNN/UNet/GNN's forward().
+    ModelOutput forward(
         torch::Tensor hist_x, torch::Tensor hist_mask,
         torch::Tensor cur_x, torch::Tensor legal_mask);
 
     // Evaluate a batch of states (arbitrary, independently-varying history lengths) in one forward
     // pass. Returns tensors on the model's device, matching CNN/GNN/UNet's evaluate_batch()
     // contract exactly.
-    std::pair<torch::Tensor, torch::Tensor> evaluate_batch(const std::vector<BoardState*>& states);
-    std::pair<torch::Tensor, torch::Tensor> evaluate_batch(const std::vector<const BoardState*>& states);
+    ModelOutput evaluate_batch(const std::vector<BoardState*>& states);
+    ModelOutput evaluate_batch(const std::vector<const BoardState*>& states);
 };
 
 TORCH_MODULE(Transformer);

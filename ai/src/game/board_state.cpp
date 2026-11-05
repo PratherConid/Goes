@@ -5,7 +5,7 @@
 
 // ── Reward ────────────────────────────────────────────────────────────────────
 
-std::unordered_map<int,float> compute_player_rewards(
+std::unordered_map<int,float> compute_player_totals(
     const std::unordered_map<int,int>& points,
     const std::unordered_map<int, std::vector<int>>& stone_to_player_map,
     const std::vector<float>& komi,
@@ -28,17 +28,28 @@ std::unordered_map<int,float> compute_player_rewards(
     // BoardState::compute_winners() folds them into its point counts before
     // comparing them.
     std::unordered_map<int,float> adj_points;
-    float total = 0.0f;
     bool use_captures = score_rule == "territory";
     for (auto& [p, cnt] : player_points) {
         float v = static_cast<float>(cnt);
         if (p >= 1 && p <= (int)komi.size()) v += komi[p - 1];
         if (use_captures && p >= 1 && p <= (int)capture_count.size()) v += capture_count[p - 1];
         adj_points[p] = v;
-        total += v;
     }
+    return adj_points;
+}
 
-    int P = static_cast<int>(player_points.size());
+std::unordered_map<int,float> compute_player_rewards(
+    const std::unordered_map<int,int>& points,
+    const std::unordered_map<int, std::vector<int>>& stone_to_player_map,
+    const std::vector<float>& komi,
+    const std::string& score_rule,
+    const std::vector<int>& capture_count)
+{
+    auto adj_points = compute_player_totals(points, stone_to_player_map, komi, score_rule, capture_count);
+    float total = 0.0f;
+    for (auto& [p, v] : adj_points) total += v;
+
+    int P = static_cast<int>(adj_points.size());
 
     std::unordered_map<int,float> rewards;
     for (auto& [p, my_cnt] : adj_points) {
