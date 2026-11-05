@@ -5,12 +5,15 @@ Self-play training pipeline for Goes using Monte Carlo Tree Search (MCTS), in th
 Four model architectures are available:
 - **CNN**: a plain residual conv stack (no pooling) for boards with a 2D integer embedding — `rect`, `rectd`, `tri`, `trihex`, `hex`, `hexdel`, `snubsq`, `twsq`, `gtsq`. The default for these boards.
 - **UNet**: an alternative for the same board types (U-Net encoder/decoder with pooling), selectable via `--net-arch unet`.
-- **MessagePassingGNN**: for higher-dimensional boards whose nodes cannot be laid out on a 2D grid — `cublat`, `hcub` — and for any `boardDescr` program whose resulting board doesn't have `emb_dim == 2` (e.g. one using `triangleForm`/`quadForm`/`globalCentralize`/`quadOctarize`, which always force `emb_dim = 0` - see **Inference Server**, below). CNN/UNet's featurizer actually derives its grid shape dynamically from the board's own embedding, not from `boardDescr` itself, so a modified 2D board that happens to keep `emb_dim == 2` (e.g. via `rectify`/`truncate`/`edgeSplit`/`mergeClose`/`scale`) wouldn't crash it either way - `effective_arch()` checks `bc.emb_dim` directly, with no separate allowlist of board kinds.
+- **MessagePassingGNN**: for higher-dimensional boards whose nodes cannot be laid out on a 2D grid — `cublat`, `hcub` — and for any `boardDescr` program whose resulting board doesn't have `emb_dim == 2` (e.g. one using `triangleForm`/`quadForm`/`globalCentralize`/`quadOctarize`, which always force `emb_dim = 0` - see **Differences from the TypeScript engine**, below). CNN/UNet's featurizer actually derives its grid shape dynamically from the board's own embedding, not from `boardDescr` itself, so a modified 2D board that happens to keep `emb_dim == 2` (e.g. via `rectify`/`truncate`/`edgeSplit`/`mergeClose`/`scale`) wouldn't crash it either way - `effective_arch()` checks `bc.emb_dim` directly, with no separate allowlist of board kinds.
 - **Transformer**: history-aware (attends over every previously reached board state, not just the current one), topology-agnostic, selectable via `--net-arch transformer` on any board type. This is the **only** architecture that supports `forcedPassOnly: true` — see **Transformer Architecture**, below.
 
 ## Differences from the TypeScript engine
 
-`shared/boardConfig.ts` stores real-valued node positions (`pos`) and a bounding box (`boardDimension`) for the canvas renderer. The C++ `BoardConfig` carries the same positions as `embed` (ported from the TypeScript factory functions) but as **exact unsigned integers only**, and omits `boardDimension`, which is only needed by the renderer. Boards and modifiers whose TypeScript positions are irrational (or need real-number averaging) therefore drop to `emb_dim = 0` with an empty `embed[]` per node — adjacency stays exact either way; see **Inference Server**, below, for the full list.
+`shared/boardConfig.ts` stores real-valued node positions (`pos`) and a bounding box (`boardDimension`) for the canvas renderer. The C++ `BoardConfig` carries the same positions as `embed` (ported from the TypeScript factory functions) but as **exact unsigned integers only**, and omits `boardDimension`, which is only needed by the renderer. Where the TypeScript positions are irrational, or need real-number averaging, the board drops to `emb_dim = 0` with an empty `embed[]` per node. Adjacency stays exact and complete either way, and only CNN/UNet read coordinates (they require `emb_dim == 2`):
+- **Boards with `emb_dim = 0`:** `regpolyB`, `starB`, `apB`, `dodecaB`, `icosaB`, `reg120CellB`, `reg600CellB`, the flake/`mengerB` fractals and `diamondCubicB`. `tetraB`/`octaB` are not among them: they delegate to `simplex_board`/`orthoplex_board`, whose exact-integer embeddings stand in for the TypeScript coordinates.
+- **Modifiers that force `emb_dim = 0`:** the `form` family (`triangleForm`/`quadForm`/`quadDiagForm`/`quadKnightForm`/`quadBishopForm`/`form`), the `localReplace` family (`simpCentralize`/`triCentralize`/`quadCentralize`, their `*Centering` variants, and `quadOctarize`) and `globalCentralize`. The rest (`rectify`, `truncate`, `edgeSplit`, `mergeClose`, `scale`, `nis`/`eis`) keep the board's `emb_dim`, so a 2D board stays CNN/UNet-eligible after them. `rectify`/`truncate`/`mergeClose` throw on an `emb_dim = 0` board, since they need real edge directions and distances.
+- **`scale`** is a no-op (returns the board unchanged): `embed` must stay exact integers, and C++ never renders positions.
 
 `BoardState` otherwise has full feature parity with `shared/boardState.ts`: multi-stone-per-turn offering (`TurnInfo.stones`), protected/friendly stones, per-player and global stone placement limits, `maxPlies`, resignation (permanent — never undone by `withdraw_move()`, and `game_over()` re-checks the resigned set live rather than stamping it onto a move), `komi` (per-player scoring handicap, applied in `compute_winners()` and folded into both MCTS reward formulas — see **Reward**, below), and `koRule` (both `positional` and `situational` superko are implemented — `HistoryManager`'s `(ply_mod, board)` key collapses `ply_mod` to a constant under `positional`, since two boards are then "the same" purely by content, mirroring `compareState()` skipping the ply-mod comparison in `shared/boardState.ts`). `stoneToPlayerMap` is stone → *set* of players (each mapped player gets a stone's full point value, not split), matching the TypeScript side.
 
@@ -115,7 +118,7 @@ Run from the project root:
 
 ```bash
 export OMP_NUM_THREADS=8
-ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --initialization-iters 8
+ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 1 --linear-move-bound 1.5 2.5
 ```
 
 For higher-end training devices,
@@ -123,11 +126,11 @@ For higher-end training devices,
 ```bash
 export OMP_NUM_THREADS=8
 
-ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192 --cnn-hidden-dim 128 --initialization-iters 8
+ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192 --cnn-hidden-dim 128
 
-ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192 --net-arch gnn --gnn-hidden-dim 256 --initialization-iters 8
+ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192 --net-arch gnn --gnn-hidden-dim 256
 
-ai/build/goes_train --game-config public/game_presets/7x7x2_twsq_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192 --cnn-hidden-dim 128 --initialization-iters 8
+ai/build/goes_train --game-config public/game_presets/7x7x2_twsq_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192 --cnn-hidden-dim 128
 
 ai/build/goes_train --game-config public/game_presets/3x3_go_fpo.json --verbosity 1 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192 --net-arch transformer --transformer-hidden-dim 128
 
@@ -212,21 +215,7 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
 
 - `POST /move` — runs MCTS from the given position and returns the chosen move.
   - **Request fields:**
-    - `config`: object with the game configuration (matches `shared/gameConfig.ts`'s `GameConfig.toJSON()` wire shape):
-      - `boardDescr`: a cleg program, as source text (see `shared/clegBase.ts`'s own top comment for the full language; `game/cleg_base.*`, `game/cleg_parser.*`, `game/cleg_check.*` and `game/cleg_eval.*` are its C++ port) - e.g. `"rectB(9, 9);"` for a 9×9 rect board, or `"modify([rectify()], rectB(3, 3));"` for a rectified 3×3 board. `parse_cleg` (`game/cleg_parser.h`) followed by `build_board_from_cleg` (`game/cleg_eval.h`) is the one entry point that turns this into a real `BoardConfig` - the old three-field `boardType`/`boardArgs`/`boardModifiers` wire shape no longer exists.
-        - Boards whose coordinates are inherently irrational (`regpolyB`, `starB`, `apB`, `dodecaB`, `icosaB`, `reg120CellB`, `reg600CellB`, the flake/`mengerB` fractals, `diamondCubicB`) use `emb_dim = 0` with an empty `embed[]` per node instead of an approximate embedding - `BoardConfig::embed` (`unsigned` integers only) can't represent their unit-edge-length coordinates exactly like every other board type here can, but adjacency alone is exact and complete for gameplay, and no featurizer needs real coordinates for them (CNN/UNet require `emb_dim == 2` and throw otherwise - see `cnn.cpp`/`unet.cpp` - and none is grid-shaped anyway, so nothing is lost by omitting positions). `tetraB`/`octaB` are *not* in that group here: they delegate to `simplex_board`/`orthoplex_board`, whose exact-integer embeddings the C++ side substitutes for the TS side's real-valued coordinates. A side-length-w subdivision of a tetrahedron's 4 triangular faces (or an octahedron's 8) is available via `modify([triangleForm(w)], ...)` instead of being built into either directly. `modify([globalCentralize()], ...)` adds a hub node connected to every existing node, at the board's barycenter - it always forces `emb_dim = 0` (a global hub isn't grid-shaped either), regardless of the board it's applied to. `modify([quadOctarize()], ...)` replaces every quad (4-cycle with no diagonal edges) with an octahedron - two new apex nodes per quad, each connected to that quad's 4 corners - and also always forces `emb_dim = 0`, since the TS side's apex positions are offset along a genuinely new dimension by an inherently irrational (Euclidean) distance. `modify([scale(factor)], ...)` multiplies every node's position by `factor` on the TS side; here it's a no-op (returns the board unchanged) - `embed` coordinates must stay exact integers and C++ never renders them anyway, so scaling would only lose precision for no benefit.
-        - `effective_arch()`/`compute_input_descr()` gate `cnn`/`unet` purely on the resulting `bc.emb_dim == 2` (see **AI Training Pipeline**, above) - not on whether `boardDescr` happens to call `modify(...)` at all. The modifiers that always force `emb_dim = 0` are the lattice-substituting `form` family (`triangleForm`/`quadForm`/`quadDiagForm`/`quadKnightForm`/`quadBishopForm`/`form`), the `localReplace` family (`simpCentralize`/`triCentralize`/`quadCentralize`, their `*Centering` variants, and `quadOctarize`), and `globalCentralize` - each adds nodes whose true position needs real-number averaging. The rest (`rectify`, `truncate`, `edgeSplit`, `mergeClose`, `scale`, `nis`/`eis`) leave the board's own `emb_dim` untouched, so a 2D board can stay CNN/UNet-eligible after one of those. (`rectify`/`truncate`/`mergeClose` do *require* a non-zero `emb_dim` and throw on an `emb_dim = 0` board, since they need real edge directions/distances.)
-      - `boardSeed`: integer in `[0, 2^32)` that seeds `boardDescr`'s random builtins, so the board built here is the game's own; required. Not part of `weak_equal()`: training builds its one board from a fresh random seed each run, so checkpoints are matched by `boardDescr` alone
-      - `numStones`, `numPlayers`, `forcedPassOnly`
-      - `turnList`: array of `{player, stones, protected, friendly}` (see `shared/types.ts`'s `TurnInfo`) — `stones`/`protected`/`friendly` are `numStones`-length 0/1 arrays
-      - `stoneToPlayerMap`: `{stone: player[]}` — stone color → the set of players it scores for (a stone mapped to several players credits each one its full point value, not split)
-      - `playerStonePlaceLimit` _(optional, default all-unlimited)_: `(int|null)[][]`, `[stone-1][player-1]`
-      - `globalStonePlaceLimit` _(optional, default all-unlimited)_: `(int|null)[]`, `[stone-1]`
-      - `maxPlies` _(optional, default `null`)_: `int|null`
-      - `allowSuicide` _(optional, default `false`)_: whether a move leaving the mover's own group with zero liberties is legal (self-captures that group immediately); part of `weak_equal()`'s checkpoint-matching fields like the other config fields
-      - `scoreRule` _(optional, default `"area"`)_: `"stone"` | `"territoryonly"` | `"area"` | `"territory"` — see `BoardState::compute_points()`; part of `weak_equal()`'s checkpoint-matching fields like the other config fields. `"territory"` (real-world Japanese-style scoring) scores territory only in `compute_points()` (same as `"territoryonly"`) plus each player's `captureCount` (stones captured so far), the latter folded in separately at the player-aggregation layer (`compute_winners()`, and both reward formulas below) the same way `komi` is - see **Reward**, below
-      - `komi` _(optional, default all-zero)_: `float[]`, per-player (`komi[player-1]`, required non-negative) scoring handicap; part of `weak_equal()`'s checkpoint-matching fields — see **Reward**, below
-      - `koRule` _(optional, default `"situational"`)_: `"positional"` | `"situational"` superko variant; part of `weak_equal()`'s checkpoint-matching fields
+    - `config`: a `GameConfig`, in `shared/gameConfig.ts`'s `toJSON()` wire shape (see that class for the fields). `boardSeed` is required, `players` is ignored, and which fields select the checkpoint is described in **Checkpoint Directories and Matching**, below.
     - `moves`: full move history as an array. Each entry is either a legacy `int|null` (board index, or `null` for pass — the stone is auto-picked if the turn offers exactly one) or an object `{"pos": int|null, "stone": int|null}` (required once a turn offers more than one stone) — see `shared/types.ts`'s `ReplayMove`.
     - `resigns` _(optional, default none)_: `[[ply, [player, ...]], ...]` — who resigned at each ply, the same shape as `shared/types.ts`'s `FinishedGame.toJSON()`'s `resigns` field. Replayed interleaved with `moves` (see `replay_tail()`, `server.cpp`), since a resigned player may always pass even under `forcedPassOnly`, but the resignation must be applied at the ply it actually happened.
     - `board`: current stone array (length N) — used to verify the replayed state matches the client
@@ -272,7 +261,6 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
 | `--num-attn-layers N` | `8` | Transformer cross-attention layer count (separate flag from `--num-layers` - not shared with GNN) |
 | `--save-every N` | `10` | Dump self-play trajectories every N iterations - does *not* save model checkpoints (see **Tournament-Based Model Selection**, below) |
 | `--num-selfplay-models N` | `1` | Target size of the active self-play model set - see **Tournament-Based Model Selection**, below |
-| `--initialization-iters N` | `0` | First N iterations (raw iter count) force a singleton `active_models` of `model_var`'s latest snapshot - see **Tournament-Based Model Selection**, below |
 | `--num-tournament-models N` | `6` | Participants per tournament: the active models plus randomly sampled challengers, filling up to this many total - must be `> --num-selfplay-models` |
 | `--undefeated-threshold N` | `3` | Consecutive all-prevail tournaments before retiring an active model into the undefeated list - see **Tournament-Based Model Selection**, below |
 | `--tournament-every N` | `16` | Training iterations between tournaments |
@@ -346,17 +334,16 @@ ones **exactly** - every field, not just a subset - before loading its latest we
 replay-buffer history (`resume()`). This is deliberately strict: resuming into a directory whose
 config doesn't match byte-for-byte would silently train an architecture-or-rules mismatch.
 
-**Server-side matching**: since a `/move` request's config can no longer be turned into a
-directory name directly, `server.cpp`'s `find_checkpoint_dir()` scans every subdirectory of
-`ai/checkpoints` once (cached in `ServerState::checkpoint_index` - directories created after that
-first scan need a server restart to be picked up), reads each one's saved `GameConfig`, and picks
-the first whose saved config `weak_equal()`-matches the request. `weak_equal()` compares only the
-fields that actually affect which trained model is appropriate for a given ruleset - board
-type/args, `numStones`, `numPlayers`, `turnList`, `stoneToPlayerMap`, `forcedPassOnly`,
-`allowSuicide`, `scoreRule`, `komi`, `koRule` (the same field set the old, now-removed,
-human-readable `model_tag()` used to encode into its directory name) - so `playerStonePlaceLimit`/
-`globalStonePlaceLimit`/`maxPlies` are intentionally allowed to differ between the request and the
-matched checkpoint, same as before this scheme existed.
+**Server-side matching**: a directory name can't be derived from a `/move` request's config, so
+`server.cpp`'s `find_checkpoint_dir()` scans every subdirectory of `ai/checkpoints` once (cached in
+`ServerState::checkpoint_index` - directories created after that first scan need a server restart
+to be picked up), reads each one's saved `GameConfig`, and picks the first whose saved config
+`weak_equal()`-matches the request. `weak_equal()` compares only the fields that affect which
+trained model is appropriate for a given ruleset - `boardDescr`, `numStones`, `numPlayers`,
+`turnList`, `stoneToPlayerMap`, `forcedPassOnly`, `allowSuicide`, `scoreRule`, `komi`, `koRule` -
+so `boardSeed`, `playerStonePlaceLimit`, `globalStonePlaceLimit` and `maxPlies` may differ between
+the request and the matched checkpoint. (`boardSeed` is left out because training builds its board
+from a fresh random seed each run.)
 
 ## How It Works
 
@@ -393,15 +380,6 @@ snapshots only join the challenger pool; `active_models` itself only changes who
 tournament promotion. A snapshot is always routed to exactly one of the two, never both, so the
 challenger pool and `active_models` are disjoint by construction - every challenger-pool entry is
 always a valid tournament wildcard, with no eligibility filtering needed (see below).
-
-**`--initialization-iters N`** overrides the above for the first N iterations, by raw iteration
-count: instead of growing, `active_models` is forced to a fresh singleton of `model_var`'s current
-snapshot every iteration, so during that warm-up self-play always uses `model_var`'s newest weights
-rather than waiting up to `--tournament-every` iterations for a tournament to promote them. Since
-it's a raw `iter` comparison, a `--resume`d run (or one continuing
-past `--retrain`'s replay phase) whose `iter` is already `>= N` never enters this window at all - no
-special-casing needed. Tournaments never fire during the window either, since the challenger pool
-never receives anything to draw wildcards from. Off (`0`) by default.
 
 **Tournaments** are attempted every `--tournament-every` iterations (immediately after that
 iteration's training step): the current `active_models` plus a random sample of *distinct*
