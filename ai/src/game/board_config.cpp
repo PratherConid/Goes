@@ -11,16 +11,20 @@
 #include <map>
 #include <set>
 
-static BoardConfig make_bc(std::vector<std::vector<int>> adj,
-                            unsigned emb_dim,
-                            std::vector<std::vector<unsigned>> emb) {
+BoardConfig make_bc(std::vector<std::vector<int>> adj,
+                     unsigned emb_dim,
+                     std::vector<std::vector<unsigned>> emb) {
     int N = static_cast<int>(emb.size());
     assert(static_cast<int>(adj.size()) == N &&
            (N == 0 || static_cast<int>(adj[0].size()) == N) && "adj must be N×N");
     for (int i = 0; i < N; i++)
         for (int j = 0; j < N; j++)
             assert(adj[i][j] == adj[j][i] && "adj must be symmetric");
-    return {N, std::move(adj), emb_dim, std::move(emb)};
+    std::vector<std::vector<int>> adlist(N);
+    for (int i = 0; i < N; i++)
+        for (int j = 0; j < N; j++)
+            if (adj[i][j]) adlist[i].push_back(j);
+    return {N, std::move(adj), std::move(adlist), emb_dim, std::move(emb)};
 }
 
 BoardConfig quotient_board(const BoardConfig& bc,

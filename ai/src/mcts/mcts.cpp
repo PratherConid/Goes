@@ -492,7 +492,7 @@ MCTS::search_batch(
     // Explicitly tear down the search trees here so the recursive MCTSNode
     // destruction is timed rather than hiding in the function's return unwind.
     // Each root tree is independent (its own HistoryManager hms[i]); the only
-    // shared object is the read-only adj shared_ptr, whose refcount is atomic.
+    // shared objects are the read-only adj/adlist shared_ptrs, whose refcounts are atomic.
     // So destroying disjoint trees in parallel is race-free.
     root_ptrs.clear();
     auto t_tear0 = std::chrono::high_resolution_clock::now();

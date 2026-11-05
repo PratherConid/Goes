@@ -115,7 +115,7 @@ using GroupDict = std::unordered_map<int, GroupLib>;
 
 // Mirrors shared/boardState.ts's groupLiberty().
 GroupDict group_liberty(const std::vector<int>& board,
-                        const std::vector<std::vector<int>>& adj,
+                        const std::vector<std::vector<int>>& adlist,
                         int N,
                         const std::vector<int>& friendly_stones);
 
@@ -293,6 +293,7 @@ public:
     TurnInfo next_turn;
     std::vector<int> board;
     std::shared_ptr<const std::vector<std::vector<int>>> adj; // shared, read-only
+    std::shared_ptr<const std::vector<std::vector<int>>> adlist; // shared, read-only
     int N;
     std::optional<std::vector<int>> winners;
 

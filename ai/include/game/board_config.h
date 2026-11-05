@@ -9,9 +9,13 @@
 struct BoardConfig {
     int N;
     std::vector<std::vector<int>> adj;       // N×N symmetric adjacency matrix (0/1)
+    std::vector<std::vector<int>> adlist;    // adjacency list: adlist[i] = i's neighbors in ascending order, built from adj by make_bc()
     unsigned emb_dim;                        // embedding dimension of embed coordinates
     std::vector<std::vector<unsigned>> embed; // N×emb_dim node positions
 };
+
+// Mirrors shared/boardConfig.ts's make(), taking an exact-integer embedding.
+BoardConfig make_bc(std::vector<std::vector<int>> adj, unsigned emb_dim, std::vector<std::vector<unsigned>> emb);
 
 // Mirrors shared/boardConfig.ts's quotientBoard().
 BoardConfig quotient_board(const BoardConfig& bc,

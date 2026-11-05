@@ -45,7 +45,7 @@ interface GroupEntry { group: number[]; liberties: Set<number>; nonLiberties: Se
 //   nonLiberties - set of occupied, non-friendly node indices (belonging to another
 //                  group) adjacent to the group - used to detect when capturing a
 //                  neighboring group frees a liberty for this one (see calculateLegalMoves).
-function groupLiberty(board: number[], adj: number[][], N: number, friendlyStones: number[])
+function groupLiberty(board: number[], adlist: number[][], N: number, friendlyStones: number[])
     : Map<number, GroupEntry[]>
 {
     const isFriendly = (stone: number) => friendlyStones[stone - 1] === 1;
@@ -67,9 +67,8 @@ function groupLiberty(board: number[], adj: number[][], N: number, friendlyStone
         while (st.length > 0) {
             const nxt: number[] = [];
             for (const node of st) {
-                const row = adj[node];
-                for (let j = 0; j < N; j++) {
-                    if (row[j] && affColor[j] === 0 && board[j] === color) {
+                for (const j of adlist[node]) {
+                    if (affColor[j] === 0 && board[j] === color) {
                         affColor[j] = color; affGid[j] = gid;
                         allel.push(j); nxt.push(j);
                     }
@@ -92,8 +91,7 @@ function groupLiberty(board: number[], adj: number[][], N: number, friendlyStone
 
     for (let i = 0; i < N; i++) {
         if (affColor[i] === 0) continue;
-        for (let j = 0; j < N; j++) {
-            if (!adj[i][j]) continue;
+        for (const j of adlist[i]) {
             if (affColor[j] === 0) {
                 liberties.get(affColor[i])![affGid[i]].add(j);
             } else if (affColor[j] !== affColor[i]) {
@@ -116,13 +114,13 @@ function groupLiberty(board: number[], adj: number[][], N: number, friendlyStone
 
 // ── legal move calculation ───────────────────────────────────────────────────
 
-// Calculate legal PLACE moves given the board, adjacency matrix, turn list, and sorted history.
+// Calculate legal PLACE moves given the board, adjacency list, turn list, and sorted history.
 // A turn may offer more than one stone color (TurnInfo.stones); legality and
 // captures are computed separately for every offered color, since which color
 // is placed can change both (protected/friendly are per-stone-color). See
 // LegalMovesData in types.ts for the returned shape.
 function calculateLegalMoves(
-    board: number[], adj: number[][], turnList: TurnInfo[],
+    board: number[], adlist: number[][], turnList: TurnInfo[],
     sortedSituations: AVLTree<Situation>, allowSuicide: boolean, koRule: KoRule,
     playerStonePlaceLimit: (number | null)[][], playerStonePlaceCnt: number[][],
     globalStonePlaceLimit: (number | null)[],
@@ -158,7 +156,7 @@ function calculateLegalMoves(
     const isProtected = (stone: number) => protectedStones[stone - 1] === 1;
     const friendlyStones = turnInfo.friendly;
     const isFriendly = (stone: number) => friendlyStones[stone - 1] === 1;
-    const groupDict = groupLiberty(board, adj, N, friendlyStones);
+    const groupDict = groupLiberty(board, adlist, N, friendlyStones);
 
     // Nodes captured by a pass - see LegalMovesData.passCapture's own doc comment (types.ts) for
     // why the opponent/self split below doesn't change this union.
@@ -203,8 +201,8 @@ function calculateLegalMoves(
 
             // whether the newly placed stone is adjacent to an empty node
             let iLib = false;
-            for (let j = 0; j < N; j++) {
-                if (adj[i][j] && board[j] === 0) { iLib = true; break; }
+            for (const j of adlist[i]) {
+                if (board[j] === 0) { iLib = true; break; }
             }
 
             const nb = board.slice();
@@ -331,6 +329,7 @@ export class BoardState {
     board: number[];
     emb: Embedding; // natural-dim node positions - see Embedding
     adj: number[][];
+    adlist: number[][];
     N: number;
 
     situations: Situation[];
@@ -432,6 +431,7 @@ export class BoardState {
         this.board         = board;
         this.emb           = bc.emb;
         this.adj           = bc.adj;
+        this.adlist        = bc.adlist;
         this.N             = bc.N;
 
         this.situations       = [];
@@ -553,7 +553,7 @@ export class BoardState {
                 0,
               )
             : calculateLegalMoves(
-                this.board, this.adj, this.turnList, this.sortedSituations, this.allowSuicide, this.koRule,
+                this.board, this.adlist, this.turnList, this.sortedSituations, this.allowSuicide, this.koRule,
                 this.playerStonePlaceLimit, playerStonePlaceCnt, this.globalStonePlaceLimit);
     }
 
@@ -585,8 +585,7 @@ export class BoardState {
             while (st.length > 0) {
                 const nxt: number[] = [];
                 for (const node of st) {
-                    for (let j = 0; j < this.N; j++) {
-                        if (!this.adj[node][j]) continue;
+                    for (const j of this.adlist[node]) {
                         if (this.board[j] !== 0) { borderStones.add(this.board[j]); continue; }
                         if (!visited[j]) { visited[j] = true; region.push(j); nxt.push(j); }
                     }
@@ -879,7 +878,7 @@ export class BoardState {
             [...this.globalStonePlaceLimit],
             Object.fromEntries(Object.entries(this.stoneToPlayerMap).map(([k, v]) => [k, new Set(v)])),
             this.forcedPassOnly, this.scoreRule, this.komi, this.koRule, this.allowSuicide, this.maxPlies, this.board.slice(),
-            { emb: this.emb, adj: this.adj, N: this.N },
+            { emb: this.emb, adj: this.adj, adlist: this.adlist, N: this.N },
         );
         // replace history/situations with deep copies
         c.situations       = this.situations.map(e => ({ ...e, board: e.board.slice() }));

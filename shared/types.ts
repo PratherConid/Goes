@@ -99,6 +99,7 @@ export class Embedding {
 export interface BoardConfig {
     emb: Embedding;    // natural-dimension node positions
     adj: number[][];  // N×N symmetric adjacency matrix, entries 0/1
+    adlist: number[][];  // adjacency list: adlist[i] = i's neighbors in ascending order, built from adj by make()
     N: number;
 }
 

@@ -92,7 +92,7 @@ static torch::Tensor board_to_features_at_ply(const BoardState& state, int ply, 
 
     std::vector<int> node_liberty(N, 0), node_group_size(N, 0);
     if (needs_liberty) {
-        auto gdict = group_liberty(board, *state.adj, N, turn_at_ply.friendly);
+        auto gdict = group_liberty(board, *state.adlist, N, turn_at_ply.friendly);
         for (auto& [color, entries] : gdict) {
             for (auto& e : entries) {
                 int lib_count  = static_cast<int>(e.liberties.size());

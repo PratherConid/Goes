@@ -127,7 +127,7 @@ const HistoryEntry& HistoryManager::history_entry_of(uint64_t id) const {
 // ── Group / liberty computation ───────────────────────────────────────────────
 
 GroupDict group_liberty(const std::vector<int>& board,
-                        const std::vector<std::vector<int>>& adj,
+                        const std::vector<std::vector<int>>& adlist,
                         int N,
                         const std::vector<int>& friendly_stones) {
     auto is_friendly = [&](int stone) { return friendly_stones[stone - 1] == 1; };
@@ -149,9 +149,8 @@ GroupDict group_liberty(const std::vector<int>& board,
         while (!stack.empty()) {
             std::vector<int> nxt;
             for (int node : stack) {
-                const auto& row = adj[node];
-                for (int j = 0; j < N; j++) {
-                    if (row[j] && aff_color[j] == 0 && board[j] == color) {
+                for (int j : adlist[node]) {
+                    if (aff_color[j] == 0 && board[j] == color) {
                         aff_color[j] = color;
                         aff_gid[j]   = gid;
                         allel.push_back(j);
@@ -173,9 +172,7 @@ GroupDict group_liberty(const std::vector<int>& board,
     }
     for (int i = 0; i < N; i++) {
         if (aff_color[i] == 0) continue;
-        const auto& row = adj[i];
-        for (int j = 0; j < N; j++) {
-            if (!row[j]) continue;
+        for (int j : adlist[i]) {
             if (aff_color[j] == 0) {
                 lib_sets[aff_color[i]][aff_gid[i]].insert(j);
             } else if (aff_color[j] != aff_color[i]) {
@@ -213,7 +210,7 @@ static int ko_ply_mod(KoRule ko_rule, int ply, int ltl) {
 // `history_id_set` in place of sortedSituations.
 static LegalMovesData calculate_legal_moves(
     const std::vector<int>& board_in,
-    const std::vector<std::vector<int>>& adj,
+    const std::vector<std::vector<int>>& adlist,
     const std::vector<TurnInfo>& turn_list,
     const std::unordered_map<uint64_t, int>& history_id_set,
     int len_history,
@@ -256,7 +253,7 @@ static LegalMovesData calculate_legal_moves(
     const auto& friendly_stones = turn_info.friendly;
     auto is_friendly = [&](int stone) { return friendly_stones[stone - 1] == 1; };
 
-    GroupDict group_dict = group_liberty(board, adj, N, friendly_stones);
+    GroupDict group_dict = group_liberty(board, adlist, N, friendly_stones);
 
     std::vector<int> pass_capture;
     for (auto& [color, groups] : group_dict) {
@@ -295,8 +292,8 @@ static LegalMovesData calculate_legal_moves(
             if (board[i] != 0) continue;
 
             bool i_lib = false;
-            for (int j = 0; j < N && !i_lib; j++)
-                if (adj[i][j] && board[j] == 0) i_lib = true;
+            for (int j : adlist[i])
+                if (board[j] == 0) { i_lib = true; break; }
 
             std::vector<int> nb = board;
             nb[i] = next_player;
@@ -400,7 +397,7 @@ LegalMovesData BoardState::compute_legal_moves(
         };
     }
     return calculate_legal_moves(
-        board, *adj, turn_list, history_id_set_,
+        board, *adlist, turn_list, history_id_set_,
         static_cast<int>(history_ids_.size()), hm_, ko_rule, allow_suicide, num_stones,
         player_stone_place_limit, global_stone_place_limit, player_stone_place_cnt);
 }
@@ -413,7 +410,7 @@ ScoreData BoardState::count_score() const {
     }
     sd.territory_owner.assign(N, 0);
 
-    const auto& adj_ = *adj;
+    const auto& adlist_ = *adlist;
     std::vector<bool> visited(N, false);
     for (int i = 0; i < N; i++) {
         if (board[i] != 0 || visited[i]) continue;
@@ -424,9 +421,7 @@ ScoreData BoardState::count_score() const {
         while (!stack.empty()) {
             std::vector<int> nxt;
             for (int node : stack) {
-                const auto& row = adj_[node];
-                for (int j = 0; j < N; j++) {
-                    if (!row[j]) continue;
+                for (int j : adlist_[node]) {
                     if (board[j] != 0) { border_stones.insert(board[j]); continue; }
                     if (!visited[j]) { visited[j] = true; region.push_back(j); nxt.push_back(j); }
                 }
@@ -522,6 +517,7 @@ BoardState::BoardState(int num_stones_,
       max_plies(max_plies_),
       board(std::move(initial_board)),
       adj(std::make_shared<std::vector<std::vector<int>>>(bc.adj)),
+      adlist(std::make_shared<std::vector<std::vector<int>>>(bc.adlist)),
       N(bc.N)
 {
     assert(num_stones > 0 && "num_stones must be > 0");
@@ -677,6 +673,7 @@ BoardState BoardState::make_copy_skeleton(const BoardState& src) {
     c.max_plies           = src.max_plies;
     c.board               = src.board;
     c.adj                 = src.adj;
+    c.adlist              = src.adlist;
     c.N                   = src.N;
     c.winners             = src.winners;
     c.resigns_             = src.resigns_;

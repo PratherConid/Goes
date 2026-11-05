@@ -3,6 +3,7 @@
 // `adj` and to the hand-built matrices some tests construct directly.
 import assert from 'node:assert/strict';
 import { Embedding, type BoardConfig } from '../shared/types.ts';
+import { make } from '../shared/boardConfig.ts';
 
 export function edgeCount(adj: number[][]): number {
     return adj.flat().reduce((s, v) => s + v, 0) / 2;
@@ -46,5 +47,5 @@ export function assertConnected(adj: number[][]) {
 export function boardFromEdges(N: number, edges: [number, number][], pos?: number[][]): BoardConfig {
     const adj: number[][] = Array.from({ length: N }, () => new Array(N).fill(0));
     for (const [i, j] of edges) { adj[i][j] = 1; adj[j][i] = 1; }
-    return { N, adj, emb: new Embedding(2, pos ?? adj.map((_, i) => [i, 0])) };
+    return make(new Embedding(2, pos ?? adj.map((_, i) => [i, 0])), adj);
 }

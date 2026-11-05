@@ -24,7 +24,8 @@ export function make(posOrEmb: number[][] | Embedding, adj: number[][]): BoardCo
     for (let i = 0; i < N; i++)
         for (let j = 0; j < N; j++)
             assert(adj[i][j] === adj[j][i], `adj must be symmetric: [${i}][${j}]`);
-    return { emb, adj, N };
+    const adlist = adj.map(row => row.flatMap((a, j) => (a ? [j] : [])));
+    return { emb, adj, adlist, N };
 }
 
 /** Glue pairs of nodes in `quot` together. The position of the new node is the average of its predecessors. */

@@ -387,8 +387,7 @@ static BuiltResult build_from_nodes_and_edges(
         adj[a][b] = 1;
         adj[b][a] = 1;
     }
-    BoardConfig bc{static_cast<int>(K), std::move(adj), emb_dim, std::move(pos)};
-    return {std::move(bc), std::move(orig_index)};
+    return {make_bc(std::move(adj), emb_dim, std::move(pos)), std::move(orig_index)};
 }
 
 // Mirrors shared/clegEval.ts's combineRestrictedFactor().
@@ -567,7 +566,7 @@ static ClegValue build_sub_hcublat(
             adj[nbi][bi] = 1;
         }
     }
-    return make_egr(BoardConfig{N, std::move(adj), static_cast<unsigned>(k), std::move(pos)});
+    return make_egr(make_bc(std::move(adj), static_cast<unsigned>(k), std::move(pos)));
 }
 
 // Mirrors shared/clegEval.ts's `point.join(',')` key in buildSubHcublatCustomAdj().
@@ -624,7 +623,7 @@ static ClegValue build_sub_hcublat_custom_adj(
             adj[it->second][bi] = 1;
         }
     }
-    return make_egr(BoardConfig{N, std::move(adj), static_cast<unsigned>(k), std::move(pos)});
+    return make_egr(make_bc(std::move(adj), static_cast<unsigned>(k), std::move(pos)));
 }
 
 // Mirrors shared/clegEval.ts's compareClegSetElems(), as a std::sort-style "less" predicate. Strings
