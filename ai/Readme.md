@@ -1,6 +1,6 @@
 ## AI Training Pipeline
 
-Self-play training pipeline for Goes using Monte Carlo Tree Search (MCTS), in the style of AlphaZero.
+Self-play training pipeline for Goes using Monte Carlo Tree Search (MCTS) - KataGo's training and search algorithm, ported to Goes' more general rules engine (see **How It Works**).
 
 Four model architectures are available:
 - **CNN**: a plain residual conv stack (no pooling) for boards with a 2D integer embedding — `rect`, `rectd`, `tri`, `trihex`, `hex`, `hexdel`, `snubsq`, `twsq`, `gtsq`. The default for these boards.
@@ -15,7 +15,7 @@ Four model architectures are available:
 - **Modifiers that force `emb_dim = 0`:** the `form` family (`triangleForm`/`quadForm`/`quadDiagForm`/`quadKnightForm`/`quadBishopForm`/`form`), the `localReplace` family (`simpCentralize`/`triCentralize`/`quadCentralize`, their `*Centering` variants, and `quadOctarize`) and `globalCentralize`. The rest (`rectify`, `truncate`, `edgeSplit`, `mergeClose`, `scale`, `nis`/`eis`) keep the board's `emb_dim`, so a 2D board stays CNN/UNet-eligible after them. `rectify`/`truncate`/`mergeClose` throw on an `emb_dim = 0` board, since they need real edge directions and distances.
 - **`scale`** is a no-op (returns the board unchanged): `embed` must stay exact integers, and C++ never renders positions.
 
-`BoardState` otherwise has full feature parity with `shared/boardState.ts`: multi-stone-per-turn offering (`TurnInfo.stones`), protected/friendly stones, per-player and global stone placement limits, `maxPlies`, resignation (permanent — never undone by `withdraw_move()`, and `game_over()` re-checks the resigned set live rather than stamping it onto a move), `komi` (per-player scoring handicap, applied in `compute_winners()` and folded into both MCTS reward formulas — see **Reward**, below), and `koRule` (both `positional` and `situational` superko are implemented — `HistoryManager`'s `(ply_mod, board)` key collapses `ply_mod` to a constant under `positional`, since two boards are then "the same" purely by content, mirroring `compareState()` skipping the ply-mod comparison in `shared/boardState.ts`). `stoneToPlayerMap` is stone → *set* of players (each mapped player gets a stone's full point value, not split), matching the TypeScript side.
+`BoardState` otherwise has full feature parity with `shared/boardState.ts`: multi-stone-per-turn offering (`TurnInfo.stones`), protected/friendly stones, per-player and global stone placement limits, `maxPlies`, resignation (permanent — never undone by `withdraw_move()`, and `game_over()` re-checks the resigned set live rather than stamping it onto a move), `komi` (per-player scoring handicap, applied in `compute_winners()` and folded into the per-player totals the search utility compares — see **Search Utility**, below), and `koRule` (both `positional` and `situational` superko are implemented — `HistoryManager`'s `(ply_mod, board)` key collapses `ply_mod` to a constant under `positional`, since two boards are then "the same" purely by content, mirroring `compareState()` skipping the ply-mod comparison in `shared/boardState.ts`). `stoneToPlayerMap` is stone → *set* of players (each mapped player gets a stone's full point value, not split), matching the TypeScript side.
 
 Not ported (no C++ consumer needs them): `GameConfig.players`/`FinishedGame`-style replay reconstruction — self-play never replays a finished game, and the inference server replays a live move list instead.
 
@@ -50,10 +50,11 @@ ai/
 │   │   ├── evaluator.h                 Type-erased Evaluator used by MCTS and self-play
 │   │   └── any_model.h                 AnyModel variant + make_evaluator() factory
 │   ├── mcts/
-│   │   └── mcts.{h,cpp}                AlphaZero-style MCTS
+│   │   ├── mcts.{h,cpp}                Batched MCTS with KataGo's search features (see Search)
+│   │   └── utility.{h,cpp}             The search utility: KataGo's win/loss + score utility for N players
 │   ├── training/
-│   │   ├── self_play.{h,cpp}           Generate training records from self-play games
-│   │   └── replay_buffer.{h,cpp}       Circular buffer of game records
+│   │   ├── self_play.{h,cpp}           Game config parsing; the self-play runner and game records (see Self-Play)
+│   │   └── replay_buffer.{h,cpp}       The training window over recorded rows (see Training Loop)
 │   └── util/
 │       └── sha256.{h,cpp}              Checkpoint-directory hashing (see Checkpoint Directories and Matching)
 ├── src/
@@ -118,39 +119,48 @@ Run from the project root:
 
 ```bash
 export OMP_NUM_THREADS=8
-ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 1 --linear-move-bound 1.5 2.5
+ai/build/goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5
 ```
 
-For higher-end training devices,
+The defaults are KataGo's `synchronous_loop.sh` sizes (500 games per iteration, 600-visit full
+searches and 100-visit cheap ones, training once 100k rows exist). For larger runs:
 
 ```bash
 export OMP_NUM_THREADS=8
 
-ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192 --cnn-hidden-dim 128
+ai/build/goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 1000 --cnn-hidden-dim 128
 
-ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192 --net-arch gnn --gnn-hidden-dim 256
+ai/build/goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 1000 --net-arch gnn --gnn-hidden-dim 256
 
-ai/build/goes_train --game-config public/game_presets/7x7x2_twsq_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192 --cnn-hidden-dim 128
+ai/build/goes_train --game-config public/game_presets/7x7x2_twsq_go.json --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 1000 --cnn-hidden-dim 128
 
-ai/build/goes_train --game-config public/game_presets/3x3_go_fpo.json --verbosity 1 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 8192 --net-arch transformer --transformer-hidden-dim 128
+ai/build/goes_train --game-config public/game_presets/3x3_go_fpo.json --gamegen-batch-size 256 --iterations 1000 --net-arch transformer --transformer-hidden-dim 128
 
-ai/build/goes_train --game-config public/game_presets/13x13_two_ply_go.json --verbosity 1 --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 65536 --save-every 8 --self-play-games 64 --num-simulations 512 --buffer-size 16384 --cnn-hidden-dim 128
+ai/build/goes_train --game-config public/game_presets/13x13_two_ply_go.json --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 1000 --cnn-hidden-dim 128
 ```
 
 **Windows:**
 
 ```powershell
 $env:OMP_NUM_THREADS = "8"
-ai\build\Release\goes_train --game-config public/game_presets/9x9_go.json --verbosity 1 --linear-move-bound 1.5 2.5
+ai\build\Release\goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5
 ```
 
-Checkpoints are saved as `ai/checkpoints/<hash>/<arch>_XXXXXX.pt`, where `<hash>` is a fresh
-64-character SHA-256 of the model config, game config, and a timestamp - a new, unique directory
-every run, never reused implicitly. To continue a specific run later, pass `--resume <hash>` (the
-hash a run created is printed to stdout, and is also just the directory name under
-`ai/checkpoints/`) - this validates that the current `--game-config`/architecture flags match the
-resumed directory's saved config exactly before loading its latest weights and replay-buffer
-history. See **Checkpoint Directories and Matching**, below, for the full scheme.
+A run's files go to `ai/checkpoints/<hash>/`, where `<hash>` is a fresh 64-character SHA-256 of the
+model config, game config, and a timestamp - a new, unique directory every run, never reused
+implicitly:
+
+- `<arch>_config.json` - the game and model config (what the server matches requests against)
+- `<arch>_XXXXXX.pt` - the model exported at the end of iteration `XXXXXX` (what self-play and the
+  server use; the newest one wins)
+- `<arch>_XXXXXX_traj.json` - that iteration's self-play games (see **Self-Play**)
+- `trainer/` - what `--resume` needs: the trained model, its weight average, the optimizer and the
+  loop's counters (`state.json`)
+
+To continue a run later, pass `--resume <hash>` (printed at startup; it is also the directory name) -
+this validates that the current `--game-config`/architecture flags match the saved config exactly,
+restores the trainer, and refills the training window from the newest recorded games. See
+**Checkpoint Directories and Matching**, below.
 
 ## Profiling Training (Linux)
 
@@ -168,7 +178,7 @@ cmake --build ai/build --config RelWithDebInfo
 ```bash
 # May need a while to collect data after the program finishes
 perf record -g --call-graph dwarf \
-    ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 2 --linear-move-bound 0.5 1.5 --iterations 3 --self-play-games 10 --gamegen-batch-size 5 --num-simulations 10
+    ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 2 --linear-move-bound 0.5 1.5 --iterations 3 --games-per-iteration 10 --gamegen-batch-size 5 --full-visits 10 --cheap-visits 4 --min-rows 50
 
 perf report --stdio | head -200   # flat report to stdout
 perf report                        # interactive TUI with drill-down
@@ -184,7 +194,7 @@ echo 0 | sudo tee /proc/sys/kernel/perf_event_paranoid
 
 ```bash
 valgrind --tool=callgrind --callgrind-out-file=callgrind.out \
-    ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 2 --linear-move-bound 0.5 1.5 --iterations 3 --self-play-games 4 --gamegen-batch-size 2 --num-simulations 5
+    ai/build/goes_train --game-config public/game_presets/9x9_go.json --verbosity 2 --linear-move-bound 0.5 1.5 --iterations 3 --games-per-iteration 4 --gamegen-batch-size 2 --full-visits 5 --cheap-visits 2 --min-rows 50
 
 callgrind_annotate --auto=yes callgrind.out | less
 ```
@@ -213,7 +223,7 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
 
 **Endpoints:**
 
-- `POST /move` — runs MCTS from the given position and returns the chosen move.
+- `POST /move` — runs a search from the given position (with KataGo's play-mode search settings - see **Search**) and returns the chosen move.
   - **Request fields:**
     - `config`: a `GameConfig`, in `shared/gameConfig.ts`'s `toJSON()` wire shape (see that class for the fields). `boardSeed` is required, `players` is ignored, and which fields select the checkpoint is described in **Checkpoint Directories and Matching**, below.
     - `moves`: full move history as an array. Each entry is either a legacy `int|null` (board index, or `null` for pass — the stone is auto-picked if the turn offers exactly one) or an object `{"pos": int|null, "stone": int|null}` (required once a turn offers more than one stone) — see `shared/types.ts`'s `ReplayMove`.
@@ -221,35 +231,44 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
     - `board`: current stone array (length N) — used to verify the replayed state matches the client
     - `session_id`: opaque string returned by a previous response; omit, `""`, or `null` for a new session
     - `num_simulations` _(optional)_: overrides the server default; must be `>= 1` (the request is rejected otherwise)
-    - `temperature` _(optional)_: overrides the server default; `0` = argmax visit count, `>0` = sample from the visit distribution
+    - `temperature` _(optional)_: overrides the server default; `0` = the search's best move (its LCB-adjusted play-selection values' argmax), `>0` = sample from those values at that temperature
   - **Response:** `{move, stone, policy, value, session_id}`
     - `move`: board index (0-based) or `null` for pass
     - `stone`: chosen stone color (1-indexed) or `null` for pass
-    - `policy`: MCTS visit distribution over all `numStones*N+1` actions (stone-major flattened — see **Policy Head and Action Space**, below)
-    - `value`: estimated value for the current player
+    - `policy`: the search's policy over all `numStones*N+1` actions (its pruned play-selection values, normalized; stone-major flattened — see **Policy Head and Action Space**, below)
+    - `value`: the search's average utility for the player to move (see **Search Utility**)
     - `session_id`: include in the next request for this game to reuse the cached board state
   - The server caches a live `BoardState` per `session_id`. On each request it finds the longest common prefix of the stored and incoming move lists (comparing both `pos` and `stone`) and withdraws/advances the cached state when cheaper than a full replay, then verifies the result against the `board` field.
   - Checkpoint directories are opaque hash names, not derivable from `config` - the server scans `ai/checkpoints`'s subdirectories once (first request only; later-created directories need a server restart to be picked up) and matches `config` against each directory's saved config via `weak_equal()` (see **Checkpoint Directories and Matching**, below). The matched directory's model is then loaded lazily on first use and cached.
 - `GET /health` — returns `{status, loaded_tags, device}`.
 
-`goes_server` accepts `--checkpoint-dir PATH` (default `ai/checkpoints`), `--port N` (default `8765`), `--sims N` (default number of MCTS simulations, default `200`, must be `>= 1`), `--temperature F` (default `0.0` = argmax visit count) and `--cpu` (force CPU even if CUDA is available). The `GOES_CHECKPOINT_DIR`, `GOES_NUM_SIMS` and `GOES_TEMPERATURE` environment variables override the checkpoint directory, default simulation count and default temperature respectively (they are applied after the flags, so they win).
+`goes_server` accepts `--checkpoint-dir PATH` (default `ai/checkpoints`), `--port N` (default `8765`), `--sims N` (default number of MCTS simulations, default `200`, must be `>= 1`), `--temperature F` (default `0.0` = the search's best move) and `--cpu` (force CPU even if CUDA is available). The `GOES_CHECKPOINT_DIR`, `GOES_NUM_SIMS` and `GOES_TEMPERATURE` environment variables override the checkpoint directory, default simulation count and default temperature respectively (they are applied after the flags, so they win).
 
 ## Key Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--game-config PATH` | _(required)_ | Path to a GameConfig JSON file (`shared/gameConfig.ts`'s `GameConfig.toJSON()` wire shape - see `public/game_presets/`) - board description (cleg source text, `boardDescr`), stone/player counts, turn list, scoring rule, komi, ko rule, suicide, etc. all come from here; `forcedPassOnly: true` requires `--net-arch transformer` (the other three architectures aren't history-aware) |
-| `--iterations N` | `200` | Training iterations |
-| `--self-play-games N` | `10` | Games to complete before each training step |
-| `--gamegen-batch-size N` | `25` | Games generated in parallel (pool size) |
-| `--num-simulations N` | `200` | MCTS sims per move - must be `>= 1` |
+| `--iterations N` | `200` | Self-play / train / export cycles |
+| `--games-per-iteration N` | `500` | Self-play games finished per cycle |
+| `--gamegen-batch-size N` | `128` | Games played concurrently - each search step batches one leaf per game |
+| `--full-visits N` | `600` | Visits of a full search - the searches that become training data |
+| `--cheap-visits N` | `100` | Visits of a cheap search - played, but not trained on |
+| `--cheap-prob F` | `0.75` | Probability that a move gets a cheap search |
+| `--c-puct F` | `1.1` | PUCT exploration constant |
 | `--linear-move-bound K1 K2` | _(none)_ | End games after Uniform(K1,K2)×N plies, resampled each time a game spawns |
-| `--train-fraction F` | `0.1` | Train on `F × current buffer size` randomly selected game states per iteration, rounded up w.r.t. batch size |
 | `--batch-size N` | `128` | Training batch size |
-| `--buffer-size N` | `2048` | Replay buffer capacity, in games (not plies) |
-| `--lr F` | `0.001` | Adam learning rate |
+| `--lr F` | `0.001` | Adam learning rate after warmup |
 | `--l2 F` | `0.0001` | Adam weight decay |
-| `--c-puct F` | `1.0` | MCTS exploration constant |
+| `--no-lr-warmup` | _(off)_ | Skip KataGo's learning-rate warmup over the first 2M training samples |
+| `--min-rows N` | `100000` | Rows needed before training starts (see **Training Loop**) |
+| `--taper-window-scale F` | `50000` | Training-window power-law scale |
+| `--taper-window-exponent F` | `0.65` | Training-window power-law exponent |
+| `--expand-window-per-row F` | `0.4` | Training-window growth per new row |
+| `--max-train-per-data F` | `8` | Training samples allowed per new row |
+| `--max-train-samples-per-iteration N` | `500000` | Cap on training samples per cycle |
+| `--swa-scale F` | `8` | Window of the exported weight average, in snapshots |
+| `--swa-period-samples N` | `80000` | Training samples between weight-average snapshots; `0` exports the raw model |
 | `--net-arch NAME` | `auto` | `auto`\|`cnn`\|`unet`\|`gnn`\|`transformer` - `auto` picks `cnn` for a board with `emb_dim == 2`, else `gnn` (see `effective_arch()`) |
 | `--cpu` | _(off)_ | Force CPU even if CUDA is available |
 | `--gnn-hidden-dim N` | `128` | GNN hidden dimension (cub/hcub boards) |
@@ -259,17 +278,10 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
 | `--transformer-hidden-dim N` | `128` | Transformer hidden dimension (any board) |
 | `--num-layers N` | `9` | GNN message-passing layers |
 | `--num-attn-layers N` | `8` | Transformer cross-attention layer count (separate flag from `--num-layers` - not shared with GNN) |
-| `--save-every N` | `10` | Dump self-play trajectories every N iterations - does *not* save model checkpoints (see **Tournament-Based Model Selection**, below) |
-| `--num-selfplay-models N` | `1` | Target size of the active self-play model set - see **Tournament-Based Model Selection**, below |
-| `--num-tournament-models N` | `6` | Participants per tournament: the active models plus randomly sampled challengers, filling up to this many total - must be `> --num-selfplay-models` |
-| `--undefeated-threshold N` | `3` | Consecutive all-prevail tournaments before retiring an active model into the undefeated list - see **Tournament-Based Model Selection**, below |
-| `--tournament-every N` | `16` | Training iterations between tournaments |
-| `--num-tournament-games N` | `512` | Games played per tournament |
-| `--tournament-num-simulations N` | `128` | MCTS sims per move during tournament games (separate, usually lower, than `--num-simulations`) |
 | `--checkpoint-dir PATH` | `ai/checkpoints` | Checkpoint directory |
-| `--resume TAG` | _(none)_ | Continue an existing hash-named checkpoint directory instead of starting a fresh one - see **Checkpoint Directories and Matching** |
-| `--retrain TAG` | _(none)_ | Train a fresh model against an existing checkpoint directory's recorded self-play (its `_traj.json` files, replayed in order into a *new* checkpoint directory) instead of generating new games, then continue with live self-play for any remaining `--iterations`. Only requires the game config to match (not the architecture/hidden-dim) - it never loads `TAG`'s weights. Mutually exclusive with `--resume` |
-| `--verbosity N` | `1` | 0=silent, 1=per-game, ≥2=per-ply |
+| `--resume TAG` | _(none)_ | Continue an existing hash-named checkpoint directory - see **Checkpoint Directories and Matching** |
+| `--retrain TAG` | _(none)_ | Train a fresh model on an existing directory's recorded games (its `_traj.json` files, replayed in order into a *new* directory, training and exporting after each file as the original run did), then continue with self-play for any remaining `--iterations`. Only the game config must match - it never loads `TAG`'s weights. Mutually exclusive with `--resume` |
+| `--verbosity N` | `1` | 0=silent, 1=per-game and per-iteration, ≥2=per-step timings |
 
 ## Input Features
 
@@ -292,7 +304,7 @@ The `liberty`/`playerStoneBudget`/`globalStoneBudget` blocks use a soft, continu
 
 ## Policy Head and Action Space
 
-A turn can offer several stone colors at once (`TurnInfo.stones`), so the action space is per-`(stone, position)` rather than per-position: width `numStones*N + 1` (the `+1` is pass), flattened **stone-major** — `flat_index = (stone-1)*N + pos` for a placement, `flat_index = numStones*N` for pass. Every model's policy head, `board_to_features()`'s `legal_mask`, and MCTS's node arrays (`prior`/`visit_count`/`total_value`) all share this exact layout, so a flat action index decodes the same way everywhere: `stone = action / N + 1; pos = action % N` (unless `action == numStones*N`, which means pass).
+A turn can offer several stone colors at once (`TurnInfo.stones`), so the action space is per-`(stone, position)` rather than per-position: width `numStones*N + 1` (the `+1` is pass), flattened **stone-major** — `flat_index = (stone-1)*N + pos` for a placement, `flat_index = numStones*N` for pass. Every model's policy head, `board_to_features()`'s `legal_mask`, and MCTS's action indices all share this exact layout, so a flat action index decodes the same way everywhere: `stone = action / N + 1; pos = action % N` (unless `action == numStones*N`, which means pass).
 
 Each architecture produces `numStones` per-position/per-node place-logit channels plus one pass-field channel, pooled to a single scalar via a learned attention-weighted sum over nodes (identical mechanism across all four - see `*PolicyHeadImpl` in `cnn.cpp`/`unet.cpp`/`gnn.cpp`/`transformer.cpp`); the place channels are reshaped to `(B, numStones*N)` and concatenated with the pooled pass logit before a single softmax over the whole `(B, numStones*N+1)` vector - one probability distribution over "place this stone at this position, or pass," not a separate distribution per stone or per position.
 
@@ -312,7 +324,7 @@ Pipeline, applied per sampled ply during training (and per MCTS leaf during self
 4. **Decoder**: the literal inverse of the encoder - a monolithic MLP `Linear(D, D) → ReLU → Linear(D, N·D)`, reshaped to `(N, D)`. No per-node operation anywhere in the decode path either, keeping the whole pipeline topology-agnostic end to end.
 5. **Heads**: the resulting `(N, D)` tensor feeds the same shared `stone_head`/`territory_head`/policy-head shapes CNN/UNet/GNN use, unmodified.
 
-**Cost tradeoff**: unlike the other three architectures' O(1)-per-leaf evaluation, this is O(ply_count) per leaf (it reconstructs every historical ply's features from scratch) - noticeably more expensive per MCTS simulation for long games, though each past-ply reconstruction skips the liberty computation entirely now (the history descriptor never needs it - see `board_to_features_at_ply()`'s perf guard, `features.cpp`); only the current ply's full-descriptor reconstruction still pays for it. Worth tuning `--num-simulations`/`--gamegen-batch-size` down accordingly for a transformer run. Cross-attention's query has length 1, so its own cost is O(ply_count) per layer (not O(ply_count²)) - an earlier self-attention refinement stage over the history set was removed for exactly this reason (its `(T,T)` attention-weight tensor made peak memory grow quadratically with history length on long `forcedPassOnly` games).
+**Cost tradeoff**: unlike the other three architectures' O(1)-per-leaf evaluation, this is O(ply_count) per leaf (it reconstructs every historical ply's features from scratch) - noticeably more expensive per MCTS simulation for long games, though each past-ply reconstruction skips the liberty computation entirely now (the history descriptor never needs it - see `board_to_features_at_ply()`'s perf guard, `features.cpp`); only the current ply's full-descriptor reconstruction still pays for it. Worth tuning `--full-visits`/`--cheap-visits`/`--gamegen-batch-size` down accordingly for a transformer run. Cross-attention's query has length 1, so its own cost is O(ply_count) per layer (not O(ply_count²)) - an earlier self-attention refinement stage over the history set was removed for exactly this reason (its `(T,T)` attention-weight tensor made peak memory grow quadratically with history length on long `forcedPassOnly` games).
 
 ## Checkpoint Directories and Matching
 
@@ -323,15 +335,15 @@ of the model config's JSON (`ModelConfig::to_json()`), the game config's JSON
 fresh directory - starting `goes_train` twice with identical flags never reuses or collides with
 an earlier run's directory.
 
-**Starting fresh** (no `--resume`): `train.cpp`'s `handle_checkpoint_dir()` computes the hash,
+**Starting fresh** (no `--resume`): `train.cpp`'s `fresh_checkpoint_dir()` computes the hash,
 errors if that exact directory somehow already exists (a collision), creates it, and prints the
 hash to stdout so it can be passed to `--resume` later.
 
-**Resuming** (`--resume TAG`): `handle_checkpoint_dir()` errors if `ai/checkpoints/TAG` doesn't
-exist or has no checkpoint config to compare against, then requires the current run's game config
+**Resuming** (`--resume TAG`): `train.cpp` errors if `ai/checkpoints/TAG` has no trainer state or
+no checkpoint config to compare against, then requires the current run's game config
 and model config to `strong_equal()`-match (`self_play.h`/`model_config.h`) the directory's saved
-ones **exactly** - every field, not just a subset - before loading its latest weights and
-replay-buffer history (`resume()`). This is deliberately strict: resuming into a directory whose
+ones **exactly** - every field, not just a subset (`validate_dir_config()`) - before restoring
+`trainer/` and refilling the training window from the newest recorded games. This is deliberately strict: resuming into a directory whose
 config doesn't match byte-for-byte would silently train an architecture-or-rules mismatch.
 
 **Server-side matching**: a directory name can't be derived from a `/move` request's config, so
@@ -347,121 +359,78 @@ from a fresh random seed each run.)
 
 ## How It Works
 
-1. **Self-play**: the current model plays games against itself. Each move is chosen by running MCTS simulations guided by the model's policy and ownership estimates.
-2. **Record collection**: each ply stores `(features, MCTS visit distribution)`; once a game ends, its final board's stone/territory ownership is recorded once, stone-type indexed with no player mapping (see Ownership Heads, below), together with which player finished ahead in every player pair (see Rank Head, below) - both shared across every ply of that game as training targets.
-3. **Training**: mini-batches are sampled from a replay buffer. The model is trained to predict the MCTS visit distribution (policy head, cross-entropy scaled by `1/log(numStones*N+1)` so the loss magnitude stays comparable across both board sizes and stone counts), the final per-location stone/territory ownership (see Ownership Heads, below), and each player pair's final outcome (see Rank Head, below).
-4. **Iteration**: the updated model is used for the next round of self-play.
+Training follows KataGo's synchronous self-play loop (`python/selfplay/synchronous_loop.sh` in KataGo), adapted to Goes' general rules - any board graph, any number of stone types, players and turn-list entries. Each iteration:
 
-## Tournament-Based Model Selection
+1. **Self-play** (see **Self-Play**): `--games-per-iteration` games are played with the newest exported model - every player searched by that one model, with no gating. Before the first model exists, a uniform evaluator stands in for it.
+2. **Record collection**: each finished game becomes a `GameRecord` of training rows - its fully searched positions, each with the search's policy target, the game's final stone/territory ownership (see **Ownership Heads**) and a blended pair-outcome target (see **Value Targets**).
+3. **Training** (see **Training Loop**): mini-batches are drawn from a window over the newest rows, for as many samples as the new data allows.
+4. **Export**: the weight average (or, before it exists, the trained model) is saved as `<arch>_XXXXXX.pt` and used for the next iteration's self-play.
 
-There is a single continuously-trained model, `model_var` (`train.cpp`), trained every iteration
-with one persistent optimizer (`model_optimizer`) spanning the whole run - no per-iteration resets,
-so Adam's momentum/variance state carries across every training step `model_var` ever takes.
-`active_models` (`ModelSnapshots`, `train.cpp`) and `ChallengerPool` never hold `model_var` itself -
-only frozen, independent snapshots of its weights at various points in time, each tagged with the
-training iteration that captured it. Every player in every self-play game is played by one of the
-currently-**active** snapshots: on that player's turn, MCTS searches with that snapshot alone,
-evaluating every node of the tree with it - the opponents' replies included (see the `MCTS` class
-comment, `mcts.h`). Every time a self-play game is created (both the initial game pool and each
-slot's replenishment once a game ends), each player is **independently** randomly assigned one of
-the active snapshots, so a single game can have different players played by different snapshots.
+KataGo features left out because they don't fit Goes' rules engine or would change the model architecture: board-symmetry augmentation (Goes boards are arbitrary graphs), komi/handicap/board-size randomization and fair-komi (komi is part of a game's config, and not a model input), draw/no-result utilities, asymmetric playouts and lead estimation (two-player Go specifics), pass-alive endings and passing hacks (Benson's algorithm is Go-specific), subtree value-bias correction (keyed on 5×5 grid patterns), and the opponent-policy, soft-policy and score-distribution heads (new heads). Graph search, the neural-net cache, tree reuse and multi-threaded virtual loss are also not ported: KataGo's self-play clears its tree for every full search and runs one search thread per game anyway.
 
-**Per-iteration training**: each iteration, after self-play, `model_var` is trained for one
-iteration's worth of backprop directly (`run_training_iteration()`), continuing the same
-gradient-descent trajectory it's always been on. A frozen, independent clone of its resulting
-weights (`clone_model()`) is then appended to the challenger pool as a fresh entry - the pool never
-trains anything itself, it just accumulates periodic captures of `model_var`'s progress for
-tournaments to draw on.
+## Search
 
-`active_models` starts as a single snapshot of the initial model and grows directly - each
-iteration's fresh snapshot of `model_var` is promoted straight into `active_models` instead of
-joining the challenger pool - until it reaches `--num-selfplay-models` capacity. From then on,
-snapshots only join the challenger pool; `active_models` itself only changes wholesale, via
-tournament promotion. A snapshot is always routed to exactly one of the two, never both, so the
-challenger pool and `active_models` are disjoint by construction - every challenger-pool entry is
-always a valid tournament wildcard, with no eligibility filtering needed (see below).
+`MCTS::search()` (`ai/src/mcts/mcts.cpp`) searches a batch of independent roots - one per concurrent game - one leaf per root per step, evaluating every new leaf in one network call. Each node keeps search averages of every player's utility (see **Search Utility**), its square (for LCB), the win term, and the rank head's pair-outcome probabilities, its own evaluation counted as its first visit. A terminal position is scored exactly instead of by the network. Every root's tree is searched with one model.
 
-**Tournaments** are attempted every `--tournament-every` iterations (immediately after that
-iteration's training step): the current `active_models` plus a random sample of *distinct*
-challenger-pool entries (filling up to `--num-tournament-models` participants total - always more
-than `--num-selfplay-models`, so there's always at least one wildcard slot wanted) play
-`--num-tournament-games` games against each other, using `--tournament-num-simulations` MCTS
-simulations per move. Each participant picks its moves with its own search alone (see above), so the
-standings compare the participants' own searches. Unlike self-play games, tournament games are **not** trajectory-recorded or trained on - only each
-participant's final per-game reward (the same terminal reward formula MCTS itself backs up,
-`compute_player_rewards()`) is tallied, then averaged per model across however many games it played.
-Which player slot each game hands to which participant is decided once, up front, for every game
-the tournament will run: `assign_by_sequence()` concatenates enough independent random shuffles of
-the participant list (each containing every participant exactly once) to cover every slot in the
-whole tournament, then hands out consecutive chunks of that single sequence, one game at a time -
-so consumption order alone balances how often each participant plays across the *entire*
-tournament, not just within one game at a time.
+The settings come from KataGo (`SearchParams::self_play()` = its self-play config, `cpp/configs/training/selfplay1.cfg`; `SearchParams::server()` = the values it plays with outside self-play, `cpp/program/setup.cpp`'s defaults - only the parameter values are taken, not KataGo's engine protocol):
 
-If there aren't yet enough challengers to fill every wanted wildcard slot, the tournament is skipped
-entirely for this check (the challenger pool is left untouched, to keep accumulating towards the
-next `--tournament-every` boundary) rather than running an under-sized one.
+- **PUCT**: a child's value is `Q + c · sqrt(N + 0.01) · P / (1 + n)`, with `c = cpuct + cpuct_log · log((N + 500) / 500)` (self-play: `--c-puct` 1.1, no log growth; server: 1.0 + 0.45 log growth).
+- **First-play urgency**: an unvisited child is valued at the parent's value - its search average blended toward its own evaluation the less of its prior mass has been visited (weight `min(1, visited_mass²)`) - minus `0.2 · sqrt(visited_mass)` (0 at a self-play root, 0.1 at a server root).
+- **Root policy**: raised to `1/T` with `T` decaying from 1.25 to 1.1 over the game (full self-play searches), then mixed 25/75 with Dirichlet noise over the legal moves whose concentrations sum to 10.83 - half spread uniformly, half by how far each move's log-policy sits above the mean.
+- **Forced playouts**: in full self-play searches, a root child below `sqrt(2 · P · N)` visits is always explored next.
+- **Score centre**: after a 10-visit pre-search, the dynamic score centre is re-read from the root's own search average (see **Search Utility**).
+- **Play-selection values** (the policy target, and what the move is chosen from): each visited root child's visit count, with every child but the most stably explored one cut back to the visits PUCT would have given it had it known the final values (this removes forced playouts), the child with the best lower confidence bound (5 stdevs, with a small max-variance prior) raised enough to outrank every child it beats on LCB, and values below 1 visit (at most max/64) dropped. Self-play uses LCB only for the policy target, the server also for the move.
+- **Move choice**: sampled from the play-selection values raised to `1/T`. In self-play, `T` decays from 0.75 to 0.15 with a half-life of 19 plies scaled by `19/sqrt(N)` (`interpolate_early()`); the server uses the request's `temperature` (0 = argmax).
 
-At `--verbosity >= 1`, the resulting standings (each participant's average reward and games played,
-ranked) are printed, with the `--num-selfplay-models` participants with the highest average reward
-marked `[promoted]` (genuinely new - wasn't in `active_models` immediately before this tournament)
-or `[prevailed]` (was already active and simply won again) - either way, those become the new
-`active_models`, wholesale-replacing the old set. Only `[promoted]` winners get a `.pt` file written
-(tagged with their own capture iteration rather than the iteration the tournament ran at) - a
-`[prevailed]` incumbent was already saved the tournament it was first promoted, so re-saving it
-would just duplicate that file. Whenever a tournament actually runs, the challenger pool is then
-**cleared** - entries that didn't get promoted are dropped rather than kept for future tournaments,
-which both bounds the pool's size (at most `--tournament-every` entries between tournaments) and
-preserves the disjoint-from-`active_models` invariant above.
+## Self-Play
 
-**`--undefeated-threshold N`** forces periodic turnover even while `active_models` keeps winning, so
-no single model's self-play shapes the training data indefinitely (see **Notes**, below, for how one
-model's self-play can degenerate) - a counter tracks consecutive tournaments where `active_models`' composition didn't change
-at all (every active model simply prevailed). Once it reaches N, one active model is picked at
-random, retired onto a separate `undefeated` stack, and replaced by the tournament's next-best
-challenger (which gets its own `.pt` file, same as any newly-promoted model), and the counter resets.
-Retired models aren't wasted: every tournament, in addition to the usual `--num-tournament-models`
-participants, the tail of the `undefeated` stack also plays as a bonus entrant, judged against the
-same raw top-`--num-selfplay-models` cutoff as everyone else - if it's still in that raw winner list
-it goes back onto the stack (marked `[undefeated]` in the standings) to keep proving itself
-indefinitely; otherwise it's marked `[defeated]` and dropped for good. Either way, the bonus entrant
-never itself becomes a real active model - real promotion is always computed with it excluded
-entirely, so its own presence can only ever bump a *challenger* up to fill the resulting gap, never
-displace a genuinely active model. Off in practice for short runs at the default of `3`.
+`SelfPlayRunner` (`ai/src/training/self_play.cpp`) keeps `--gamegen-batch-size` games going, playing one ply in each per `step()` and replacing every finished game with a new one. Defaults (`SelfPlayParams`) are KataGo's:
 
-A self-play game can easily outlive one tournament (self-play games aren't bounded to finish within
-a single training iteration). To keep this safe, once `active_models` is replaced, any in-progress
-game still assigning a player to a now-dropped id immediately reassigns that player to a fresh
-random pick from the *new* `active_models` (`train.cpp`'s `refresh_player()`) - so every live game's
-player-to-model assignments are always a subset of the current active set, and the self-play
-evaluator map (`build_evaluators()`) only ever needs to mirror that set exactly.
+- **Opening**: a new game's first `floor(Exp(1) · 0.04 · N)` moves are sampled straight from the network's policy - not searched, not trained on - for opening variety.
+- **Cheap and full searches**: each later move gets a cheap search (`--cheap-visits`, no noise, no forced playouts, root policy temperature 1) with probability `--cheap-prob`, otherwise a full one (`--full-visits`). Only full searches start with training weight 1; cheap ones start at 0.
+- **Reduced visits**: once some player's search win term has stayed above 0.9 for 3 consecutive searched plies, a full search's visits move toward 100 and its weight toward 0.1, by the square of how far past 0.9 it is.
+- **Surprise weighting** (at game end): the game's total weight is redistributed so 50% follows each ply's policy surprise (KL of the search target against the searched prior - cheap plies count only beyond 1.5× the game's average surprise) and 10% follows its value surprise (KL of the network's pair outcomes against the result smoothed over the longest TD horizon - see **Value Targets**), then every weight is rounded stochastically to an integer row count.
 
-`active_models`/`ChallengerPool` are purely an in-memory, self-play-time concept layered on top of
-`model_var` - `--resume` always restarts `active_models` from a single snapshot of the resumed
-weights and the challenger pool empty (see `--resume`'s note in **Key Flags**: this can replay up to
-`tournament_every - 1` iterations' worth of gradient progress that was never captured as a
-tournament-proven winner), and `--retrain`'s
-trajectory-replay phase never touches either (that phase doesn't run self-play or tournaments at all
-- see `--retrain` in **Key Flags**, above), though it trains the very same `model_var`/
-`model_optimizer` pair the live loop below it continues with, on the same span boundaries it always
-has.
+A game's trajectory (`<arch>_XXXXXX_traj.json`, one array of games per iteration) records `{"model": m, "plies": [...]}`, where `m` is the iteration of the model that played it (-1 = uniform evaluator), an opening ply is `{"move": a}` and a searched ply is `{"move": a, "search": [pair outcomes], "weight": rows}` plus `"policy"` when `rows > 0`. That is everything `replay_trajectory()` needs to rebuild the game's record exactly, by replaying its moves.
 
-## Reward
+## Value Targets
 
-The value target for every ply is a sum of a rank-based component and a point-fraction component, both in (−1, 1), computed over **points** — stones, territory, or stones + territory, depending on the game's `scoreRule` (set via `--game-config`; see `BoardState::compute_points()` / Ownership Heads, below):
+The rank head's target for a searched ply blends the final outcome with the search's own estimates at later plies - KataGo's TD value targets. With `V_k` the search-averaged pair-outcome probabilities at searched ply `k` (of `T`) and `Z` the final outcome (one-hot per pair), each horizon `f = 1/(1 + N·c)`, `c ∈ {0.176, 0.056, 0.016}` (about 7, 21 and 64 moves on 19x19), gives
 
 ```
-rank_reward  = (# opp with fewer points − # opp with more points) × 2 / (2P−1)   [0 if P=1]
-point_reward = (point_fraction − 1/P) / (2P−1)
-reward       = rank_reward + point_reward
+TD_f(t) = Σ_{k=t}^{T-1} f(1-f)^(k-t) V_k  +  (1-f)^(T-t) Z
 ```
 
-where `point_fraction = (player's points) / (total points)`, or 0 when there are no points at all, and `P` is the number of players. The `[-1, 1]` interval is divided into `2P−1` equal sub-intervals; the rank reward places each player at the midpoint of the sub-interval corresponding to their rank, and the point reward adds a continuous signal within one half-interval width. The combined reward stays within `(−1, 1)` for all player counts. Because the point term is linear in `point_fraction`, the per-player rewards are exactly zero-sum whenever there are points at all (`Σ (point_fraction − 1/P) = 0` and the rank term is antisymmetric); the only non-zero-sum case is a fully empty/pointless terminal board.
+and the row's target is `(Z + TD_0.176 + TD_0.056 + TD_0.016) / 4`. KataGo trains its main value head on `Z` and a separate head per horizon, all with equal loss weight; cross-entropy is linear in its target, so a single head trained on the average receives exactly that combined loss. Because the target differs from ply to ply, a game's rows no longer all share one label the network can memorize.
 
-This exact formula is used in two places: directly, via `compute_player_rewards()`, for genuine terminal game-over states inside MCTS - fed `BoardState::compute_points(state.score_rule, state.score())`; and as an expectation, via `estimate_player_rewards()`, for non-terminal leaves evaluated by the model - the rank term from the rank head's pairwise outcome probabilities (see Rank Head, below), the point-fraction term from the same rule applied to the model's own predicted stone/territory estimates (see Ownership Heads, below). Either way, MCTS backup has per-player rewards for every simulation — not just for the player to move at the leaf. Backup does not negate: each node looks up its own player's reward from the map, so Q-values at every node reflect that node's player's outcome directly.
+## Training Loop
 
-Both formulas also fold in each player's `komi` before computing the rank/fraction reward - komi is added to every player's point total before the shared denominator (`total`/`sum_total`) is computed, so the point-fraction term stays zero-sum across players, and the search objective stays consistent with `BoardState::compute_winners()`'s own komi-adjusted winner determination. When `scoreRule` is `"territory"`, each player's `captureCount` (`BoardState::capture_count()`) is folded in the same way, right alongside komi - captures so far are a fully-known quantity at any ply (not a prediction), so this needs no special handling for non-terminal leaves either.
+`ai/src/train.cpp`, KataGo's `shuffle.py` + `train.py` + export steps, in memory:
 
-Since `scoreRule` now directly determines the reward signal self-play trains on, it's a game-dynamics config like `forcedPassOnly`: it's part of `weak_equal()`'s checkpoint-matching fields (a `stone`/`area`/`territoryonly`/`territory`-trained model is not interchangeable with another rule's), and games under different rules get separate checkpoint folders and separate `/move` sessions.
+- **Rows and the window**: a `GameRecord` stores each training row once with its row count; `ReplayBuffer` gives every row a global index and samples uniformly (without repeats within a batch) from the newest `window` rows. The window follows KataGo's power law - nothing until `--min-rows` rows exist (rows from the uniform evaluator count only up to `--min-rows`), then `window = min_rows + 0.4 · ((x^0.65 − s^0.65) / (0.65 · s^−0.35))` with `x` the usable rows past `--min-rows` plus the scale `s` (`--taper-window-scale`) - so it keeps growing, ever more slowly. Games that fall out of the window are dropped.
+- **How much to train**: a sample bucket gains `--max-train-per-data` (8) samples per new row - the first time, one sample per existing row - capped at `--max-train-samples-per-iteration`; training takes batches while the bucket holds one.
+- **Optimizer**: Adam (`--lr`, `--l2`), gradient-norm clipping at 1, with KataGo's learning-rate warmup (×1/20 rising to ×1 over the first 2M samples).
+- **Weight average**: every `--swa-period-samples` samples, `average += (model − average) / --swa-scale` (KataGo's SWA); the average is what gets exported.
+- **Losses**: policy cross-entropy against the play-selection target (scaled by `1/log(numStones·N+1)`), the ownership and point losses (see **Ownership Heads**), and the rank head's cross-entropy against its blended target (scaled by `1/log 3`), all with weight 1.
+
+## Search Utility
+
+The quantity MCTS maximizes (`ai/include/mcts/utility.h`) is KataGo's utility - win/loss plus a bounded score term - generalized to any number of players by summing over the player pairs the rank head scores. For player `p`, opponents `q`, `P` players, board size `N`:
+
+```
+win_p     = 1/(P-1) · Σ_q [ P(p ahead of q) − P(q ahead of p) ]
+static_p  = 1/(P-1) · Σ_q (2/π) atan( d_pq / (2·sqrt(N)) )
+dynamic_p = 1/(P-1) · Σ_q (2/π) atan( (d_pq − c_pq) / (scale·sqrt(N)) )
+utility_p = win_p + static_factor · static_p + dynamic_factor · dynamic_p
+```
+
+`d_pq` is p's final total minus q's (komi-adjusted, and under `"territory"` capture-adjusted - `compute_player_totals()`), and `c_pq` is the search's dynamic score centre: the root's expected difference pulled 25% toward 0, but never more than `scale·sqrt(N)` away from it. Self-play uses `static_factor` 0, `dynamic_factor` 0.4, `scale` 0.5; the server 0.1, 0.3 and 0.75 with a 20% pull. For two players this is exactly KataGo's `(W − L) + static + dynamic` score utility. Every term is antisymmetric in `(p, q)`, so utilities always sum to 0.
+
+A terminal position uses its exact outcomes and differences (`exact_pair_eval()`). A network leaf takes `P(p ahead of q)` from the rank head (see **Rank Head**) and `d_pq` from the ownership heads' expected totals (`estimate_player_totals()`, see **Ownership Heads**). KataGo averages the atan over its score head's predicted spread; Goes has no score-spread head, so a leaf uses its expected difference alone.
+
+The score term is what keeps the search playing once the result is decided: per point near the current score it is worth `0.4 · (2/π) / (0.5·sqrt(N))` - about 0.06 on 9x9 - and its centre follows the game, so the winning side still prefers a bigger win and the losing side keeps fighting.
+
+Since `scoreRule` determines the totals the utility compares, it is a game-dynamics config like `forcedPassOnly`: it is part of `weak_equal()`'s checkpoint-matching fields, and games under different rules get separate checkpoint directories and `/move` sessions.
 
 ## Ownership Heads: Per-Location Stone/Territory Estimates
 
@@ -472,13 +441,13 @@ Rather than predicting the game outcome directly, the model predicts, for every 
 
 Both come out of the same per-node features the policy head reads, via two independent `Linear→ReLU→Linear→softmax` heads (`stone_head`, `territory_head`), packaged as one `(2, N, num_stones+1)` ownership tensor (index 0 = stone estimate, index 1 = territory estimate).
 
-**Training targets**: for each finished game, the final board (`BoardState::board`) and `ScoreData::territory_owner` (from the flood-fill territory computation - see `BoardState::count_score()`) are used *directly* as `stone_owner`/`territory_owner` (length-N, stone-type-indexed) ground truth - no player mapping. These are stored once per game in `GameRecord` and shared across every ply, the same way a per-game scalar target used to be broadcast in the old design.
+**Training targets**: for each finished game, the final board (`BoardState::board`) and `ScoreData::territory_owner` (from the flood-fill territory computation - see `BoardState::count_score()`) are used *directly* as `stone_owner`/`territory_owner` (length-N, stone-type-indexed) ground truth - no player mapping. These are stored once per game in `GameRecord` and shared by all of its rows.
 
 **Loss** (`ai/src/train.cpp`):
 - *Stone loss* / *Territory loss*: per-location squared error for each estimate - the predicted `(N, num_stones+1)` distribution against the true one-hot ownership (`stone_owner`/`territory_owner`, one-hot expanded via `torch::one_hot`), summed over the `num_stones+1` channels at each location (not averaged - averaging over channels as `torch::mse_loss` would do by default shrinks the loss too much to carry useful gradient signal), then averaged over locations and the batch: `(stone_estimate - one_hot(stone_owner))^2 .sum(channels) .mean(locations, batch)` (and the same for territory).
-- *Point loss*: raw per-stone-type point total (no rank adjustment, no player aggregation), analogous to the scalar value loss from before the ownership refactor but supervising points instead of the rank-adjusted reward - the difference between `estimate_stone_points(ownership, score_rule)` (the model's own expected total per stone type) and the same function applied to a one-hot ground-truth "ownership" tensor built from `stone_owner`/`territory_owner`, scaled by `num_stones / N` (board size) before squaring - the raw difference can be as large as `N`, which would otherwise dwarf the per-location Stone/Territory losses - then summed over stone types and averaged over the batch: `((predicted_points - actual_points) / N * num_stones)^2 .sum(stone types) .mean(batch)`.
+- *Point loss*: raw per-stone-type point total (no player aggregation) - the difference between `estimate_stone_points(ownership, score_rule)` (the model's own expected total per stone type) and the same function applied to a one-hot ground-truth "ownership" tensor built from `stone_owner`/`territory_owner`, scaled by `num_stones / N` (board size) before squaring - the raw difference can be as large as `N`, which would otherwise dwarf the per-location Stone/Territory losses - then summed over stone types and averaged over the batch: `((predicted_points - actual_points) / N * num_stones)^2 .sum(stone types) .mean(batch)`.
 
-**MCTS and the `/move` endpoint still need a single per-player scalar** for backup/UCB and for the reported `value` - `estimate_player_rewards()` (`ai/include/model/evaluator.h`). Its point-fraction term comes from these heads: `estimate_stone_points()` (the same function the point loss above uses) gives the model's expected per-stone-type point total under the state's `score_rule` - combined exactly like `compute_points()` does (stones only, territory only, or their sum) - which is aggregated to per-player totals via `stone_to_player_map` (a small membership-matrix matmul, mirroring `compute_player_rewards()`'s own stone→player aggregation) and turned into `(point_fraction − 1/P) / (2P−1)` as in `compute_player_rewards()` (see Reward, above). Its rank term comes from the rank head instead (see Rank Head, below) - the ownership heads can't supply it. MCTS always batches leaves from one game's config at a time, so a single rule/map per batched call is correct.
+**The search reads these heads through `estimate_player_totals()`** (`ai/include/model/evaluator.h`): `estimate_stone_points()` (the same function the point loss above uses) gives the expected per-stone-type points under the state's `score_rule` - combined exactly like `compute_points()` does (stones only, territory only, or their sum) - which are credited to players via `stone_to_player_map` (a small membership-matrix matmul, mirroring `compute_player_totals()`) and have komi and, under `"territory"`, captures so far added. Differences of these expected totals are the score term's `d_pq` (see **Search Utility**); the win term comes from the rank head instead (see **Rank Head**) - the ownership heads can't supply it. MCTS always batches leaves from one game's config at a time, so a single rule/map per batched call is correct.
 
 ## Rank Head: Pairwise Outcome Probabilities
 
@@ -486,31 +455,19 @@ Every architecture has a third head, `RankHead` (`ai/include/model/rank_head.h`)
 
 **Architecture**: the trunk's final per-node hidden states (the same `(B, N, hidden)` tensor the policy and ownership heads read) are mean- and max-pooled over the board, concatenated, and passed through `Linear(2·hidden → hidden) → ReLU → Linear(hidden → 3·pairs)`, with a softmax over each pair's 3 outcomes. It is returned as `ModelOutput::rank`, shape `(B, num_rank_pairs(P), 3)` (`ai/include/model/model_output.h`).
 
-**Training target**: when a game ends, each player's komi-adjusted (and, under `"territory"`, capture-adjusted) final total comes from `compute_player_totals()` - the same totals `compute_player_rewards()` ranks - and each pair's outcome is recorded as a class index (`RankOutcome`: `FIRST_AHEAD`/`TIED`/`SECOND_AHEAD`) in `GameRecord::rank_target`, shared by every ply of the game. Trajectory files are unchanged: `--resume`/`--retrain` recompute the target by replaying each stored game to its end.
+**Training target**: the blended pair-outcome distribution of **Value Targets**, built from the game's exact final outcome (`compute_player_totals()` of the final position, a player no stone credits ranked on komi alone) and the search's pair-outcome averages along the game. **Loss** (`compute_losses()`, `ai/src/train.cpp`): cross-entropy against that target, averaged over pairs and the batch and scaled by `1/log 3`, printed as `rank=` in each iteration's loss line.
 
-**Loss** (`ai/src/train.cpp`'s `compute_losses()`): cross-entropy of the predicted pair outcome against the actual one, averaged over pairs and the batch and scaled by `1/log 3` (so a uniform guess scores 1, like the policy loss's own normalization), added to the total with weight 1 and printed as `rank=` in each iteration's loss line.
+**How MCTS uses it**: the rank head gives the search utility's win term - `win_p = 1/(P−1) · Σ_q (P(p ahead of q) − P(q ahead of p))`, the exact expectation of the pairwise comparisons a finished game's win term counts (see **Search Utility**).
 
-**How MCTS uses it**: `compute_player_rewards()`'s rank term is `2/(2P−1) · rank_diff_p`, where `rank_diff_p = Σ_q sign(total_p − total_q)` - a sum of pairwise comparisons. Its expectation is therefore exactly
-
-```
-E[rank_diff_p] = Σ_q ( P(p ahead of q) − P(q ahead of p) )
-```
-
-which `estimate_player_rewards()` computes from the rank head's probabilities (one small matmul from the per-pair margins to per-player sums), so a non-terminal leaf's reward is `2/(2P−1) · E[rank_diff_p]` plus the ownership heads' point-fraction term (see Ownership Heads, above). For 2 players that is `(2/3)·(P_win − P_loss) + (point_fraction − 1/2)/3`. Terminal states still use the exact `compute_player_rewards()`, and backup is unchanged.
-
-**Why the value can't be derived from the ownership head**: MCTS needs the *expected* reward of a position. The rank term is a step function of the final score - `sign(total_p − total_q)` - so what's needed is `E[sign(Δ)] = P(win) − P(loss)`, where `Δ` is the final score difference. The ownership heads only give per-location marginal distributions, and so the *expected* score difference `E[Δ]`. Neither is enough:
-- **The sign of an expectation is not the expectation of the sign.** Plugging `E[Δ]` into the reward gives `sign(E[Δ])`, which is ±1 the moment the expected leader changes. A position expected to finish +0.5 points ahead with a wide spread of outcomes is close to a coin flip, but `sign(E[Δ])` scores it exactly like a certain win.
+**Why the win term can't be derived from the ownership head**: what the search needs is the *expected* outcome, `E[sign(Δ)] = P(win) − P(loss)`, where `Δ` is a pair's final score difference. The ownership heads only give per-location marginal distributions, and so the *expected* difference `E[Δ]`. Neither is enough:
+- **The sign of an expectation is not the expectation of the sign.** Plugging `E[Δ]` into the win term gives `sign(E[Δ])`, which is ±1 the moment the expected leader changes. A position expected to finish +0.5 points ahead with a wide spread of outcomes is close to a coin flip, but `sign(E[Δ])` scores it exactly like a certain win.
 - **Per-location marginals don't determine `P(win)`.** That needs the distribution of `Δ`, and the locations are strongly correlated - a group lives or dies as a whole, and one capture flips many points at once. Marginals carry no correlation information, and assuming independence badly underestimates the spread, so a win probability built from them is overconfident.
 
-Measured on a 9x9 CNN run that used `sign(E[Δ])` as the leaf value, both failure modes showed up directly. At ply 10, the predicted winner differed between a position's children in 83% of positions, so child values swung by the full ±0.67 rank step on what was nearly a coin flip (the value picked the actual winner only 52% of the time before ply 10); the search treated those swings as certainties, and its chosen move changed in 36% of positions when given 8× more simulations. By ply 70, every child agreed on the winner in 93% of positions, and child values differed by a median of 0.002 - far below MCTS's exploration bonus, so the search could no longer rank moves at all. The rank head is trained on actual game outcomes with cross-entropy (a proper scoring rule), so it learns calibrated probabilities instead: near 0 net margin when the result is uncertain, and changing smoothly as moves actually change the odds.
-
-**What it doesn't fix**: once the result is all but certain, `P(win)` saturates for every child alike, and moves are distinguished only by the point-fraction term (about 0.004 per point on 9x9) - the same weakness AlphaZero-style win-probability values have when far ahead or behind.
+Measured on a 9x9 CNN run that used `sign(E[Δ])` as the leaf value, both failure modes showed up directly. At ply 10, the predicted winner differed between a position's children in 83% of positions, so child values swung by the full rank step on what was nearly a coin flip (the value picked the actual winner only 52% of the time before ply 10); the search treated those swings as certainties, and its chosen move changed in 36% of positions when given 8× more simulations. By ply 70, every child agreed on the winner in 93% of positions, and child values differed by a median of 0.002 - far below MCTS's exploration bonus, so the search could no longer rank moves at all. A head trained with cross-entropy (a proper scoring rule) learns calibrated probabilities instead: near 0 net margin when the result is uncertain, and changing smoothly as moves actually change the odds. The blended targets keep it from memorizing each game's single result, and the score term keeps moves distinguishable once `P(win)` saturates.
 
 ## Notes
 
-- Self-attention over the Transformer's history set (query=key=value over the full `(T, D)` sequence) produces an `O(T²)` attention-weight tensor per layer, so peak GPU memory grew *quadratically* with history length - on `forcedPassOnly` boards with no move bound, a single unusually long game entering self-play or the replay buffer could blow up memory (confirmed empirically: fitting `peak_MB ≈ 338 + 0.0216·Tmax²` matched measured peaks within ~9% across two codebase states and a 3x range of iteration counts). This is why the current architecture (see **Transformer Architecture**, above) uses cross-attention only, whose query has length 1 and so costs `O(T)` per layer - removing the self-attention stack measured a ~3.6-4x reduction in peak memory at matched history length and batch size, and replaced the quadratic growth with linear.
-- When `--num-selfplay-models` is greater than 1, we're observing that none of the newly trained challengers can outplay the existing active models in tournaments - the active set never turns over. Speculated reason: with multiple active models, each self-play game randomly assigns different snapshots to different player slots (see `assign_random_models()`), which lowers the quality/consistency of the generated games each individual model is trained on relative to every player being the same, single active model - degrading the training signal enough that new challengers can't catch up. Not yet root-caused; `--num-selfplay-models 1` sidesteps it, hence the default change. Possibly the same tournament-search bug as the next note, which affected every game between different snapshots - this setting's self-play games as well as tournaments; not re-tested since that fix.
-- In 9x9 and 13x13 CNN runs (`D:/9x9.out`, `D:/13x13_two_ply.out`), one early model won every tournament it played (9x9: model 8, iterations 15-63, until `--undefeated-threshold` retired it). The cause was tournament search, not that model's strength: MCTS evaluated each node with the network of whichever player was to move there, so each player's search used its opponent's network at the opponent's nodes. A challenger playing second saw, through the incumbent's network, that a pass would be answered with a pass and end the game; believing itself behind, it took that exit and lost by one stone. With each player's whole tree searched by its own snapshot (see **Tournament-Based Model Selection**, above), a 256-game rerun of challenger 51 against model 8 flipped from model 8 ahead (average reward +0.19) to model 51 ahead (+0.28), matching a head-to-head between two separate `goes_server` engines, where model 51 won 65.6%.
-- A single model's self-play can degenerate into very short games. With komi 0 the second player expects to lose, and under the reward (see **Reward**, above) losing now by one stone scores about the same as losing later by more (−0.682 vs −0.681 on 9x9), so that player's search can't separate its moves and follows the prior. In the 9x9 run above, once model 8 was the only active model, the second player passed first in about 97% of its self-play games, at ply 21 (the first ply played at temperature 0); games ended after about 33 plies, and the first player won 97-100% of them. The 13x13 run collapsed the same way. Challengers trained on those games overrate the first player: model 51 predicts 72% of the points on an empty board go to P1, against 59% for model 8.
+- Self-attention over the Transformer's history set (query=key=value over the full `(T, D)` sequence) produces an `O(T²)` attention-weight tensor per layer, so peak GPU memory grew *quadratically* with history length - on `forcedPassOnly` boards with no move bound, a single unusually long game entering self-play or the training window could blow up memory (confirmed empirically: fitting `peak_MB ≈ 338 + 0.0216·Tmax²` matched measured peaks within ~9% across two codebase states and a 3x range of iteration counts). This is why the current architecture (see **Transformer Architecture**, above) uses cross-attention only, whose query has length 1 and so costs `O(T)` per layer - removing the self-attention stack measured a ~3.6-4x reduction in peak memory at matched history length and batch size, and replaced the quadratic growth with linear.
+- With komi 0, both passing at the start is an exact draw. A KataGo 9x9 run at komi 0 (KataGo's own engine, Goes' 9x9 rules) learned to pass early - 30-46% of its self-play games were draws - during its first ~3,000 trained-net games, and grew out of it with more data (no draws after ~25k games). A Goes run at komi 0 may go through the same early phase.
 
-`BoardState::game_over()` covers `maxPlies` truncation directly via a live check (`ply_count() >= max_plies`, alongside a live resigned-players check and `MoveInfo.all_passed`, which only covers the consecutive-passes cause - mirroring `shared/boardState.ts`), so MCTS treats a state that hit its own `maxPlies` as terminal like any other game-over state, scoring it with `compute_player_rewards()` rather than the model — once `game_over()` is true, `make_move()` always refuses further moves, so the recorded score genuinely is final rather than a heuristic snapshot of a game that could still continue.
+`BoardState::game_over()` covers `maxPlies` truncation directly via a live check (`ply_count() >= max_plies`, alongside a live resigned-players check and `MoveInfo.all_passed`, which only covers the consecutive-passes cause - mirroring `shared/boardState.ts`), so MCTS treats a state that hit its own `maxPlies` as terminal like any other game-over state, scoring it exactly (`exact_pair_eval()`) rather than with the model — once `game_over()` is true, `make_move()` always refuses further moves, so the recorded score genuinely is final rather than a heuristic snapshot of a game that could still continue.

@@ -1,113 +1,69 @@
 #pragma once
 #include <torch/torch.h>
-#include <vector>
-#include <unordered_map>
-#include <tuple>
-#include <random>
 #include <cstdint>
+#include <deque>
+#include <random>
+#include <vector>
 
+// One finished self-play game's training data. Rows are the positions self-play chose to train on
+// (see ai/Readme.md's "Self-Play"), each stored once with a multiplicity - KataGo writes a row once
+// per unit of its resolved target weight; sampling treats a row of multiplicity k as k rows.
 struct GameRecord {
-    torch::Tensor features;         // (P, N, F) float32 - P = plies in this game
-    torch::Tensor legal_mask;       // (P, numStones*N+1) bool
-    torch::Tensor policy_target;    // (P, numStones*N+1) float32
-    torch::Tensor stone_owner;      // (N,) int64 - stone type occupying each node at game end
-                                     // (BoardState::board), 0 = empty
-    torch::Tensor territory_owner;  // (N,) int64 - stone type whose territory each node is at game
-                                     // end (ScoreData::territory_owner), 0 = none/dame/occupied
-    torch::Tensor rank_target;      // (num_rank_pairs,) int64 - per rank_pairs() pair, the game's
-                                     // RankOutcome (rank_head.h): which player finished ahead, or a tie
-    // stone_owner/territory_owner/rank_target are shared by every ply of this game (only meaningful
-    // once the game ends). stone_owner/territory_owner are stone-type indexed, matching the
-    // network's ownership head (see evaluator.h).
+    torch::Tensor features;         // (R, N, F) float16
+    torch::Tensor legal_mask;       // (R, numStones*N+1) bool
+    torch::Tensor policy_target;    // (R, numStones*N+1) float32 - pruned search visit distribution
+    torch::Tensor rank_target;      // (R, num_rank_pairs, 3) float32 - blended pair-outcome target
+    std::vector<int> row_count;     // (R) multiplicity of each row, >= 1
+    std::vector<int> row_ply;       // (R) the row's position among all of the game's plies (0-based)
+    torch::Tensor stone_owner;      // (N,) int64 - stone type occupying each node at game end, 0 = empty
+    torch::Tensor territory_owner;  // (N,) int64 - stone type whose territory each node is at game end
+    // Transformer runs only: every ply's minimal history features (TransformerConfig::history_descr),
+    // so any row's full history prefix is available. Undefined otherwise.
+    torch::Tensor history_features;  // (T, N, F_hist) float16
 
-    // Minimal-descriptor per-ply features (TransformerConfig::history_descr's plyMod+stoneOccupancy
-    // descriptor) - only populated for a Transformer run (see PlyResult::history_features,
-    // training/self_play.h); left default-constructed (undefined) otherwise. Used only via
-    // ReplayBuffer::sample_with_history()'s history prefix - `features` above (the full
-    // descriptor) is still what's used whenever a ply is sampled as the "current" one.
-    torch::Tensor history_features;  // (P, N, F_hist) float32, Transformer runs only
+    int64_t num_rows() const;
 };
 
-// Batch returned by ReplayBuffer::sample_with_history() - used only by the Transformer
-// architecture, whose forward() needs every ply's embedding up to the sampled ply, not just the
-// sampled ply's own row (unlike sample(), below).
-struct HistoryBatch {
-    torch::Tensor hist_features;    // (B, T_max, N, F) float32, zero-padded
-    torch::Tensor hist_mask;        // (B, T_max) bool - True = padded/invalid slot
-    torch::Tensor cur_features;     // (B, N, F) float32 - the sampled ply's own features
+struct Batch {
+    torch::Tensor features;         // (B, N, F) float32
     torch::Tensor legal_mask;       // (B, numStones*N+1) bool
     torch::Tensor policy_target;    // (B, numStones*N+1) float32
     torch::Tensor stone_owner;      // (B, N) int64
     torch::Tensor territory_owner;  // (B, N) int64
-    torch::Tensor rank_target;      // (B, num_rank_pairs) int64
+    torch::Tensor rank_target;      // (B, num_rank_pairs, 3) float32
 };
 
-// Circular buffer of GameRecord objects (one per game).
-//
-// Storage is per-game, but sampling must be uniform per-ply. To reconcile
-// the two, imagine every ply ever produced by self-play (across the whole
-// run, not just what's currently buffered) appended in generation order to
-// one persistent, conceptual array ALL_REC - it never shrinks or reorders.
-// Each game occupies a contiguous range of ALL_REC indices
-// (see Slot::start_idx). `ReplayBuffer` tracks:
-//   - removed_ply_count_  = plies belonging to already-evicted games, i.e.
-//                           how far the front of ALL_REC has been forgotten.
-//   - live_ply_count_     = plies still resident in buf_.
-// Together these define the currently-live window of ALL_REC as the
-// half-open range [removed_ply_count_, removed_ply_count_ + live_ply_count_).
-// idx_map_ maps each live ALL_REC index in that window to the buf_ slot
-// holding its game (offset `by removed_game_count_`), so sample() can
-// pick a uniformly random index in the window and land on any ply with
-// equal probability, regardless of which game (or how long that game was) it came from.
+// Batch for the Transformer, whose forward() also needs each sampled row's preceding plies.
+struct HistoryBatch {
+    torch::Tensor hist_features;  // (B, T_max, N, F_hist) float32, zero-padded
+    torch::Tensor hist_mask;      // (B, T_max) bool - true = padded slot
+    Batch current;                // the sampled rows themselves
+};
+
+// The training window: every row ever added gets the next global index, and sampling draws
+// uniformly from the newest `window_rows` of them (KataGo's shuffle window - see ai/Readme.md's
+// "Training"). Games whose rows have all fallen out of the window can be dropped with trim().
 class ReplayBuffer {
 public:
-    explicit ReplayBuffer(int capacity = 2048);
-
-    // Number of ply records currently stored (not number of games).
-    int size() const { return static_cast<int>(live_ply_count_); }
     void add(GameRecord record);
-
-    // Returns (features, legal_mask, policy_target, stone_owner, territory_owner, rank_target)
-    // batched tensors:
-    //   features        : (B, N, F)              float32
-    //   legal_mask      : (B, numStones*N+1)     bool
-    //   policy_target   : (B, numStones*N+1)     float32
-    //   stone_owner     : (B, N)                 int64
-    //   territory_owner : (B, N)                 int64
-    //   rank_target     : (B, num_rank_pairs)    int64
-    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
-    sample(int batch_size, std::mt19937& rng);
-
-    // Same uniform-over-every-live-ply sampling distribution as sample(), but for each sampled
-    // ply also returns its full preceding-ply prefix as history, plus that ply's own row as
-    // "current" - used only by the Transformer architecture, whose two encoders need different
-    // widths for the two: history comes from GameRecord.history_features (the minimal
-    // plyMod+stoneOccupancy descriptor), current comes from GameRecord.features (the full
-    // descriptor, same one CNN/UNet/GNN use). Requires GameRecord.history_features to have been
-    // populated - true automatically for any run using --net-arch transformer, since
-    // train.cpp/self_play.cpp thread TransformerConfig::history_descr through unconditionally for
-    // that architecture.
-    HistoryBatch sample_with_history(int batch_size, std::mt19937& rng);
+    int64_t total_rows() const { return total_rows_; }
+    int64_t stored_rows() const;
+    // Drops every game whose rows all lie before the newest `window_rows` rows.
+    void trim(int64_t window_rows);
+    Batch sample(int batch_size, int64_t window_rows, std::mt19937& rng) const;
+    HistoryBatch sample_with_history(int batch_size, int64_t window_rows, std::mt19937& rng) const;
 
 private:
     struct Slot {
         GameRecord record;
-        uint64_t start_idx;  // this game's first ply's index in ALL_REC; its
-                              // plies occupy [start_idx, start_idx + num_plies)
-        int64_t num_plies;
+        int64_t start;             // global index of this game's first row
+        std::vector<int64_t> cum;  // cum[r] = rows before row r within this game (prefix sums of row_count)
+        int64_t rows;
     };
+    std::deque<Slot> slots_;
+    int64_t total_rows_ = 0;
 
-    // Picks `n` distinct uniformly-random offsets into the live ALL_REC window and resolves each
-    // to a (slot, ply_offset) pair - the sampling-distribution core shared by sample() and
-    // sample_with_history(), factored out so both draw from the exact same distribution with no
-    // duplicated logic.
-    std::vector<std::pair<size_t, int64_t>> pick_samples(int batch_size, std::mt19937& rng);
-
-    int capacity_;  // max games
-    std::vector<Slot> buf_;
-    uint64_t removed_ply_count_ = 0;   // # plies belonging to evicted games (front of the live ALL_REC window)
-    uint64_t removed_game_count_ = 0;  // # games evicted so far (also: next eviction targets slot
-                                        // removed_game_count_ % capacity_)
-    int64_t live_ply_count_ = 0;       // # plies currently in buf_ (width of the live ALL_REC window)
-    std::unordered_map<uint64_t, size_t> idx_map_;  // live ALL_REC index -> slot in buf_
+    // (slot, row) of `batch_size` distinct uniformly random global indices in the window.
+    std::vector<std::pair<size_t, int>> pick(int batch_size, int64_t window_rows, std::mt19937& rng) const;
+    Batch gather(const std::vector<std::pair<size_t, int>>& picks) const;
 };

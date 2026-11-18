@@ -19,8 +19,8 @@
 //     forcedPassOnly    bool
 //     allowSuicide      bool (optional, default false)
 //     scoreRule         "stone"|"territoryonly"|"area"|"territory" (optional, default
-//                        "area") - also shapes the reward MCTS backs up
-//                        (compute_player_rewards(), estimate_player_rewards())
+//                        "area") - also the totals the search's utility compares
+//                        (mcts/utility.h)
 //     komi              float[] (optional, default all-zero)
 //     koRule            "positional"|"situational" (optional, default "situational")
 //   moves             array - full move history; each entry is EITHER a legacy
@@ -35,14 +35,15 @@
 //   session_id        string|null  - opaque token returned by a previous response;
 //                                    omit or pass "" / null for a new session
 //   num_simulations   int (optional, overrides server default; must be >= 1)
-//   temperature       float (optional, overrides server default; 0 = argmax
-//                      visit count, >0 = sample from visit distribution)
+//   temperature       float (optional, overrides server default; 0 = the search's best
+//                      move, >0 = sample from its play-selection values at that temperature)
 //
 //   Returns: {move, stone, policy, value, session_id}
 //     move       int|null   - chosen board index, or null for pass
 //     stone      int|null   - chosen stone color, or null for pass
-//     policy     float[]    - MCTS visit distribution over all actions (length num_stones*N+1)
-//     value      float      - estimated value for the current player
+//     policy     float[]    - the search's policy over all actions (length num_stones*N+1)
+//     value      float      - the search's utility for the player to move, in [-1, 1]-ish
+//                             (mcts/utility.h)
 //     session_id string     - token to include in the next request for this game
 //
 //   The server maintains a cached BoardState per session_id. On each request it
@@ -456,27 +457,24 @@ int main(int argc, char* argv[]) {
 
             // ── Run MCTS ─────────────────────────────────────────────────────
 
-            float temperature = j.value("temperature", ss.default_temperature);
-            // Server sessions always evaluate with a single model (BoardState::player_model_id is
-            // always the default all-1s from new_state() here) - wrap it as a 1-entry map purely
-            // to match MCTS's multi-model constructor signature.
-            MCTS mcts({{1, evaluator}}, 1.0f);
-            auto [results, _timing] = mcts.search_batch(
-                {sess->state.get()}, num_sims, NoiseConfig{/*add_noise=*/false, 0.3f, 0.25f},
-                {temperature});
-            auto& [policy_vec, move_idx] = results[0];
-            ModelOutput leaf = evaluator.evaluate_batch({sess->state.get()});
-            auto reward_t = estimate_player_rewards(leaf.ownership, leaf.rank, {sess->state->capture_count()},
-                                                    sess->state->score_rule, sess->state->stone_to_player_map,
-                                                    sess->state->num_players, sess->state->komi);
-            // Mover is next_turn.player, not stone_to_player_map (scoring-only - see
+            if (sess->state->game_over())
+                throw std::runtime_error("the game is already over");
+            // KataGo's play-mode search settings: no root noise, a small root FPU reduction, and the
+            // move chosen from the LCB-adjusted play-selection values at the request's temperature.
+            RootSettings root;
+            root.visits = num_sims;
+            root.fpu_reduction_max = 0.1f;
+            root.move_temperature = j.value("temperature", ss.default_temperature);
+            MCTS mcts(evaluator, SearchParams::server(), std::random_device{}());
+            auto [results, _timing] = mcts.search({sess->state.get()}, {root});
+            const SearchResult& result = results[0];
+            // The mover is next_turn.player (stone_to_player_map is scoring-only - see
             // shared/types.ts's TurnInfo).
-            int pid = sess->state->next_turn.player;
-            float value = reward_t[0][pid - 1].item<float>();
+            float value = result.utility[sess->state->next_turn.player - 1];
 
-            // Decode the flat, stone-major action index (see MCTS::select()) into
-            // a (pos, stone) pair for the response.
+            // Decode the flat, stone-major action index into a (pos, stone) pair.
             int ns = sess->state->num_stones;
+            int move_idx = result.move;
             json resp;
             if (move_idx == ns * bc.N) {
                 resp["move"]  = nullptr;
@@ -485,7 +483,7 @@ int main(int argc, char* argv[]) {
                 resp["move"]  = move_idx % bc.N;
                 resp["stone"] = move_idx / bc.N + 1;
             }
-            resp["policy"]     = policy_vec;
+            resp["policy"]     = result.policy_target;
             resp["value"]      = value;
             resp["session_id"] = result_session_id;
 

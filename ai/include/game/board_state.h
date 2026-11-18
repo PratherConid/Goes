@@ -21,29 +21,13 @@ struct TurnInfo {
     std::vector<int> friendly;
 };
 
-// Compute per-player reward in (-1, 1) from a terminal board's point distribution
-// (see BoardState::compute_points() - depending on the caller's scoring rule,
-// `points` may represent stones only, territory only, or stones + territory).
-// A stone mapping to multiple players credits each of them the stone's FULL
-// point value (not split) - stone_to_player_map is stone -> set of players.
-// komi is always added; capture_count (see ScoreData) is added only when
-// score_rule == "territory" (real-world Japanese-style scoring is territory +
-// prisoners) - both are player-indexed, so they're folded in here rather
-// than inside compute_points(), which stays purely stone-indexed.
-// rank_reward  = (# opp with fewer points - # opp with more) * 2 / (2P-1)  [0 if P==1]
-// point_reward = (point_fraction - 1/P) / (2P-1)   [empty board: fraction = 0]
-// reward[p] = rank_reward + point_reward
-// The per-player totals both terms use come from compute_player_totals() (below).
-std::unordered_map<int,float> compute_player_rewards(
-    const std::unordered_map<int,int>& points,
-    const std::unordered_map<int, std::vector<int>>& stone_to_player_map,
-    const std::vector<float>& komi,
-    const std::string& score_rule,
-    const std::vector<int>& capture_count);
-
-// The komi- (and, under "territory", capture-) adjusted per-player point totals
-// compute_player_rewards() ranks, for every player stone_to_player_map credits - also the
-// source of the rank head's training targets (see self_play.cpp's rank_targets()).
+// Per-player point totals from a board's per-stone-type points (see BoardState::compute_points() -
+// depending on the scoring rule, `points` may be stones only, territory only, or stones +
+// territory), for every player stone_to_player_map credits. A stone mapping to several players
+// credits each of them its full value (not split). komi is always added; capture_count (see
+// ScoreData) is added only when score_rule == "territory" (territory + prisoners) - both are
+// player-indexed, so they're folded in here rather than in compute_points(), which stays purely
+// stone-indexed. These are the totals search utilities and rank targets compare (mcts/utility.h).
 std::unordered_map<int,float> compute_player_totals(
     const std::unordered_map<int,int>& points,
     const std::unordered_map<int, std::vector<int>>& stone_to_player_map,
@@ -273,19 +257,12 @@ public:
     bool forced_pass_only;
     std::string score_rule;
     // Per-player scoring handicap added to each non-resigned player's point
-    // count before winner determination (compute_winners()) and before the
-    // MCTS reward formulas (compute_player_rewards() below,
-    // estimate_player_rewards() in evaluator.h) - 1-indexed via komi[p-1].
+    // count before winner determination (compute_winners()) and in
+    // compute_player_totals() - 1-indexed via komi[p-1].
     std::vector<float> komi;
-    // Training/self-play concept only - server.cpp's per-request /move inference path never reads
-    // this (a session's BoardState always gets the default all-1s from new_state(), and the server
-    // always evaluates with a single model regardless of this field's contents). Which model
-    // searches each player's turns during self-play - 1-indexed via player_model_id[p-1], an id
-    // key into MCTS::models_ (mcts.h). Lets different players in the same self-play game be
-    // played by different models (e.g. a candidate checkpoint vs. a previous one); a player's
-    // model evaluates every node of the search it runs on its turn (see MCTS's class comment). new_state()
-    // starts every player at id 1; train.cpp then reassigns them per game from the currently-active
-    // snapshot set (assign_random_models()/refresh_player()/assign_by_sequence()).
+    // Which model plays each player, 1-indexed via player_model_id[p-1]. Self-play and the server
+    // both search every player with a single model, so new_state() sets every entry to 1 and
+    // nothing reads it.
     std::vector<int> player_model_id;
     KoRule ko_rule;
     bool allow_suicide;

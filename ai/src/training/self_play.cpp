@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <random>
 #include <cstdint>
+#include <cmath>
+#include <stdexcept>
 
 static std::mt19937 rng(std::random_device{}());
 
@@ -241,9 +243,7 @@ BoardState new_state(const GameConfig& cfg, const BoardConfig& bc) {
     if (komi.empty())
         komi = std::vector<float>(cfg.num_players, 0.0f);
 
-    // A fresh state starts with every player on model id 1 - self-play/tournament callers
-    // reassign these per game (train.cpp's assign_random_models/assign_by_sequence), while
-    // server.cpp keeps the default (see BoardState::player_model_id's doc comment).
+    // Self-play and the server search every player with one model.
     std::vector<int> player_model_id(cfg.num_players, 1);
 
     BoardState state(
@@ -264,183 +264,357 @@ BoardState new_state(const GameConfig& cfg, const BoardConfig& bc) {
     return state;
 }
 
-nlohmann::json PlyResult::to_json() const {
-    json p;
-    p["move"]   = move;
-    p["stone"]  = stone;
-    p["policy"] = policy;
-    return p;
+
+// ── Value targets and data weighting ─────────────────────────────────────────
+
+// KataGo's three TD horizons: c in nowFactor = 1/(1 + N*c), N the board's node count.
+static constexpr float kTDHorizonCoeffs[3] = {0.176f, 0.056f, 0.016f};
+
+static float td_now_factor(float coeff, int N) { return 1.0f / (1.0f + static_cast<float>(N) * coeff); }
+
+// KataGo's fillValueTDTargets(): searched ply t's target is
+//   sum_{k=t}^{T-1} f(1-f)^(k-t) V_k  +  (1-f)^(T-t) Z
+// over the searched plies' search-averaged pair outcomes V_k and the final outcome Z.
+static std::vector<float> td_target(const std::vector<const std::vector<float>*>& values,
+                                    const std::vector<float>& final_probs, size_t t, float f) {
+    std::vector<float> out(final_probs.size(), 0.0f);
+    double left = 1.0;
+    for (size_t k = t; k < values.size(); k++) {
+        double w = left * f;
+        left *= 1.0 - f;
+        for (size_t c = 0; c < out.size(); c++) out[c] += static_cast<float>(w * (*values[k])[c]);
+    }
+    for (size_t c = 0; c < out.size(); c++) out[c] += static_cast<float>(left * final_probs[c]);
+    return out;
 }
 
-PlyResult parse_ply_result(const json& j) {
-    PlyResult pr;
-    pr.move   = j.at("move").get<int>();
-    pr.stone  = j.at("stone").get<int>();
-    pr.policy = j.at("policy").get<std::vector<float>>();
-    return pr;
+// Mean over pairs of KL(target || predicted) between 3-way pair-outcome distributions, capped at 1 -
+// the multi-pair form of KataGo's valueSurpriseKL() over its single win/loss/no-result distribution.
+static float pair_outcome_kl(const std::vector<float>& target, const std::vector<float>& predicted) {
+    size_t num_pairs = target.size() / 3;
+    if (num_pairs == 0) return 0.0f;
+    double kl = 0.0;
+    for (size_t i = 0; i < target.size(); i++)
+        if (target[i] > 1e-30f)
+            kl += target[i] * (std::log(static_cast<double>(target[i])) -
+                               std::log(std::max(static_cast<double>(predicted[i]), 1e-100)));
+    return static_cast<float>(std::min(1.0, std::max(0.0, kl / num_pairs)));
 }
 
-// Converts a stone-type-indexed array (0 = none, 1..num_stones) to an int64 tensor.
-static torch::Tensor to_int64_tensor(const std::vector<int>& stones) {
-    auto t = torch::zeros({(int64_t)stones.size()}, torch::kInt64);
-    auto a = t.accessor<int64_t, 1>();
-    for (size_t i = 0; i < stones.size(); i++) a[i] = stones[i];
-    return t;
+// KL(target || prior) over actions - KataGo's policy surprise.
+static float policy_kl(const std::vector<float>& target, const std::vector<float>& prior) {
+    double kl = 0.0;
+    for (size_t a = 0; a < target.size(); a++)
+        if (target[a] > 1e-30f)
+            kl += target[a] * (std::log(static_cast<double>(target[a])) -
+                               std::log(std::max(static_cast<double>(prior[a]), 1e-100)));
+    return static_cast<float>(std::max(0.0, kl));
 }
 
-// The finished game's pairwise outcome per rank_pairs() pair: which of the two players ended with
-// the larger compute_player_totals() total, or a tie. A player stone_to_player_map credits nothing
-// is ranked on komi alone, as estimate_player_rewards() (evaluator.h) does.
-static torch::Tensor rank_targets(const BoardState& final_state) {
-    auto totals = compute_player_totals(
-        BoardState::compute_points(final_state.score_rule, final_state.score()),
-        final_state.stone_to_player_map, final_state.komi, final_state.score_rule, final_state.capture_count());
-    auto total_of = [&](int p) {
-        auto it = totals.find(p);
-        if (it != totals.end()) return it->second;
-        return p <= (int)final_state.komi.size() ? final_state.komi[p - 1] : 0.0f;
+// KataGo's end-of-game data weighting: redistributes a game's total target weight so that a
+// policy_surprise_data_weight share follows each ply's policy surprise (including cheap plies whose
+// surprise exceeds 1.5x the game's average) and a value_surprise_data_weight share follows each
+// ply's value surprise - KL between the network's pair outcomes and the forward-looking result
+// smoothed with the longest TD horizon - then rounds each weight stochastically to a row count.
+static void resolve_row_counts(std::vector<PlyRecord>& plies, const std::vector<float>& final_probs, int N,
+                               const SelfPlayParams& params, std::mt19937_64& rng) {
+    std::vector<PlyRecord*> searched;
+    for (auto& p : plies) if (p.searched) searched.push_back(&p);
+    size_t T = searched.size();
+
+    std::vector<float> value_surprise(T, 0.0f);
+    {
+        float f = td_now_factor(kTDHorizonCoeffs[2], N);
+        std::vector<float> running = final_probs;
+        for (size_t i = T; i-- > 0;) {
+            const auto& v = searched[i]->search_pair_probs;
+            for (size_t c = 0; c < running.size(); c++) running[c] += f * (v[c] - running[c]);
+            value_surprise[i] = pair_outcome_kl(running, searched[i]->nn_pair_probs);
+        }
+    }
+
+    std::vector<float> weight(T);
+    double sum_w = 0.0, sum_ps = 0.0, sum_vs = 0.0;
+    for (size_t i = 0; i < T; i++) {
+        weight[i] = searched[i]->target_weight;
+        sum_w += weight[i];
+        sum_ps += searched[i]->policy_surprise * weight[i];
+        sum_vs += value_surprise[i] * weight[i];
+    }
+    if (sum_w >= 1.0) {
+        double avg_ps = sum_ps / sum_w, avg_vs = sum_vs / sum_w;
+        double vs_weight = params.value_surprise_data_weight;
+        if (avg_vs < 0.010) vs_weight *= avg_vs / 0.010;
+        double threshold = avg_ps * 1.5;
+        std::vector<double> ps_prop(T), vs_prop(T);
+        double ps_total = 0.0, vs_total = 0.0;
+        for (size_t i = 0; i < T; i++) {
+            double w = weight[i], ps = searched[i]->policy_surprise;
+            ps_prop[i] = w * ps + (1.0 - w) * std::max(0.0, ps - threshold);
+            vs_prop[i] = w * value_surprise[i];
+            ps_total += ps_prop[i];
+            vs_total += vs_prop[i];
+        }
+        ps_total = std::max(ps_total, 1e-10);
+        vs_total = std::max(vs_total, 1e-10);
+        for (size_t i = 0; i < T; i++)
+            weight[i] = static_cast<float>((1.0 - params.policy_surprise_data_weight - vs_weight) * weight[i]
+                + params.policy_surprise_data_weight * ps_prop[i] * sum_w / ps_total
+                + vs_weight * vs_prop[i] * sum_w / vs_total);
+    }
+
+    std::uniform_real_distribution<float> unif(0.0f, 1.0f);
+    for (size_t i = 0; i < T; i++) {
+        float w = std::max(0.0f, weight[i]);
+        float floored = std::floor(w);
+        searched[i]->row_count = static_cast<int>(floored) + (unif(rng) < w - floored ? 1 : 0);
+    }
+}
+
+GameRecord build_game_record(const std::vector<PlyRecord>& plies, const BoardState& final_state) {
+    int N = final_state.N;
+    auto final_eval = exact_pair_eval(final_state);
+    int num_pairs = num_rank_pairs(final_state.num_players);
+
+    std::vector<const std::vector<float>*> values;
+    std::vector<size_t> searched_index_of(plies.size(), 0);
+    for (size_t i = 0; i < plies.size(); i++)
+        if (plies[i].searched) { searched_index_of[i] = values.size(); values.push_back(&plies[i].search_pair_probs); }
+
+    GameRecord record;
+    std::vector<torch::Tensor> feats, masks, policies, ranks;
+    for (size_t i = 0; i < plies.size(); i++) {
+        const PlyRecord& p = plies[i];
+        if (!p.searched || p.row_count <= 0) continue;
+        // KataGo's four value targets (the final outcome and three TD horizons) each get equal loss
+        // weight; cross-entropy is linear in its target, so one head trained on their mean gets
+        // exactly that loss.
+        std::vector<float> target = final_eval.probs;
+        for (float coeff : kTDHorizonCoeffs) {
+            auto td = td_target(values, final_eval.probs, searched_index_of[i], td_now_factor(coeff, N));
+            for (size_t c = 0; c < target.size(); c++) target[c] += td[c];
+        }
+        for (float& x : target) x *= 0.25f;
+        feats.push_back(p.features.to(torch::kFloat16));
+        masks.push_back(p.legal_mask);
+        policies.push_back(torch::tensor(p.policy_target, torch::kFloat32));
+        ranks.push_back(torch::tensor(target, torch::kFloat32).view({num_pairs, 3}));
+        record.row_count.push_back(p.row_count);
+        record.row_ply.push_back(static_cast<int>(i));
+    }
+    if (!feats.empty()) {
+        record.features = torch::stack(feats, 0);
+        record.legal_mask = torch::stack(masks, 0);
+        record.policy_target = torch::stack(policies, 0);
+        record.rank_target = torch::stack(ranks, 0);
+    }
+    auto to_int64 = [](const std::vector<int>& v) {
+        auto t = torch::empty({(int64_t)v.size()}, torch::kInt64);
+        auto a = t.accessor<int64_t, 1>();
+        for (size_t i = 0; i < v.size(); i++) a[i] = v[i];
+        return t;
     };
-    auto pairs = rank_pairs(final_state.num_players);
-    auto t = torch::empty({(int64_t)pairs.size()}, torch::kInt64);
-    auto a = t.accessor<int64_t, 1>();
-    for (size_t k = 0; k < pairs.size(); k++) {
-        float tp = total_of(pairs[k].first), tq = total_of(pairs[k].second);
-        a[k] = tp > tq ? FIRST_AHEAD : tp < tq ? SECOND_AHEAD : TIED;
+    record.stone_owner = to_int64(final_state.board);
+    record.territory_owner = to_int64(final_state.score().territory_owner);
+    if (!plies.empty() && plies[0].history_features.defined()) {
+        std::vector<torch::Tensor> hist;
+        for (auto& p : plies) hist.push_back(p.history_features.to(torch::kFloat16));
+        record.history_features = torch::stack(hist, 0);
     }
-    return t;
-}
-
-GameRecord trajectory_and_result_to_record(const std::vector<PlyResult>& trajectory, const BoardState& final_state) {
-    auto stone_owner     = to_int64_tensor(final_state.board);
-    auto territory_owner = to_int64_tensor(final_state.score().territory_owner);
-
-    std::vector<torch::Tensor> feats, masks, policies, history_feats;
-    feats.reserve(trajectory.size());
-    masks.reserve(trajectory.size());
-    policies.reserve(trajectory.size());
-    for (auto& pr : trajectory) {
-        auto p_tensor = torch::zeros({(int)pr.policy.size()}, torch::kFloat32);
-        auto pa = p_tensor.accessor<float, 1>();
-        for (int i = 0; i < (int)pr.policy.size(); i++) pa[i] = pr.policy[i];
-        feats.push_back(pr.features);
-        masks.push_back(pr.legal_mask);
-        policies.push_back(p_tensor);
-    }
-
-    GameRecord record{
-        torch::stack(feats, 0),     // (P, N, F)
-        torch::stack(masks, 0),     // (P, numStones*N+1)
-        torch::stack(policies, 0),  // (P, numStones*N+1)
-        stone_owner,                 // (N,)
-        territory_owner,             // (N,)
-        rank_targets(final_state),   // (num_rank_pairs,)
-    };
-
-    // history_features is only populated when the run passed a history_descr (Transformer only) -
-    // check the first ply as a stand-in for the whole trajectory (history_descr is either always
-    // passed for a whole run, or never).
-    if (!trajectory.empty() && trajectory[0].history_features.defined()) {
-        history_feats.reserve(trajectory.size());
-        for (auto& pr : trajectory) history_feats.push_back(pr.history_features);
-        record.history_features = torch::stack(history_feats, 0);  // (P, N, F_hist)
-    }
-
     return record;
 }
 
-GameRecord trajectory_to_record(
-    const std::vector<PlyResult>& trajectory,
-    const GameConfig& cfg,
-    const BoardConfig& bc,
-    const nlohmann::json& descr,
-    const nlohmann::json* history_descr)
-{
-    BoardState state = new_state(cfg, bc);
-    // Replaying a sequence that already completed successfully once - a
-    // freshly-sampled linear_move_bound draw could be shorter than this
-    // trajectory and prematurely trip game_over(), rejecting legitimate
-    // remaining moves. Disable the cap entirely for the replay.
-    state.max_plies = std::nullopt;
+// ── Self-play ─────────────────────────────────────────────────────────────────
 
-    std::vector<PlyResult> replayed;
-    replayed.reserve(trajectory.size());
-    for (auto& pr : trajectory) {
-        auto [ft, mask] = board_to_features(state, torch::kCPU, descr);
-        PlyResult full = pr;
-        full.features   = ft;
-        full.legal_mask = mask;
-        if (history_descr) full.history_features = board_to_features(state, torch::kCPU, *history_descr).features;
-        replayed.push_back(std::move(full));
-
-        std::optional<int> k, stone_opt;
-        if (pr.stone != 0) {            // stone==0 means pass (PlyResult's own convention)
-            stone_opt = pr.stone;
-            k         = pr.move % bc.N; // move is stone-major; position is the low N-range
-        }
-        bool ok = state.make_move(k, stone_opt);
-        assert(ok && "trajectory_to_record: replay move rejected - trajectory/config/input_descr mismatch");
-    }
-    return trajectory_and_result_to_record(replayed, state);
+static void apply_action(BoardState& s, int action) {
+    int N = s.N, ns = s.num_stones;
+    bool ok = action == ns * N ? s.make_move(std::nullopt, std::nullopt) : s.make_move(action % N, action / N + 1);
+    if (!ok) throw std::runtime_error("self-play: illegal action " + std::to_string(action) + " at ply " +
+                                      std::to_string(s.ply_count()));
 }
 
-// Not thread-safe: uses the file-scope std::mt19937 rng to seed each MCTS instance.
-std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
-    std::map<int, Evaluator>& evaluators,
-    const std::vector<BoardState*>& states,
-    const nlohmann::json& descr,
-    int num_simulations,
-    int temperature_threshold,
-    float c_puct,
-    int verbosity,
-    const nlohmann::json* history_descr)
+SelfPlayRunner::SelfPlayRunner(const GameConfig& cfg, const BoardConfig& bc, nlohmann::json input_descr,
+                               const nlohmann::json* history_descr, SelfPlayParams params,
+                               SearchParams search_params, int num_games, uint64_t seed)
+    : cfg_(cfg), bc_(bc), input_descr_(std::move(input_descr)), history_descr_(history_descr),
+      params_(params), search_params_(search_params), rng_(seed)
 {
-    MCTS mcts(evaluators, c_puct, rng());
+    slots_.reserve(num_games);
+    for (int i = 0; i < num_games; i++) slots_.push_back(new_slot());
+}
 
-    std::vector<float> temps;
-    temps.reserve(states.size());
-    for (auto* s : states)
-        temps.push_back(s->ply_count() < temperature_threshold ? 1.0f : 0.0f);
+// A fresh game whose first floor(Exp(1) * policy_init_area_prop * N) moves are sampled from the raw
+// policy (KataGo's initGamesWithPolicy) for opening variety.
+SelfPlayRunner::Slot SelfPlayRunner::new_slot() {
+    Slot s{new_state(cfg_, bc_), {}, 0, {}};
+    std::exponential_distribution<double> exp1(1.0);
+    s.opening_moves_left = static_cast<int>(std::floor(exp1(rng_) * params_.policy_init_area_prop * bc_.N));
+    return s;
+}
 
-    auto t_search0 = std::chrono::high_resolution_clock::now();
-    auto [results, timing] = mcts.search_batch(
-        states, num_simulations,
-        NoiseConfig{/*add_noise=*/true, 0.3f, 0.25f}, temps);
-    double search_ms = std::chrono::duration<double, std::milli>(
-        std::chrono::high_resolution_clock::now() - t_search0).count();
-    timing.search = search_ms / 1000.0;
-
-    std::vector<PlyResult> ply_results;
-    ply_results.reserve(states.size());
-    for (int j = 0; j < (int)states.size(); j++) {
-        auto* s = states[j];
-        auto& [policy, move] = results[j];
-        auto [ft, mask] = board_to_features(*s, torch::kCPU, descr);
-        torch::Tensor hist_ft;
-        if (history_descr) hist_ft = board_to_features(*s, torch::kCPU, *history_descr).features;
-        int N = s->N, ns = s->num_stones;
-        // Decode the flat action (stone-major, matching MCTS::select()'s
-        // layout) into (stone, pos) - not knowable before the move, since a
-        // turn can now offer several stones.
-        std::optional<int> k, stone_opt;
-        if (move != ns * N) {
-            stone_opt = move / N + 1;
-            k         = move % N;
+FinishedGame SelfPlayRunner::finish(Slot& slot) {
+    resolve_row_counts(slot.plies, exact_pair_eval(slot.state).probs, bc_.N, params_, rng_);
+    json plies = json::array();
+    for (auto& p : slot.plies) {
+        json j;
+        j["move"] = p.move;
+        if (p.searched) {
+            j["search"] = p.search_pair_probs;
+            j["weight"] = p.row_count;
+            if (p.row_count > 0) j["policy"] = p.policy_target;
         }
+        plies.push_back(std::move(j));
+    }
+    GameRecord record = build_game_record(slot.plies, slot.state);
+    return FinishedGame{std::move(record), json{{"plies", std::move(plies)}}, std::move(slot.state)};
+}
 
-        if (verbosity >= 2) {
-            std::string move_str = (move == ns * N) ? "pass" : std::to_string(move);
-            std::cout << "  slot=" << j << " ply=" << s->ply_count()
-                      << " stone=" << stone_opt.value_or(0) << " move=" << move_str
-                      << " p=" << policy[move] << std::endl;
+std::vector<FinishedGame> SelfPlayRunner::step(const Evaluator& evaluator, MCTSTiming& timing) {
+    int N = bc_.N;
+    std::vector<int> opening, searching;
+    for (int i = 0; i < (int)slots_.size(); i++)
+        (slots_[i].opening_moves_left > 0 ? opening : searching).push_back(i);
+
+    auto history_of = [&](const BoardState& s) {
+        return history_descr_ ? board_to_features(s, torch::kCPU, *history_descr_).features : torch::Tensor();
+    };
+
+    if (!opening.empty()) {
+        std::vector<const BoardState*> states;
+        for (int i : opening) states.push_back(&slots_[i].state);
+        auto t0 = std::chrono::high_resolution_clock::now();
+        auto policy = evaluator.evaluate_batch(states).policy.to(torch::kCPU).contiguous();
+        timing.eval += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - t0).count();
+        auto pa = policy.accessor<float, 2>();
+        for (size_t j = 0; j < opening.size(); j++) {
+            Slot& slot = slots_[opening[j]];
+            int A = slot.state.num_stones * N + 1;
+            auto mask = board_to_features(slot.state, torch::kCPU, input_descr_).legal_mask;
+            auto ma = mask.accessor<bool, 1>();
+            std::vector<double> w(A, 0.0);
+            double total = 0.0;
+            for (int a = 0; a < A; a++)
+                if (ma[a] && pa[j][a] > 0) {
+                    w[a] = std::pow(static_cast<double>(pa[j][a]), 1.0 / params_.policy_init_temperature);
+                    total += w[a];
+                }
+            if (total <= 0.0) for (int a = 0; a < A; a++) w[a] = ma[a] ? 1.0 : 0.0;
+            std::discrete_distribution<int> dist(w.begin(), w.end());
+            PlyRecord rec;
+            rec.move = dist(rng_);
+            rec.history_features = history_of(slot.state);
+            apply_action(slot.state, rec.move);
+            slot.plies.push_back(std::move(rec));
+            slot.opening_moves_left--;
         }
-
-        bool ok = s->make_move(k, stone_opt);
-        if (!ok)
-            std::cerr << "MCTS returned illegal move: slot=" << j
-                      << " ply=" << s->ply_count() << " move=" << move << std::endl;
-
-        ply_results.push_back({ft, mask, hist_ft, std::move(policy), move, stone_opt.value_or(0)});
     }
 
-    return {std::move(ply_results), timing};
+    if (!searching.empty()) {
+        std::vector<BoardState*> states;
+        std::vector<RootSettings> settings;
+        std::vector<float> weights;
+        std::uniform_real_distribution<float> unif(0.0f, 1.0f);
+        for (int i : searching) {
+            Slot& slot = slots_[i];
+            int ply = slot.state.ply_count();
+            RootSettings rs;
+            rs.move_temperature = interpolate_early(params_.temperature_halflife, params_.move_temperature_early,
+                                                    params_.move_temperature, ply, N);
+            float weight = 1.0f;
+            if (unif(rng_) < params_.cheap_prob) {
+                rs.visits = params_.cheap_visits;
+                rs.fpu_reduction_max = search_params_.fpu_reduction_max;
+                weight = 0.0f;
+            } else {
+                rs.visits = params_.full_visits;
+                rs.noise = true;
+                rs.policy_temperature = interpolate_early(params_.temperature_halflife,
+                                                          params_.root_policy_temperature_early,
+                                                          params_.root_policy_temperature, ply, N);
+                rs.forced_playouts_coeff = params_.forced_playouts_coeff;
+                // KataGo's reduceVisits: once some player's search win term has stayed above the
+                // threshold for the last `lookback` plies, visits move toward reduced_visits_min and
+                // the weight toward reduced_visits_weight by the square of how far past it is.
+                int lookback = params_.reduce_visits_lookback;
+                if (params_.reduce_visits && (int)slot.recent_win.size() >= lookback) {
+                    float most_extreme = *std::min_element(slot.recent_win.end() - lookback, slot.recent_win.end());
+                    float through = std::min(most_extreme, 1.0f) - params_.reduce_visits_threshold;
+                    if (through > 0) {
+                        float r = through / (1.0f - params_.reduce_visits_threshold);
+                        r *= r;
+                        rs.visits = std::max(params_.reduced_visits_min, static_cast<int>(std::round(
+                            rs.visits + r * (params_.reduced_visits_min - rs.visits))));
+                        weight += r * (params_.reduced_visits_weight - weight);
+                    }
+                }
+            }
+            states.push_back(&slot.state);
+            settings.push_back(rs);
+            weights.push_back(weight);
+        }
+
+        MCTS mcts(evaluator, search_params_, rng_());
+        auto [results, t] = mcts.search(states, settings);
+        timing.eval += t.eval;
+        timing.select += t.select;
+        timing.simulate += t.simulate;
+        timing.teardown += t.teardown;
+        timing.search += t.search;
+
+        for (size_t j = 0; j < searching.size(); j++) {
+            Slot& slot = slots_[searching[j]];
+            SearchResult& res = results[j];
+            PlyRecord rec;
+            rec.move = res.move;
+            rec.searched = true;
+            auto ft = board_to_features(slot.state, torch::kCPU, input_descr_);
+            rec.features = ft.features;
+            rec.legal_mask = ft.legal_mask;
+            rec.history_features = history_of(slot.state);
+            rec.policy_surprise = policy_kl(res.policy_target, res.root_prior);
+            rec.policy_target = std::move(res.policy_target);
+            rec.search_pair_probs = std::move(res.pair_probs);
+            rec.nn_pair_probs = std::move(res.nn_pair_probs);
+            rec.target_weight = weights[j];
+            slot.recent_win.push_back(*std::max_element(res.win.begin(), res.win.end()));
+            apply_action(slot.state, rec.move);
+            slot.plies.push_back(std::move(rec));
+        }
+    }
+
+    std::vector<FinishedGame> finished;
+    for (auto& slot : slots_) {
+        if (!slot.state.game_over()) continue;
+        finished.push_back(finish(slot));
+        slot = new_slot();
+    }
+    return finished;
+}
+
+GameRecord replay_trajectory(const nlohmann::json& trajectory, const GameConfig& cfg, const BoardConfig& bc,
+                             const nlohmann::json& descr, const nlohmann::json* history_descr) {
+    BoardState state = new_state(cfg, bc);
+    // The game already finished once under its own move bound; a fresh linear_move_bound draw could
+    // be shorter and end the replay early.
+    state.max_plies = std::nullopt;
+    std::vector<PlyRecord> plies;
+    for (const auto& j : trajectory.at("plies")) {
+        PlyRecord p;
+        p.move = j.at("move").get<int>();
+        p.searched = j.contains("search");
+        if (history_descr) p.history_features = board_to_features(state, torch::kCPU, *history_descr).features;
+        if (p.searched) {
+            p.search_pair_probs = j.at("search").get<std::vector<float>>();
+            p.row_count = j.at("weight").get<int>();
+            if (p.row_count > 0) {
+                p.policy_target = j.at("policy").get<std::vector<float>>();
+                auto ft = board_to_features(state, torch::kCPU, descr);
+                p.features = ft.features;
+                p.legal_mask = ft.legal_mask;
+            }
+        }
+        apply_action(state, p.move);
+        plies.push_back(std::move(p));
+    }
+    return build_game_record(plies, state);
 }

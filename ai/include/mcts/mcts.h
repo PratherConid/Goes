@@ -1,102 +1,91 @@
 #pragma once
 #include "game/board_state.h"
 #include "model/evaluator.h"
-#include <vector>
-#include <unordered_map>
-#include <map>
+#include "mcts/utility.h"
 #include <memory>
-#include <optional>
 #include <random>
-#include <tuple>
+#include <vector>
 
 struct MCTSTiming {
-    double eval = 0.0;
-    double select = 0.0;
-    double simulate = 0.0;  // wall time for the simulation loop
-    double teardown = 0.0;  // wall time to destroy the search trees + history managers
-    double search = 0.0;    // wall time for the full search_batch call
-    MCTSTiming& add(const MCTSTiming& o) { eval += o.eval; select += o.select; return *this; }
+    double eval = 0.0;      // network evaluation (roots and leaves)
+    double select = 0.0;    // tree descent
+    double simulate = 0.0;  // the whole simulation loop
+    double teardown = 0.0;  // destroying the search trees
+    double search = 0.0;    // the whole search() call
 };
 
-struct MCTSNode {
-    BoardState state;
-    std::vector<float> prior;        // (num_stones*N+1,) from model policy, stone-major + pass
-    std::vector<int>   visit_count;  // (num_stones*N+1,)
-    std::vector<float> total_value;  // (num_stones*N+1,)
-    std::unordered_map<int, std::unique_ptr<MCTSNode>> children;
-    bool is_expanded = false;
-    // This node's per-player reward estimate when first evaluated (terminal value via
-    // compute_player_rewards, or derived from the model's ownership output via
-    // estimate_player_rewards()). nullopt until the node is evaluated as a leaf / root. Counted
-    // as one visit of q_values()'s value for unvisited actions; also DBG_PRINT_TREE's dump.
-    std::optional<std::unordered_map<int,float>> reward_estimate;
+// Settings shared by every root of a search - the subset of KataGo's SearchParams that Goes ports
+// (see ai/Readme.md's "Search"). self_play() holds KataGo's self-play values
+// (cpp/configs/training/selfplay1.cfg); server() holds the values KataGo plays with outside
+// self-play (cpp/program/setup.cpp's defaults) - only the parameter values, nothing of its protocol.
+struct SearchParams {
+    float cpuct = 1.1f;              // cpuctExploration
+    float cpuct_log = 0.0f;          // cpuctExplorationLog - cpuct grows as log((N + base) / base)
+    float cpuct_base = 500.0f;       // cpuctExplorationBase
+    float fpu_reduction_max = 0.2f;  // non-root first-play urgency reduction
+    float fpu_parent_weight_pow = 2.0f;  // fpuParentWeightByVisitedPolicyPow
+    UtilityParams utility;
+    float noise_total_concentration = 10.83f;  // rootDirichletNoiseTotalConcentration
+    float noise_weight = 0.25f;                // rootDirichletNoiseWeight
+    float lcb_stdevs = 5.0f;
+    float min_visit_prop_for_lcb = 0.15f;
+    bool lcb_for_move = false;  // false: LCB shapes only the policy target, as KataGo's self-play does
+    float chosen_move_prune = 1.0f;
+    // Visits searched before the dynamic score centre is re-read from the root's own search
+    // average (KataGo's short pre-search after clearing the tree).
+    int center_presearch_visits = 10;
 
-    MCTSNode(BoardState s, std::vector<float> p);
-
-    std::vector<float> q_values() const;
-    std::vector<float> ucb_scores(float c_puct) const;
+    static SearchParams self_play();
+    static SearchParams server();
 };
 
-// Dirichlet root-noise settings for search_batch (self-play exploration).
-struct NoiseConfig {
-    bool  add_noise       = false;  // add Dirichlet noise to root priors
-    float dirichlet_alpha = 0.3f;   // Dirichlet concentration
-    float noise_weight    = 0.25f;  // mixing weight of noise into the prior
+// Per-root settings, so one batched search can mix KataGo's full and cheap searches.
+struct RootSettings {
+    int visits = 600;                     // root visits to reach, including the root's own evaluation
+    bool noise = false;                   // Dirichlet root noise
+    float policy_temperature = 1.0f;      // root policy raised to 1/T before noise
+    float fpu_reduction_max = 0.0f;       // rootFpuReductionMax
+    float forced_playouts_coeff = 0.0f;   // rootDesiredPerChildVisitsCoeff
+    float move_temperature = 0.0f;        // temperature on the play-selection values; ~0 = argmax
 };
 
-// AlphaZero-style MCTS.
-//
-// Value convention: each node stores Q-values from the perspective of the player
-// whose turn it is at that node. Backup does not negate - instead it looks up the
-// per-player reward map and reads the value for each node's own player. Terminal
-// rewards come from compute_player_rewards(); model leaves contribute only the value
-// for the leaf's current player (others get 0 for that simulation).
-//
-// Each root's tree is searched with one model throughout: the root mover's own
-// (models.at(root->player_model_id[next_turn.player-1])), which also stands in for the
-// opponents at their nodes. A game between different models is then a contest of each model's
-// own search - routing an opponent's nodes to the opponent's model instead would let each
-// search consult the other side's network, so tournament results would measure that mixture
-// rather than either model.
+// One root's search outcome. Action vectors are dense over num_stones*N+1 actions (stone-major,
+// num_stones*N = pass - see ai/Readme.md's "Policy Head and Action Space").
+struct SearchResult {
+    std::vector<float> policy_target;  // normalized play-selection values (pruned, LCB-adjusted)
+    int move = 0;
+    std::vector<float> root_prior;     // policy the root was searched with (tempered, noised)
+    std::vector<float> utility;        // per player, search average
+    std::vector<float> win;            // per player, search average of the win term
+    std::vector<float> pair_probs;     // num_rank_pairs*3, search average
+    std::vector<float> nn_pair_probs;  // num_rank_pairs*3, the root's own network evaluation
+    int visits = 0;
+};
+
+// KataGo's interpolateEarly(): `late` + (`early` - `late`) * 0.5^(ply/halflife * 19/sqrt(N)) - a
+// schedule that decays with the move number, faster on larger boards.
+float interpolate_early(float halflife, float early, float late, int ply, int N);
+
+struct MCTSNode;
+
+// Batched MCTS over independent roots. Every simulation step descends one path per unfinished root,
+// evaluates all new leaves in one network call, and backs each leaf's value up its own path.
 class MCTS {
 public:
-    // models: model id -> Evaluator (see BoardState::player_model_id's doc comment).
-    MCTS(std::map<int, Evaluator> models, float c_puct, uint64_t seed = 42);
+    MCTS(Evaluator evaluator, SearchParams params, uint64_t seed);
 
-    // Move-count truncation is read per-state from BoardState::max_plies
-    // (propagated to every node of a game's own search tree via copy() /
-    // copy_with_hm()), not passed in here.
-    std::pair<std::vector<std::pair<std::vector<float>, int>>, MCTSTiming> search_batch(
-        std::vector<BoardState*> states,
-        int num_simulations = 200,
-        NoiseConfig noise_cfg = {},
-        std::vector<float> temperatures = {});
+    // All states must share one game config and board, and none may be game-over.
+    std::pair<std::vector<SearchResult>, MCTSTiming> search(
+        const std::vector<BoardState*>& states, const std::vector<RootSettings>& settings);
 
 private:
-    std::map<int, Evaluator> models_;
-    float c_puct_;
+    Evaluator evaluator_;
+    SearchParams params_;
     std::mt19937 rng_;
 
-    // Evaluates states[i] with models_.at(model_ids[i]) - one sub-batch per distinct model, then
-    // rearranges the per-model results back into one full-size ModelOutput in the caller's
-    // original order, so callers don't need to know how many distinct models were involved.
-    ModelOutput evaluate_batch(
-        const std::vector<const BoardState*>& states, const std::vector<int>& model_ids);
-
-    // Returns (path, leaf, per-player-rewards-or-nullopt)
-    std::tuple<std::vector<std::pair<MCTSNode*, int>>,
-               MCTSNode*,
-               std::optional<std::unordered_map<int,float>>>
-    select(MCTSNode* root);
-
-    MCTSTiming simulate_batch(const std::vector<MCTSNode*>& roots, const std::vector<int>& root_model_ids);
-    void backup(const std::vector<std::pair<MCTSNode*, int>>& path,
-                const std::unordered_map<int,float>& rewards);
-
-    static std::pair<std::vector<float>, int>
-    visit_counts_to_policy(const std::vector<int>& vc, float temperature,
-                           std::mt19937& rng);
-
-    static std::vector<bool> legal_mask(const BoardState& state);
-    std::vector<float> dirichlet_sample(int n, float alpha);
+    double explore_scaling(double total_child_visits) const;
+    int choose_child(const MCTSNode& node, bool is_root, const RootSettings& root_settings) const;
+    std::vector<double> play_selection_values(const MCTSNode& root, bool use_lcb) const;
+    void add_root_noise(std::vector<float>& prior);
+    int choose_with_temperature(const std::vector<double>& values, float temperature);
 };

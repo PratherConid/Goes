@@ -94,36 +94,6 @@ std::vector<std::vector<std::optional<int>>> resolve_player_stone_place_limit(
 std::vector<std::optional<int>> resolve_global_stone_place_limit(
     const std::vector<std::optional<int>>& limit, int num_stones);
 
-// Per-ply result: features captured before the move, plus the chosen move.
-struct PlyResult {
-    torch::Tensor features;
-    torch::Tensor legal_mask;
-    // Minimal per-ply history features (TransformerConfig::history_descr's descriptor) - only
-    // populated for a Transformer run (see generate_one_ply_per_game()/trajectory_to_record()'s
-    // history_descr parameter); left default-constructed (undefined) otherwise. Used only when
-    // this ply later falls in some later-sampled ply's history prefix (ReplayBuffer::
-    // sample_with_history()) - never read when this ply itself is the sampled "current" one,
-    // which always uses `features` (the full descriptor) instead.
-    torch::Tensor history_features;
-    std::vector<float> policy;
-    int move;    // flat MCTS action index (stone-major: (stone-1)*N+pos for a
-                 // placement, numStones*N for pass) - see Policy Head and
-                 // Action Space in ai/Readme.md.
-    int stone;   // stone actually placed (1-indexed); 0 = pass. Decoded from
-                 // `move` after MCTS picks it - a turn can now offer several
-                 // stones, so this isn't knowable beforehand.
-
-    // move/stone/policy only - features/legal_mask/history_features are never persisted (large
-    // per-node tensors; not needed for the trajectory dump - see train.cpp -
-    // which exists for human inspection via analysis.py, not replay).
-    nlohmann::json to_json() const;
-};
-
-// Inverse of PlyResult::to_json() - move/stone/policy only; features/legal_mask/history_features
-// are left default-constructed (undefined) torch::Tensors, since those are
-// never part of the dumped JSON to begin with.
-PlyResult parse_ply_result(const nlohmann::json& j);
-
 // Builds the full self-describing feature-block descriptor for a fresh
 // training run - the JSON stored as ModelConfig::input_descr (model/model_config.h),
 // consumed by board_to_features() (model/features.h). Call exactly once, at
@@ -154,80 +124,93 @@ nlohmann::json compute_input_descr(const GameConfig& cfg, int N);
 // Create a fresh starting board state for a game.
 BoardState new_state(const GameConfig& cfg, const BoardConfig& bc);
 
-// Convert a completed game's trajectory to a single GameRecord with per-ply
-// tensors stacked along a new leading dimension, plus the ground truth shared by
-// the whole game, all taken from `final_state` (the game's last BoardState):
-// stone_owner/territory_owner from its board and ScoreData::territory_owner -
-// both already stone-type indexed, matching the network's ownership head (see
-// evaluator.h) - and rank_target from its compute_player_totals() (see
-// GameRecord::rank_target). Use this when the trajectory's PlyResults already
-// carry features/legal_mask (i.e. straight from self-play, not round-tripped
-// through PlyResult::to_json()/parse_ply_result()).
-GameRecord trajectory_and_result_to_record(const std::vector<PlyResult>& trajectory, const BoardState& final_state);
+// KataGo's self-play settings (its PlaySettings) that Goes ports - defaults are KataGo's
+// cpp/configs/training/selfplay1.cfg values. See ai/Readme.md's "Self-Play".
+struct SelfPlayParams {
+    int full_visits = 600;                  // maxVisits
+    int cheap_visits = 100;                 // cheapSearchVisits
+    float cheap_prob = 0.75f;               // cheapSearchProb - cheap searches are not trained on
+    bool reduce_visits = true;              // fewer visits and less weight once a game is decided
+    float reduce_visits_threshold = 0.9f;   // search win term some player must stay above...
+    int reduce_visits_lookback = 3;         // ...for this many consecutive searched plies
+    int reduced_visits_min = 100;
+    float reduced_visits_weight = 0.1f;
+    float policy_surprise_data_weight = 0.5f;
+    float value_surprise_data_weight = 0.1f;
+    float policy_init_area_prop = 0.04f;    // mean opening moves sampled from the raw policy, per node
+    float policy_init_temperature = 1.0f;
+    float move_temperature_early = 0.75f;   // chosenMoveTemperatureEarly
+    float move_temperature = 0.15f;         // chosenMoveTemperature
+    float temperature_halflife = 19.0f;     // chosenMoveTemperatureHalflife
+    float root_policy_temperature_early = 1.25f;
+    float root_policy_temperature = 1.1f;
+    float forced_playouts_coeff = 2.0f;     // rootDesiredPerChildVisitsCoeff
+};
 
-// Reconstructs a GameRecord from a trajectory whose PlyResults only carry
-// move/stone/policy - e.g. parsed back from a trajectory dump via
-// parse_ply_result(), which never has features/legal_mask or a final board
-// state (see PlyResult::to_json()). Replays the moves through a fresh
-// BoardState (built from cfg/bc) to regenerate each ply's features/legal_mask
-// via board_to_features() (descr must match whatever descriptor the original
-// game was actually recorded under - a mismatch produces a differently-shaped
-// or differently-populated tensor, not necessarily a crash) and to reach the
-// game's final state, then delegates to
-// trajectory_and_result_to_record(). Used by train.cpp's resume() to rebuild
-// ReplayBuffer state from historical trajectory dumps.
-//
-// history_descr, when non-null, additionally regenerates each ply's minimal history features
-// (PlyResult::history_features) via a second board_to_features() call under that descriptor -
-// used only for a Transformer run (pass TransformerConfig::history_descr; null for every other
-// architecture, leaving history_features undefined).
-//
-// Always builds features/legal_mask on CPU - ReplayBuffer entries live on
-// CPU regardless of the training device, and only get moved to GPU (if any)
-// for the duration of one sampled training batch (see train.cpp's training
-// loop) - self-play/MCTS itself never reads these particular tensors (they're
-// built purely for storage; MCTS evaluation uses its own, separately-placed
-// features - see generate_one_ply_per_game()).
-GameRecord trajectory_to_record(
-    const std::vector<PlyResult>& trajectory,
-    const GameConfig& cfg,
-    const BoardConfig& bc,
-    const nlohmann::json& descr,
-    const nlohmann::json* history_descr = nullptr);
+// One ply of a game in progress.
+struct PlyRecord {
+    int move = 0;                            // flat action (stone-major, num_stones*N = pass)
+    bool searched = false;                   // false: an opening move sampled from the raw policy
+    std::vector<float> policy_target;        // searched plies: the search's policy target
+    std::vector<float> search_pair_probs;    // searched plies: the root's search-averaged pair outcomes
+    std::vector<float> nn_pair_probs;        // searched plies: the root's network pair outcomes
+    float target_weight = 0.0f;              // before surprise reweighting
+    float policy_surprise = 0.0f;            // KL(policy_target || root prior)
+    int row_count = 0;                       // resolved training multiplicity
+    torch::Tensor features, legal_mask;      // searched plies, CPU, captured before the move
+    torch::Tensor history_features;          // every ply, Transformer runs only
+};
 
-// Produce one training record per active game: run batched MCTS on all states,
-// capture board features before the move, then apply the chosen move in place.
+// Builds a finished game's GameRecord: rows are the searched plies with row_count > 0, each with
+// the blended pair-outcome target (see ai/Readme.md's "Value Targets"); stone/territory ownership
+// comes from final_state.
+GameRecord build_game_record(const std::vector<PlyRecord>& plies, const BoardState& final_state);
+
+struct FinishedGame {
+    GameRecord record;
+    nlohmann::json trajectory;  // {"plies": [...]} - see SelfPlayRunner's trajectory format
+    BoardState final_state;
+};
+
+// A pool of concurrent self-play games. Each step() plays one ply in every game - an opening move
+// sampled from the raw policy, or a batched search (cheap or full, see SelfPlayParams) - and
+// returns the games that just finished, each slot immediately restarting with a fresh game.
 //
-// Call only on states that are not yet game-over. After returning, check each
-// state for game_over() (which now also covers its own max_plies, if set) to
-// detect finished games and collect their trajectories.
-//
-// Dirichlet noise is always added to root priors for self-play exploration.
-// temperature_threshold maps to the MCTS temperature parameter: plies before the
-// threshold use temperature=1 (sampling proportional to visit counts); at or
-// after it, temperature=0 (argmax).
-//
-// verbosity >=2: one line per ply plus a timing summary per batch.
-//
-// The returned PlyResults' features/legal_mask are always built on CPU (see
-// trajectory_to_record()'s doc comment) - `evaluators` (not a device param
-// here) already carry their own models' devices internally, and are all MCTS
-// itself needs for evaluation; these particular tensors exist only to be
-// stored into the replay buffer via the caller's trajectory_and_result_to_record().
-//
-// evaluators: model id -> Evaluator, keyed to match BoardState::player_model_id (each state in
-// `states` is searched by the model its own next_turn.player is assigned to - see MCTS's class
-// comment). Copied into the MCTS instance constructed internally.
-//
-// history_descr, when non-null, additionally captures each ply's minimal history features
-// (PlyResult::history_features) via a second board_to_features() call under that descriptor -
-// used only for a Transformer run (see trajectory_to_record()'s matching parameter).
-std::pair<std::vector<PlyResult>, MCTSTiming> generate_one_ply_per_game(
-    std::map<int, Evaluator>& evaluators,
-    const std::vector<BoardState*>& states,
-    const nlohmann::json& descr,
-    int num_simulations,
-    int temperature_threshold,
-    float c_puct,
-    int verbosity = 0,
-    const nlohmann::json* history_descr = nullptr);
+// Trajectory format, one object per game: {"plies": [ply, ...]} (train.cpp adds "model": the
+// iteration of the model that played it, -1 = uniform evaluator), where an opening ply is
+// {"move": a} and a searched ply is {"move": a, "search": [num_rank_pairs*3 floats], "weight": w}
+// plus "policy": [num_stones*N+1 floats] when w > 0 - everything replay_trajectory() needs to
+// rebuild the game's GameRecord exactly.
+class SelfPlayRunner {
+public:
+    SelfPlayRunner(const GameConfig& cfg, const BoardConfig& bc, nlohmann::json input_descr,
+                   const nlohmann::json* history_descr, SelfPlayParams params, SearchParams search_params,
+                   int num_games, uint64_t seed);
+
+    std::vector<FinishedGame> step(const Evaluator& evaluator, MCTSTiming& timing);
+
+private:
+    struct Slot {
+        BoardState state;
+        std::vector<PlyRecord> plies;
+        int opening_moves_left = 0;
+        std::vector<float> recent_win;  // per searched ply, the best player's search win term
+    };
+
+    const GameConfig& cfg_;
+    const BoardConfig& bc_;
+    nlohmann::json input_descr_;
+    const nlohmann::json* history_descr_;
+    SelfPlayParams params_;
+    SearchParams search_params_;
+    std::mt19937_64 rng_;
+    std::vector<Slot> slots_;
+
+    Slot new_slot();
+    FinishedGame finish(Slot& slot);
+};
+
+// Rebuilds a finished game's GameRecord from its trajectory (SelfPlayRunner's format) by replaying
+// its moves through a fresh BoardState - used by --resume/--retrain to refill the training window.
+GameRecord replay_trajectory(const nlohmann::json& trajectory, const GameConfig& cfg, const BoardConfig& bc,
+                             const nlohmann::json& descr, const nlohmann::json* history_descr);

@@ -1,508 +1,485 @@
 #include "mcts/mcts.h"
-#include <cmath>
-#include <chrono>
-#include <numeric>
+#include "model/rank_head.h"
 #include <algorithm>
-#include <iostream>
-#include <string>
-#include <fstream>
-#include <filesystem>
+#include <chrono>
+#include <cmath>
+#include <functional>
+#include <limits>
 #include <omp.h>
-#include "nlohmann/json.hpp"
 
-// Debug toggle: when true, search_batch prints each root's MCTS subtree as JSON.
-#define DBG_PRINT_TREE false
-
-using json = nlohmann::json;
-
-// Each state's own capture counts, one row per state - see estimate_player_rewards().
-static std::vector<std::vector<int>> capture_counts_of(const std::vector<const BoardState*>& states) {
-    std::vector<std::vector<int>> counts;
-    counts.reserve(states.size());
-    for (const BoardState* s : states) counts.push_back(s->capture_count());
-    return counts;
+using Clock = std::chrono::high_resolution_clock;
+static double seconds_since(Clock::time_point t0) {
+    return std::chrono::duration<double>(Clock::now() - t0).count();
 }
 
-// Recursively serialise an MCTS node and its subtree to JSON.
-//   "move"           action taken from the parent state (omitted for the root)
-//   "visit_count"    N(parent, move): visits to the edge into this node (non-root)
-//   "total_value"    W(parent, move): summed backup value of that edge (non-root)
-//   "prior"          P(parent, move): model policy prior for that edge (non-root)
-//   "board"          current board stones (root only)
-//   "last_move"      description of the move that produced this state (root only)
-//   "ply"            ply number of this node's state
-//   "value_estimate" per-player reward estimate (empty if not yet evaluated)
-//   "subtree"        list of child nodes
-static json mcts_node_to_json(const MCTSNode* node, std::optional<int> move,
-                              int visit_count, float total_value, float prior) {
-    json j;
-    if (move.has_value()) {
-        j["move"] = move.value();
-        j["visit_count"] = visit_count;
-        j["total_value"] = total_value;
-        j["prior"] = prior;
-    } else {
-        // Only the root is serialised with no move from a parent; record the
-        // board and the move that produced this state instead.
-        j["board"] = node->state.board;
-        j["last_move"] = move_to_string(node->state.last_move());
+SearchParams SearchParams::self_play() { return SearchParams{}; }
+
+SearchParams SearchParams::server() {
+    SearchParams p;
+    p.cpuct = 1.0f;
+    p.cpuct_log = 0.45f;
+    p.utility.static_score_factor = 0.1f;
+    p.utility.dynamic_score_factor = 0.3f;
+    p.utility.dynamic_center_zero_weight = 0.2f;
+    p.utility.dynamic_center_scale = 0.75f;
+    p.lcb_for_move = true;
+    return p;
+}
+
+float interpolate_early(float halflife, float early, float late, int ply, int N) {
+    double halflives = static_cast<double>(ply) / halflife * 19.0 / std::sqrt(static_cast<double>(N));
+    return static_cast<float>(late + (early - late) * std::pow(0.5, halflives));
+}
+
+// ── Nodes ─────────────────────────────────────────────────────────────────────
+
+// A position's own evaluation: the network's (or, for a terminal position, the exact) pair
+// evaluation and the per-player utility/win term it implies under its root's score centres.
+struct LeafEval {
+    PairEval pair;
+    std::vector<float> utility, win;
+};
+
+struct MCTSNode {
+    BoardState state;
+    bool evaluated = false;
+    bool terminal = false;
+    std::vector<int> actions;                         // legal actions
+    std::vector<float> prior;                         // aligned with actions
+    std::vector<std::unique_ptr<MCTSNode>> children;  // aligned with actions; null = never visited
+    LeafEval own;
+    // Sums over every visit of this node's subtree, its own evaluation counted as the first.
+    int visits = 0;
+    std::vector<double> utility_sum, utility_sq_sum, win_sum, pair_sum, diff_sum;
+
+    explicit MCTSNode(BoardState s) : state(std::move(s)) {}
+
+    void add(const LeafEval& v) {
+        if (utility_sum.empty()) {
+            utility_sum.assign(v.utility.size(), 0.0);
+            utility_sq_sum.assign(v.utility.size(), 0.0);
+            win_sum.assign(v.win.size(), 0.0);
+            pair_sum.assign(v.pair.probs.size(), 0.0);
+            diff_sum.assign(v.pair.diff.size(), 0.0);
+        }
+        visits++;
+        for (size_t p = 0; p < v.utility.size(); p++) {
+            utility_sum[p] += v.utility[p];
+            utility_sq_sum[p] += static_cast<double>(v.utility[p]) * v.utility[p];
+            win_sum[p] += v.win[p];
+        }
+        for (size_t k = 0; k < v.pair.probs.size(); k++) pair_sum[k] += v.pair.probs[k];
+        for (size_t k = 0; k < v.pair.diff.size(); k++) diff_sum[k] += v.pair.diff[k];
     }
-    j["ply"] = node->state.ply_count();
-    json ve = json::object();
-    if (node->reward_estimate.has_value())
-        for (const auto& [player, val] : *node->reward_estimate)
-            ve[std::to_string(player)] = val;
-    j["value_estimate"] = std::move(ve);
-    json sub = json::array();
-    for (const auto& [action, child] : node->children)
-        sub.push_back(mcts_node_to_json(child.get(), action,
-                          node->visit_count[action], node->total_value[action],
-                          node->prior[action]));
-    j["subtree"] = std::move(sub);
-    return j;
+
+    double mean_utility(int player_idx) const { return utility_sum[player_idx] / visits; }
+};
+
+static std::vector<int> legal_actions(const BoardState& s) {
+    int N = s.N, ns = s.num_stones;
+    std::vector<int> a;
+    for (int st = 1; st <= ns; st++)
+        for (int i = 0; i < N; i++)
+            if (s.legal_moves_data().captures[st][i].has_value()) a.push_back((st - 1) * N + i);
+    if (!s.game_over() && (!s.forced_pass_only || s.no_trad_legal())) a.push_back(ns * N);
+    return a;
 }
 
-// ── MCTSNode ──────────────────────────────────────────────────────────────────
-
-MCTSNode::MCTSNode(BoardState s, std::vector<float> p)
-    : state(std::move(s)),
-      prior(std::move(p)),
-      visit_count(state.N * state.num_stones + 1, 0),
-      total_value(state.N * state.num_stones + 1, 0.0f)
-{}
-
-// An unvisited action's Q is this node's own running mean value for its mover: its first
-// evaluation (reward_estimate) counted as one visit, plus every reward backed up through it.
-std::vector<float> MCTSNode::q_values() const {
-    float sum_value = std::accumulate(total_value.begin(), total_value.end(), 0.0f);
-    int sum_visits = std::accumulate(visit_count.begin(), visit_count.end(), 0);
-    if (reward_estimate.has_value()) {
-        auto rit = reward_estimate->find(state.next_turn.player);
-        sum_value += (rit != reward_estimate->end()) ? rit->second : 0.0f;
-        sum_visits += 1;
-    }
-    float unvisited_q = sum_visits > 0 ? sum_value / sum_visits : 0.0f;
-
-    std::vector<float> q(visit_count.size());
-    for (size_t i = 0; i < q.size(); i++)
-        q[i] = visit_count[i] > 0 ? total_value[i] / visit_count[i] : unvisited_q;
-    return q;
+static void apply_action(BoardState& s, int action) {
+    int N = s.N, ns = s.num_stones;
+    if (action == ns * N) s.make_move(std::nullopt, std::nullopt);
+    else s.make_move(action % N, action / N + 1);
 }
 
-std::vector<float> MCTSNode::ucb_scores(float c_puct) const {
-    int total = std::accumulate(visit_count.begin(), visit_count.end(), 0);
-    float sqrt_total = std::sqrt(static_cast<float>(total + 1));
-    auto q = q_values();
-    std::vector<float> scores(q.size());
-    for (size_t i = 0; i < scores.size(); i++)
-        scores[i] = q[i] + c_puct * prior[i] * sqrt_total / (1.0f + visit_count[i]);
-    return scores;
-}
+struct RootCtx {
+    MCTSNode* root = nullptr;
+    RootSettings settings;
+    std::vector<float> centers;  // dynamic score centre per pair
+    bool recentered = false;
+};
 
 // ── MCTS ─────────────────────────────────────────────────────────────────────
 
-MCTS::MCTS(std::map<int, Evaluator> models, float c_puct, uint64_t seed)
-    : models_(std::move(models)), c_puct_(c_puct),
-      rng_(static_cast<unsigned>(seed))
-{}
+MCTS::MCTS(Evaluator evaluator, SearchParams params, uint64_t seed)
+    : evaluator_(std::move(evaluator)), params_(params), rng_(static_cast<std::mt19937::result_type>(seed)) {}
 
-ModelOutput MCTS::evaluate_batch(
-    const std::vector<const BoardState*>& states, const std::vector<int>& model_ids) {
-    // model id -> indices into `states` that model evaluates.
-    std::map<int, std::vector<int>> groups;
-    for (int i = 0; i < (int)states.size(); i++) groups[model_ids[i]].push_back(i);
-
-    ModelOutput out;
-    for (auto& [model_id, idxs] : groups) {
-        std::vector<const BoardState*> sub;
-        sub.reserve(idxs.size());
-        for (int i : idxs) sub.push_back(states[i]);
-
-        ModelOutput sub_out = models_.at(model_id).evaluate_batch(sub);
-
-        if (!out.policy.defined()) {
-            // Allocate the full-size result tensors once we know shape/dtype/device, from the
-            // first group's sub-batch - every model in one run is assumed to share a device.
-            auto full = [&](const torch::Tensor& t) {
-                auto sizes = t.sizes().vec();
-                sizes[0] = (int64_t)states.size();
-                return torch::empty(sizes, t.options());
-            };
-            out.policy = full(sub_out.policy);
-            out.ownership = full(sub_out.ownership);
-            out.rank = full(sub_out.rank);
-        }
-
-        // index_copy_ requires the index tensor to be on the same device as the tensor it's
-        // writing into - torch::tensor(idxs, torch::kLong) alone defaults to CPU, which throws
-        // ("Expected all tensors to be on the same device") once policy/ownership live on CUDA.
-        auto idx_t = torch::tensor(idxs, torch::TensorOptions().dtype(torch::kLong).device(out.policy.device()));
-        out.policy.index_copy_(0, idx_t, sub_out.policy);
-        out.ownership.index_copy_(0, idx_t, sub_out.ownership);
-        out.rank.index_copy_(0, idx_t, sub_out.rank);
-    }
-    return out;
+double MCTS::explore_scaling(double total_child_visits) const {
+    double cpuct = params_.cpuct
+        + params_.cpuct_log * std::log((total_child_visits + params_.cpuct_base) / params_.cpuct_base);
+    return cpuct * std::sqrt(total_child_visits + 0.01);
 }
 
-std::vector<float> MCTS::dirichlet_sample(int n, float alpha) {
-    std::gamma_distribution<float> gamma(alpha, 1.0f);
-    std::vector<float> v(n);
-    float sum = 0.0f;
-    for (float& x : v) { x = gamma(rng_); sum += x; }
-    for (float& x : v) x /= sum;
+// PUCT over a node's legal actions, from the mover's perspective. An unvisited child is valued at
+// the first-play urgency: the parent's value - its search average blended toward its own
+// evaluation the less of its prior mass has been visited - minus fpu_reduction_max *
+// sqrt(visited prior mass). At the root, a child below its forced-playout floor
+// sqrt(coeff * prior * total visits) is always taken first.
+int MCTS::choose_child(const MCTSNode& node, bool is_root, const RootSettings& root_settings) const {
+    int m = node.state.next_turn.player - 1;
+    int L = static_cast<int>(node.actions.size());
+    double total = 0.0, visited_mass = 0.0;
+    for (int k = 0; k < L; k++)
+        if (node.children[k] && node.children[k]->visits > 0) {
+            total += node.children[k]->visits;
+            visited_mass += node.prior[k];
+        }
+    double avg_weight = std::min(1.0, std::pow(visited_mass, static_cast<double>(params_.fpu_parent_weight_pow)));
+    double parent_for_fpu = avg_weight * node.mean_utility(m) + (1.0 - avg_weight) * node.own.utility[m];
+    double reduction_max = is_root ? root_settings.fpu_reduction_max : params_.fpu_reduction_max;
+    double fpu = parent_for_fpu - reduction_max * std::sqrt(visited_mass);
+    double scale = explore_scaling(total);
+    double forced_coeff = is_root ? root_settings.forced_playouts_coeff : 0.0f;
+
+    int best = 0;
+    double best_value = -std::numeric_limits<double>::infinity();
+    for (int k = 0; k < L; k++) {
+        const MCTSNode* child = node.children[k].get();
+        double n = child ? child->visits : 0.0;
+        double value;
+        if (forced_coeff > 0.0 && node.prior[k] > 0.0f && n < std::sqrt(node.prior[k] * total * forced_coeff))
+            value = 1e20;
+        else
+            value = (n > 0 ? child->mean_utility(m) : fpu) + scale * node.prior[k] / (1.0 + n);
+        if (value > best_value) { best_value = value; best = k; }
+    }
+    return best;
+}
+
+// Root play-selection values, aligned with root.actions: each visited child's visit count, then
+// (1) every child but the most stably explored one cut back to the visits PUCT would have given it
+// had it known the final values (KataGo's policy target pruning - this removes forced playouts),
+// (2) with use_lcb, the child with the best lower confidence bound raised enough to outrank every
+// child it beats on LCB, and (3) values below chosen_move_prune (capped at max/64) zeroed.
+std::vector<double> MCTS::play_selection_values(const MCTSNode& r, bool use_lcb) const {
+    int L = static_cast<int>(r.actions.size());
+    int m = r.state.next_turn.player - 1;
+    std::vector<double> v(L, 0.0);
+    double total = 0.0, best_goodness = -1e30;
+    int best = -1;
+    for (int k = 0; k < L; k++) {
+        const MCTSNode* c = r.children[k].get();
+        if (!c || c->visits <= 0) continue;
+        double n = c->visits;
+        v[k] = n;
+        total += n;
+        double g = n * std::max(0.0, n - 1.0) / std::max(1.0, n) + 2.0 * r.prior[k];
+        if (g > best_goodness) { best_goodness = g; best = k; }
+    }
+
+    if (best >= 0) {
+        double scale = explore_scaling(total);
+        double best_weight = v[best];
+        double best_value = r.children[best]->mean_utility(m) + scale * r.prior[best] / (1.0 + best_weight);
+        for (int k = 0; k < L; k++) {
+            if (k == best || v[k] <= 0) continue;
+            double explore = best_value - r.children[k]->mean_utility(m);
+            double wanted = explore <= 0 ? 1e100 : std::max(0.0, scale * r.prior[k] / explore - 1.0);
+            v[k] = std::ceil(std::min(v[k], wanted));
+        }
+
+        if (use_lcb) {
+            double radius_range = params_.utility.radius();
+            std::vector<double> lcb(L, -1e10), radius(L, 0.0);
+            double best_lcb = -1e10;
+            int best_lcb_idx = -1;
+            for (int k = 0; k < L; k++) {
+                const MCTSNode* c = r.children[k].get();
+                if (!c || c->visits <= 0) continue;
+                // Utility mean/variance with KataGo's small max-variance prior, so few-visit
+                // children get wide bounds.
+                double n = c->visits;
+                double avg = c->mean_utility(m);
+                double sq = std::max(c->utility_sq_sum[m] / n, avg * avg + 1e-8);
+                double prior_w = n / (n * n * n);
+                sq = (sq * n + (sq + radius_range * radius_range) * prior_w) / (n + prior_w);
+                double w = n + prior_w, w_sq = n + prior_w * prior_w;
+                double ess = w * w / w_sq;
+                radius[k] = std::sqrt(std::max(0.0, sq - avg * avg) / ess) * params_.lcb_stdevs;
+                lcb[k] = avg - radius[k];
+                if (v[k] > 0 && v[k] >= params_.min_visit_prop_for_lcb * best_weight && lcb[k] > best_lcb) {
+                    best_lcb = lcb[k];
+                    best_lcb_idx = k;
+                }
+            }
+            if (best_lcb_idx >= 0) {
+                double adjusted = v[best_lcb_idx];
+                for (int k = 0; k < L; k++) {
+                    if (k == best_lcb_idx || v[k] <= 0) continue;
+                    double excess = best_lcb - lcb[k];
+                    if (excess < 0) continue;
+                    double factor = (radius[k] + excess) / (radius[k] + 0.2 * excess);
+                    adjusted = std::max(adjusted, factor * factor * v[k]);
+                }
+                v[best_lcb_idx] = adjusted;
+            }
+        }
+    }
+
+    double max_v = *std::max_element(v.begin(), v.end());
+    if (max_v <= 1e-50) {
+        for (int k = 0; k < L; k++) v[k] = r.prior[k];
+        max_v = *std::max_element(v.begin(), v.end());
+        if (max_v <= 1e-50) { std::fill(v.begin(), v.end(), 1.0); max_v = 1.0; }
+    }
+    double prune = std::min(static_cast<double>(params_.chosen_move_prune), max_v / 64.0);
+    for (double& x : v) if (x < prune) x = 0.0;
     return v;
 }
 
-std::vector<bool> MCTS::legal_mask(const BoardState& state) {
-    int N = state.N, ns = state.num_stones;
-    std::vector<bool> mask(ns * N + 1, false);
-    for (int s = 1; s <= ns; s++)
-        for (int i = 0; i < N; i++)
-            if (state.legal_moves_data().captures[s][i].has_value()) mask[(s - 1) * N + i] = true;
-    bool can_pass = (!state.forced_pass_only) || state.no_trad_legal();
-    if (can_pass && !state.game_over()) mask[ns * N] = true;
-    return mask;
+// KataGo's root noise: a Dirichlet draw over legal moves whose concentrations sum to
+// noise_total_concentration - half spread uniformly, half by how far each move's log-policy sits
+// above the mean - mixed into the prior with weight noise_weight.
+void MCTS::add_root_noise(std::vector<float>& prior) {
+    int L = static_cast<int>(prior.size());
+    if (L == 0) return;
+    std::vector<double> alpha(L);
+    double log_sum = 0.0;
+    for (int k = 0; k < L; k++) {
+        alpha[k] = std::log(std::min(0.01, static_cast<double>(prior[k])) + 1e-20);
+        log_sum += alpha[k];
+    }
+    double log_mean = log_sum / L, prop_sum = 0.0;
+    for (int k = 0; k < L; k++) {
+        alpha[k] = std::max(0.0, alpha[k] - log_mean);
+        prop_sum += alpha[k];
+    }
+    double uniform = 1.0 / L;
+    for (int k = 0; k < L; k++)
+        alpha[k] = prop_sum <= 0.0 ? uniform : 0.5 * (alpha[k] / prop_sum + uniform);
+
+    std::vector<double> draw(L);
+    double draw_sum = 0.0;
+    for (int k = 0; k < L; k++) {
+        std::gamma_distribution<double> gamma(alpha[k] * params_.noise_total_concentration, 1.0);
+        draw[k] = gamma(rng_);
+        draw_sum += draw[k];
+    }
+    if (draw_sum <= 0.0) return;
+    for (int k = 0; k < L; k++)
+        prior[k] = static_cast<float>(draw[k] / draw_sum * params_.noise_weight + prior[k] * (1.0 - params_.noise_weight));
 }
 
-// Walk tree via UCB to a leaf. Returns (path, leaf, per-player-rewards-or-nullopt).
-//
-// cached_rewards is non-nullopt only for terminal leaves (no model call needed) - game_over()
-// states, which includes ones that have reached their own max_plies.
-// New non-terminal leaves have is_expanded=false; caller must evaluate them.
-std::tuple<std::vector<std::pair<MCTSNode*, int>>,
-           MCTSNode*,
-           std::optional<std::unordered_map<int,float>>>
-MCTS::select(MCTSNode* root) {
-    std::vector<std::pair<MCTSNode*, int>> path;
-    MCTSNode* node = root;
-    std::optional<std::unordered_map<int,float>> cached_rewards;
+// KataGo's chooseIndexWithTemperature(): argmax at temperature ~0, otherwise sample in proportion
+// to (value / max)^(1/temperature).
+int MCTS::choose_with_temperature(const std::vector<double>& values, float temperature) {
+    int best = static_cast<int>(std::max_element(values.begin(), values.end()) - values.begin());
+    if (temperature <= 1e-4f) return best;
+    double log_max = std::log(values[best]);
+    std::vector<double> w(values.size(), 0.0);
+    for (size_t k = 0; k < values.size(); k++)
+        if (values[k] > 0) w[k] = std::exp((std::log(values[k]) - log_max) / temperature);
+    std::discrete_distribution<int> dist(w.begin(), w.end());
+    return dist(rng_);
+}
 
-    // game_over() checks max_plies live (against ply_count()), independently of
-    // MoveInfo.all_passed (which only covers the consecutive-passes cause) -
-    // mirroring shared/boardState.ts. Once true, make_move() itself will always
-    // refuse further moves, so a max_plies-truncated leaf is scored by
-    // compute_player_rewards() like any other game-over leaf.
-    auto is_terminal = [&](const MCTSNode* n) { return n->state.game_over(); };
+// Evaluates `nodes` (all non-terminal, sharing one game config) in one network call, filling each
+// one's actions/prior and own evaluation. With set_centers, each node is its root and its root's
+// dynamic score centres are first set from its own expected differences.
+static void evaluate_nodes(const Evaluator& evaluator, const UtilityParams& utility_params,
+                           const std::vector<MCTSNode*>& nodes, const std::vector<std::vector<float>*>& centers,
+                           bool set_centers) {
+    std::vector<const BoardState*> states;
+    std::vector<std::vector<int>> captures;
+    states.reserve(nodes.size());
+    for (MCTSNode* n : nodes) { states.push_back(&n->state); captures.push_back(n->state.capture_count()); }
+    const BoardState& s0 = *states[0];
+    int N = s0.N, P = s0.num_players, num_pairs = num_rank_pairs(P);
 
-    while (node->is_expanded && !is_terminal(node)) {
-        auto scores = node->ucb_scores(c_puct_);
-        auto mask = legal_mask(node->state);
-        // Apply legal mask
-        bool any_legal = false;
-        for (size_t i = 0; i < scores.size(); i++) {
-            if (!mask[i]) scores[i] = -std::numeric_limits<float>::infinity();
-            else any_legal = true;
+    ModelOutput out = evaluator.evaluate_batch(states);
+    auto totals = estimate_player_totals(out.ownership, captures, s0.score_rule, s0.stone_to_player_map, P, s0.komi)
+                      .to(torch::kCPU).contiguous();
+    auto rank = out.rank.to(torch::kCPU).contiguous();
+    auto policy = out.policy.to(torch::kCPU).contiguous();
+    auto totals_a = totals.accessor<float, 2>();
+    auto rank_a = rank.accessor<float, 3>();
+    auto policy_a = policy.accessor<float, 2>();
+    auto pairs = rank_pairs(P);
+
+    for (size_t j = 0; j < nodes.size(); j++) {
+        MCTSNode& n = *nodes[j];
+        n.actions = legal_actions(n.state);
+        n.prior.resize(n.actions.size());
+        n.children.resize(n.actions.size());
+        double sum = 0.0;
+        for (size_t k = 0; k < n.actions.size(); k++) { n.prior[k] = policy_a[j][n.actions[k]]; sum += n.prior[k]; }
+        for (float& p : n.prior) p = sum > 0 ? static_cast<float>(p / sum) : 1.0f / n.prior.size();
+
+        n.own.pair.probs.resize(num_pairs * 3);
+        n.own.pair.diff.resize(num_pairs);
+        for (int k = 0; k < num_pairs; k++) {
+            for (int c = 0; c < 3; c++) n.own.pair.probs[k * 3 + c] = rank_a[j][k][c];
+            n.own.pair.diff[k] = totals_a[j][pairs[k].first - 1] - totals_a[j][pairs[k].second - 1];
         }
-        if (!any_legal) break;
-        int action = static_cast<int>(
-            std::max_element(scores.begin(), scores.end()) - scores.begin());
-        path.push_back({node, action});
+        if (set_centers) *centers[j] = dynamic_score_centers(n.own.pair.diff, N, utility_params);
+        pair_eval_to_utility(n.own.pair, *centers[j], P, N, utility_params, n.own.utility, n.own.win);
+        n.evaluated = true;
+    }
+}
 
-        if (!node->children.count(action)) {
-            // Create new child
-            auto child_state = node->state.copy();
-            int N = node->state.N, ns = node->state.num_stones;
-            std::optional<int> k, stone;
-            if (action != ns * N) {
-                stone = action / N + 1; // 1-indexed stone color
-                k     = action % N;     // 0-indexed position
+// Descends from ctx.root to a leaf, recording the path (root first, leaf last). A newly created
+// terminal child is given its exact evaluation here; any other new child is returned unevaluated
+// for the caller's batched network call.
+static MCTSNode* descend(RootCtx& ctx, std::vector<MCTSNode*>& path, const UtilityParams& utility_params,
+                         const std::function<int(const MCTSNode&, bool)>& choose) {
+    path.clear();
+    MCTSNode* node = ctx.root;
+    path.push_back(node);
+    while (node->evaluated && !node->terminal && !node->actions.empty()) {
+        int k = choose(*node, node == ctx.root);
+        std::unique_ptr<MCTSNode>& child = node->children[k];
+        if (!child) {
+            BoardState s = node->state.copy();
+            apply_action(s, node->actions[k]);
+            child = std::make_unique<MCTSNode>(std::move(s));
+            if (child->state.game_over()) {
+                child->terminal = true;
+                child->evaluated = true;
+                child->own.pair = exact_pair_eval(child->state);
+                pair_eval_to_utility(child->own.pair, ctx.centers, child->state.num_players, child->state.N,
+                                     utility_params, child->own.utility, child->own.win);
             }
-            child_state.make_move(k, stone);
-            auto new_child = std::make_unique<MCTSNode>(
-                std::move(child_state),
-                std::vector<float>(ns * N + 1, 0.0f));
-            MCTSNode* child_ptr = new_child.get();
-            if (is_terminal(child_ptr)) {
-                child_ptr->is_expanded = true;
-                cached_rewards = compute_player_rewards(
-                    BoardState::compute_points(child_ptr->state.score_rule, child_ptr->state.score()),
-                    child_ptr->state.stone_to_player_map, child_ptr->state.komi,
-                    child_ptr->state.score_rule, child_ptr->state.capture_count());
-            }
-            node->children[action] = std::move(new_child);
-            node = child_ptr;
-            break;
+            path.push_back(child.get());
+            return child.get();
         }
-        node = node->children.at(action).get();
+        node = child.get();
+        path.push_back(node);
     }
-
-    if (!cached_rewards.has_value() && is_terminal(node))
-        cached_rewards = compute_player_rewards(
-            BoardState::compute_points(node->state.score_rule, node->state.score()),
-            node->state.stone_to_player_map, node->state.komi,
-            node->state.score_rule, node->state.capture_count());
-
-    return {std::move(path), node, std::move(cached_rewards)};
+    return node;
 }
 
-// Plain running-average backup: each edge on the path accumulates the reward of
-// its own node's mover (next_turn.player - turn ownership is independent of
-// stone_to_player_map, mirroring shared/boardState.ts).
-void MCTS::backup(const std::vector<std::pair<MCTSNode*, int>>& path,
-                  const std::unordered_map<int,float>& rewards) {
-    for (int i = static_cast<int>(path.size()) - 1; i >= 0; i--) {
-        auto [node, action] = path[i];
-        auto rit = rewards.find(node->state.next_turn.player);
-        node->visit_count[action] += 1;
-        node->total_value[action] += (rit != rewards.end()) ? rit->second : 0.0f;
-    }
-}
-
-// Run one simulation step across all roots with a single batched model call.
-//
-// Each simulation selects a leaf per root: follows UCB scores (exploitation Q +
-// exploration prior) down existing edges until reaching an unvisited child or a
-// terminal node. For non-terminal leaves, estimate_player_rewards() derives a
-// per-player reward from the model's ownership output, standing in for
-// rolling the game out to the end. When a new child is created, the model is
-// called once to get its prior and value; the child is immediately marked
-// expanded so a second evaluation is not triggered on the next visit.
-//
-// All non-terminal leaves across roots are evaluated together in one batched
-// call. Backup looks up per-player rewards so each node's Q-value reflects its
-// own player's outcome rather than relying on a zero-sum negation.
-//
-// root_model_ids[i] is the model that searches roots[i]'s tree (see search_batch()).
-//
-// Returns timing: seconds spent in MCTS::select (all roots) and evaluate_batch
-//                 (eval=0.0 if all leaves were terminal and no model call was needed)
-MCTSTiming MCTS::simulate_batch(const std::vector<MCTSNode*>& roots, const std::vector<int>& root_model_ids) {
-    int n = static_cast<int>(roots.size());
-    std::vector<std::vector<std::pair<MCTSNode*, int>>> paths(n);
-    std::vector<MCTSNode*> nodes(n);
-    std::vector<std::optional<std::unordered_map<int,float>>> leaf_values(n);
-    std::vector<int> eval_indices;
-
-    auto t_sel0 = std::chrono::high_resolution_clock::now();
-    // Each root's tree is independent (separate HistoryManager), so select and
-    // backup are safe to run in parallel across roots.
-    #pragma omp parallel for schedule(dynamic)
-    for (int i = 0; i < n; i++) {
-        auto [path, node, cached] = select(roots[i]);
-        paths[i] = std::move(path);
-        nodes[i] = node;
-        if (cached.has_value())
-            leaf_values[i] = std::move(cached.value());
-        else if (node->state.game_over())
-            leaf_values[i] = compute_player_rewards(
-                BoardState::compute_points(node->state.score_rule, node->state.score()),
-                node->state.stone_to_player_map, node->state.komi,
-                node->state.score_rule, node->state.capture_count());
-        // leaf_values[i] stays nullopt when GNN evaluation is needed
-    }
-    auto t_sel1 = std::chrono::high_resolution_clock::now();
-    double select_time = std::chrono::duration<double>(t_sel1 - t_sel0).count();
-
-    // Collect eval indices serially after the parallel region
-    for (int i = 0; i < n; i++) {
-        if (!leaf_values[i].has_value())
-            eval_indices.push_back(i);
-    }
-
-    double eval_time = 0.0;
-    if (!eval_indices.empty()) {
-        std::vector<const BoardState*> batch_states;
-        std::vector<int> batch_model_ids;
-        batch_states.reserve(eval_indices.size());
-        batch_model_ids.reserve(eval_indices.size());
-        for (int i : eval_indices) {
-            batch_states.push_back(&nodes[i]->state);
-            batch_model_ids.push_back(root_model_ids[i]);
-        }
-
-        auto t0 = std::chrono::high_resolution_clock::now();
-        ModelOutput eval_out = evaluate_batch(batch_states, batch_model_ids);
-        const torch::Tensor& policy_t = eval_out.policy;
-        auto t1 = std::chrono::high_resolution_clock::now();
-        eval_time = std::chrono::duration<double>(t1 - t0).count();
-
-        auto reward_t = estimate_player_rewards(eval_out.ownership, eval_out.rank, capture_counts_of(batch_states),
-                                                batch_states[0]->score_rule, batch_states[0]->stone_to_player_map,
-                                                batch_states[0]->num_players, batch_states[0]->komi);
-        // Both tensors arrive on the model's device (see evaluate_batch()'s comment) -
-        // transfer only here, right where CPU-side accessor reads actually happen.
-        auto policy_cpu = policy_t.cpu();
-        auto reward_cpu = reward_t.cpu();
-        auto pol_a = policy_cpu.accessor<float, 2>();
-        auto reward_a = reward_cpu.accessor<float, 2>();
-        for (int j = 0; j < (int)eval_indices.size(); j++) {
-            int i = eval_indices[j];
-            int Np1 = nodes[i]->state.N * nodes[i]->state.num_stones + 1;
-            for (int k = 0; k < Np1; k++)
-                nodes[i]->prior[k] = pol_a[j][k];
-            nodes[i]->is_expanded = true;
-            int P = nodes[i]->state.num_players;
-            std::unordered_map<int,float> rewards;
-            for (int p = 0; p < P; p++)
-                rewards[p + 1] = reward_a[j][p];
-            leaf_values[i] = std::move(rewards);
-        }
-    }
-
-    #pragma omp parallel for schedule(static)
-    for (int i = 0; i < n; i++) {
-        if (leaf_values[i].has_value()) {
-            nodes[i]->reward_estimate = leaf_values[i];
-            backup(paths[i], leaf_values[i].value());
-        }
-    }
-    return {eval_time, select_time};
-}
-
-std::pair<std::vector<float>, int>
-MCTS::visit_counts_to_policy(const std::vector<int>& vc, float temperature,
-                              std::mt19937& rng) {
-    std::vector<int> vc2 = vc;
-    int total = std::accumulate(vc2.begin(), vc2.end(), 0);
-    if (total == 0) {
-        std::fill(vc2.begin(), vc2.end(), 1);
-        total = static_cast<int>(vc2.size());
-    }
-
-    int n = static_cast<int>(vc2.size());
-    // The returned distribution is the plain visit-count distribution regardless of `temperature`
-    // - it's the policy training target, and temperature only shapes which move gets played.
-    std::vector<float> dist(n);
-    for (int i = 0; i < n; i++) dist[i] = static_cast<float>(vc2[i]) / static_cast<float>(total);
-
-    int move;
-    if (temperature == 0.0f) {
-        move = static_cast<int>(
-            std::max_element(vc2.begin(), vc2.end()) - vc2.begin());
-    } else {
-        std::vector<float> weights(n);
-        for (int i = 0; i < n; i++)
-            weights[i] = std::pow(static_cast<float>(vc2[i]), 1.0f / temperature);
-        std::discrete_distribution<int> distr(weights.begin(), weights.end());
-        move = distr(rng);
-    }
-    return {std::move(dist), move};
-}
-
-// Batched MCTS search: build a search tree per state and return a move for each.
-//
-// Runs `num_simulations` rounds of simulation. In each round one simulation step
-// is taken across all trees simultaneously, with all model evaluations batched into
-// a single forward pass. For a single state pass a one-element vector.
-//
-// Each simulation traverses a tree to a leaf via UCB scores, evaluates non-terminal
-// leaves with the model, and backs the value up to the root. The root's visit-count
-// distribution is the policy target (stronger than the raw model prior because it
-// reflects the result of lookahead). The move is sampled from that distribution
-// raised to the power 1/temperature; temperature=0 picks the most-visited action.
-//
-// temperatures: per-state; empty defaults to 1.0 for all.
-// All states must share the same adjacency matrix.
-// noise_cfg: Dirichlet root-noise settings (added to root priors for self-play exploration).
-// Move-count truncation is read from each state's own BoardState::max_plies
-// (a state at or beyond its own bound is treated as terminal - value from
-// its own final score - rather than evaluated by the model); it propagates to
-// every node of that state's search tree via copy()/copy_with_hm().
-//
-// Each root gets its own HistoryManager so the per-root search trees are fully
-// independent. This is required for parallel select: HistoryManager::store_board/lookup
-// are not thread-safe.
-//
-// Returns (per-state (visit-count dist, move index (stone-major flat index,
-//          num_stones*N=pass)), timing including initial batched root evaluation)
-std::pair<std::vector<std::pair<std::vector<float>, int>>, MCTSTiming>
-MCTS::search_batch(
-    std::vector<BoardState*> states,
-    int num_simulations,
-    NoiseConfig noise_cfg,
-    std::vector<float> temperatures)
+std::pair<std::vector<SearchResult>, MCTSTiming> MCTS::search(
+    const std::vector<BoardState*>& states, const std::vector<RootSettings>& settings)
 {
+    auto t_start = Clock::now();
+    MCTSTiming timing;
     int n = static_cast<int>(states.size());
-    if (temperatures.empty()) temperatures.assign(n, 1.0f);
+    const BoardState& s0 = *states[0];
+    int N = s0.N, A = s0.num_stones * N + 1;
 
-    // Initial root-prior batch evaluation
-    std::vector<const BoardState*> cstates(states.begin(), states.end());
-    // The model that searches from each root: the root mover's own, used for every node of that
-    // root's tree.
-    std::vector<int> root_model_ids;
-    root_model_ids.reserve(n);
-    for (const BoardState* s : cstates) root_model_ids.push_back(s->player_model_id[s->next_turn.player - 1]);
-    auto t0 = std::chrono::high_resolution_clock::now();
-    ModelOutput root_out = evaluate_batch(cstates, root_model_ids);
-    const torch::Tensor& policy_t = root_out.policy;
-    auto t1 = std::chrono::high_resolution_clock::now();
-    MCTSTiming total;
-    total.eval = std::chrono::duration<double>(t1 - t0).count();
-
-    auto reward_t = estimate_player_rewards(root_out.ownership, root_out.rank, capture_counts_of(cstates),
-                                            states[0]->score_rule, states[0]->stone_to_player_map,
-                                            states[0]->num_players, states[0]->komi);
-    // Both tensors arrive on the model's device (see evaluate_batch()'s comment) -
-    // transfer only here, right where CPU-side accessor reads actually happen.
-    auto policy_cpu = policy_t.cpu();
-    auto reward_cpu = reward_t.cpu();
-    auto pol_a = policy_cpu.accessor<float, 2>();
-    auto reward_a = reward_cpu.accessor<float, 2>();
-
-    // hms must be declared before roots so it outlives the MCTSNodes (LIFO destruction).
-    // One HistoryManager per root so each search tree is fully independent.
+    // One HistoryManager per root keeps every tree independent, so descents and backups can run in
+    // parallel across roots. Declared before the roots so it outlives their nodes.
     std::vector<HistoryManager> hms(n);
-    std::vector<std::unique_ptr<MCTSNode>> roots;
-    roots.reserve(n);
+    std::vector<std::unique_ptr<MCTSNode>> roots(n);
+    std::vector<RootCtx> ctx(n);
     for (int i = 0; i < n; i++) {
-        int Np1 = states[i]->N * states[i]->num_stones + 1;
-        std::vector<float> prior(Np1);
-        for (int k = 0; k < Np1; k++) prior[k] = pol_a[i][k];
+        roots[i] = std::make_unique<MCTSNode>(states[i]->copy_with_hm(&hms[i]));
+        ctx[i].root = roots[i].get();
+        ctx[i].settings = settings[i];
+    }
 
-        if (noise_cfg.add_noise) {
-            auto noise = dirichlet_sample(Np1, noise_cfg.dirichlet_alpha);
-            for (int k = 0; k < Np1; k++)
-                prior[k] = (1.0f - noise_cfg.noise_weight) * prior[k] + noise_cfg.noise_weight * noise[k];
+    {
+        std::vector<MCTSNode*> nodes;
+        std::vector<std::vector<float>*> centers;
+        for (int i = 0; i < n; i++) { nodes.push_back(roots[i].get()); centers.push_back(&ctx[i].centers); }
+        auto t0 = Clock::now();
+        evaluate_nodes(evaluator_, params_.utility, nodes, centers, /*set_centers=*/true);
+        timing.eval += seconds_since(t0);
+    }
+    for (int i = 0; i < n; i++) {
+        MCTSNode& r = *roots[i];
+        float T = settings[i].policy_temperature;
+        if (T != 1.0f && !r.prior.empty()) {
+            float max_p = *std::max_element(r.prior.begin(), r.prior.end());
+            double sum = 0.0;
+            for (float& p : r.prior) {
+                if (p > 0) p = static_cast<float>(std::exp((std::log(p) - std::log(max_p)) / T));
+                sum += p;
+            }
+            for (float& p : r.prior) p = static_cast<float>(p / sum);
         }
-        auto root = std::make_unique<MCTSNode>(states[i]->copy_with_hm(&hms[i]), std::move(prior));
-        root->is_expanded = true;
-        std::unordered_map<int,float> root_rewards;
-        for (int p = 0; p < states[i]->num_players; p++)
-            root_rewards[p + 1] = reward_a[i][p];
-        root->reward_estimate = std::move(root_rewards);
-        roots.push_back(std::move(root));
+        if (settings[i].noise) add_root_noise(r.prior);
+        r.add(r.own);
     }
 
-    std::vector<MCTSNode*> root_ptrs;
-    root_ptrs.reserve(n);
-    for (auto& r : roots) root_ptrs.push_back(r.get());
-
-    auto t_sim0 = std::chrono::high_resolution_clock::now();
-    for (int s = 0; s < num_simulations; s++)
-        total.add(simulate_batch(root_ptrs, root_model_ids));
-
-    std::vector<std::pair<std::vector<float>, int>> results;
-    results.reserve(n);
-    for (int i = 0; i < n; i++) {
-        auto [dist, move] = visit_counts_to_policy(
-            roots[i]->visit_count, temperatures[i], rng_);
-        results.push_back({std::move(dist), move});
-    }
-    total.simulate = std::chrono::duration<double>(
-        std::chrono::high_resolution_clock::now() - t_sim0).count();
-
-    if (DBG_PRINT_TREE) {
-        json roots_json = json::array();
-        for (int i = 0; i < n; i++)
-            roots_json.push_back(mcts_node_to_json(root_ptrs[i], std::nullopt, 0, 0.0f, 0.0f));
-        std::filesystem::create_directories(".logs");
-        std::ofstream(".logs/tree.json") << roots_json.dump(2) << std::endl;
-    }
-
-    // Explicitly tear down the search trees here so the recursive MCTSNode
-    // destruction is timed rather than hiding in the function's return unwind.
-    // Each root tree is independent (its own HistoryManager hms[i]); the only
-    // shared objects are the read-only adj/adlist shared_ptrs, whose refcounts are atomic.
-    // So destroying disjoint trees in parallel is race-free.
-    root_ptrs.clear();
-    auto t_tear0 = std::chrono::high_resolution_clock::now();
-    #pragma omp parallel for schedule(dynamic)
+    std::vector<std::function<int(const MCTSNode&, bool)>> choosers;
     for (int i = 0; i < n; i++)
-        roots[i].reset();  // recursively destroy tree i
-    roots.clear();         // now just drops null unique_ptrs (cheap)
-    total.teardown = std::chrono::duration<double>(
-        std::chrono::high_resolution_clock::now() - t_tear0).count();
-    hms.clear();
+        choosers.push_back([this, &settings, i](const MCTSNode& node, bool is_root) {
+            return choose_child(node, is_root, settings[i]);
+        });
 
-    return {std::move(results), total};
+    auto t_sim0 = Clock::now();
+    std::vector<std::vector<MCTSNode*>> paths(n);
+    std::vector<MCTSNode*> leaves(n, nullptr);
+    while (true) {
+        std::vector<int> active;
+        for (int i = 0; i < n; i++)
+            if (roots[i]->visits < settings[i].visits && !roots[i]->actions.empty()) active.push_back(i);
+        if (active.empty()) break;
+
+        auto t_sel0 = Clock::now();
+        #pragma omp parallel for schedule(dynamic)
+        for (int j = 0; j < (int)active.size(); j++) {
+            int i = active[j];
+            leaves[i] = descend(ctx[i], paths[i], params_.utility, choosers[i]);
+        }
+        timing.select += seconds_since(t_sel0);
+
+        std::vector<MCTSNode*> to_eval;
+        std::vector<std::vector<float>*> to_eval_centers;
+        for (int i : active)
+            if (!leaves[i]->evaluated) { to_eval.push_back(leaves[i]); to_eval_centers.push_back(&ctx[i].centers); }
+        if (!to_eval.empty()) {
+            auto t0 = Clock::now();
+            evaluate_nodes(evaluator_, params_.utility, to_eval, to_eval_centers, /*set_centers=*/false);
+            timing.eval += seconds_since(t0);
+        }
+
+        #pragma omp parallel for schedule(static)
+        for (int j = 0; j < (int)active.size(); j++) {
+            int i = active[j];
+            for (MCTSNode* node : paths[i]) node->add(leaves[i]->own);
+        }
+
+        for (int i : active) {
+            if (ctx[i].recentered || roots[i]->visits < std::min(params_.center_presearch_visits, settings[i].visits))
+                continue;
+            std::vector<float> avg_diff(roots[i]->diff_sum.size());
+            for (size_t k = 0; k < avg_diff.size(); k++)
+                avg_diff[k] = static_cast<float>(roots[i]->diff_sum[k] / roots[i]->visits);
+            ctx[i].centers = dynamic_score_centers(avg_diff, N, params_.utility);
+            ctx[i].recentered = true;
+        }
+    }
+    timing.simulate = seconds_since(t_sim0);
+
+    std::vector<SearchResult> results(n);
+    for (int i = 0; i < n; i++) {
+        const MCTSNode& r = *roots[i];
+        SearchResult& res = results[i];
+        res.visits = r.visits;
+        res.policy_target.assign(A, 0.0f);
+        res.root_prior.assign(A, 0.0f);
+        for (size_t k = 0; k < r.actions.size(); k++) res.root_prior[r.actions[k]] = r.prior[k];
+        if (!r.actions.empty()) {
+            auto target_values = play_selection_values(r, /*use_lcb=*/true);
+            auto move_values = params_.lcb_for_move ? target_values : play_selection_values(r, false);
+            double sum = 0.0;
+            for (double x : target_values) sum += x;
+            for (size_t k = 0; k < r.actions.size(); k++)
+                res.policy_target[r.actions[k]] = static_cast<float>(target_values[k] / sum);
+            res.move = r.actions[choose_with_temperature(move_values, settings[i].move_temperature)];
+        } else {
+            res.move = A - 1;
+        }
+        auto mean = [&](const std::vector<double>& s) {
+            std::vector<float> m(s.size());
+            for (size_t k = 0; k < s.size(); k++) m[k] = static_cast<float>(s[k] / r.visits);
+            return m;
+        };
+        res.utility = mean(r.utility_sum);
+        res.win = mean(r.win_sum);
+        res.pair_probs = mean(r.pair_sum);
+        res.nn_pair_probs = r.own.pair.probs;
+    }
+
+    // Destroy the trees explicitly so their (recursive) teardown is timed. Trees are disjoint and
+    // only share the read-only adj/adlist shared_ptrs, whose refcounts are atomic.
+    auto t_tear0 = Clock::now();
+    #pragma omp parallel for schedule(dynamic)
+    for (int i = 0; i < n; i++) roots[i].reset();
+    roots.clear();
+    hms.clear();
+    timing.teardown = seconds_since(t_tear0);
+    timing.search = seconds_since(t_start);
+    return {std::move(results), timing};
 }

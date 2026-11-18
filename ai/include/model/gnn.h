@@ -37,7 +37,7 @@ TORCH_MODULE(GNNPolicyHead);
 //               slice is a softmax over "which stone type occupies/holds territory at this
 //               location at game end" (channel 0 = none) - stone-type indexed to match
 //               ScoreData/BoardState::board; player-level aggregation (via stone_to_player_map)
-//               happens downstream, e.g. in estimate_player_rewards() (evaluator.h)
+//               happens downstream, e.g. in estimate_player_totals() (evaluator.h)
 //   rank      : (num_rank_pairs, 3) pairwise outcome probabilities - RankHead (rank_head.h) over
 //               the final per-node states
 struct MessagePassingGNNImpl : torch::nn::Module {

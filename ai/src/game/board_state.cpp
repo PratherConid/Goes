@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <unordered_set>
 
-// ── Reward ────────────────────────────────────────────────────────────────────
+// ── Player totals ─────────────────────────────────────────────────────────────
 
 std::unordered_map<int,float> compute_player_totals(
     const std::unordered_map<int,int>& points,
@@ -21,12 +21,8 @@ std::unordered_map<int,float> compute_player_totals(
     for (auto& [stone, players] : stone_to_player_map)
         for (int player : players) player_points.emplace(player, 0);
 
-    // Komi-adjusted (and, under "territory", capture-adjusted) per-player
-    // totals - both are folded in before computing `total` (rather than just
-    // added to each numerator) so the point-fraction term stays exactly
-    // zero-sum across players (see Readme's "Reward" section), matching how
-    // BoardState::compute_winners() folds them into its point counts before
-    // comparing them.
+    // Folded in the same way BoardState::compute_winners() folds them into its point counts
+    // before comparing them.
     std::unordered_map<int,float> adj_points;
     bool use_captures = score_rule == "territory";
     for (auto& [p, cnt] : player_points) {
@@ -38,44 +34,11 @@ std::unordered_map<int,float> compute_player_totals(
     return adj_points;
 }
 
-std::unordered_map<int,float> compute_player_rewards(
-    const std::unordered_map<int,int>& points,
-    const std::unordered_map<int, std::vector<int>>& stone_to_player_map,
-    const std::vector<float>& komi,
-    const std::string& score_rule,
-    const std::vector<int>& capture_count)
-{
-    auto adj_points = compute_player_totals(points, stone_to_player_map, komi, score_rule, capture_count);
-    float total = 0.0f;
-    for (auto& [p, v] : adj_points) total += v;
-
-    int P = static_cast<int>(adj_points.size());
-
-    std::unordered_map<int,float> rewards;
-    for (auto& [p, my_cnt] : adj_points) {
-        if (P <= 1) { rewards[p] = 0.0f; continue; }
-
-        float sf = (total != 0.0f) ? (my_cnt / total) : 0.0f;
-
-        float rank_diff = 0.0f;
-        for (auto& [q, their_cnt] : adj_points) {
-            if (q == p) continue;
-            if (their_cnt < my_cnt)      rank_diff += 1.0f;
-            else if (their_cnt > my_cnt) rank_diff -= 1.0f;
-        }
-        float rank_reward  = rank_diff * 2.0f / (2 * P - 1);
-        float point_reward = (sf - 1.0f / P) / (2 * P - 1);
-        rewards[p] = rank_reward + point_reward;
-    }
-    return rewards;
-}
-
 std::string move_to_string(const MoveInfo& m) {
     switch (m.move_type) {
         case MoveType::PLACE: return "PLACE " + std::to_string(m.pos.value_or(-1));
         // Only reflects the all-passed cause specifically (not max_plies/resignation) -
-        // debug-only string (see mcts.cpp's DBG_PRINT_TREE), not worth threading full
-        // game-over state through for.
+        // a debug-only string, not worth threading full game-over state through for.
         case MoveType::PASS:  return m.all_passed ? "PASS [ALL PASSED]" : "PASS";
         default:              return "NONE";   // NOMOVE
     }
