@@ -259,14 +259,13 @@ int MCTS::choose_with_temperature(const std::vector<double>& values, float tempe
     return dist(rng_);
 }
 
-std::vector<NNRow> evaluate_rows(const Evaluator& evaluator, const std::vector<const BoardState*>& states) {
+std::vector<NNRow> output_rows(const ModelOutput& out, const std::vector<const BoardState*>& states) {
     std::vector<std::vector<int>> captures;
     captures.reserve(states.size());
     for (const BoardState* s : states) captures.push_back(s->capture_count());
     const BoardState& s0 = *states[0];
     int P = s0.num_players;
 
-    ModelOutput out = evaluator.evaluate_batch(states);
     auto totals = estimate_player_totals(out.ownership, captures, s0.score_rule, s0.stone_to_player_map, P, s0.komi)
                       .to(torch::kCPU).contiguous();
     auto rank = out.rank.to(torch::kCPU).contiguous().view({(int64_t)states.size(), -1});
@@ -280,6 +279,10 @@ std::vector<NNRow> evaluate_rows(const Evaluator& evaluator, const std::vector<c
         rows[j] = NNRow{row_of(policy), row_of(totals), row_of(rank)};
     }
     return rows;
+}
+
+std::vector<NNRow> evaluate_rows(const Evaluator& evaluator, const std::vector<const BoardState*>& states) {
+    return output_rows(evaluator.evaluate_batch(states), states);
 }
 
 // Fills a non-terminal node's legal actions, prior and own evaluation from its network row. With

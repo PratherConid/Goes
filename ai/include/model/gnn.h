@@ -72,17 +72,14 @@ struct MessagePassingGNNImpl : torch::nn::Module {
         const AdjNorms& adj_norms,
         torch::Tensor legal_mask);
 
-    // Evaluate a list of states in one forward pass (all must share the same board). Every
-    // ModelOutput tensor is left on the model's device - callers needing CPU access (e.g. via
-    // .accessor<T,N>()) must call .cpu() themselves at their point of use.
-    ModelOutput evaluate_batch(
-        const std::vector<BoardState*>& states,
-        const AdjNorms& adj_norms);
+    // One state's network input (model_output.h's ModelInput), built on the CPU. Thread-safe.
+    ModelInput prepare_input(const BoardState& state) const;
 
-    // Convenience overload for const states
-    ModelOutput evaluate_batch(
-        const std::vector<const BoardState*>& states,
-        const AdjNorms& adj_norms);
+    // Evaluates prepared inputs (all from the same board) in one forward pass, copying each stacked
+    // input tensor to the model's device once. Every ModelOutput tensor is left on the model's
+    // device - callers needing CPU access (e.g. via .accessor<T,N>()) must call .cpu() themselves
+    // at their point of use.
+    ModelOutput evaluate_inputs(const std::vector<const ModelInput*>& inputs, const AdjNorms& adj_norms);
 };
 
 TORCH_MODULE(MessagePassingGNN);

@@ -120,11 +120,15 @@ struct TransformerImpl : torch::nn::Module {
         torch::Tensor hist_x, torch::Tensor hist_mask,
         torch::Tensor cur_x, torch::Tensor legal_mask);
 
-    // Evaluate a batch of states (arbitrary, independently-varying history lengths) in one forward
-    // pass. Returns tensors on the model's device, matching CNN/GNN/UNet's evaluate_batch()
-    // contract exactly.
-    ModelOutput evaluate_batch(const std::vector<BoardState*>& states);
-    ModelOutput evaluate_batch(const std::vector<const BoardState*>& states);
+    // One state's network input (model_output.h's ModelInput) - its current-ply features and legal
+    // mask, plus history features for each of its ply_count() past plies - built on the CPU.
+    // Thread-safe.
+    ModelInput prepare_input(const BoardState& state) const;
+
+    // Evaluates prepared inputs (arbitrary, independently-varying history lengths, zero-padded to
+    // the batch's longest) in one forward pass. Returns tensors on the model's device, matching
+    // CNN/GNN/UNet's evaluate_inputs() contract exactly.
+    ModelOutput evaluate_inputs(const std::vector<const ModelInput*>& inputs);
 };
 
 TORCH_MODULE(Transformer);

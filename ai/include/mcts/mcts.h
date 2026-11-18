@@ -18,6 +18,10 @@ struct NNRow {
 // request to an NNServer (mcts/nn_server.h) that batches it with other searches' requests.
 using NNQuery = std::function<NNRow(const BoardState&)>;
 
+// Splits a batch's network outputs into one row per state (`states` share one game config, in the
+// batch's order).
+std::vector<NNRow> output_rows(const ModelOutput& out, const std::vector<const BoardState*>& states);
+
 // Evaluates `states` (sharing one game config) in one call and splits the outputs into rows.
 std::vector<NNRow> evaluate_rows(const Evaluator& evaluator, const std::vector<const BoardState*>& states);
 

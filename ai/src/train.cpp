@@ -730,7 +730,7 @@ int main(int argc, char* argv[]) {
     for (int iter = st.iteration + 1; iter <= args.iterations; iter++) {
         auto t0 = Clock::now();
         Evaluator evaluator = selfplay_model ? make_evaluator(*selfplay_model, adj_norms)
-                                             : make_uniform_evaluator(game_cfg.num_players);
+                                             : make_uniform_evaluator(bc.N, game_cfg.num_stones, game_cfg.num_players);
         int model_id = selfplay_model ? st.exported_iteration : -1;
         if (args.verbosity >= 1)
             std::cout << "[iter " << std::setw(4) << iter << "] self-play with "

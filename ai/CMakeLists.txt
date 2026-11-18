@@ -6,7 +6,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # LibTorch: set via -DCMAKE_PREFIX_PATH=/path/to/libtorch
 find_package(Torch REQUIRED)
-find_package(OpenMP)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 
 # TorchConfig.cmake only auto-links extra libraries it finds via its
@@ -82,9 +81,6 @@ add_library(goes_core STATIC
 )
 target_include_directories(goes_core PUBLIC include third_party)
 target_link_libraries(goes_core PUBLIC "${TORCH_LIBRARIES}")
-if(OpenMP_CXX_FOUND)
-    target_link_libraries(goes_core PUBLIC OpenMP::OpenMP_CXX)
-endif()
 target_compile_features(goes_core PUBLIC cxx_std_17)
 
 add_executable(goes_train src/train.cpp)

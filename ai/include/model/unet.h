@@ -103,13 +103,14 @@ struct UNetImpl : torch::nn::Module {
         torch::Tensor x,
         torch::Tensor legal_mask);
 
-    // Evaluate a batch of states in one forward pass (all must share the same board). Every
-    // ModelOutput tensor is left on the model's device - callers needing CPU access (e.g. via
-    // .accessor<T,N>()) must call .cpu() themselves at their point of use.
-    ModelOutput evaluate_batch(
-        const std::vector<BoardState*>& states);
-    ModelOutput evaluate_batch(
-        const std::vector<const BoardState*>& states);
+    // One state's network input (model_output.h's ModelInput), built on the CPU. Thread-safe.
+    ModelInput prepare_input(const BoardState& state) const;
+
+    // Evaluates prepared inputs (all from the same board) in one forward pass, copying each stacked
+    // input tensor to the model's device once. Every ModelOutput tensor is left on the model's
+    // device - callers needing CPU access (e.g. via .accessor<T,N>()) must call .cpu() themselves
+    // at their point of use.
+    ModelOutput evaluate_inputs(const std::vector<const ModelInput*>& inputs);
 };
 
 TORCH_MODULE(UNet);

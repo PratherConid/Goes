@@ -1,7 +1,6 @@
 #include "model/gnn.h"
 #include <limits>
 #include <cmath>
-#include <omp.h>
 
 MessagePassingGNNImpl::MessagePassingGNNImpl(const GNNConfig& cfg, int num_stones, int num_players,
                                               const AdjNorms& adj_norms)
@@ -118,38 +117,16 @@ ModelOutput MessagePassingGNNImpl::forward(
     return {policy, ownership, rank};
 }
 
-// Helper: run a batch of raw pointers
-static ModelOutput run_batch(
-    MessagePassingGNNImpl* self,
-    const std::vector<const BoardState*>& states,
-    const AdjNorms& adj_norms)
-{
+ModelInput MessagePassingGNNImpl::prepare_input(const BoardState& state) const {
+    auto [ft, mask] = board_to_features(state, torch::kCPU, cfg_.input_descr);
+    return {ft, mask, {}};
+}
+
+ModelOutput MessagePassingGNNImpl::evaluate_inputs(const std::vector<const ModelInput*>& inputs,
+                                                   const AdjNorms& adj_norms) {
     torch::NoGradGuard ng;
     auto dev = adj_norms.adj.device();
-    int B = static_cast<int>(states.size());
-    std::vector<torch::Tensor> feats(B), masks(B);
-    #pragma omp parallel for schedule(dynamic)
-    for (int i = 0; i < B; i++) {
-        auto [ft, mask] = board_to_features(*states[i], dev, self->cfg_.input_descr);
-        feats[i] = ft;
-        masks[i] = mask;
-    }
-    auto x    = torch::stack(feats, 0); // (B, N, F)
-    auto mask = torch::stack(masks, 0); // (B, ns*N+1)
-    return self->forward(x, adj_norms, mask);
-}
-
-ModelOutput MessagePassingGNNImpl::evaluate_batch(
-    const std::vector<BoardState*>& states,
-    const AdjNorms& adj_norms)
-{
-    std::vector<const BoardState*> cstates(states.begin(), states.end());
-    return run_batch(this, cstates, adj_norms);
-}
-
-ModelOutput MessagePassingGNNImpl::evaluate_batch(
-    const std::vector<const BoardState*>& states,
-    const AdjNorms& adj_norms)
-{
-    return run_batch(this, states, adj_norms);
+    auto x    = stack_inputs(inputs, &ModelInput::features).to(dev);   // (B, N, F)
+    auto mask = stack_inputs(inputs, &ModelInput::legal_mask).to(dev); // (B, ns*N+1)
+    return forward(x, adj_norms, mask);
 }

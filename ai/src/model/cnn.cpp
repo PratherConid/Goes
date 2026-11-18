@@ -4,7 +4,6 @@
 #include <cassert>
 #include <stdexcept>
 #include <string>
-#include <omp.h>
 
 CNNImpl::CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_stones, int num_players)
     : cfg_(cfg), num_stones_(num_stones)
@@ -159,34 +158,15 @@ ModelOutput CNNImpl::forward(
     return {policy, ownership, rank};
 }
 
-static ModelOutput run_batch(
-    CNNImpl* self,
-    const std::vector<const BoardState*>& states)
-{
+ModelInput CNNImpl::prepare_input(const BoardState& state) const {
+    auto [ft, mask] = board_to_features(state, torch::kCPU, cfg_.input_descr);
+    return {ft, mask, {}};
+}
+
+ModelOutput CNNImpl::evaluate_inputs(const std::vector<const ModelInput*>& inputs) {
     torch::NoGradGuard ng;
-    auto dev = self->lin_idx_.device();
-    int B = static_cast<int>(states.size());
-    std::vector<torch::Tensor> feats(B), masks(B);
-    #pragma omp parallel for schedule(dynamic)
-    for (int i = 0; i < B; i++) {
-        auto [ft, mask] = board_to_features(*states[i], dev, self->cfg_.input_descr);
-        feats[i] = ft;
-        masks[i] = mask;
-    }
-    auto x    = torch::stack(feats, 0); // (B, N, F)
-    auto mask = torch::stack(masks, 0); // (B, ns*N+1)
-    return self->forward(x, mask);
-}
-
-ModelOutput CNNImpl::evaluate_batch(
-    const std::vector<BoardState*>& states)
-{
-    std::vector<const BoardState*> cstates(states.begin(), states.end());
-    return run_batch(this, cstates);
-}
-
-ModelOutput CNNImpl::evaluate_batch(
-    const std::vector<const BoardState*>& states)
-{
-    return run_batch(this, states);
+    auto dev = lin_idx_.device();
+    auto x    = stack_inputs(inputs, &ModelInput::features).to(dev);   // (B, N, F)
+    auto mask = stack_inputs(inputs, &ModelInput::legal_mask).to(dev); // (B, ns*N+1)
+    return forward(x, mask);
 }

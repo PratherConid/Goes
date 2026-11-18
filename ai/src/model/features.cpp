@@ -209,16 +209,18 @@ static torch::Tensor board_to_features_at_ply(const BoardState& state, int ply, 
 // See board_to_features_at_ply() above for the recognized block names/args
 // and per-block fill logic (shared with this function).
 //
-// Features come from board_to_features_at_ply() at the current ply; the legal mask stays here
-// rather than moving into that shared function, since it depends on game_over()/no_trad_legal(),
-// concepts that are only meaningful for the current position, not an arbitrary past ply.
+// Features come from board_to_features_at_ply() at the current ply; the legal mask comes from
+// legal_action_mask() rather than that shared function, since it depends on
+// game_over()/no_trad_legal(), concepts that are only meaningful for the current position, not an
+// arbitrary past ply.
 FeatureTensors board_to_features(const BoardState& state, torch::Device device, const nlohmann::json& descr) {
+    auto features = board_to_features_at_ply(state, state.ply_count(), descr);
+    return {features.to(device), legal_action_mask(state).to(device)};
+}
+
+torch::Tensor legal_action_mask(const BoardState& state) {
     int N = state.N;
     int ns = state.num_stones;
-    auto features = board_to_features_at_ply(state, state.ply_count(), descr);
-
-    // Legal mask: num_stones*N place actions (stone-major) + 1 pass -
-    // independent of descr.
     auto legal_mask = torch::zeros({ns * N + 1}, torch::kBool);
     auto mask_a = legal_mask.accessor<bool, 1>();
     for (int s = 1; s <= ns; s++)
@@ -229,8 +231,7 @@ FeatureTensors board_to_features(const BoardState& state, torch::Device device, 
         bool can_pass = (!state.forced_pass_only) || state.no_trad_legal();
         if (can_pass) mask_a[ns * N] = true;
     }
-
-    return {features.to(device), legal_mask.to(device)};
+    return legal_mask;
 }
 
 torch::Tensor history_features_at_ply(const BoardState& state, int ply, const nlohmann::json& descr) {

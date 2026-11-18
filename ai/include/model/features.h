@@ -31,6 +31,11 @@ struct AdjNorms {
 // directly rather than recomputing it.
 FeatureTensors board_to_features(const BoardState& state, torch::Device device, const nlohmann::json& descr);
 
+// The current position's legal actions as a (num_stones*N + 1,) bool CPU tensor - num_stones*N
+// placements (stone-major, index (stone-1)*N + pos) and a final pass - board_to_features()'s
+// legal_mask.
+torch::Tensor legal_action_mask(const BoardState& state);
+
 // Computes per-node features for one historical ply of `state`, under whatever descr is passed -
 // ply may be anything in [0, state.ply_count()], including the current ply. Fully descriptor-
 // agnostic (just a thin forward to board_to_features_at_ply(), below); used exclusively by the

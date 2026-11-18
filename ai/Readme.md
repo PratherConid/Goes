@@ -68,11 +68,10 @@ ai/
 
 1. **MSVC 2022** (or GCC/Clang on Linux) with C++17 support
 2. **CMake ≥ 3.18**
-3. **OpenMP** — bundled with MSVC and GCC; on macOS install via `brew install libomp`. Optional but recommended: builds each network batch's input features in parallel.
-4. **LibTorch** — download the pre-built package from https://pytorch.org/get-started/locally/
+3. **LibTorch** — download the pre-built package from https://pytorch.org/get-started/locally/
    - Select: your OS (IMPORTANT!), C++ / LibTorch, CUDA version or CPU
    - Extract to a local directory, e.g. `D:\libtorch` on windows and `~/include/libtorch` on linux
-5. **Third-party headers** (single-file, copy into `third_party/`):
+4. **Third-party headers** (single-file, copy into `third_party/`):
    - [httplib.h](https://github.com/yhirose/cpp-httplib/releases) → `third_party/httplib.h`
    - [json.hpp](https://github.com/nlohmann/json/releases) → `third_party/nlohmann/json.hpp`
 
@@ -386,7 +385,7 @@ The settings come from KataGo (`SearchParams::self_play()` = its self-play confi
 
 ## Self-Play
 
-`SelfPlayRunner` (`ai/src/training/self_play.cpp`) follows KataGo's self-play structure: `--gamegen-batch-size` threads each play one game at a time, start a new one as soon as it ends, and search sequentially. Every search's network requests go to one `NNServer` (`ai/src/mcts/nn_server.cpp`, KataGo's `NNEvaluator` queue): a search submits one position and blocks, and each of `--nn-server-threads` server threads takes whatever is queued, up to `--nn-max-batch`, without waiting for a full batch. Batches form from however many searches are waiting at once, and the network runs while the other searches do their CPU work. Once an iteration's `--games-per-iteration` games have finished, each thread stops at its next ply boundary. Unfinished games carry over into the next iteration, continuing with the newly exported model, and keep their full move history - which the Transformer reads from move 0. Defaults (`SelfPlayParams`) are KataGo's:
+`SelfPlayRunner` (`ai/src/training/self_play.cpp`) follows KataGo's self-play structure: `--gamegen-batch-size` threads each play one game at a time, start a new one as soon as it ends, and search sequentially. Every search's network requests go to one `NNServer` (`ai/src/mcts/nn_server.cpp`, KataGo's `NNEvaluator` queue). A search builds its position's network input itself on the CPU - features, legal mask and, for the Transformer, every past ply's history features (`Evaluator::prepare()`, the counterpart of KataGo's `fillRow`) - then submits it and blocks. Each of `--nn-server-threads` server threads takes whatever is queued, up to `--nn-max-batch`, without waiting for a full batch, copies the inputs into one batch and onto the device (one copy per input tensor), runs the network and splits the outputs into per-position rows. Batches form from however many searches are waiting at once, and the network runs while the other searches do their CPU work. Once an iteration's `--games-per-iteration` games have finished, each thread stops at its next ply boundary. Unfinished games carry over into the next iteration, continuing with the newly exported model, and keep their full move history - which the Transformer reads from move 0. Defaults (`SelfPlayParams`) are KataGo's:
 
 - **Opening**: a new game's first `floor(Exp(1) · 0.04 · N)` moves are sampled straight from the network's policy - not searched, not trained on - for opening variety.
 - **Cheap and full searches**: each later move gets a cheap search (`--cheap-visits`, no noise, no forced playouts, root policy temperature 1) with probability `--cheap-prob`, otherwise a full one (`--full-visits`). Only full searches start with training weight 1; cheap ones start at 0.

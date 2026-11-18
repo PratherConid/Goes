@@ -7,10 +7,11 @@
 #include <thread>
 #include <vector>
 
-// KataGo's NNEvaluator queue (cpp/neuralnet/nneval.cpp): searches submit one position each and
-// block; server threads take whatever is queued - up to max_batch, never waiting for a full batch
-// (KataGo's waitPopUpToN()) - and evaluate it as one batch. Batches form from however many searches
-// are waiting at once, and the network runs while other searches do their CPU work.
+// KataGo's NNEvaluator queue (cpp/neuralnet/nneval.cpp): a search builds its position's input
+// itself (Evaluator::prepare(), KataGo's fillRow), submits it and blocks; server threads take
+// whatever is queued - up to max_batch, never waiting for a full batch (KataGo's waitPopUpToN()) -
+// stack it, run it as one batch and split the outputs into rows. Batches form from however many
+// searches are waiting at once, and the network runs while other searches do their CPU work.
 //
 // Several server threads share one evaluator, so they run the model concurrently; one thread
 // (KataGo's self-play default) avoids that.
@@ -38,6 +39,7 @@ public:
 private:
     struct Request {
         const BoardState* state;
+        ModelInput input;
         NNRow row;
         bool done = false;
         std::mutex mutex;

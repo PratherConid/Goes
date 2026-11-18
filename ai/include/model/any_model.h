@@ -16,14 +16,15 @@ using AnyModel = std::variant<MessagePassingGNN, UNet, CNN, Transformer>;
 inline Evaluator make_evaluator(AnyModel& model, const AdjNorms& adj_norms) {
     return std::visit([&](auto& m) -> Evaluator {
         using M = std::decay_t<decltype(m)>;
+        auto prepare = [m](const BoardState& s) { return m->prepare_input(s); };
         if constexpr (std::is_same_v<M, MessagePassingGNN>) {
             auto adj = adj_norms;
-            return Evaluator{[m, adj](const std::vector<const BoardState*>& s) mutable {
-                return m->evaluate_batch(s, adj);
+            return Evaluator{prepare, [m, adj](const std::vector<const ModelInput*>& in) mutable {
+                return m->evaluate_inputs(in, adj);
             }};
         } else {
-            return Evaluator{[m](const std::vector<const BoardState*>& s) mutable {
-                return m->evaluate_batch(s);
+            return Evaluator{prepare, [m](const std::vector<const ModelInput*>& in) mutable {
+                return m->evaluate_inputs(in);
             }};
         }
     }, model);

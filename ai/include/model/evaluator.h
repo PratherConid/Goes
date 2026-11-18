@@ -7,18 +7,29 @@
 #include <unordered_map>
 #include <torch/torch.h>
 #include "game/board_state.h"
+#include "model/features.h"
 #include "model/model_output.h"
 #include "model/rank_head.h"
 
-// Type-erased neural-network evaluator used by MCTS and self-play. Wraps any of the four
-// architectures (see make_evaluator(), any_model.h) - for a MessagePassingGNN, its adj_norms are
-// captured inside fn, so every wrapped model presents the same states-in/ModelOutput-out
+// Type-erased neural-network evaluator used by MCTS and self-play, split as KataGo's NNEvaluator
+// splits an evaluation: prepare() builds one position's input on the CPU in whichever thread wants
+// it evaluated (thread-safe), and run() evaluates a batch of prepared inputs in one forward pass.
+// Wraps any of the four architectures (see make_evaluator(), any_model.h) - for a
+// MessagePassingGNN, its adj_norms are captured inside run, so every wrapped model presents the same
 // interface regardless of what it needs internally.
 struct Evaluator {
-    std::function<ModelOutput(const std::vector<const BoardState*>&)> fn;
+    std::function<ModelInput(const BoardState&)> prepare;
+    std::function<ModelOutput(const std::vector<const ModelInput*>&)> run;
 
+    // prepare() for each state, then one run().
     ModelOutput evaluate_batch(const std::vector<const BoardState*>& states) const {
-        return fn(states);
+        std::vector<ModelInput> inputs;
+        inputs.reserve(states.size());
+        for (const BoardState* s : states) inputs.push_back(prepare(*s));
+        std::vector<const ModelInput*> ptrs;
+        ptrs.reserve(inputs.size());
+        for (const ModelInput& in : inputs) ptrs.push_back(&in);
+        return run(ptrs);
     }
 };
 
@@ -88,26 +99,19 @@ inline torch::Tensor estimate_player_totals(
 // Stand-in for a network before any has been trained - the analog of KataGo's "random" net, which
 // self-play uses until enough data exists to train the first model. Costs no forward pass: the
 // policy is uniform over each state's legal actions, every node's ownership is uniform over
-// empty/each stone type, and every player pair's outcome is uniform. All states must share one game
-// config. Outputs are on the CPU.
-inline Evaluator make_uniform_evaluator(int num_players) {
-    return Evaluator{[num_players](const std::vector<const BoardState*>& states) {
-        int64_t B = (int64_t)states.size();
-        const BoardState& s0 = *states.at(0);
-        int64_t N = s0.N, ns = s0.num_stones, A = ns * N + 1;
-        auto policy = torch::zeros({B, A}, torch::kFloat32);
-        auto pa = policy.accessor<float, 2>();
-        for (int64_t b = 0; b < B; b++) {
-            const BoardState& s = *states[b];
-            std::vector<int64_t> legal;
-            for (int64_t st = 1; st <= ns; st++)
-                for (int64_t i = 0; i < N; i++)
-                    if (s.legal_moves_data().captures[st][i].has_value()) legal.push_back((st - 1) * N + i);
-            if (!s.game_over() && (!s.forced_pass_only || s.no_trad_legal())) legal.push_back(ns * N);
-            for (int64_t a : legal) pa[b][a] = 1.0f / static_cast<float>(legal.size());
-        }
-        auto ownership = torch::full({B, 2, N, ns + 1}, 1.0f / static_cast<float>(ns + 1));
-        auto rank = torch::full({B, (int64_t)num_rank_pairs(num_players), 3}, 1.0f / 3.0f);
-        return ModelOutput{policy, ownership, rank};
-    }};
+// empty/each stone type, and every player pair's outcome is uniform. prepare() builds only the legal
+// mask. All states must share one game config (N nodes, num_stones stone types). Outputs are on the
+// CPU.
+inline Evaluator make_uniform_evaluator(int N, int num_stones, int num_players) {
+    return Evaluator{
+        [](const BoardState& s) { return ModelInput{{}, legal_action_mask(s), {}}; },
+        [N, num_stones, num_players](const std::vector<const ModelInput*>& inputs) {
+            auto legal = stack_inputs(inputs, &ModelInput::legal_mask).to(torch::kFloat32);  // (B, ns*N+1)
+            auto policy = legal / legal.sum(-1, true).clamp_min(1.0f);
+            int64_t B = legal.size(0);
+            auto ownership = torch::full({B, 2, (int64_t)N, (int64_t)num_stones + 1},
+                                         1.0f / static_cast<float>(num_stones + 1));
+            auto rank = torch::full({B, (int64_t)num_rank_pairs(num_players), 3}, 1.0f / 3.0f);
+            return ModelOutput{policy, ownership, rank};
+        }};
 }

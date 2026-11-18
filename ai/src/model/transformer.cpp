@@ -2,7 +2,7 @@
 #include <limits>
 #include <algorithm>
 #include <cassert>
-#include <omp.h>
+#include <cstring>
 
 TransformerPolicyHeadImpl::TransformerPolicyHeadImpl(int hidden_dim, int num_stones)
     : num_stones_(num_stones)
@@ -152,57 +152,45 @@ ModelOutput TransformerImpl::forward(
     return {policy, ownership, rank};
 }
 
-static ModelOutput run_batch(
-    TransformerImpl* self,
-    const std::vector<const BoardState*>& states)
-{
+ModelInput TransformerImpl::prepare_input(const BoardState& state) const {
+    int T = state.ply_count();
+    torch::Tensor history;
+    if (T > 0) {
+        std::vector<torch::Tensor> rows(T);
+        for (int k = 0; k < T; k++) rows[k] = history_features_at_ply(state, k, cfg_.history_descr);
+        history = stack_cpu(rows);
+    } else {
+        history = torch::empty({0, N_, history_feature_dim_}, torch::kFloat32);
+    }
+    auto [ft, mask] = board_to_features(state, torch::kCPU, cfg_.input_descr);
+    return {ft, mask, history};
+}
+
+ModelOutput TransformerImpl::evaluate_inputs(const std::vector<const ModelInput*>& inputs) {
     torch::NoGradGuard ng;
-    auto dev = self->encoder_in->weight.device();
-    int B = static_cast<int>(states.size());
-    int N = self->N_;
-    int Fh = self->history_feature_dim_;
+    auto dev = encoder_in->weight.device();
+    int64_t B = static_cast<int64_t>(inputs.size());
+    int64_t Tmax = 0;
+    for (const ModelInput* in : inputs) Tmax = std::max(Tmax, in->history.size(0));
 
-    std::vector<torch::Tensor> cur_feats(B), legal_masks(B), hist_stacks(B);
-    std::vector<int> T(B);
-    #pragma omp parallel for schedule(dynamic)
-    for (int i = 0; i < B; i++) {
-        int Ti = states[i]->ply_count();
-        T[i] = Ti;
-        std::vector<torch::Tensor> rows(Ti);
-        for (int k = 0; k < Ti; k++) rows[k] = history_features_at_ply(*states[i], k, self->cfg_.history_descr);
-        hist_stacks[i] = (Ti > 0) ? torch::stack(rows, 0) : torch::zeros({0, N, Fh}, torch::kFloat32);
-
-        auto [ft, mask] = board_to_features(*states[i], dev, self->cfg_.input_descr);
-        cur_feats[i] = ft;
-        legal_masks[i] = mask;
+    // Each input's history, zero-padded to Tmax plies, copied in with plain memcpys/memsets for the
+    // same reason as stack_cpu() (model_output.h).
+    auto hist_x    = torch::empty({B, Tmax, N_, history_feature_dim_}, torch::kFloat32);
+    auto hist_mask = torch::empty({B, Tmax}, torch::kBool);  // True = pad
+    size_t ply_bytes = static_cast<size_t>(N_) * history_feature_dim_ * sizeof(float);
+    auto* hist_dst = static_cast<char*>(hist_x.data_ptr());
+    bool* mask_dst = hist_mask.data_ptr<bool>();
+    for (int64_t i = 0; i < B; i++) {
+        const torch::Tensor& h = inputs[i]->history;
+        int64_t T = h.size(0);
+        TORCH_CHECK(h.is_contiguous(), "Transformer: history input must be contiguous");
+        char* row = hist_dst + static_cast<size_t>(i * Tmax) * ply_bytes;
+        if (T > 0) std::memcpy(row, h.data_ptr(), static_cast<size_t>(T) * ply_bytes);
+        std::memset(row + static_cast<size_t>(T) * ply_bytes, 0, static_cast<size_t>(Tmax - T) * ply_bytes);
+        std::fill(mask_dst + i * Tmax, mask_dst + i * Tmax + T, false);
+        std::fill(mask_dst + i * Tmax + T, mask_dst + (i + 1) * Tmax, true);
     }
-
-    int Tmax = 0;
-    for (int t : T) Tmax = std::max(Tmax, t);
-
-    auto hist_x    = torch::zeros({B, Tmax, N, Fh}, torch::kFloat32);
-    auto hist_mask = torch::ones({B, Tmax}, torch::kBool);  // True = pad
-    for (int i = 0; i < B; i++) {
-        if (T[i] > 0) {
-            hist_x[i].slice(0, 0, T[i]).copy_(hist_stacks[i]);
-            hist_mask[i].slice(0, 0, T[i]).fill_(false);
-        }
-    }
-    auto cur_x    = torch::stack(cur_feats, 0);   // (B, N, F) - already on dev
-    auto legal_mask = torch::stack(legal_masks, 0); // (B, ns*N+1) - already on dev
-
-    return self->forward(hist_x.to(dev), hist_mask.to(dev), cur_x, legal_mask);
-}
-
-ModelOutput TransformerImpl::evaluate_batch(
-    const std::vector<BoardState*>& states)
-{
-    std::vector<const BoardState*> cstates(states.begin(), states.end());
-    return run_batch(this, cstates);
-}
-
-ModelOutput TransformerImpl::evaluate_batch(
-    const std::vector<const BoardState*>& states)
-{
-    return run_batch(this, states);
+    auto cur_x      = stack_inputs(inputs, &ModelInput::features).to(dev);   // (B, N, F)
+    auto legal_mask = stack_inputs(inputs, &ModelInput::legal_mask).to(dev); // (B, ns*N+1)
+    return forward(hist_x.to(dev), hist_mask.to(dev), cur_x, legal_mask);
 }

@@ -22,6 +22,7 @@ void NNServer::set_evaluator(Evaluator evaluator) {
 NNRow NNServer::evaluate(const BoardState& state) {
     Request req;
     req.state = &state;
+    req.input = evaluator_.prepare(state);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         queue_.push_back(&req);
@@ -53,11 +54,16 @@ void NNServer::serve() {
             }
             evaluator = evaluator_;
         }
+        std::vector<const ModelInput*> inputs;
         std::vector<const BoardState*> states;
+        inputs.reserve(batch.size());
         states.reserve(batch.size());
-        for (Request* r : batch) states.push_back(r->state);
+        for (Request* r : batch) {
+            inputs.push_back(&r->input);
+            states.push_back(r->state);
+        }
         auto t0 = std::chrono::high_resolution_clock::now();
-        auto rows = evaluate_rows(evaluator, states);
+        auto rows = output_rows(evaluator.run(inputs), states);
         double secs = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - t0).count();
         {
             std::lock_guard<std::mutex> lock(mutex_);
