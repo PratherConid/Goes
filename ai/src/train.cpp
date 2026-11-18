@@ -49,6 +49,7 @@ struct Args {
     int num_attn_layers = 8;
     // Loop sizes and training-window settings default to KataGo's synchronous_loop.sh values.
     int iterations = 200;
+    int saves_every = 8;
     int games_per_iteration = 500;
     int gamegen_batch_size = 128;
     int nn_server_threads = 1;
@@ -92,6 +93,8 @@ static void print_usage(const char* prog) {
               << "  --num-layers N            GNN message-passing layers (default: 9)\n"
               << "  --num-attn-layers N       Transformer cross-attention layers (default: 8)\n"
               << "  --iterations N            Self-play/train/export cycles (default: 200)\n"
+              << "  --saves-every N           Keep the exported model file of every Nth iteration and of\n"
+              << "                            iteration --iterations (default: 8)\n"
               << "  --games-per-iteration N   Self-play games finished per cycle (default: 500)\n"
               << "  --gamegen-batch-size N    Games played concurrently, one thread each (default: 128)\n"
               << "  --nn-server-threads N     Threads evaluating the games' network requests (default: 1)\n"
@@ -152,6 +155,7 @@ static Args parse_args(int argc, char* argv[]) {
         else if (a == "--num-layers") args.num_layers = std::stoi(need(i));
         else if (a == "--num-attn-layers") args.num_attn_layers = std::stoi(need(i));
         else if (a == "--iterations") args.iterations = std::stoi(need(i));
+        else if (a == "--saves-every") { args.saves_every = std::stoi(need(i)); positive(a, args.saves_every); }
         else if (a == "--games-per-iteration") { args.games_per_iteration = std::stoi(need(i)); positive(a, args.games_per_iteration); }
         else if (a == "--gamegen-batch-size") { args.gamegen_batch_size = std::stoi(need(i)); positive(a, args.gamegen_batch_size); }
         else if (a == "--nn-server-threads") { args.nn_server_threads = std::stoi(need(i)); positive(a, args.nn_server_threads); }
@@ -314,8 +318,9 @@ static double lr_warmup_scale(int64_t samples) {
 
 // Checkpoint directory layout:
 //   <arch>_config.json        game config + model config (what server.cpp matches /move requests on)
-//   <arch>_<iter>.pt          the model exported at the end of that iteration (what self-play and
-//                             server.cpp use)
+//   <arch>_<iter>.pt          the model exported at the end of that iteration, kept every
+//                             --saves-every iterations and at iteration --iterations (what server.cpp
+//                             uses)
 //   <arch>_<iter>_traj.json   that iteration's self-play games (SelfPlayRunner's trajectory format)
 //   trainer/                  what --resume needs: model.pt, weight_average.pt, optimizer.pt, state.json
 
@@ -546,12 +551,21 @@ static void train_iteration(Trainer& t, TrainState& st, ReplayBuffer& buffer, in
     train_on_bucket(t, st, buffer, window, args, game_cfg, bc, model_cfg, adj_norms, device, rng, iter);
 }
 
-// Saves the model self-play and the server should use - the weight average once it exists - as
-// <arch>_<iter>.pt, plus everything --resume needs under trainer/.
-static void export_and_save(Trainer& t, TrainState& st, const fs::path& dir, const std::string& arch, int iter) {
-    AnyModel& exported = t.average ? *t.average : t.model;
-    fs::path path = dir / iter_name(arch, iter, ".pt");
-    std::visit([&](auto& m) { torch::save(m, path.string()); }, exported);
+// Whether iteration `iter`'s export is kept as <arch>_<iter>.pt.
+static bool keeps_model_file(int iter, const Args& args) {
+    return iter % args.saves_every == 0 || iter == args.iterations;
+}
+
+// Exports the model self-play and the server should use - the weight average once it exists - and
+// saves everything --resume needs under trainer/. The export is also kept as <arch>_<iter>.pt when
+// keep_model_file.
+static void export_and_save(Trainer& t, TrainState& st, const fs::path& dir, const std::string& arch, int iter,
+                            bool keep_model_file) {
+    if (keep_model_file) {
+        AnyModel& exported = t.average ? *t.average : t.model;
+        fs::path path = dir / iter_name(arch, iter, ".pt");
+        std::visit([&](auto& m) { torch::save(m, path.string()); }, exported);
+    }
     st.exported_iteration = iter;
     fs::create_directories(dir / "trainer");
     std::visit([&](auto& m) { torch::save(m, (dir / "trainer" / "model.pt").string()); }, t.model);
@@ -696,7 +710,7 @@ int main(int argc, char* argv[]) {
             std::ofstream(ckpt_dir / iter_name(arch, it, "_traj.json")) << games.dump() << "\n";
             train_iteration(trainer, st, buffer, new_rows, args, game_cfg, bc, *model_cfg, adj_norms, device, rng, it);
             st.iteration = it;
-            if (st.bucket_started) export_and_save(trainer, st, ckpt_dir, arch, it);
+            if (st.bucket_started) export_and_save(trainer, st, ckpt_dir, arch, it, keeps_model_file(it, args));
         }
     }
 
@@ -712,18 +726,13 @@ int main(int argc, char* argv[]) {
                           args.gamegen_batch_size, args.nn_server_threads, args.nn_max_batch,
                           std::random_device{}());
 
-    // The model self-play plays with: the newest exported one, or the uniform evaluator before any.
+    // The model self-play plays with: a copy of the newest export, taken from the trainer (which holds
+    // it whether or not its <arch>_<iter>.pt was kept), or the uniform evaluator before any.
     std::optional<AnyModel> selfplay_model;
     auto load_selfplay_model = [&]() {
         selfplay_model.reset();
         if (st.exported_iteration < 0) return;
-        AnyModel m = build_model(bc, *model_cfg, game_cfg);
-        std::visit([&](auto& mm) {
-            torch::load(mm, (ckpt_dir / iter_name(arch, st.exported_iteration, ".pt")).string());
-            mm->to(device);
-            mm->eval();
-        }, m);
-        selfplay_model = std::move(m);
+        selfplay_model = clone_model(trainer.average ? *trainer.average : trainer.model, bc, *model_cfg, game_cfg, device);
     };
     load_selfplay_model();
 
@@ -767,7 +776,7 @@ int main(int argc, char* argv[]) {
         train_iteration(trainer, st, buffer, new_rows, args, game_cfg, bc, *model_cfg, adj_norms, device, rng, iter);
         st.iteration = iter;
         if (st.bucket_started) {
-            export_and_save(trainer, st, ckpt_dir, arch, iter);
+            export_and_save(trainer, st, ckpt_dir, arch, iter, keeps_model_file(iter, args));
             load_selfplay_model();
         } else {
             std::ofstream(ckpt_dir / "trainer" / "state.json") << st.to_json().dump(2) << "\n";

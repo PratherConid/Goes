@@ -150,8 +150,10 @@ model config, game config, and a timestamp - a new, unique directory every run, 
 implicitly:
 
 - `<arch>_config.json` - the game and model config (what the server matches requests against)
-- `<arch>_XXXXXX.pt` - the model exported at the end of iteration `XXXXXX` (what self-play and the
-  server use; the newest one wins)
+- `<arch>_XXXXXX.pt` - the model exported at the end of iteration `XXXXXX`, kept only every
+  `--saves-every` iterations (default 8) and at iteration `--iterations` (what the server uses; the
+  newest one wins). A run stopped earlier - e.g. killed mid-run - keeps its newest weights only in
+  `trainer/`, so its newest `.pt` can be up to `--saves-every - 1` iterations older
 - `<arch>_XXXXXX_traj.json` - that iteration's self-play games (see **Self-Play**)
 - `trainer/` - what `--resume` needs: the trained model, its weight average, the optimizer and the
   loop's counters (`state.json`)
@@ -249,6 +251,7 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
 |------|---------|-------------|
 | `--game-config PATH` | _(required)_ | Path to a GameConfig JSON file (`shared/gameConfig.ts`'s `GameConfig.toJSON()` wire shape - see `public/game_presets/`) - board description (cleg source text, `boardDescr`), stone/player counts, turn list, scoring rule, komi, ko rule, suicide, etc. all come from here; `forcedPassOnly: true` requires `--net-arch transformer` (the other three architectures aren't history-aware) |
 | `--iterations N` | `200` | Self-play / train / export cycles |
+| `--saves-every N` | `8` | Keep the exported model as `<arch>_XXXXXX.pt` only every N iterations and at iteration `--iterations`; `trainer/` and every `_traj.json` are still written each iteration |
 | `--games-per-iteration N` | `500` | Self-play games finished per cycle |
 | `--gamegen-batch-size N` | `128` | Games played concurrently, one thread each (KataGo's `numGameThreads`) - see **Self-Play** |
 | `--nn-server-threads N` | `1` | Threads evaluating the games' network requests (KataGo's `numNNServerThreadsPerModel`) |
@@ -365,7 +368,7 @@ Training follows KataGo's synchronous self-play loop (`python/selfplay/synchrono
 1. **Self-play** (see **Self-Play**): `--games-per-iteration` games are played with the newest exported model - every player searched by that one model, with no gating. Before the first model exists, a uniform evaluator stands in for it.
 2. **Record collection**: each finished game becomes a `GameRecord` of training rows - its fully searched positions, each with the search's policy target, the game's final stone/territory ownership (see **Ownership Heads**) and a blended pair-outcome target (see **Value Targets**).
 3. **Training** (see **Training Loop**): mini-batches are drawn from a window over the newest rows, for as many samples as the new data allows.
-4. **Export**: the weight average (or, before it exists, the trained model) is saved as `<arch>_XXXXXX.pt` and used for the next iteration's self-play.
+4. **Export**: the weight average (or, before it exists, the trained model) becomes the next iteration's self-play model, and is kept as `<arch>_XXXXXX.pt` every `--saves-every` iterations and at iteration `--iterations`.
 
 KataGo features left out because they don't fit Goes' rules engine or would change the model architecture: board-symmetry augmentation (Goes boards are arbitrary graphs), komi/handicap/board-size randomization and fair-komi (komi is part of a game's config, and not a model input), draw/no-result utilities, asymmetric playouts and lead estimation (two-player Go specifics), pass-alive endings and passing hacks (Benson's algorithm is Go-specific), subtree value-bias correction (keyed on 5×5 grid patterns), and the opponent-policy, soft-policy and score-distribution heads (new heads). Graph search, the neural-net cache, tree reuse and multi-threaded virtual loss are also not ported: KataGo's self-play clears its tree for every full search and runs one search thread per game anyway.
 
