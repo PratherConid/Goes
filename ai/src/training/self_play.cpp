@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cmath>
 #include <stdexcept>
+#include <mutex>
 
 static std::mt19937 rng(std::random_device{}());
 
@@ -258,7 +259,14 @@ BoardState new_state(const GameConfig& cfg, const BoardConfig& bc) {
         float k1 = cfg.linear_move_bound->first;
         float k2 = cfg.linear_move_bound->second;
         std::uniform_real_distribution<float> dist(k1, k2);
-        int sampled = static_cast<int>(dist(rng) * bc.N);
+        // Self-play creates games from many threads at once.
+        static std::mutex rng_mutex;
+        float k;
+        {
+            std::lock_guard<std::mutex> lock(rng_mutex);
+            k = dist(rng);
+        }
+        int sampled = static_cast<int>(k * bc.N);
         state.max_plies = state.max_plies.has_value() ? std::min(*state.max_plies, sampled) : sampled;
     }
     return state;
@@ -433,27 +441,89 @@ static void apply_action(BoardState& s, int action) {
                                       std::to_string(s.ply_count()));
 }
 
+static std::vector<int> legal_action_list(const BoardState& s) {
+    int N = s.N, ns = s.num_stones;
+    std::vector<int> a;
+    for (int st = 1; st <= ns; st++)
+        for (int i = 0; i < N; i++)
+            if (s.legal_moves_data().captures[st][i].has_value()) a.push_back((st - 1) * N + i);
+    if (!s.game_over() && (!s.forced_pass_only || s.no_trad_legal())) a.push_back(ns * N);
+    return a;
+}
+
 SelfPlayRunner::SelfPlayRunner(const GameConfig& cfg, const BoardConfig& bc, nlohmann::json input_descr,
                                const nlohmann::json* history_descr, SelfPlayParams params,
-                               SearchParams search_params, int num_games, uint64_t seed)
+                               SearchParams search_params, int num_games, int nn_server_threads,
+                               int nn_max_batch, uint64_t seed)
     : cfg_(cfg), bc_(bc), input_descr_(std::move(input_descr)), history_descr_(history_descr),
-      params_(params), search_params_(search_params), rng_(seed)
+      params_(params), search_params_(search_params), nn_(nn_server_threads, nn_max_batch)
 {
-    slots_.reserve(num_games);
-    for (int i = 0; i < num_games; i++) slots_.push_back(new_slot());
+    std::mt19937_64 seeder(seed);
+    threads_.reserve(num_games);
+    for (int i = 0; i < num_games; i++) threads_.emplace_back([this, s = seeder()] { worker(s); });
+}
+
+SelfPlayRunner::~SelfPlayRunner() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stopping_ = true;
+    }
+    workers_cv_.notify_all();
+    for (auto& t : threads_) t.join();
+}
+
+std::vector<FinishedGame> SelfPlayRunner::play(const Evaluator& evaluator, int num_games) {
+    // Every thread is paused at a ply boundary here, so no network request is pending.
+    nn_.set_evaluator(evaluator);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        finished_.clear();
+        target_games_ = num_games;
+        running_ = true;
+    }
+    workers_cv_.notify_all();
+    std::unique_lock<std::mutex> lock(mutex_);
+    main_cv_.wait(lock, [&] { return !running_ && paused_ == (int)threads_.size(); });
+    return std::move(finished_);
+}
+
+void SelfPlayRunner::worker(uint64_t seed) {
+    std::mt19937_64 rng(seed);
+    MCTS mcts(search_params_, rng());
+    Slot slot = new_slot(rng);
+    while (true) {
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (!running_ && !stopping_) {
+                paused_++;
+                main_cv_.notify_all();
+                workers_cv_.wait(lock, [&] { return running_ || stopping_; });
+                paused_--;
+            }
+            if (stopping_) return;
+        }
+        play_ply(slot, mcts, rng);
+        if (slot.state.game_over()) {
+            FinishedGame game = finish(slot, rng);
+            slot = new_slot(rng);
+            std::lock_guard<std::mutex> lock(mutex_);
+            finished_.push_back(std::move(game));
+            if ((int)finished_.size() >= target_games_) running_ = false;
+        }
+    }
 }
 
 // A fresh game whose first floor(Exp(1) * policy_init_area_prop * N) moves are sampled from the raw
 // policy (KataGo's initGamesWithPolicy) for opening variety.
-SelfPlayRunner::Slot SelfPlayRunner::new_slot() {
+SelfPlayRunner::Slot SelfPlayRunner::new_slot(std::mt19937_64& rng) const {
     Slot s{new_state(cfg_, bc_), {}, 0, {}};
     std::exponential_distribution<double> exp1(1.0);
-    s.opening_moves_left = static_cast<int>(std::floor(exp1(rng_) * params_.policy_init_area_prop * bc_.N));
+    s.opening_moves_left = static_cast<int>(std::floor(exp1(rng) * params_.policy_init_area_prop * bc_.N));
     return s;
 }
 
-FinishedGame SelfPlayRunner::finish(Slot& slot) {
-    resolve_row_counts(slot.plies, exact_pair_eval(slot.state).probs, bc_.N, params_, rng_);
+FinishedGame SelfPlayRunner::finish(Slot& slot, std::mt19937_64& rng) const {
+    resolve_row_counts(slot.plies, exact_pair_eval(slot.state).probs, bc_.N, params_, rng);
     json plies = json::array();
     for (auto& p : slot.plies) {
         json j;
@@ -469,126 +539,82 @@ FinishedGame SelfPlayRunner::finish(Slot& slot) {
     return FinishedGame{std::move(record), json{{"plies", std::move(plies)}}, std::move(slot.state)};
 }
 
-std::vector<FinishedGame> SelfPlayRunner::step(const Evaluator& evaluator, MCTSTiming& timing) {
+void SelfPlayRunner::play_ply(Slot& slot, MCTS& mcts, std::mt19937_64& rng) {
     int N = bc_.N;
-    std::vector<int> opening, searching;
-    for (int i = 0; i < (int)slots_.size(); i++)
-        (slots_[i].opening_moves_left > 0 ? opening : searching).push_back(i);
-
     auto history_of = [&](const BoardState& s) {
         return history_descr_ ? board_to_features(s, torch::kCPU, *history_descr_).features : torch::Tensor();
     };
 
-    if (!opening.empty()) {
-        std::vector<const BoardState*> states;
-        for (int i : opening) states.push_back(&slots_[i].state);
-        auto t0 = std::chrono::high_resolution_clock::now();
-        auto policy = evaluator.evaluate_batch(states).policy.to(torch::kCPU).contiguous();
-        timing.eval += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - t0).count();
-        auto pa = policy.accessor<float, 2>();
-        for (size_t j = 0; j < opening.size(); j++) {
-            Slot& slot = slots_[opening[j]];
-            int A = slot.state.num_stones * N + 1;
-            auto mask = board_to_features(slot.state, torch::kCPU, input_descr_).legal_mask;
-            auto ma = mask.accessor<bool, 1>();
-            std::vector<double> w(A, 0.0);
-            double total = 0.0;
-            for (int a = 0; a < A; a++)
-                if (ma[a] && pa[j][a] > 0) {
-                    w[a] = std::pow(static_cast<double>(pa[j][a]), 1.0 / params_.policy_init_temperature);
-                    total += w[a];
-                }
-            if (total <= 0.0) for (int a = 0; a < A; a++) w[a] = ma[a] ? 1.0 : 0.0;
-            std::discrete_distribution<int> dist(w.begin(), w.end());
-            PlyRecord rec;
-            rec.move = dist(rng_);
-            rec.history_features = history_of(slot.state);
-            apply_action(slot.state, rec.move);
-            slot.plies.push_back(std::move(rec));
-            slot.opening_moves_left--;
-        }
-    }
-
-    if (!searching.empty()) {
-        std::vector<BoardState*> states;
-        std::vector<RootSettings> settings;
-        std::vector<float> weights;
-        std::uniform_real_distribution<float> unif(0.0f, 1.0f);
-        for (int i : searching) {
-            Slot& slot = slots_[i];
-            int ply = slot.state.ply_count();
-            RootSettings rs;
-            rs.move_temperature = interpolate_early(params_.temperature_halflife, params_.move_temperature_early,
-                                                    params_.move_temperature, ply, N);
-            float weight = 1.0f;
-            if (unif(rng_) < params_.cheap_prob) {
-                rs.visits = params_.cheap_visits;
-                rs.fpu_reduction_max = search_params_.fpu_reduction_max;
-                weight = 0.0f;
-            } else {
-                rs.visits = params_.full_visits;
-                rs.noise = true;
-                rs.policy_temperature = interpolate_early(params_.temperature_halflife,
-                                                          params_.root_policy_temperature_early,
-                                                          params_.root_policy_temperature, ply, N);
-                rs.forced_playouts_coeff = params_.forced_playouts_coeff;
-                // KataGo's reduceVisits: once some player's search win term has stayed above the
-                // threshold for the last `lookback` plies, visits move toward reduced_visits_min and
-                // the weight toward reduced_visits_weight by the square of how far past it is.
-                int lookback = params_.reduce_visits_lookback;
-                if (params_.reduce_visits && (int)slot.recent_win.size() >= lookback) {
-                    float most_extreme = *std::min_element(slot.recent_win.end() - lookback, slot.recent_win.end());
-                    float through = std::min(most_extreme, 1.0f) - params_.reduce_visits_threshold;
-                    if (through > 0) {
-                        float r = through / (1.0f - params_.reduce_visits_threshold);
-                        r *= r;
-                        rs.visits = std::max(params_.reduced_visits_min, static_cast<int>(std::round(
-                            rs.visits + r * (params_.reduced_visits_min - rs.visits))));
-                        weight += r * (params_.reduced_visits_weight - weight);
-                    }
-                }
+    if (slot.opening_moves_left > 0) {
+        NNRow row = nn_.evaluate(slot.state);
+        std::vector<int> legal = legal_action_list(slot.state);
+        std::vector<double> w(legal.size(), 0.0);
+        double total = 0.0;
+        for (size_t k = 0; k < legal.size(); k++)
+            if (row.policy[legal[k]] > 0) {
+                w[k] = std::pow(static_cast<double>(row.policy[legal[k]]), 1.0 / params_.policy_init_temperature);
+                total += w[k];
             }
-            states.push_back(&slot.state);
-            settings.push_back(rs);
-            weights.push_back(weight);
-        }
+        if (total <= 0.0) std::fill(w.begin(), w.end(), 1.0);
+        std::discrete_distribution<int> dist(w.begin(), w.end());
+        PlyRecord rec;
+        rec.move = legal[dist(rng)];
+        rec.history_features = history_of(slot.state);
+        apply_action(slot.state, rec.move);
+        slot.plies.push_back(std::move(rec));
+        slot.opening_moves_left--;
+        return;
+    }
 
-        MCTS mcts(evaluator, search_params_, rng_());
-        auto [results, t] = mcts.search(states, settings);
-        timing.eval += t.eval;
-        timing.select += t.select;
-        timing.simulate += t.simulate;
-        timing.teardown += t.teardown;
-        timing.search += t.search;
-
-        for (size_t j = 0; j < searching.size(); j++) {
-            Slot& slot = slots_[searching[j]];
-            SearchResult& res = results[j];
-            PlyRecord rec;
-            rec.move = res.move;
-            rec.searched = true;
-            auto ft = board_to_features(slot.state, torch::kCPU, input_descr_);
-            rec.features = ft.features;
-            rec.legal_mask = ft.legal_mask;
-            rec.history_features = history_of(slot.state);
-            rec.policy_surprise = policy_kl(res.policy_target, res.root_prior);
-            rec.policy_target = std::move(res.policy_target);
-            rec.search_pair_probs = std::move(res.pair_probs);
-            rec.nn_pair_probs = std::move(res.nn_pair_probs);
-            rec.target_weight = weights[j];
-            slot.recent_win.push_back(*std::max_element(res.win.begin(), res.win.end()));
-            apply_action(slot.state, rec.move);
-            slot.plies.push_back(std::move(rec));
+    int ply = slot.state.ply_count();
+    RootSettings rs;
+    rs.move_temperature = interpolate_early(params_.temperature_halflife, params_.move_temperature_early,
+                                            params_.move_temperature, ply, N);
+    float weight = 1.0f;
+    std::uniform_real_distribution<float> unif(0.0f, 1.0f);
+    if (unif(rng) < params_.cheap_prob) {
+        rs.visits = params_.cheap_visits;
+        rs.fpu_reduction_max = search_params_.fpu_reduction_max;
+        weight = 0.0f;
+    } else {
+        rs.visits = params_.full_visits;
+        rs.noise = true;
+        rs.policy_temperature = interpolate_early(params_.temperature_halflife, params_.root_policy_temperature_early,
+                                                  params_.root_policy_temperature, ply, N);
+        rs.forced_playouts_coeff = params_.forced_playouts_coeff;
+        // KataGo's reduceVisits: once some player's search win term has stayed above the threshold
+        // for the last `lookback` plies, visits move toward reduced_visits_min and the weight toward
+        // reduced_visits_weight by the square of how far past it is.
+        int lookback = params_.reduce_visits_lookback;
+        if (params_.reduce_visits && (int)slot.recent_win.size() >= lookback) {
+            float most_extreme = *std::min_element(slot.recent_win.end() - lookback, slot.recent_win.end());
+            float through = std::min(most_extreme, 1.0f) - params_.reduce_visits_threshold;
+            if (through > 0) {
+                float r = through / (1.0f - params_.reduce_visits_threshold);
+                r *= r;
+                rs.visits = std::max(params_.reduced_visits_min, static_cast<int>(std::round(
+                    rs.visits + r * (params_.reduced_visits_min - rs.visits))));
+                weight += r * (params_.reduced_visits_weight - weight);
+            }
         }
     }
 
-    std::vector<FinishedGame> finished;
-    for (auto& slot : slots_) {
-        if (!slot.state.game_over()) continue;
-        finished.push_back(finish(slot));
-        slot = new_slot();
-    }
-    return finished;
+    SearchResult res = mcts.search(slot.state, rs, [this](const BoardState& s) { return nn_.evaluate(s); });
+    PlyRecord rec;
+    rec.move = res.move;
+    rec.searched = true;
+    auto ft = board_to_features(slot.state, torch::kCPU, input_descr_);
+    rec.features = ft.features;
+    rec.legal_mask = ft.legal_mask;
+    rec.history_features = history_of(slot.state);
+    rec.policy_surprise = policy_kl(res.policy_target, res.root_prior);
+    rec.policy_target = std::move(res.policy_target);
+    rec.search_pair_probs = std::move(res.pair_probs);
+    rec.nn_pair_probs = std::move(res.nn_pair_probs);
+    rec.target_weight = weight;
+    slot.recent_win.push_back(*std::max_element(res.win.begin(), res.win.end()));
+    apply_action(slot.state, rec.move);
+    slot.plies.push_back(std::move(rec));
 }
 
 GameRecord replay_trajectory(const nlohmann::json& trajectory, const GameConfig& cfg, const BoardConfig& bc,

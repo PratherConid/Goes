@@ -2,19 +2,26 @@
 #include "game/board_state.h"
 #include "model/evaluator.h"
 #include "mcts/utility.h"
+#include <functional>
 #include <memory>
 #include <random>
 #include <vector>
 
-struct MCTSTiming {
-    double eval = 0.0;      // network evaluation (roots and leaves)
-    double select = 0.0;    // tree descent
-    double simulate = 0.0;  // the whole simulation loop
-    double teardown = 0.0;  // destroying the search trees
-    double search = 0.0;    // the whole search() call
+// The network outputs a search needs for one position, on the CPU.
+struct NNRow {
+    std::vector<float> policy;  // num_stones*N+1 action probabilities
+    std::vector<float> totals;  // num_players expected final totals (estimate_player_totals())
+    std::vector<float> rank;    // num_rank_pairs*3 pair-outcome probabilities
 };
 
-// Settings shared by every root of a search - the subset of KataGo's SearchParams that Goes ports
+// Evaluates one position, blocking until its outputs are ready - a direct network call, or a
+// request to an NNServer (mcts/nn_server.h) that batches it with other searches' requests.
+using NNQuery = std::function<NNRow(const BoardState&)>;
+
+// Evaluates `states` (sharing one game config) in one call and splits the outputs into rows.
+std::vector<NNRow> evaluate_rows(const Evaluator& evaluator, const std::vector<const BoardState*>& states);
+
+// Settings shared by every search - the subset of KataGo's SearchParams that Goes ports
 // (see ai/Readme.md's "Search"). self_play() holds KataGo's self-play values
 // (cpp/configs/training/selfplay1.cfg); server() holds the values KataGo plays with outside
 // self-play (cpp/program/setup.cpp's defaults) - only the parameter values, nothing of its protocol.
@@ -39,7 +46,7 @@ struct SearchParams {
     static SearchParams server();
 };
 
-// Per-root settings, so one batched search can mix KataGo's full and cheap searches.
+// Per-search settings - where KataGo's full and cheap self-play searches differ.
 struct RootSettings {
     int visits = 600;                     // root visits to reach, including the root's own evaluation
     bool noise = false;                   // Dirichlet root noise
@@ -49,7 +56,7 @@ struct RootSettings {
     float move_temperature = 0.0f;        // temperature on the play-selection values; ~0 = argmax
 };
 
-// One root's search outcome. Action vectors are dense over num_stones*N+1 actions (stone-major,
+// A search's outcome. Action vectors are dense over num_stones*N+1 actions (stone-major,
 // num_stones*N = pass - see ai/Readme.md's "Policy Head and Action Space").
 struct SearchResult {
     std::vector<float> policy_target;  // normalized play-selection values (pruned, LCB-adjusted)
@@ -68,18 +75,17 @@ float interpolate_early(float halflife, float early, float late, int ply, int N)
 
 struct MCTSNode;
 
-// Batched MCTS over independent roots. Every simulation step descends one path per unfinished root,
-// evaluates all new leaves in one network call, and backs each leaf's value up its own path.
+// Single-root MCTS, one simulation at a time - KataGo's self-play shape (one search thread per
+// game). Batching across searches happens outside, in whatever serves `nn`: self-play runs one
+// search per game thread against a shared NNServer, so concurrent searches' requests share batches.
 class MCTS {
 public:
-    MCTS(Evaluator evaluator, SearchParams params, uint64_t seed);
+    MCTS(SearchParams params, uint64_t seed);
 
-    // All states must share one game config and board, and none may be game-over.
-    std::pair<std::vector<SearchResult>, MCTSTiming> search(
-        const std::vector<BoardState*>& states, const std::vector<RootSettings>& settings);
+    // `state` must not be game-over.
+    SearchResult search(const BoardState& state, const RootSettings& settings, const NNQuery& nn);
 
 private:
-    Evaluator evaluator_;
     SearchParams params_;
     std::mt19937 rng_;
 

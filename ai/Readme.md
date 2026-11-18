@@ -68,7 +68,7 @@ ai/
 
 1. **MSVC 2022** (or GCC/Clang on Linux) with C++17 support
 2. **CMake ≥ 3.18**
-3. **OpenMP** — bundled with MSVC and GCC; on macOS install via `brew install libomp`. Optional but recommended: enables parallel MCTS select across game trees.
+3. **OpenMP** — bundled with MSVC and GCC; on macOS install via `brew install libomp`. Optional but recommended: builds each network batch's input features in parallel.
 4. **LibTorch** — download the pre-built package from https://pytorch.org/get-started/locally/
    - Select: your OS (IMPORTANT!), C++ / LibTorch, CUDA version or CPU
    - Extract to a local directory, e.g. `D:\libtorch` on windows and `~/include/libtorch` on linux
@@ -251,7 +251,9 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
 | `--game-config PATH` | _(required)_ | Path to a GameConfig JSON file (`shared/gameConfig.ts`'s `GameConfig.toJSON()` wire shape - see `public/game_presets/`) - board description (cleg source text, `boardDescr`), stone/player counts, turn list, scoring rule, komi, ko rule, suicide, etc. all come from here; `forcedPassOnly: true` requires `--net-arch transformer` (the other three architectures aren't history-aware) |
 | `--iterations N` | `200` | Self-play / train / export cycles |
 | `--games-per-iteration N` | `500` | Self-play games finished per cycle |
-| `--gamegen-batch-size N` | `128` | Games played concurrently - each search step batches one leaf per game |
+| `--gamegen-batch-size N` | `128` | Games played concurrently, one thread each (KataGo's `numGameThreads`) - see **Self-Play** |
+| `--nn-server-threads N` | `1` | Threads evaluating the games' network requests (KataGo's `numNNServerThreadsPerModel`) |
+| `--nn-max-batch N` | `128` | Most network requests evaluated as one batch (KataGo's `nnMaxBatchSize`) |
 | `--full-visits N` | `600` | Visits of a full search - the searches that become training data |
 | `--cheap-visits N` | `100` | Visits of a cheap search - played, but not trained on |
 | `--cheap-prob F` | `0.75` | Probability that a move gets a cheap search |
@@ -281,7 +283,7 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
 | `--checkpoint-dir PATH` | `ai/checkpoints` | Checkpoint directory |
 | `--resume TAG` | _(none)_ | Continue an existing hash-named checkpoint directory - see **Checkpoint Directories and Matching** |
 | `--retrain TAG` | _(none)_ | Train a fresh model on an existing directory's recorded games (its `_traj.json` files, replayed in order into a *new* directory, training and exporting after each file as the original run did), then continue with self-play for any remaining `--iterations`. Only the game config must match - it never loads `TAG`'s weights. Mutually exclusive with `--resume` |
-| `--verbosity N` | `1` | 0=silent, 1=per-game and per-iteration, ≥2=per-step timings |
+| `--verbosity N` | `1` | 0=silent, 1=per-game and per-iteration, ≥2=also each iteration's network batch counts and evaluation time |
 
 ## Input Features
 
@@ -370,7 +372,7 @@ KataGo features left out because they don't fit Goes' rules engine or would chan
 
 ## Search
 
-`MCTS::search()` (`ai/src/mcts/mcts.cpp`) searches a batch of independent roots - one per concurrent game - one leaf per root per step, evaluating every new leaf in one network call. Each node keeps search averages of every player's utility (see **Search Utility**), its square (for LCB), the win term, and the rank head's pair-outcome probabilities, its own evaluation counted as its first visit. A terminal position is scored exactly instead of by the network. Every root's tree is searched with one model.
+`MCTS::search()` (`ai/src/mcts/mcts.cpp`) searches one root, one leaf at a time, getting each new leaf's network outputs from an `NNQuery` - in self-play the shared `NNServer` (see **Self-Play**), in the server a direct one-position call. Each node keeps search averages of every player's utility (see **Search Utility**), its square (for LCB), the win term, and the rank head's pair-outcome probabilities, its own evaluation counted as its first visit. A terminal position is scored exactly instead of by the network. Every root's tree is searched with one model.
 
 The settings come from KataGo (`SearchParams::self_play()` = its self-play config, `cpp/configs/training/selfplay1.cfg`; `SearchParams::server()` = the values it plays with outside self-play, `cpp/program/setup.cpp`'s defaults - only the parameter values are taken, not KataGo's engine protocol):
 
@@ -384,7 +386,7 @@ The settings come from KataGo (`SearchParams::self_play()` = its self-play confi
 
 ## Self-Play
 
-`SelfPlayRunner` (`ai/src/training/self_play.cpp`) keeps `--gamegen-batch-size` games going, playing one ply in each per `step()` and replacing every finished game with a new one. Defaults (`SelfPlayParams`) are KataGo's:
+`SelfPlayRunner` (`ai/src/training/self_play.cpp`) follows KataGo's self-play structure: `--gamegen-batch-size` threads each play one game at a time, start a new one as soon as it ends, and search sequentially. Every search's network requests go to one `NNServer` (`ai/src/mcts/nn_server.cpp`, KataGo's `NNEvaluator` queue): a search submits one position and blocks, and each of `--nn-server-threads` server threads takes whatever is queued, up to `--nn-max-batch`, without waiting for a full batch. Batches form from however many searches are waiting at once, and the network runs while the other searches do their CPU work. Once an iteration's `--games-per-iteration` games have finished, each thread stops at its next ply boundary. Unfinished games carry over into the next iteration, continuing with the newly exported model, and keep their full move history - which the Transformer reads from move 0. Defaults (`SelfPlayParams`) are KataGo's:
 
 - **Opening**: a new game's first `floor(Exp(1) · 0.04 · N)` moves are sampled straight from the network's policy - not searched, not trained on - for opening variety.
 - **Cheap and full searches**: each later move gets a cheap search (`--cheap-visits`, no noise, no forced playouts, root policy temperature 1) with probability `--cheap-prob`, otherwise a full one (`--full-visits`). Only full searches start with training weight 1; cheap ones start at 0.
@@ -447,7 +449,7 @@ Both come out of the same per-node features the policy head reads, via two indep
 - *Stone loss* / *Territory loss*: per-location squared error for each estimate - the predicted `(N, num_stones+1)` distribution against the true one-hot ownership (`stone_owner`/`territory_owner`, one-hot expanded via `torch::one_hot`), summed over the `num_stones+1` channels at each location (not averaged - averaging over channels as `torch::mse_loss` would do by default shrinks the loss too much to carry useful gradient signal), then averaged over locations and the batch: `(stone_estimate - one_hot(stone_owner))^2 .sum(channels) .mean(locations, batch)` (and the same for territory).
 - *Point loss*: raw per-stone-type point total (no player aggregation) - the difference between `estimate_stone_points(ownership, score_rule)` (the model's own expected total per stone type) and the same function applied to a one-hot ground-truth "ownership" tensor built from `stone_owner`/`territory_owner`, scaled by `num_stones / N` (board size) before squaring - the raw difference can be as large as `N`, which would otherwise dwarf the per-location Stone/Territory losses - then summed over stone types and averaged over the batch: `((predicted_points - actual_points) / N * num_stones)^2 .sum(stone types) .mean(batch)`.
 
-**The search reads these heads through `estimate_player_totals()`** (`ai/include/model/evaluator.h`): `estimate_stone_points()` (the same function the point loss above uses) gives the expected per-stone-type points under the state's `score_rule` - combined exactly like `compute_points()` does (stones only, territory only, or their sum) - which are credited to players via `stone_to_player_map` (a small membership-matrix matmul, mirroring `compute_player_totals()`) and have komi and, under `"territory"`, captures so far added. Differences of these expected totals are the score term's `d_pq` (see **Search Utility**); the win term comes from the rank head instead (see **Rank Head**) - the ownership heads can't supply it. MCTS always batches leaves from one game's config at a time, so a single rule/map per batched call is correct.
+**The search reads these heads through `estimate_player_totals()`** (`ai/include/model/evaluator.h`): `estimate_stone_points()` (the same function the point loss above uses) gives the expected per-stone-type points under the state's `score_rule` - combined exactly like `compute_points()` does (stones only, territory only, or their sum) - which are credited to players via `stone_to_player_map` (a small membership-matrix matmul, mirroring `compute_player_totals()`) and have komi and, under `"territory"`, captures so far added. Differences of these expected totals are the score term's `d_pq` (see **Search Utility**); the win term comes from the rank head instead (see **Rank Head**) - the ownership heads can't supply it. A network batch only ever holds positions from one game config, so a single rule/map per batched call is correct.
 
 ## Rank Head: Pairwise Outcome Probabilities
 

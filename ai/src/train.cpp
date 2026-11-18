@@ -51,6 +51,8 @@ struct Args {
     int iterations = 200;
     int games_per_iteration = 500;
     int gamegen_batch_size = 128;
+    int nn_server_threads = 1;
+    int nn_max_batch = 128;
     int full_visits = 600;
     int cheap_visits = 100;
     float cheap_prob = 0.75f;
@@ -91,7 +93,9 @@ static void print_usage(const char* prog) {
               << "  --num-attn-layers N       Transformer cross-attention layers (default: 8)\n"
               << "  --iterations N            Self-play/train/export cycles (default: 200)\n"
               << "  --games-per-iteration N   Self-play games finished per cycle (default: 500)\n"
-              << "  --gamegen-batch-size N    Games played concurrently (default: 128)\n"
+              << "  --gamegen-batch-size N    Games played concurrently, one thread each (default: 128)\n"
+              << "  --nn-server-threads N     Threads evaluating the games' network requests (default: 1)\n"
+              << "  --nn-max-batch N          Most network requests evaluated as one batch (default: 128)\n"
               << "  --full-visits N           Visits of a full (recorded) search (default: 600)\n"
               << "  --cheap-visits N          Visits of a cheap (unrecorded) search (default: 100)\n"
               << "  --cheap-prob F            Probability a move gets a cheap search (default: 0.75)\n"
@@ -117,7 +121,7 @@ static void print_usage(const char* prog) {
               << "                            for any remaining --iterations (exclusive with --resume)\n"
               << "  --linear-move-bound K1 K2 End games after Uniform(K1,K2)*N plies, resampled per game\n"
               << "  --cpu                     Force CPU even if CUDA is available\n"
-              << "  --verbosity N             0=silent, 1=per-game, >=2=per-step timings (default: 1)\n";
+              << "  --verbosity N             0=silent, 1=per-game, >=2=network batch stats (default: 1)\n";
 }
 
 static Args parse_args(int argc, char* argv[]) {
@@ -150,6 +154,8 @@ static Args parse_args(int argc, char* argv[]) {
         else if (a == "--iterations") args.iterations = std::stoi(need(i));
         else if (a == "--games-per-iteration") { args.games_per_iteration = std::stoi(need(i)); positive(a, args.games_per_iteration); }
         else if (a == "--gamegen-batch-size") { args.gamegen_batch_size = std::stoi(need(i)); positive(a, args.gamegen_batch_size); }
+        else if (a == "--nn-server-threads") { args.nn_server_threads = std::stoi(need(i)); positive(a, args.nn_server_threads); }
+        else if (a == "--nn-max-batch") { args.nn_max_batch = std::stoi(need(i)); positive(a, args.nn_max_batch); }
         else if (a == "--full-visits") { args.full_visits = std::stoi(need(i)); positive(a, args.full_visits); }
         else if (a == "--cheap-visits") { args.cheap_visits = std::stoi(need(i)); positive(a, args.cheap_visits); }
         else if (a == "--cheap-prob") {
@@ -703,7 +709,8 @@ int main(int argc, char* argv[]) {
     sp_params.reduced_visits_min = std::min(sp_params.reduced_visits_min, args.full_visits);
     sp_params.cheap_prob = args.cheap_prob;
     SelfPlayRunner runner(game_cfg, bc, model_cfg->input_descr, hist_descr, sp_params, search_params,
-                          args.gamegen_batch_size, std::random_device{}());
+                          args.gamegen_batch_size, args.nn_server_threads, args.nn_max_batch,
+                          std::random_device{}());
 
     // The model self-play plays with: the newest exported one, or the uniform evaluator before any.
     std::optional<AnyModel> selfplay_model;
@@ -732,29 +739,23 @@ int main(int argc, char* argv[]) {
 
         json traj = json::array();
         int64_t new_rows = 0;
-        int games = 0, step_count = 0;
-        while (games < args.games_per_iteration) {
-            MCTSTiming timing;
-            auto t_step = Clock::now();
-            auto finished = runner.step(evaluator, timing);
-            if (args.verbosity >= 2)
-                std::cout << std::fixed << std::setprecision(0) << "  step " << step_count << ": total="
-                          << std::chrono::duration<double, std::milli>(Clock::now() - t_step).count() << "ms"
-                          << "  search=" << timing.search * 1000 << "ms  eval=" << timing.eval * 1000
-                          << "ms  select=" << timing.select * 1000 << "ms  teardown=" << timing.teardown * 1000 << "ms"
-                          << std::defaultfloat << std::endl;
-            step_count++;
-            for (auto& g : finished) {
-                games++;
-                if (args.verbosity >= 1) print_game_result(games, args.games_per_iteration, model_id, g.final_state);
-                int64_t rows = g.record.num_rows();
-                new_rows += rows;
-                if (!selfplay_model) st.random_rows += rows;
-                g.trajectory["model"] = model_id;
-                traj.push_back(std::move(g.trajectory));
-                buffer.add(std::move(g.record));
-            }
+        int games = 0;
+        auto finished = runner.play(evaluator, args.games_per_iteration);
+        NNServer::Stats nn = runner.take_nn_stats();
+        for (auto& g : finished) {
+            games++;
+            if (args.verbosity >= 1) print_game_result(games, (int)finished.size(), model_id, g.final_state);
+            int64_t rows = g.record.num_rows();
+            new_rows += rows;
+            if (!selfplay_model) st.random_rows += rows;
+            g.trajectory["model"] = model_id;
+            traj.push_back(std::move(g.trajectory));
+            buffer.add(std::move(g.record));
         }
+        if (args.verbosity >= 2 && nn.batches > 0)
+            std::cout << std::fixed << std::setprecision(1) << "  network: " << nn.rows << " rows in " << nn.batches
+                      << " batches (avg " << static_cast<double>(nn.rows) / nn.batches << "), "
+                      << nn.seconds << "s evaluating" << std::defaultfloat << std::endl;
         st.total_games += games;
         st.total_rows += new_rows;
         std::ofstream(ckpt_dir / iter_name(arch, iter, "_traj.json")) << traj.dump() << "\n";

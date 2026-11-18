@@ -5,6 +5,7 @@
 #include "model/evaluator.h"
 #include "model/model_config.h"
 #include "mcts/mcts.h"
+#include "mcts/nn_server.h"
 #include "training/replay_buffer.h"
 #include "nlohmann/json.hpp"
 #include <vector>
@@ -13,6 +14,9 @@
 #include <optional>
 #include <cstdint>
 #include <string>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 struct GameConfig {
     // Mirrors shared/gameConfig.ts's GameConfig.boardDescr, but held as cleg source text (its
@@ -172,9 +176,14 @@ struct FinishedGame {
     BoardState final_state;
 };
 
-// A pool of concurrent self-play games. Each step() plays one ply in every game - an opening move
-// sampled from the raw policy, or a batched search (cheap or full, see SelfPlayParams) - and
-// returns the games that just finished, each slot immediately restarting with a fresh game.
+// Concurrent self-play games, one thread per game - KataGo's self-play structure. Each thread plays
+// its own game at its own pace - opening moves sampled from the raw policy, then a cheap or full
+// search per move (see SelfPlayParams) - with every search's network requests batched by one shared
+// NNServer, and starts a new game as soon as one finishes.
+//
+// play() runs every thread until `num_games` games have finished, then pauses each thread at its
+// next ply boundary and returns those games. Unfinished games carry over to the next play() call,
+// continuing with whatever evaluator that call passes.
 //
 // Trajectory format, one object per game: {"plies": [ply, ...]} (train.cpp adds "model": the
 // iteration of the model that played it, -1 = uniform evaluator), where an opening ply is
@@ -185,9 +194,13 @@ class SelfPlayRunner {
 public:
     SelfPlayRunner(const GameConfig& cfg, const BoardConfig& bc, nlohmann::json input_descr,
                    const nlohmann::json* history_descr, SelfPlayParams params, SearchParams search_params,
-                   int num_games, uint64_t seed);
+                   int num_games, int nn_server_threads, int nn_max_batch, uint64_t seed);
+    ~SelfPlayRunner();
 
-    std::vector<FinishedGame> step(const Evaluator& evaluator, MCTSTiming& timing);
+    std::vector<FinishedGame> play(const Evaluator& evaluator, int num_games);
+
+    // Network rows, batches and evaluation time since the previous call.
+    NNServer::Stats take_nn_stats() { return nn_.take_stats(); }
 
 private:
     struct Slot {
@@ -203,11 +216,20 @@ private:
     const nlohmann::json* history_descr_;
     SelfPlayParams params_;
     SearchParams search_params_;
-    std::mt19937_64 rng_;
-    std::vector<Slot> slots_;
+    NNServer nn_;
 
-    Slot new_slot();
-    FinishedGame finish(Slot& slot);
+    std::mutex mutex_;
+    std::condition_variable workers_cv_, main_cv_;
+    bool running_ = false, stopping_ = false;
+    int paused_ = 0;
+    int target_games_ = 0;
+    std::vector<FinishedGame> finished_;
+    std::vector<std::thread> threads_;
+
+    void worker(uint64_t seed);
+    Slot new_slot(std::mt19937_64& rng) const;
+    void play_ply(Slot& slot, MCTS& mcts, std::mt19937_64& rng);
+    FinishedGame finish(Slot& slot, std::mt19937_64& rng) const;
 };
 
 // Rebuilds a finished game's GameRecord from its trajectory (SelfPlayRunner's format) by replaying

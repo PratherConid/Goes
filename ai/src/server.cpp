@@ -465,9 +465,10 @@ int main(int argc, char* argv[]) {
             root.visits = num_sims;
             root.fpu_reduction_max = 0.1f;
             root.move_temperature = j.value("temperature", ss.default_temperature);
-            MCTS mcts(evaluator, SearchParams::server(), std::random_device{}());
-            auto [results, _timing] = mcts.search({sess->state.get()}, {root});
-            const SearchResult& result = results[0];
+            MCTS mcts(SearchParams::server(), std::random_device{}());
+            SearchResult result = mcts.search(*sess->state, root, [&](const BoardState& s) {
+                return evaluate_rows(evaluator, {&s})[0];
+            });
             // The mover is next_turn.player (stone_to_player_map is scoring-only - see
             // shared/types.ts's TurnInfo).
             float value = result.utility[sess->state->next_turn.player - 1];
