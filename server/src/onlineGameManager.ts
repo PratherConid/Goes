@@ -386,7 +386,7 @@ export class OnlineGameManager {
             // resignation to already be known).
             resigns: [...game.boardState.resigns.entries()],
             session_id: game.engineSessions.get(slot) ?? null,
-            num_simulations: pi.emsim || 0,
+            num_simulations: pi.emsim,
             temperature: pi.temp || 0,
         };
     }

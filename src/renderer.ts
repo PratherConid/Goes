@@ -565,18 +565,18 @@ class EngineManager {
         session_id: string | null,
         num_simulations: number,
         temperature: number,
-        onMove: (move: number | null) => void,
+        onMove: (move: number | null, stone: number | null) => void,
         onError: (e: any) => void,
     ): void {
         const body = { game_id, config, board, moves, session_id, num_simulations, temperature };
-        const handle = conn.request<{ move: number | null; session_id?: string }>('ai/move', { body });
+        const handle = conn.request<{ move: number | null; stone: number | null; session_id?: string }>('ai/move', { body });
         this._handle = handle;
         handle.promise
             .then(data => {
                 this._handle = null;
                 if (data.session_id) this.sessionId = data.session_id;
                 this.remainingMoves--;
-                onMove(data.move);
+                onMove(data.move, data.stone);
             })
             .catch(e => {
                 this._handle = null;
@@ -1380,9 +1380,9 @@ export class Renderer {
             this.engineManager.sessionId,
             numSims,
             temp,
-            (move) => {
-                if (!this._active.bs.makeMove(move)) {
-                    console.error('em: engine returned an illegal move', move);
+            (move, stone) => {
+                if (!this._active.bs.makeMove(move, stone ?? undefined)) {
+                    console.error('em: engine returned an illegal move', move, stone);
                     this.engineManager.cancel();
                 } else {
                     this._active.displayPlyNum = this._active.bs.getView().plyCount;
@@ -1639,7 +1639,7 @@ export class Renderer {
             ${row('new',              'Start new local game')}
             ${row('em [&lt;n&gt;]',  'Engine move (optional n consecutive moves)')}
             ${row('cem',             'Cancel current engine move')}
-            ${row('temp &lt;f&gt;',  'Set engine temperature (0 = argmax visits)')}
+            ${row('temp &lt;f&gt;',  'Set engine temperature (0 = the search\'s best move)')}
             ${row('s',           'Toggle self-play (random moves)')}
             ${row('af',          'Toggle auto-forced: auto-execute forced moves')}
             ${row('w &lt;n&gt;', 'Withdraw n moves')}
@@ -3297,7 +3297,7 @@ export class Renderer {
         else if (cmd === 'soe') {
             if (!requireOrderMode(true)) return;
             const n = posInt(parts[1]); if (n === null) { this._setCmdOutput('Usage: soe <player-id> [emsim] [temp]'); return; }
-            const emsim = parts[2] !== undefined ? nonNeg(parts[2]) : this.emNumSims;
+            const emsim = parts[2] !== undefined ? posInt(parts[2]) : this.emNumSims;
             const temp  = parts[3] !== undefined ? nonNeg(parts[3]) : this.emTemperature;
             if (emsim === null || temp === null) { this._setCmdOutput('Usage: soe <player-id> [emsim] [temp]'); return; }
             this.onlinePlayerRequest.fixedOrder.set(n, new PlayerInfo('serverEngine', 'Engine', emsim, temp));
@@ -3311,7 +3311,7 @@ export class Renderer {
         }
         else if (cmd === 'adde') {
             if (!requireOrderMode(false) || !randomOrderHasRoom()) return;
-            const emsim = parts[1] !== undefined ? nonNeg(parts[1]) : this.emNumSims;
+            const emsim = parts[1] !== undefined ? posInt(parts[1]) : this.emNumSims;
             const temp  = parts[2] !== undefined ? nonNeg(parts[2]) : this.emTemperature;
             if (emsim === null || temp === null) { this._setCmdOutput('Usage: adde [emsim] [temp]'); return; }
             this.onlinePlayerRequest.randomOrder.push(new PlayerInfo('serverEngine', 'Engine', emsim, temp));
