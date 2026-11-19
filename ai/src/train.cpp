@@ -53,6 +53,7 @@ struct Args {
     int games_per_iteration = 500;
     int gamegen_batch_size = 128;
     int nn_server_threads = 1;
+    std::vector<int> selfplay_gpus;  // empty: self-play evaluates on the training device
     int nn_max_batch = 128;
     int full_visits = 600;
     int cheap_visits = 100;
@@ -100,6 +101,9 @@ static void print_usage(const char* prog) {
               << "  --gamegen-batch-size N    Games played concurrently, one thread each (default: 128)\n"
               << "  --nn-server-threads N     Threads evaluating the games' network requests (default: 1)\n"
               << "  --nn-max-batch N          Most network requests evaluated as one batch (default: 128)\n"
+              << "  --selfplay-gpus LIST      CUDA devices for self-play's network evaluation, e.g. 0,1 - network\n"
+              << "                            server thread i uses the (i mod count)-th, each GPU with its own\n"
+              << "                            copy of the model (default: the training device)\n"
               << "  --full-visits N           Visits of a full (recorded) search (default: 600)\n"
               << "  --cheap-visits N          Visits of a cheap (unrecorded) search (default: 100)\n"
               << "  --cheap-prob F            Probability a move gets a cheap search (default: 0.75)\n"
@@ -161,6 +165,21 @@ static Args parse_args(int argc, char* argv[]) {
         else if (a == "--gamegen-batch-size") { args.gamegen_batch_size = std::stoi(need(i)); positive(a, args.gamegen_batch_size); }
         else if (a == "--nn-server-threads") { args.nn_server_threads = std::stoi(need(i)); positive(a, args.nn_server_threads); }
         else if (a == "--nn-max-batch") { args.nn_max_batch = std::stoi(need(i)); positive(a, args.nn_max_batch); }
+        else if (a == "--selfplay-gpus") {
+            std::stringstream list(need(i));
+            std::string item;
+            while (std::getline(list, item, ',')) {
+                size_t used = 0;
+                int gpu = -1;
+                try { gpu = std::stoi(item, &used); } catch (const std::exception&) {}
+                if (gpu < 0 || used != item.size()) {
+                    std::cerr << "--selfplay-gpus expects comma-separated CUDA device indices, got '" << item << "'\n";
+                    std::exit(1);
+                }
+                args.selfplay_gpus.push_back(gpu);
+            }
+            if (args.selfplay_gpus.empty()) { std::cerr << "--selfplay-gpus needs at least one device\n"; std::exit(1); }
+        }
         else if (a == "--full-visits") { args.full_visits = std::stoi(need(i)); positive(a, args.full_visits); }
         else if (a == "--cheap-visits") { args.cheap_visits = std::stoi(need(i)); positive(a, args.cheap_visits); }
         else if (a == "--cheap-prob") {
@@ -618,6 +637,30 @@ int main(int argc, char* argv[]) {
     torch::Device device = (torch::cuda::is_available() && !args.cpu) ? torch::kCUDA : torch::kCPU;
     std::cout << "Device: " << device << std::endl;
 
+    // Self-play's network evaluation devices; network server thread i uses the (i mod count)-th.
+    std::vector<torch::Device> selfplay_devices;
+    if (args.selfplay_gpus.empty()) {
+        selfplay_devices.push_back(device);
+    } else {
+        if (!device.is_cuda()) { std::cerr << "Error: --selfplay-gpus needs CUDA (and no --cpu)\n"; return 1; }
+        int count = static_cast<int>(torch::cuda::device_count());
+        for (int gpu : args.selfplay_gpus) {
+            if (gpu >= count) {
+                std::cerr << "Error: --selfplay-gpus: device " << gpu << " does not exist (" << count << " visible)\n";
+                return 1;
+            }
+            selfplay_devices.emplace_back(torch::kCUDA, static_cast<torch::DeviceIndex>(gpu));
+        }
+        if (args.nn_server_threads < (int)selfplay_devices.size()) {
+            std::cerr << "Error: --nn-server-threads (" << args.nn_server_threads << ") is less than the number of "
+                      << "--selfplay-gpus (" << selfplay_devices.size() << "), so some would go unused\n";
+            return 1;
+        }
+        std::cout << "Self-play devices:";
+        for (auto& d : selfplay_devices) std::cout << " " << d;
+        std::cout << std::endl;
+    }
+
     json input_descr = compute_input_descr(game_cfg, bc.N);
     int in_dim = input_descr.at("totalDims").get<int>();
     // The Transformer's per-ply history input: just the turn position and stones.
@@ -727,37 +770,44 @@ int main(int argc, char* argv[]) {
                           args.gamegen_batch_size, args.nn_server_threads, args.nn_max_batch,
                           std::random_device{}());
 
-    // The model self-play plays with: a copy of the newest export, taken from the trainer (which holds
-    // it whether or not its <arch>_<iter>.pt was kept), or the uniform evaluator before any.
-    std::optional<AnyModel> selfplay_model;
+    // The model self-play plays with: one copy of the newest export per self-play device, taken from
+    // the trainer (which holds it whether or not its <arch>_<iter>.pt was kept), or the uniform
+    // evaluator before any.
+    std::vector<AdjNorms> selfplay_adj_norms;
+    for (auto& d : selfplay_devices) selfplay_adj_norms.push_back(d == device ? adj_norms : compute_adj_norms(bc, d));
+    std::vector<AnyModel> selfplay_models;
     auto load_selfplay_model = [&]() {
-        selfplay_model.reset();
+        selfplay_models.clear();
         if (st.exported_iteration < 0) return;
-        selfplay_model = clone_model(trainer.average ? *trainer.average : trainer.model, bc, *model_cfg, game_cfg, device);
+        for (auto& d : selfplay_devices)
+            selfplay_models.push_back(clone_model(trainer.average ? *trainer.average : trainer.model, bc, *model_cfg, game_cfg, d));
     };
     load_selfplay_model();
 
     for (int iter = st.iteration + 1; iter <= args.iterations; iter++) {
         auto t0 = Clock::now();
-        Evaluator evaluator = selfplay_model ? make_evaluator(*selfplay_model, adj_norms)
-                                             : make_uniform_evaluator(bc.N, game_cfg.num_stones, game_cfg.num_players);
-        int model_id = selfplay_model ? st.exported_iteration : -1;
+        bool has_model = !selfplay_models.empty();
+        std::vector<Evaluator> evaluators;
+        for (size_t d = 0; d < selfplay_models.size(); d++)
+            evaluators.push_back(make_evaluator(selfplay_models[d], selfplay_adj_norms[d]));
+        if (!has_model) evaluators.push_back(make_uniform_evaluator(bc.N, game_cfg.num_stones, game_cfg.num_players));
+        int model_id = has_model ? st.exported_iteration : -1;
         if (args.verbosity >= 1)
             std::cout << "[iter " << std::setw(4) << iter << "] self-play with "
-                      << (selfplay_model ? "model " + std::to_string(model_id) : std::string("uniform evaluator"))
+                      << (has_model ? "model " + std::to_string(model_id) : std::string("uniform evaluator"))
                       << " (" << args.games_per_iteration << " games, " << args.gamegen_batch_size << " at a time)" << std::endl;
 
         json traj = json::array();
         int64_t new_rows = 0;
         int games = 0;
-        auto finished = runner.play(evaluator, args.games_per_iteration);
+        auto finished = runner.play(evaluators, args.games_per_iteration);
         NNServer::Stats nn = runner.take_nn_stats();
         for (auto& g : finished) {
             games++;
             if (args.verbosity >= 1) print_game_result(games, (int)finished.size(), model_id, g.final_state);
             int64_t rows = g.record.num_rows();
             new_rows += rows;
-            if (!selfplay_model) st.random_rows += rows;
+            if (!has_model) st.random_rows += rows;
             g.trajectory["model"] = model_id;
             traj.push_back(std::move(g.trajectory));
             buffer.add(std::move(g.record));

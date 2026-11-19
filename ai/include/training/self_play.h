@@ -183,7 +183,8 @@ struct FinishedGame {
 //
 // play() runs every thread until `num_games` games have finished, then pauses each thread at its
 // next ply boundary and returns those games. Unfinished games carry over to the next play() call,
-// continuing with whatever evaluator that call passes.
+// continuing with whatever evaluators that call passes. Network server thread i uses
+// evaluators[i % evaluators.size()] (NNServer::set_evaluators()).
 //
 // Trajectory format, one object per game: {"plies": [ply, ...]} (train.cpp adds "model": the
 // iteration of the model that played it, -1 = uniform evaluator), where an opening ply is
@@ -197,7 +198,7 @@ public:
                    int num_games, int nn_server_threads, int nn_max_batch, uint64_t seed);
     ~SelfPlayRunner();
 
-    std::vector<FinishedGame> play(const Evaluator& evaluator, int num_games);
+    std::vector<FinishedGame> play(const std::vector<Evaluator>& evaluators, int num_games);
 
     // Network rows, batches and evaluation time since the previous call.
     NNServer::Stats take_nn_stats() { return nn_.take_stats(); }

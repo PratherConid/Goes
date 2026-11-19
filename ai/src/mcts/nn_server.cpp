@@ -1,8 +1,9 @@
 #include "mcts/nn_server.h"
 #include <chrono>
+#include <stdexcept>
 
 NNServer::NNServer(int num_threads, int max_batch) : max_batch_(max_batch) {
-    for (int i = 0; i < num_threads; i++) threads_.emplace_back([this] { serve(); });
+    for (int i = 0; i < num_threads; i++) threads_.emplace_back([this, i] { serve(i); });
 }
 
 NNServer::~NNServer() {
@@ -14,15 +15,16 @@ NNServer::~NNServer() {
     for (auto& t : threads_) t.join();
 }
 
-void NNServer::set_evaluator(Evaluator evaluator) {
+void NNServer::set_evaluators(std::vector<Evaluator> evaluators) {
+    if (evaluators.empty()) throw std::invalid_argument("NNServer::set_evaluators: no evaluators");
     std::lock_guard<std::mutex> lock(mutex_);
-    evaluator_ = std::move(evaluator);
+    evaluators_ = std::move(evaluators);
 }
 
 NNRow NNServer::evaluate(const BoardState& state) {
     Request req;
     req.state = &state;
-    req.input = evaluator_.prepare(state);
+    req.input = evaluators_.front().prepare(state);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         queue_.push_back(&req);
@@ -40,7 +42,7 @@ NNServer::Stats NNServer::take_stats() {
     return s;
 }
 
-void NNServer::serve() {
+void NNServer::serve(int thread_index) {
     while (true) {
         std::vector<Request*> batch;
         Evaluator evaluator;
@@ -52,7 +54,7 @@ void NNServer::serve() {
                 batch.push_back(queue_.front());
                 queue_.pop_front();
             }
-            evaluator = evaluator_;
+            evaluator = evaluators_[thread_index % evaluators_.size()];
         }
         std::vector<const ModelInput*> inputs;
         std::vector<const BoardState*> states;

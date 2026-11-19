@@ -472,9 +472,9 @@ SelfPlayRunner::~SelfPlayRunner() {
     for (auto& t : threads_) t.join();
 }
 
-std::vector<FinishedGame> SelfPlayRunner::play(const Evaluator& evaluator, int num_games) {
+std::vector<FinishedGame> SelfPlayRunner::play(const std::vector<Evaluator>& evaluators, int num_games) {
     // Every thread is paused at a ply boundary here, so no network request is pending.
-    nn_.set_evaluator(evaluator);
+    nn_.set_evaluators(evaluators);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         finished_.clear();
