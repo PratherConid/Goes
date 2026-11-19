@@ -117,7 +117,6 @@ Run from the project root:
 **Linux:**
 
 ```bash
-export OMP_NUM_THREADS=8
 ai/build/goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5 --min-rows 10000
 ```
 
@@ -126,8 +125,6 @@ searches and 100-visit cheap ones, training once 100k rows exist); these command
 at 10k rows instead (`--min-rows 10000`). For larger runs:
 
 ```bash
-export OMP_NUM_THREADS=8
-
 ai/build/goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 1000 --cnn-hidden-dim 128 --min-rows 10000
 
 ai/build/goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 1000 --net-arch gnn --gnn-hidden-dim 256 --min-rows 10000
@@ -142,7 +139,6 @@ ai/build/goes_train --game-config public/game_presets/13x13_two_ply_go.json --li
 **Windows:**
 
 ```powershell
-$env:OMP_NUM_THREADS = "8"
 ai\build\Release\goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5 --min-rows 10000
 ```
 
