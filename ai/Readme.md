@@ -123,9 +123,10 @@ Run from the project root:
 ai/build/goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5 --min-rows 10000
 ```
 
-The defaults are KataGo's: `synchronous_loop.sh`'s sizes (500 games per iteration, training once
-100k rows exist) and `selfplay1.cfg`'s searches (600-visit full searches and 100-visit cheap
-ones); these commands start training at 10k rows instead (`--min-rows 10000`). For larger runs:
+The defaults are KataGo's - `synchronous_loop.sh`'s 500 games per iteration and `selfplay1.cfg`'s
+searches (600-visit full searches and 100-visit cheap ones) - except that training starts once 2048
+rows exist (KataGo waits for 100k); these commands start training at 10k rows (`--min-rows 10000`).
+For larger runs:
 
 ```bash
 ai/build/goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 1000 --cnn-hidden-dim 128 --min-rows 10000
@@ -266,7 +267,7 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
 | `--lr F` | `0.001` | Adam learning rate after warmup |
 | `--l2 F` | `0.0001` | Adam weight decay |
 | `--no-lr-warmup` | _(off)_ | Skip KataGo's learning-rate warmup over the first 2M training samples |
-| `--min-rows N` | `100000` | Rows needed before training starts (see **Training Loop**) |
+| `--min-rows N` | `2048` | Rows needed before training starts (see **Training Loop**; KataGo's is 100000) |
 | `--taper-window-scale F` | `50000` | Training-window power-law scale |
 | `--taper-window-exponent F` | `0.65` | Training-window power-law exponent |
 | `--expand-window-per-row F` | `0.4` | Training-window growth per new row |

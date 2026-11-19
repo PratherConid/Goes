@@ -63,7 +63,7 @@ struct Args {
     float l2 = 1e-4f;
     bool lr_warmup = true;
     float c_puct = 1.1f;
-    int64_t min_rows = 100000;
+    int64_t min_rows = 2048;  // KataGo's is 100000.
     double taper_window_scale = 50000;
     double taper_window_exponent = 0.65;
     double expand_window_per_row = 0.4;
@@ -112,7 +112,7 @@ static void print_usage(const char* prog) {
               << "  --lr F                    Adam learning rate after warmup (default: 0.001)\n"
               << "  --l2 F                    Adam weight decay (default: 0.0001)\n"
               << "  --no-lr-warmup            Skip the learning-rate warmup over the first 2M samples\n"
-              << "  --min-rows N              Rows needed before training starts (default: 100000)\n"
+              << "  --min-rows N              Rows needed before training starts (default: 2048)\n"
               << "  --taper-window-scale F    Training-window power-law scale (default: 50000)\n"
               << "  --taper-window-exponent F Training-window power-law exponent (default: 0.65)\n"
               << "  --expand-window-per-row F Training-window growth per new row (default: 0.4)\n"
