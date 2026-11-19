@@ -25,8 +25,10 @@ function loadBundledFonts(publicDir: string): void {
 // Builds the Express+WebSocket app against `dataDir` and, iff `autoStart`, starts listening on
 // `port` and wires up graceful-shutdown signal handlers. When `autoStart` is false, the returned
 // http.Server is fully built but not yet listening - the caller decides if/when to server.listen()
-// themselves, e.g. to choose its own port.
-export async function startServer(port: number, dataDir: string, autoStart: boolean): Promise<http.Server> {
+// themselves, e.g. to choose its own port. `checkpointDir` is the directory the AI engine searches
+// for checkpoints (one subdirectory per training run, as goes_train writes them).
+export async function startServer(port: number, dataDir: string, autoStart: boolean,
+                                  checkpointDir: string): Promise<http.Server> {
     // ── AI engine initialisation ──────────────────────────────────────────
     // Only the binary path is resolved here; EngineManager does the spawning.
     const projectRoot = path.resolve(__dirname, '../..');
@@ -39,11 +41,12 @@ export async function startServer(port: number, dataDir: string, autoStart: bool
         path.join(projectRoot, 'ai', 'build', exeName),
     ];
     const aiExe   = candidates.find(p => existsSync(p));
-    const ckptDir = path.join(projectRoot, 'ai', 'checkpoints');
 
     if (aiExe) {
-        engineManager.init(aiExe, ckptDir);
+        engineManager.init(aiExe, checkpointDir);
         console.log(`[ai] Engine binary found: ${aiExe}`);
+        console.log(`[ai] Checkpoint directory: ${checkpointDir}`);
+        if (!existsSync(checkpointDir)) console.warn(`[ai] Checkpoint directory does not exist: ${checkpointDir}`);
     } else {
         console.warn('[ai] goes_server binary not found — AI features unavailable');
     }
@@ -64,11 +67,12 @@ export async function startServer(port: number, dataDir: string, autoStart: bool
 }
 
 // Only parse argv and run when this file is executed directly
-// (`tsx src/index.ts <port> <dataDir> <autoStart>`), not when it's imported for startServer().
+// (`tsx src/index.ts <port> <dataDir> <autoStart> <checkpointDir>`), not when it's imported for
+// startServer(). A relative checkpointDir resolves against the current working directory, like dataDir.
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-    const [portArg, dataDirArg, autoStartArg] = process.argv.slice(2);
-    if (portArg === undefined || dataDirArg === undefined || autoStartArg === undefined) {
-        console.error('Usage: index.ts <port> <dataDir> <autoStart: true|false>');
+    const [portArg, dataDirArg, autoStartArg, checkpointDirArg] = process.argv.slice(2);
+    if (portArg === undefined || dataDirArg === undefined || autoStartArg === undefined || checkpointDirArg === undefined) {
+        console.error('Usage: index.ts <port> <dataDir> <autoStart: true|false> <checkpointDir>');
         process.exit(1);
     }
     const port = Number(portArg);
@@ -77,7 +81,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         process.exit(1);
     }
     const autoStart = autoStartArg === 'true';
-    startServer(port, dataDirArg, autoStart).then(server => {
+    startServer(port, dataDirArg, autoStart, path.resolve(checkpointDirArg)).then(server => {
         if (!autoStart) { console.log('Server built (autoStart=false), not listening'); return; }
         const address = server.address();
         const actualPort = typeof address === 'object' && address ? address.port : port;

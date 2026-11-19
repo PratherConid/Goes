@@ -23,6 +23,7 @@ import { WebSocket } from 'ws';
 const __dirname   = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot     = path.resolve(__dirname, '../..');
 const serverEntry  = path.join(repoRoot, 'server', 'src', 'index.ts');
+const ckptDir      = path.join(repoRoot, 'ai', 'checkpoints');
 
 export interface TestServer {
     url: string;
@@ -36,9 +37,9 @@ export interface TestServer {
 export async function startTestServer(dataDir?: string): Promise<TestServer> {
     const dir = dataDir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'goes-test-'));
     const mod = await import(pathToFileURL(serverEntry).href) as {
-        startServer(port: number, dataDir: string, autoStart: boolean): Promise<import('node:http').Server>;
+        startServer(port: number, dataDir: string, autoStart: boolean, checkpointDir: string): Promise<import('node:http').Server>;
     };
-    const server = await mod.startServer(0, dir, true);
+    const server = await mod.startServer(0, dir, true, ckptDir);
     const address = server.address() as AddressInfo;
     return {
         url: `ws://localhost:${address.port}/ws`,
@@ -72,7 +73,7 @@ export function useTestServer(): { url: string; dataDir: string } {
 // startTestServer) when a test needs to prove data survived an actual restart.
 export function startTestServerProcess(dataDir: string): Promise<{ url: string; stop(): Promise<void> }> {
     return new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, ['--import', 'tsx', serverEntry, '0', dataDir, 'true'], {
+        const child = spawn(process.execPath, ['--import', 'tsx', serverEntry, '0', dataDir, 'true', ckptDir], {
             cwd: path.join(repoRoot, 'server'),
             env: process.env,
             stdio: ['ignore', 'pipe', 'pipe'],

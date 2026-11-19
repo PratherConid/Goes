@@ -79,9 +79,13 @@ Goes/
   npm install
   npm start
   ```
-  The server listens on port 3000 and serves `dist/` as static files. The port and the data
-  directory are positional arguments to `server/src/index.ts` (`index.ts <port> <dataDir> <autoStart>`),
-  passed by `server/package.json`'s `start`/`dev` scripts - edit them there to change either.
+  The server listens on port 3000 and serves `dist/` as static files. The port, the data
+  directory and the checkpoint directory are positional arguments to `server/src/index.ts`
+  (`index.ts <port> <dataDir> <autoStart> <checkpointDir>`), passed by `server/package.json`'s
+  `start`/`dev` scripts (`3000 ./data true ../ai/checkpoints`, run from `server/`) - edit them there
+  to change any of them. `checkpointDir` is where the AI engine looks for trained models: the repo's
+  `ai/checkpoints` by default, holding one subdirectory per training run, each with its
+  `<arch>_config.json` and `<arch>_XXXXXX.pt` files, as `goes_train` writes them.
 
 ## Player Modes
 

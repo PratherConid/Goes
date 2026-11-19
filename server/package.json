@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx src/index.ts 3000 ./data true",
-    "start": "tsx src/index.ts 3000 ./data true"
+    "dev": "tsx src/index.ts 3000 ./data true ../ai/checkpoints",
+    "start": "tsx src/index.ts 3000 ./data true ../ai/checkpoints"
   },
   "dependencies": {
     "express": "^4.21.0",
