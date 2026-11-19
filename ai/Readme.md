@@ -17,7 +17,7 @@ Four model architectures are available:
 
 `BoardState` otherwise has full feature parity with `shared/boardState.ts`: multi-stone-per-turn offering (`TurnInfo.stones`), protected/friendly stones, per-player and global stone placement limits, `maxPlies`, resignation (permanent — never undone by `withdraw_move()`, and `game_over()` re-checks the resigned set live rather than stamping it onto a move), `komi` (per-player scoring handicap, applied in `compute_winners()` and folded into the per-player totals the search utility compares — see **Search Utility**, below), and `koRule` (both `positional` and `situational` superko are implemented — `HistoryManager`'s `(ply_mod, board)` key collapses `ply_mod` to a constant under `positional`, since two boards are then "the same" purely by content, mirroring `compareState()` skipping the ply-mod comparison in `shared/boardState.ts`). `stoneToPlayerMap` is stone → *set* of players (each mapped player gets a stone's full point value, not split), matching the TypeScript side.
 
-Not ported (no C++ consumer needs them): `GameConfig.players`/`FinishedGame`-style replay reconstruction — self-play never replays a finished game, and the inference server replays a live move list instead.
+Not ported (no C++ consumer needs it): `GameConfig.players` (the `PlayerInfo` slot assignments) — `parse_game_cfg()` ignores it and `GameConfig::to_json()` omits it, since self-play and the inference server search every player with one model.
 
 ## Directory Structure
 
@@ -35,25 +35,28 @@ ai/
 │   │   ├── cleg_parser.{h,cpp}         Port of shared/clegParser.ts (source text → AST)
 │   │   ├── cleg_check.{h,cpp}          Port of shared/clegCheck.ts (static type checker)
 │   │   ├── cleg_eval.{h,cpp}           Port of shared/clegEval.ts (builtins + evaluator → BoardConfig)
+│   │   ├── cleg_eval_internal.h        Declarations shared only by cleg_eval.cpp and cleg_check.cpp (BUILTIN_FUNCTIONS, EGR_TYPE)
 │   │   ├── selector.{h,cpp}            Port of shared/selector.ts (node/edge/simplex/quad selectors)
 │   │   ├── fractal.{h,cpp}             Port of shared/fractal.ts (flake/Menger glue tables)
 │   │   ├── geometry.{h,cpp}            Port of shared/geometry.ts (LP-based convex hull, for rectify)
 │   │   └── topology.{h,cpp}            Port of shared/topology.ts (merge_boards, find_simplices/quads)
 │   ├── model/
-│   │   ├── features.{h,cpp}            BoardState → per-node feature tensor
+│   │   ├── features.{h,cpp}            BoardState → per-node feature tensor and legal-action mask (see Input Features)
 │   │   ├── gnn.{h,cpp}                 MessagePassingGNN (policy + ownership + rank heads, for cublat/hcub)
 │   │   ├── unet.{h,cpp}                U-Net (policy + ownership + rank heads, for 2D boards)
 │   │   ├── cnn.{h,cpp}                 Plain residual CNN (policy + ownership + rank heads, for 2D boards)
 │   │   ├── transformer.{h,cpp}         History-aware Transformer (policy + ownership + rank heads, any board; only arch supporting forcedPassOnly)
 │   │   ├── rank_head.{h,cpp}           Pairwise-outcome (rank) head shared by every architecture
-│   │   ├── model_output.h              ModelOutput: the policy/ownership/rank tensors every model returns
-│   │   ├── evaluator.h                 Type-erased Evaluator used by MCTS and self-play
-│   │   └── any_model.h                 AnyModel variant + make_evaluator() factory
+│   │   ├── model_config.{h,cpp}        ModelConfig and its per-architecture subclasses, JSON (de)serialization
+│   │   ├── model_output.h              ModelOutput (the policy/ownership/rank tensors every model returns) and ModelInput (one position's prepared input)
+│   │   ├── evaluator.h                 Type-erased Evaluator: per-position prepare() + batched run()
+│   │   └── any_model.h                 AnyModel variant, build_model() and make_evaluator()
 │   ├── mcts/
-│   │   ├── mcts.{h,cpp}                Batched MCTS with KataGo's search features (see Search)
+│   │   ├── mcts.{h,cpp}                Single-root MCTS, one simulation at a time, with KataGo's search features (see Search)
+│   │   ├── nn_server.{h,cpp}           KataGo's NNEvaluator-style batching queue shared by all self-play games (see Self-Play)
 │   │   └── utility.{h,cpp}             The search utility: KataGo's win/loss + score utility for N players
 │   ├── training/
-│   │   ├── self_play.{h,cpp}           Game config parsing; the self-play runner and game records (see Self-Play)
+│   │   ├── self_play.{h,cpp}           Game config parsing; the self-play runner, game records and trajectory replay (see Self-Play)
 │   │   └── replay_buffer.{h,cpp}       The training window over recorded rows (see Training Loop)
 │   └── util/
 │       └── sha256.{h,cpp}              Checkpoint-directory hashing (see Checkpoint Directories and Matching)
@@ -66,7 +69,7 @@ ai/
 
 ## Prerequisites
 
-1. **MSVC 2022** (or GCC/Clang on Linux) with C++17 support
+1. **MSVC 2022** (or GCC/Clang on Linux) with C++20 support
 2. **CMake ≥ 3.18**
 3. **LibTorch** — download the pre-built package from https://pytorch.org/get-started/locally/
    - Select: your OS (IMPORTANT!), C++ / LibTorch, CUDA version or CPU
@@ -120,9 +123,9 @@ Run from the project root:
 ai/build/goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5 --min-rows 10000
 ```
 
-The defaults are KataGo's `synchronous_loop.sh` sizes (500 games per iteration, 600-visit full
-searches and 100-visit cheap ones, training once 100k rows exist); these commands start training
-at 10k rows instead (`--min-rows 10000`). For larger runs:
+The defaults are KataGo's: `synchronous_loop.sh`'s sizes (500 games per iteration, training once
+100k rows exist) and `selfplay1.cfg`'s searches (600-visit full searches and 100-visit cheap
+ones); these commands start training at 10k rows instead (`--min-rows 10000`). For larger runs:
 
 ```bash
 ai/build/goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 1000 --cnn-hidden-dim 128 --min-rows 10000
@@ -142,9 +145,9 @@ ai/build/goes_train --game-config public/game_presets/13x13_two_ply_go.json --li
 ai\build\Release\goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5 --min-rows 10000
 ```
 
-A run's files go to `ai/checkpoints/<hash>/`, where `<hash>` is a fresh 64-character SHA-256 of the
-model config, game config, and a timestamp - a new, unique directory every run, never reused
-implicitly:
+A run's files go to `<checkpoint-dir>/<hash>/` (`--checkpoint-dir`, default `ai/checkpoints`),
+where `<hash>` is a fresh 64-character SHA-256 of the model config, game config, and a timestamp -
+a new, unique directory every run, never reused implicitly:
 
 - `<arch>_config.json` - the game and model config (what the server matches requests against)
 - `<arch>_XXXXXX.pt` - the model exported at the end of iteration `XXXXXX`, kept only every
@@ -224,8 +227,8 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
 - `POST /move` — runs a search from the given position (with KataGo's play-mode search settings - see **Search**) and returns the chosen move.
   - **Request fields:**
     - `config`: a `GameConfig`, in `shared/gameConfig.ts`'s `toJSON()` wire shape (see that class for the fields). `boardSeed` is required, `players` is ignored, and which fields select the checkpoint is described in **Checkpoint Directories and Matching**, below.
-    - `moves`: full move history as an array. Each entry is either a legacy `int|null` (board index, or `null` for pass — the stone is auto-picked if the turn offers exactly one) or an object `{"pos": int|null, "stone": int|null}` (required once a turn offers more than one stone) — see `shared/types.ts`'s `ReplayMove`.
-    - `resigns` _(optional, default none)_: `[[ply, [player, ...]], ...]` — who resigned at each ply, the same shape as `shared/types.ts`'s `FinishedGame.toJSON()`'s `resigns` field. Replayed interleaved with `moves` (see `replay_tail()`, `server.cpp`), since a resigned player may always pass even under `forcedPassOnly`, but the resignation must be applied at the ply it actually happened.
+    - `moves`: full move history as an array of `{"pos": int|null, "stone": int|null}` objects (`shared/types.ts`'s `ReplayMove`) — `pos` is the board index, or `null` for pass; `stone` may be `null` only when the turn offers exactly one stone, which is then auto-picked.
+    - `resigns` _(optional, default none)_: `[[ply, [player, ...]], ...]` — who resigned at each ply, the same shape as `shared/gameConfig.ts`'s `FinishedGame.toJSON()`'s `resigns` field. Replayed interleaved with `moves` (see `replay_tail()`, `server.cpp`), since a resigned player may always pass even under `forcedPassOnly`, but the resignation must be applied at the ply it actually happened.
     - `board`: current stone array (length N) — used to verify the replayed state matches the client
     - `session_id`: opaque string returned by a previous response; omit, `""`, or `null` for a new session
     - `num_simulations` _(optional)_: overrides the server default; must be `>= 1` (the request is rejected otherwise)
@@ -237,7 +240,7 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
     - `value`: the search's average utility for the player to move (see **Search Utility**)
     - `session_id`: include in the next request for this game to reuse the cached board state
   - The server caches a live `BoardState` per `session_id`. On each request it finds the longest common prefix of the stored and incoming move lists (comparing both `pos` and `stone`) and withdraws/advances the cached state when cheaper than a full replay, then verifies the result against the `board` field.
-  - Checkpoint directories are opaque hash names, not derivable from `config` - the server scans `ai/checkpoints`'s subdirectories once (first request only; later-created directories need a server restart to be picked up) and matches `config` against each directory's saved config via `weak_equal()` (see **Checkpoint Directories and Matching**, below). The matched directory's model is then loaded lazily on first use and cached.
+  - Checkpoint directories are opaque hash names, not derivable from `config` - the server scans the `--checkpoint-dir` directory's subdirectories once (first request only; later-created directories need a server restart to be picked up) and matches `config` against each directory's saved config via `weak_equal()` (see **Checkpoint Directories and Matching**, below). The matched directory's model is then loaded lazily on first use and cached.
 - `GET /health` — returns `{status, loaded_tags, device}`.
 
 `goes_server` accepts `--checkpoint-dir PATH` (default `ai/checkpoints`), `--port N` (default `8765`), `--sims N` (default number of MCTS simulations, default `200`, must be `>= 1`), `--temperature F` (default `0.0` = the search's best move) and `--cpu` (force CPU even if CUDA is available). The `GOES_CHECKPOINT_DIR`, `GOES_NUM_SIMS` and `GOES_TEMPERATURE` environment variables override the checkpoint directory, default simulation count and default temperature respectively (they are applied after the flags, so they win).
@@ -258,7 +261,7 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
 | `--cheap-visits N` | `100` | Visits of a cheap search - played, but not trained on |
 | `--cheap-prob F` | `0.75` | Probability that a move gets a cheap search |
 | `--c-puct F` | `1.1` | PUCT exploration constant |
-| `--linear-move-bound K1 K2` | _(none)_ | End games after Uniform(K1,K2)×N plies, resampled each time a game spawns |
+| `--linear-move-bound K1 K2` | _(none)_ | End games after Uniform(K1,K2)×N plies, resampled each time a game spawns (combined with the game config's `maxPlies` by taking the tighter bound) |
 | `--batch-size N` | `128` | Training batch size |
 | `--lr F` | `0.001` | Adam learning rate after warmup |
 | `--l2 F` | `0.0001` | Adam weight decay |
@@ -273,7 +276,7 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
 | `--swa-period-samples N` | `80000` | Training samples between weight-average snapshots; `0` exports the raw model |
 | `--net-arch NAME` | `auto` | `auto`\|`cnn`\|`unet`\|`gnn`\|`transformer` - `auto` picks `cnn` for a board with `emb_dim == 2`, else `gnn` (see `effective_arch()`) |
 | `--cpu` | _(off)_ | Force CPU even if CUDA is available |
-| `--gnn-hidden-dim N` | `128` | GNN hidden dimension (cub/hcub boards) |
+| `--gnn-hidden-dim N` | `128` | GNN hidden dimension (cublat/hcub and other non-2D boards) |
 | `--unet-hidden-dim N` | `16` | UNet hidden dimension (2D boards) |
 | `--cnn-hidden-dim N` | `64` | CNN hidden dimension (2D boards) |
 | `--cnn-conv-size N` | `3` | CNN convolution kernel size (2D boards) - must be odd and > 1 |
@@ -287,7 +290,7 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
 
 ## Input Features
 
-The model's input is a self-describing JSON descriptor with shape `{"blocks": [[name, ...args], ...], "totalDims": N}`, built once per fresh training run by `compute_input_descr(const GameConfig&, int N)` (`ai/include/training/self_play.h`) and persisted into the checkpoint's `_config.json` as `ModelConfig::input_descr` - never recomputed on `--resume` or by the server (`server.cpp`'s `load_model()`), both of which only ever read whatever descriptor is already stored, so a checkpoint stays self-describing even if the block formulas below change later. Used identically by all four architectures for their CURRENT-ply-only input.
+The model's input is a self-describing JSON descriptor with shape `{"blocks": [[name, ...args], ...], "totalDims": N}`, built once per fresh training run by `compute_input_descr(const GameConfig&, int N)` (`ai/include/training/self_play.h`) and persisted into the checkpoint's `_config.json` as `ModelConfig::input_descr`. The server (`server.cpp`'s `load_model()`) never recomputes it - it only reads the stored descriptor, so a checkpoint stays self-describing even if the block formulas below change later. `--resume` does recompute it, as part of the model config it requires to match the stored one exactly (see **Checkpoint Directories and Matching**). Used identically by all four architectures for their CURRENT-ply-only input.
 
 `board_to_features()` (`ai/src/model/features.cpp`) consumes this descriptor "event loop style": it walks `descr["blocks"]` in order and dispatches each entry by name to that block's fill logic, using the entry's own args (not a fresh `GameConfig` lookup) to know its width. Recognized block names:
 
@@ -302,7 +305,7 @@ The model's input is a self-describing JSON descriptor with shape `{"blocks": [[
 
 The `liberty`/`playerStoneBudget`/`globalStoneBudget` blocks use a soft, continuous stand-in for raw binary bit-encoding: `clamp_scale(value, bit_index) = max(0, 1 - value/2^bit_index)`, one channel per `bit_index` in `[0, bits)` - 1 at `value=0`, ramping linearly down to 0 at `value=2^bit_index` and clamped at 0 beyond, so a small change in `value` moves every channel by a small, continuous amount rather than flipping a bit discontinuously.
 
-**Transformer's two descriptors**: the Transformer is the only architecture that uses two independent descriptors instead of one. Its CURRENT ply uses the exact same `compute_input_descr()` output as CNN/UNet/GNN, unmodified - a single current state is always safe to describe fully, since there's no risk of it recurring at a different point in time with different bits. Every PAST ply instead uses a much smaller, separate 2-block descriptor (`plyMod`, `stoneOccupancy` only) built directly in `train.cpp` and stored as `TransformerConfig::history_descr` - `legalPlace` (and every other block) is excluded here because it depends on transient per-turn context (protected/friendly flags, which stones a turn happens to offer) rather than the board's physical content, so the same physical position recurring later in a game could get different `legalPlace` bits - breaking the "one board position → one embedding" property the transformer's cross-state comparison relies on. `liberty`/`consectivePassOneHot` are also omitted from the history descriptor (a further narrowing versus an earlier iteration of this design) since they add cost (`liberty` needs a `group_liberty()` traversal per historical ply) without being essential to the history signal.
+**Transformer's two descriptors**: the Transformer is the only architecture that uses two independent descriptors instead of one. Its CURRENT ply uses the exact same `compute_input_descr()` output as CNN/UNet/GNN, unmodified - a single current state is always safe to describe fully, since there's no risk of it recurring at a different point in time with different bits. Every PAST ply instead uses a much smaller, separate 2-block descriptor (`plyMod`, `stoneOccupancy` only) built directly in `train.cpp` and stored as `TransformerConfig::history_descr` - `legalPlace` (and every other block) is excluded here because it depends on transient per-turn context (protected/friendly flags, which stones a turn happens to offer) rather than the board's physical content, so the same physical position recurring later in a game could get different `legalPlace` bits - breaking the "one board position → one embedding" property the transformer's cross-state comparison relies on. `liberty`/`consectivePassOneHot` are also omitted from the history descriptor, since they add cost (`liberty` needs a `group_liberty()` traversal per historical ply) without being essential to the history signal.
 
 ## Policy Head and Action Space
 
@@ -316,7 +319,7 @@ Stones a turn doesn't offer are simply illegal everywhere that ply (masked out v
 
 ## Transformer Architecture
 
-Unlike CNN/UNet/GNN, which evaluate only the current `BoardState`, the transformer attends over every board state reached so far in the game - this is what lets it support `forcedPassOnly: true`, where legality (superko in particular) depends on the *set* of previously-reached states, not just the current one. `BoardState` already content-interns its full history via `HistoryManager` (`board_at(ply)`, `consecutive_passes_at(ply)`), so `Evaluator`/MCTS need no interface changes at all - the transformer's own `evaluate_batch()` (`ai/src/model/transformer.cpp`) reconstructs each state's history internally from a single `const BoardState&`.
+Unlike CNN/UNet/GNN, which evaluate only the current `BoardState`, the transformer attends over every board state reached so far in the game - this is what lets it support `forcedPassOnly: true`, where legality (superko in particular) depends on the *set* of previously-reached states, not just the current one. `BoardState` already content-interns its full history via `HistoryManager` (`board_at(ply)`, `consecutive_passes_at(ply)`), so `Evaluator`/MCTS need no transformer-specific interface: `TransformerImpl::prepare_input()` (`ai/src/model/transformer.cpp`, the transformer's `Evaluator::prepare()`) builds a position's current-ply features, legal mask and every past ply's history features from a single `const BoardState&`, on the CPU, in the thread that requests the evaluation; `evaluate_inputs()` (its `Evaluator::run()`) zero-pads the batch's histories to the longest one and runs one forward pass.
 
 Pipeline, applied per sampled ply during training (and per MCTS leaf during self-play):
 
@@ -326,12 +329,13 @@ Pipeline, applied per sampled ply during training (and per MCTS leaf during self
 4. **Decoder**: the literal inverse of the encoder - a monolithic MLP `Linear(D, D) → ReLU → Linear(D, N·D)`, reshaped to `(N, D)`. No per-node operation anywhere in the decode path either, keeping the whole pipeline topology-agnostic end to end.
 5. **Heads**: the resulting `(N, D)` tensor feeds the same shared `stone_head`/`territory_head`/policy-head shapes CNN/UNet/GNN use, unmodified.
 
-**Cost tradeoff**: unlike the other three architectures' O(1)-per-leaf evaluation, this is O(ply_count) per leaf (it reconstructs every historical ply's features from scratch) - noticeably more expensive per MCTS simulation for long games, though each past-ply reconstruction skips the liberty computation entirely now (the history descriptor never needs it - see `board_to_features_at_ply()`'s perf guard, `features.cpp`); only the current ply's full-descriptor reconstruction still pays for it. Worth tuning `--full-visits`/`--cheap-visits`/`--gamegen-batch-size` down accordingly for a transformer run. Cross-attention's query has length 1, so its own cost is O(ply_count) per layer (not O(ply_count²)) - an earlier self-attention refinement stage over the history set was removed for exactly this reason (its `(T,T)` attention-weight tensor made peak memory grow quadratically with history length on long `forcedPassOnly` games).
+**Cost tradeoff**: unlike the other three architectures' O(1)-per-leaf evaluation, this is O(ply_count) per leaf (it reconstructs every historical ply's features from scratch) - noticeably more expensive per MCTS simulation for long games, though each past-ply reconstruction skips the liberty computation entirely (the history descriptor never needs it - see `board_to_features_at_ply()`'s perf guard, `features.cpp`); only the current ply's full-descriptor reconstruction pays for it. Worth tuning `--full-visits`/`--cheap-visits`/`--gamegen-batch-size` down accordingly for a transformer run. Cross-attention's query has length 1, so its own cost is O(ply_count) per layer, not self-attention's O(ply_count²) - see **Notes**, below, for why the history set gets no self-attention.
 
 ## Checkpoint Directories and Matching
 
-Checkpoint directories are opaque: `ai/checkpoints/<hash>/`, where `<hash>` is a 64-character
-SHA-256 (`sha256_hex()`, `ai/include/util/sha256.h`/`ai/src/util/sha256.cpp`) of the concatenation
+Checkpoint directories are opaque: `<checkpoint-dir>/<hash>/` (`--checkpoint-dir`, default
+`ai/checkpoints`), where `<hash>` is a 64-character SHA-256 (`sha256_hex()`,
+`ai/include/util/sha256.h`/`ai/src/util/sha256.cpp`) of the concatenation
 of the model config's JSON (`ModelConfig::to_json()`), the game config's JSON
 (`GameConfig::to_json()`), and a timestamp. The timestamp means every training run gets its own
 fresh directory - starting `goes_train` twice with identical flags never reuses or collides with
@@ -341,7 +345,7 @@ an earlier run's directory.
 errors if that exact directory somehow already exists (a collision), creates it, and prints the
 hash to stdout so it can be passed to `--resume` later.
 
-**Resuming** (`--resume TAG`): `train.cpp` errors if `ai/checkpoints/TAG` has no trainer state or
+**Resuming** (`--resume TAG`): `train.cpp` errors if `<checkpoint-dir>/TAG` has no trainer state or
 no checkpoint config to compare against, then requires the current run's game config
 and model config to `strong_equal()`-match (`self_play.h`/`model_config.h`) the directory's saved
 ones **exactly** - every field, not just a subset (`validate_dir_config()`) - before restoring
@@ -349,7 +353,7 @@ ones **exactly** - every field, not just a subset (`validate_dir_config()`) - be
 config doesn't match byte-for-byte would silently train an architecture-or-rules mismatch.
 
 **Server-side matching**: a directory name can't be derived from a `/move` request's config, so
-`server.cpp`'s `find_checkpoint_dir()` scans every subdirectory of `ai/checkpoints` once (cached in
+`server.cpp`'s `find_checkpoint_dir()` scans every subdirectory of the `--checkpoint-dir` directory once (cached in
 `ServerState::checkpoint_index` - directories created after that first scan need a server restart
 to be picked up), reads each one's saved `GameConfig`, and picks the first whose saved config
 `weak_equal()`-matches the request. `weak_equal()` compares only the fields that affect which
@@ -358,6 +362,12 @@ trained model is appropriate for a given ruleset - `boardDescr`, `numStones`, `n
 so `boardSeed`, `playerStonePlaceLimit`, `globalStonePlaceLimit` and `maxPlies` may differ between
 the request and the matched checkpoint. (`boardSeed` is left out because training builds its board
 from a fresh random seed each run.)
+
+The matched directory's model is loaded on its first request and cached: the newest
+`<arch>_XXXXXX.pt` of the architecture named by the directory's `<arch>_config.json` (a run directory
+holds one architecture). Only the exports of every `--saves-every`-th iteration and of iteration
+`--iterations` are kept as `.pt` files, so this can lag the newest trained weights in `trainer/`,
+which the server never reads.
 
 ## How It Works
 
@@ -377,7 +387,7 @@ KataGo features left out because they don't fit Goes' rules engine or would chan
 The settings come from KataGo (`SearchParams::self_play()` = its self-play config, `cpp/configs/training/selfplay1.cfg`; `SearchParams::server()` = the values it plays with outside self-play, `cpp/program/setup.cpp`'s defaults - only the parameter values are taken, not KataGo's engine protocol):
 
 - **PUCT**: a child's value is `Q + c · sqrt(N + 0.01) · P / (1 + n)`, with `c = cpuct + cpuct_log · log((N + 500) / 500)` (self-play: `--c-puct` 1.1, no log growth; server: 1.0 + 0.45 log growth).
-- **First-play urgency**: an unvisited child is valued at the parent's value - its search average blended toward its own evaluation the less of its prior mass has been visited (weight `min(1, visited_mass²)`) - minus `0.2 · sqrt(visited_mass)` (0 at a self-play root, 0.1 at a server root).
+- **First-play urgency**: an unvisited child is valued at the parent's value - its search average blended toward its own evaluation the less of its prior mass has been visited (weight `min(1, visited_mass²)`) - minus `0.2 · sqrt(visited_mass)` (at the root: 0 in a full self-play search, 0.1 in the server; a cheap self-play search keeps 0.2).
 - **Root policy**: raised to `1/T` with `T` decaying from 1.25 to 1.1 over the game (full self-play searches), then mixed 25/75 with Dirichlet noise over the legal moves whose concentrations sum to 10.83 - half spread uniformly, half by how far each move's log-policy sits above the mean.
 - **Forced playouts**: in full self-play searches, a root child below `sqrt(2 · P · N)` visits is always explored next.
 - **Score centre**: after a 10-visit pre-search, the dynamic score centre is re-read from the root's own search average (see **Search Utility**).
@@ -389,21 +399,21 @@ The settings come from KataGo (`SearchParams::self_play()` = its self-play confi
 `SelfPlayRunner` (`ai/src/training/self_play.cpp`) follows KataGo's self-play structure: `--gamegen-batch-size` threads each play one game at a time, start a new one as soon as it ends, and search sequentially. Every search's network requests go to one `NNServer` (`ai/src/mcts/nn_server.cpp`, KataGo's `NNEvaluator` queue). A search builds its position's network input itself on the CPU - features, legal mask and, for the Transformer, every past ply's history features (`Evaluator::prepare()`, the counterpart of KataGo's `fillRow`) - then submits it and blocks. Each of `--nn-server-threads` server threads takes whatever is queued, up to `--nn-max-batch`, without waiting for a full batch, copies the inputs into one batch and onto the device (one copy per input tensor), runs the network and splits the outputs into per-position rows. With `--selfplay-gpus`, the server threads are spread over several GPUs, each GPU running its own copy of the model on whatever batch its threads take from the shared queue (KataGo's per-thread `cudaDeviceToUseThread<N>`); training stays on the training device. Batches form from however many searches are waiting at once, and the network runs while the other searches do their CPU work. Once an iteration's `--games-per-iteration` games have finished, each thread stops at its next ply boundary. Unfinished games carry over into the next iteration, continuing with the newly exported model, and keep their full move history - which the Transformer reads from move 0. Defaults (`SelfPlayParams`) are KataGo's:
 
 - **Opening**: a new game's first `floor(Exp(1) · 0.04 · N)` moves are sampled straight from the network's policy - not searched, not trained on - for opening variety.
-- **Cheap and full searches**: each later move gets a cheap search (`--cheap-visits`, no noise, no forced playouts, root policy temperature 1) with probability `--cheap-prob`, otherwise a full one (`--full-visits`). Only full searches start with training weight 1; cheap ones start at 0.
+- **Cheap and full searches**: each later move gets a cheap search (`--cheap-visits`, no noise, no forced playouts, root policy temperature 1, root FPU reduction 0.2 as at non-root nodes) with probability `--cheap-prob`, otherwise a full one (`--full-visits`). Only full searches start with training weight 1; cheap ones start at 0.
 - **Reduced visits**: once some player's search win term has stayed above 0.9 for 3 consecutive searched plies, a full search's visits move toward 100 and its weight toward 0.1, by the square of how far past 0.9 it is.
-- **Surprise weighting** (at game end): the game's total weight is redistributed so 50% follows each ply's policy surprise (KL of the search target against the searched prior - cheap plies count only beyond 1.5× the game's average surprise) and 10% follows its value surprise (KL of the network's pair outcomes against the result smoothed over the longest TD horizon - see **Value Targets**), then every weight is rounded stochastically to an integer row count.
+- **Surprise weighting** (at game end): the game's total weight is redistributed so 50% follows each ply's policy surprise (KL of the search target against the searched prior - cheap plies count only beyond 1.5× the game's average surprise) and 10% follows its value surprise (KL of the network's pair outcomes against the result smoothed over the shortest TD horizon, `c = 0.016` - see **Value Targets**), then every weight is rounded stochastically to an integer row count.
 
-A game's trajectory (`<arch>_XXXXXX_traj.json`, one array of games per iteration) records `{"model": m, "plies": [...]}`, where `m` is the iteration of the model that played it (-1 = uniform evaluator), an opening ply is `{"move": a}` and a searched ply is `{"move": a, "search": [pair outcomes], "weight": rows}` plus `"policy"` when `rows > 0`. That is everything `replay_trajectory()` needs to rebuild the game's record exactly, by replaying its moves.
+A game's trajectory (`<arch>_XXXXXX_traj.json`, one array of games per iteration) records `{"model": m, "plies": [...]}`, where `m` is the iteration of the model that finished it (-1 = uniform evaluator), an opening ply is `{"move": a}` and a searched ply is `{"move": a, "search": [pair outcomes], "weight": rows}` plus `"policy"` when `rows > 0`. That is everything `replay_trajectory()` needs to rebuild the game's record exactly, by replaying its moves.
 
 ## Value Targets
 
-The rank head's target for a searched ply blends the final outcome with the search's own estimates at later plies - KataGo's TD value targets. With `V_k` the search-averaged pair-outcome probabilities at searched ply `k` (of `T`) and `Z` the final outcome (one-hot per pair), each horizon `f = 1/(1 + N·c)`, `c ∈ {0.176, 0.056, 0.016}` (about 7, 21 and 64 moves on 19x19), gives
+The rank head's target for a searched ply blends the final outcome with the search's own estimates at later plies - KataGo's TD value targets. With `V_k` the search-averaged pair-outcome probabilities at searched ply `k` (of `T`) and `Z` the final outcome (one-hot per pair), each horizon `f = 1/(1 + N·c)`, `c ∈ {0.176, 0.056, 0.016}` (about 64, 21 and 7 moves on 19x19), gives
 
 ```
 TD_f(t) = Σ_{k=t}^{T-1} f(1-f)^(k-t) V_k  +  (1-f)^(T-t) Z
 ```
 
-and the row's target is `(Z + TD_0.176 + TD_0.056 + TD_0.016) / 4`. KataGo trains its main value head on `Z` and a separate head per horizon, all with equal loss weight; cross-entropy is linear in its target, so a single head trained on the average receives exactly that combined loss. Because the target differs from ply to ply, a game's rows no longer all share one label the network can memorize.
+and the row's target is `(Z + TD_0.176 + TD_0.056 + TD_0.016) / 4`. KataGo trains its main value head on `Z` and a separate head per horizon, all with equal loss weight; cross-entropy is linear in its target, so a single head trained on the average receives exactly that combined loss. Because the target differs from ply to ply, a game's rows don't all share one label the network can memorize.
 
 ## Training Loop
 
@@ -469,7 +479,7 @@ Measured on a 9x9 CNN run that used `sign(E[Δ])` as the leaf value, both failur
 
 ## Notes
 
-- Self-attention over the Transformer's history set (query=key=value over the full `(T, D)` sequence) produces an `O(T²)` attention-weight tensor per layer, so peak GPU memory grew *quadratically* with history length - on `forcedPassOnly` boards with no move bound, a single unusually long game entering self-play or the training window could blow up memory (confirmed empirically: fitting `peak_MB ≈ 338 + 0.0216·Tmax²` matched measured peaks within ~9% across two codebase states and a 3x range of iteration counts). This is why the current architecture (see **Transformer Architecture**, above) uses cross-attention only, whose query has length 1 and so costs `O(T)` per layer - removing the self-attention stack measured a ~3.6-4x reduction in peak memory at matched history length and batch size, and replaced the quadratic growth with linear.
+- The Transformer reads its history set only through cross-attention (see **Transformer Architecture**, above), whose length-1 query costs `O(T)` per layer for `T` past plies. Self-attention over the set (query=key=value over the full `(T, D)` sequence) would produce an `O(T²)` attention-weight tensor per layer, making peak GPU memory grow *quadratically* with history length - on `forcedPassOnly` boards with no move bound, a single unusually long game entering self-play or the training window could exhaust memory. Measured: with a self-attention stack over the history set, peak memory fit `peak_MB ≈ 338 + 0.0216·Tmax²` within ~9% across a 3x range of iteration counts, while the cross-attention-only architecture uses ~3.6-4x less peak memory at matched history length and batch size, growing linearly.
 - With komi 0, both passing at the start is an exact draw. A KataGo 9x9 run at komi 0 (KataGo's own engine, Goes' 9x9 rules) learned to pass early - 30-46% of its self-play games were draws - during its first ~3,000 trained-net games, and grew out of it with more data (no draws after ~25k games). A Goes run at komi 0 may go through the same early phase.
 
 `BoardState::game_over()` covers `maxPlies` truncation directly via a live check (`ply_count() >= max_plies`, alongside a live resigned-players check and `MoveInfo.all_passed`, which only covers the consecutive-passes cause - mirroring `shared/boardState.ts`), so MCTS treats a state that hit its own `maxPlies` as terminal like any other game-over state, scoring it exactly (`exact_pair_eval()`) rather than with the model — once `game_over()` is true, `make_move()` always refuses further moves, so the recorded score genuinely is final rather than a heuristic snapshot of a game that could still continue.

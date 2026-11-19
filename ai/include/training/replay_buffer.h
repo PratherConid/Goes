@@ -42,7 +42,7 @@ struct HistoryBatch {
 
 // The training window: every row ever added gets the next global index, and sampling draws
 // uniformly from the newest `window_rows` of them (KataGo's shuffle window - see ai/Readme.md's
-// "Training"). Games whose rows have all fallen out of the window can be dropped with trim().
+// "Training Loop"). Games whose rows have all fallen out of the window can be dropped with trim().
 class ReplayBuffer {
 public:
     void add(GameRecord record);

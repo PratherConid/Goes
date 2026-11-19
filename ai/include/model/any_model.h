@@ -4,11 +4,32 @@
 #include "model/cnn.h"
 #include "model/transformer.h"
 #include "model/evaluator.h"
+#include "model/features.h"
+#include "model/model_config.h"
+#include "game/board_config.h"
+#include <stdexcept>
+#include <string>
 #include <variant>
 #include <type_traits>
 
 // Variant holding either model type; used in both train and server.
 using AnyModel = std::variant<MessagePassingGNN, UNet, CNN, Transformer>;
+
+// A freshly initialized model of the architecture cfg.model_type names; cfg's dynamic type must be
+// that architecture's ModelConfig subclass (as parse_model_config() returns).
+inline AnyModel build_model(const BoardConfig& bc, const ModelConfig& cfg, int num_stones, int num_players) {
+    if (cfg.model_type == "cnn")
+        return CNN(bc, static_cast<const CNNConfig&>(cfg), num_stones, num_players);
+    if (cfg.model_type == "unet")
+        return UNet(bc, static_cast<const UNetConfig&>(cfg), num_stones, num_players);
+    if (cfg.model_type == "transformer")
+        return Transformer(bc, static_cast<const TransformerConfig&>(cfg), num_stones, num_players);
+    // adj_norms only sizes the GNN's neighbor-count embedding table.
+    if (cfg.model_type == "gnn")
+        return MessagePassingGNN(static_cast<const GNNConfig&>(cfg), num_stones, num_players,
+                                 compute_adj_norms(bc, torch::kCPU));
+    throw std::runtime_error("build_model: unknown model type '" + cfg.model_type + "'");
+}
 
 // Build a type-erased Evaluator from a model variant.
 // For GNN, adj_norms is captured by value so the returned Evaluator is self-contained.

@@ -1,14 +1,16 @@
 #pragma once
 #include "model/features.h"
 #include "nlohmann/json.hpp"
+#include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 
 // Model-building metadata, disjoint from GameConfig (game rules, shared with
 // the TS client, see training/self_play.h) - written alongside a GameConfig
 // to each checkpoint's <arch>_config.json by train.cpp (the two to_json()
-// objects are joined into one file), read back separately by server.cpp's
-// load_model(). Has no shared/types.ts analog - it's purely an
+// objects are joined into one file), read back separately by
+// parse_model_config(). Has no shared/types.ts analog - it's purely an
 // ai/-internal artifact. Lives in model/ (rather than training/, alongside
 // GameConfig) so cnn.h/unet.h/gnn.h can depend on it without a model/ ->
 // training/ layering inversion.
@@ -91,8 +93,8 @@ struct TransformerConfig : ModelConfig {
     int num_attn_layers;
     // Minimal per-ply feature descriptor for PAST plies only (plyMod + stoneOccupancy) - built
     // directly in train.cpp from the GameConfig, independent of compute_input_descr(). The
-    // inherited ModelConfig::input_descr now uniformly means "the full descriptor," used for the
-    // CURRENT ply only, same meaning as CNN/UNet/GNN's input_descr. See TransformerImpl's ctor for
+    // inherited ModelConfig::input_descr is the full descriptor, used for the CURRENT ply only,
+    // same meaning as CNN/UNet/GNN's input_descr. See TransformerImpl's ctor for
     // how this sizes the separate history-encoder MLP.
     nlohmann::json history_descr;
 
@@ -107,11 +109,15 @@ struct TransformerConfig : ModelConfig {
 // Parses a checkpoint's <arch>_config.json modelType/featureDim/hiddenDim/inputDescr keys - plus
 // whichever extra keys the named architecture's own subclass carries (convSize for cnn, numLayers
 // for gnn, numAttnLayers/historyDescr for transformer) - into the matching concrete subclass,
-// selected by the modelType key. Call parse_game_cfg (training/self_play.h) on the same
-// JSON separately for the GameConfig (numStones/numPlayers/etc.) fields
-// joined into the same file. Used by server.cpp's load_model() instead of
-// reading individual keys inline.
+// selected by the modelType key. Every key is required; throws on a missing key or an unknown
+// modelType. Call parse_game_cfg (training/self_play.h) on the same JSON separately for the
+// GameConfig (numStones/numPlayers/etc.) fields joined into the same file. Used by server.cpp's
+// load_model() and train.cpp's --resume validation.
 std::unique_ptr<ModelConfig> parse_model_config(const nlohmann::json& cfg);
+
+// The <arch>_config.json in checkpoint directory `dir` (the first entry whose name ends in
+// "_config.json"), or nullopt if `dir` doesn't exist or has none.
+std::optional<std::filesystem::path> find_config_json(const std::filesystem::path& dir);
 
 // True iff a and b are identical in every field (== ModelConfig::to_json()
 // equality, which each subclass already overrides to include its own extra

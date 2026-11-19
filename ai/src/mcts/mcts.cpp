@@ -1,8 +1,8 @@
 #include "mcts/mcts.h"
+#include "model/features.h"
 #include "model/rank_head.h"
 #include <algorithm>
 #include <cmath>
-#include <functional>
 #include <limits>
 
 SearchParams SearchParams::self_play() { return SearchParams{}; }
@@ -67,23 +67,6 @@ struct MCTSNode {
 
     double mean_utility(int player_idx) const { return utility_sum[player_idx] / visits; }
 };
-
-static std::vector<int> legal_actions(const BoardState& s) {
-    int N = s.N, ns = s.num_stones;
-    std::vector<int> a;
-    for (int st = 1; st <= ns; st++)
-        for (int i = 0; i < N; i++)
-            if (s.legal_moves_data().captures[st][i].has_value()) a.push_back((st - 1) * N + i);
-    if (!s.game_over() && (!s.forced_pass_only || s.no_trad_legal())) a.push_back(ns * N);
-    return a;
-}
-
-static void apply_action(BoardState& s, int action) {
-    int N = s.N, ns = s.num_stones;
-    if (action == ns * N) s.make_move(std::nullopt, std::nullopt);
-    else s.make_move(action % N, action / N + 1);
-}
-
 
 // ── MCTS ─────────────────────────────────────────────────────────────────────
 
@@ -342,6 +325,9 @@ SearchResult MCTS::search(const BoardState& state, const RootSettings& settings,
             if (!child) {
                 BoardState s = node->state.copy();
                 apply_action(s, node->actions[k]);
+                // Resigned players' turns are passed automatically, as the TS game flow does after
+                // every move (BoardState.advanceResigned()).
+                s.advance_resigned();
                 child = std::make_unique<MCTSNode>(std::move(s));
                 if (child->state.game_over()) {
                     child->terminal = true;

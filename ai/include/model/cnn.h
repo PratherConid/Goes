@@ -75,12 +75,10 @@ struct CNNImpl : torch::nn::Module {
     // a validity channel, so input_proj actually receives feature_dim + 1 channels.
     CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_stones, int num_players);
 
-    // x: (N,F) or (B,N,F) → (1,F+1,H,W) or (B,F+1,H,W)
+    // x: (B,N,F) → (B,F+1,H,W)
     torch::Tensor features_to_grid(const torch::Tensor& x) const;
 
-    // Returns a ModelOutput (model_output.h).
-    //   Unbatched: x (N,F),   legal_mask (numStones*N+1,)
-    //   Batched:   x (B,N,F), legal_mask (B,numStones*N+1)
+    // x (B,N,F), legal_mask (B,numStones*N+1). Returns a ModelOutput (model_output.h).
     ModelOutput forward(
         torch::Tensor x,
         torch::Tensor legal_mask);

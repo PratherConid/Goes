@@ -81,10 +81,10 @@ TORCH_MODULE(TransformerBlock);
 //
 // Known cost tradeoff: unlike the other three architectures' O(1)-per-leaf evaluation, this is
 // O(ply_count) per leaf (loops every historical ply via history_features_at_ply()) - materially
-// more expensive per MCTS simulation for long games, though each past-ply reconstruction now skips
+// more expensive per MCTS simulation for long games, though each past-ply reconstruction skips
 // the group_liberty() traversal entirely (the minimal history descriptor never needs
 // liberty/groupSize - see board_to_features_at_ply()'s perf guard, features.cpp); only the
-// current-ply's full-descriptor call still pays for it.
+// current ply's full-descriptor call pays for it.
 struct TransformerImpl : torch::nn::Module {
     torch::nn::Linear encoder_in{nullptr};   // N*feature_dim -> hidden_dim (current ply only)
     torch::nn::Linear encoder_out{nullptr};  // hidden_dim -> hidden_dim (current ply only)
@@ -112,9 +112,9 @@ struct TransformerImpl : torch::nn::Module {
 
     TransformerImpl(const BoardConfig& bc, const TransformerConfig& cfg, int num_stones, int num_players);
 
-    // hist_x: (B,T,N,F) or (T,N,F) float32 (T past plies, zero-padded to the batch's own max);
-    // hist_mask: (B,T) or (T,) bool, True = padded/invalid slot; cur_x: (B,N,F) or (N,F) - the
-    // current ply; legal_mask: (B,numStones*N+1) or (numStones*N+1,).
+    // hist_x: (B,T,N,F) float32 (T past plies, zero-padded to the batch's own max);
+    // hist_mask: (B,T) bool, True = padded/invalid slot; cur_x: (B,N,F) - the current ply;
+    // legal_mask: (B,numStones*N+1).
     // Returns a ModelOutput (model_output.h) - same shapes as CNN/UNet/GNN's forward().
     ModelOutput forward(
         torch::Tensor hist_x, torch::Tensor hist_mask,

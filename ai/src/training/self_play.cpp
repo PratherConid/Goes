@@ -1,17 +1,12 @@
 #include "training/self_play.h"
 #include "model/features.h"
 #include "model/rank_head.h"
-#include <chrono>
-#include <iostream>
-#include <cassert>
 #include <algorithm>
 #include <random>
 #include <cstdint>
 #include <cmath>
 #include <stdexcept>
 #include <mutex>
-
-static std::mt19937 rng(std::random_device{}());
 
 using json = nlohmann::json;
 
@@ -28,7 +23,7 @@ bool weak_equal(const GameConfig& a, const GameConfig& b) {
             return false;
     }
     // Compare as sorted (stone,player) pair sets - order within one stone's
-    // player list doesn't matter (matches the old model_tag()'s own flattening).
+    // player list doesn't matter.
     auto flatten = [](const std::unordered_map<int, std::vector<int>>& m) {
         std::vector<std::pair<int,int>> pairs;
         for (auto& [stone, players] : m)
@@ -244,32 +239,12 @@ BoardState new_state(const GameConfig& cfg, const BoardConfig& bc) {
     if (komi.empty())
         komi = std::vector<float>(cfg.num_players, 0.0f);
 
-    // Self-play and the server search every player with one model.
-    std::vector<int> player_model_id(cfg.num_players, 1);
-
-    BoardState state(
+    return BoardState(
         cfg.num_stones, cfg.num_players,
         cfg.turn_list, pspl, gspl, cfg.stone_to_player_map,
-        cfg.forced_pass_only, cfg.score_rule, komi, player_model_id, cfg.ko_rule, cfg.allow_suicide, cfg.max_plies,
+        cfg.forced_pass_only, cfg.score_rule, komi, cfg.ko_rule, cfg.allow_suicide, cfg.max_plies,
         std::vector<int>(bc.N, 0),
         bc);
-    // linear_move_bound combines with (rather than being overridden by) a
-    // fixed cfg.max_plies - take whichever bound is tighter.
-    if (cfg.linear_move_bound.has_value()) {
-        float k1 = cfg.linear_move_bound->first;
-        float k2 = cfg.linear_move_bound->second;
-        std::uniform_real_distribution<float> dist(k1, k2);
-        // Self-play creates games from many threads at once.
-        static std::mutex rng_mutex;
-        float k;
-        {
-            std::lock_guard<std::mutex> lock(rng_mutex);
-            k = dist(rng);
-        }
-        int sampled = static_cast<int>(k * bc.N);
-        state.max_plies = state.max_plies.has_value() ? std::min(*state.max_plies, sampled) : sampled;
-    }
-    return state;
 }
 
 
@@ -323,7 +298,7 @@ static float policy_kl(const std::vector<float>& target, const std::vector<float
 // policy_surprise_data_weight share follows each ply's policy surprise (including cheap plies whose
 // surprise exceeds 1.5x the game's average) and a value_surprise_data_weight share follows each
 // ply's value surprise - KL between the network's pair outcomes and the forward-looking result
-// smoothed with the longest TD horizon - then rounds each weight stochastically to a row count.
+// smoothed with the shortest TD horizon - then rounds each weight stochastically to a row count.
 static void resolve_row_counts(std::vector<PlyRecord>& plies, const std::vector<float>& final_probs, int N,
                                const SelfPlayParams& params, std::mt19937_64& rng) {
     std::vector<PlyRecord*> searched;
@@ -434,23 +409,6 @@ GameRecord build_game_record(const std::vector<PlyRecord>& plies, const BoardSta
 
 // ── Self-play ─────────────────────────────────────────────────────────────────
 
-static void apply_action(BoardState& s, int action) {
-    int N = s.N, ns = s.num_stones;
-    bool ok = action == ns * N ? s.make_move(std::nullopt, std::nullopt) : s.make_move(action % N, action / N + 1);
-    if (!ok) throw std::runtime_error("self-play: illegal action " + std::to_string(action) + " at ply " +
-                                      std::to_string(s.ply_count()));
-}
-
-static std::vector<int> legal_action_list(const BoardState& s) {
-    int N = s.N, ns = s.num_stones;
-    std::vector<int> a;
-    for (int st = 1; st <= ns; st++)
-        for (int i = 0; i < N; i++)
-            if (s.legal_moves_data().captures[st][i].has_value()) a.push_back((st - 1) * N + i);
-    if (!s.game_over() && (!s.forced_pass_only || s.no_trad_legal())) a.push_back(ns * N);
-    return a;
-}
-
 SelfPlayRunner::SelfPlayRunner(const GameConfig& cfg, const BoardConfig& bc, nlohmann::json input_descr,
                                const nlohmann::json* history_descr, SelfPlayParams params,
                                SearchParams search_params, int num_games, int nn_server_threads,
@@ -517,6 +475,11 @@ void SelfPlayRunner::worker(uint64_t seed) {
 // policy (KataGo's initGamesWithPolicy) for opening variety.
 SelfPlayRunner::Slot SelfPlayRunner::new_slot(std::mt19937_64& rng) const {
     Slot s{new_state(cfg_, bc_), {}, 0, {}};
+    if (params_.linear_move_bound) {
+        std::uniform_real_distribution<float> dist(params_.linear_move_bound->first, params_.linear_move_bound->second);
+        int sampled = static_cast<int>(dist(rng) * bc_.N);
+        s.state.max_plies = s.state.max_plies ? std::min(*s.state.max_plies, sampled) : sampled;
+    }
     std::exponential_distribution<double> exp1(1.0);
     s.opening_moves_left = static_cast<int>(std::floor(exp1(rng) * params_.policy_init_area_prop * bc_.N));
     return s;
@@ -542,12 +505,12 @@ FinishedGame SelfPlayRunner::finish(Slot& slot, std::mt19937_64& rng) const {
 void SelfPlayRunner::play_ply(Slot& slot, MCTS& mcts, std::mt19937_64& rng) {
     int N = bc_.N;
     auto history_of = [&](const BoardState& s) {
-        return history_descr_ ? board_to_features(s, torch::kCPU, *history_descr_).features : torch::Tensor();
+        return history_descr_ ? board_to_features(s, *history_descr_).features : torch::Tensor();
     };
 
     if (slot.opening_moves_left > 0) {
         NNRow row = nn_.evaluate(slot.state);
-        std::vector<int> legal = legal_action_list(slot.state);
+        std::vector<int> legal = legal_actions(slot.state);
         std::vector<double> w(legal.size(), 0.0);
         double total = 0.0;
         for (size_t k = 0; k < legal.size(); k++)
@@ -603,7 +566,7 @@ void SelfPlayRunner::play_ply(Slot& slot, MCTS& mcts, std::mt19937_64& rng) {
     PlyRecord rec;
     rec.move = res.move;
     rec.searched = true;
-    auto ft = board_to_features(slot.state, torch::kCPU, input_descr_);
+    auto ft = board_to_features(slot.state, input_descr_);
     rec.features = ft.features;
     rec.legal_mask = ft.legal_mask;
     rec.history_features = history_of(slot.state);
@@ -620,21 +583,19 @@ void SelfPlayRunner::play_ply(Slot& slot, MCTS& mcts, std::mt19937_64& rng) {
 GameRecord replay_trajectory(const nlohmann::json& trajectory, const GameConfig& cfg, const BoardConfig& bc,
                              const nlohmann::json& descr, const nlohmann::json* history_descr) {
     BoardState state = new_state(cfg, bc);
-    // The game already finished once under its own move bound; a fresh linear_move_bound draw could
-    // be shorter and end the replay early.
-    state.max_plies = std::nullopt;
+    state.max_plies = std::nullopt;  // the recorded game already obeyed its own (possibly sampled) bound
     std::vector<PlyRecord> plies;
     for (const auto& j : trajectory.at("plies")) {
         PlyRecord p;
         p.move = j.at("move").get<int>();
         p.searched = j.contains("search");
-        if (history_descr) p.history_features = board_to_features(state, torch::kCPU, *history_descr).features;
+        if (history_descr) p.history_features = board_to_features(state, *history_descr).features;
         if (p.searched) {
             p.search_pair_probs = j.at("search").get<std::vector<float>>();
             p.row_count = j.at("weight").get<int>();
             if (p.row_count > 0) {
                 p.policy_target = j.at("policy").get<std::vector<float>>();
-                auto ft = board_to_features(state, torch::kCPU, descr);
+                auto ft = board_to_features(state, descr);
                 p.features = ft.features;
                 p.legal_mask = ft.legal_mask;
             }

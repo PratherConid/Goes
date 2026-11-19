@@ -3,6 +3,8 @@
 #include <cassert>
 #include <iostream>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 AdjNorms compute_adj_norms(const BoardConfig& bc, torch::Device device) {
     int N = bc.N;
@@ -194,13 +196,13 @@ static torch::Tensor board_to_features_at_ply(const BoardState& state, int ply, 
 
 // Convert a BoardState to model input tensors (identical for all four architectures).
 //
-// Returns
+// Returns (CPU tensors)
 //   features  : float32 (N, F)               per-node feature matrix
 //   legal_mask: bool    (num_stones*N + 1,)   True = legal action (stone-major
 //                                             flattened: index (stone-1)*N+pos;
 //                                             last entry = pass) - see the
 //                                             matching policy-head layout in
-//                                             cnn.cpp/gnn.cpp/unet.cpp.
+//                                             cnn.cpp/gnn.cpp/unet.cpp/transformer.cpp.
 //
 // descr is the self-describing feature-block descriptor built once by
 // compute_input_descr() (training/self_play.h) at the start of a fresh
@@ -213,24 +215,43 @@ static torch::Tensor board_to_features_at_ply(const BoardState& state, int ply, 
 // legal_action_mask() rather than that shared function, since it depends on
 // game_over()/no_trad_legal(), concepts that are only meaningful for the current position, not an
 // arbitrary past ply.
-FeatureTensors board_to_features(const BoardState& state, torch::Device device, const nlohmann::json& descr) {
-    auto features = board_to_features_at_ply(state, state.ply_count(), descr);
-    return {features.to(device), legal_action_mask(state).to(device)};
+FeatureTensors board_to_features(const BoardState& state, const nlohmann::json& descr) {
+    return {board_to_features_at_ply(state, state.ply_count(), descr), legal_action_mask(state)};
+}
+
+std::vector<int> legal_actions(const BoardState& state) {
+    int N = state.N;
+    int ns = state.num_stones;
+    std::vector<int> actions;
+    if (state.game_over()) return actions;
+    // As in BoardState::make_move(), a resigned player may only pass, and always may.
+    auto resigned = state.resigned_players();
+    if (std::find(resigned.begin(), resigned.end(), state.next_turn.player) != resigned.end()) {
+        actions.push_back(ns * N);
+        return actions;
+    }
+    const LegalMovesByStone& captures = state.legal_moves_data().captures;
+    for (int s = 1; s <= ns; s++)
+        for (int i = 0; i < N; i++)
+            if (captures[s][i].has_value()) actions.push_back((s - 1) * N + i);
+    if (!state.forced_pass_only || state.no_trad_legal()) actions.push_back(ns * N);
+    return actions;
+}
+
+void apply_action(BoardState& state, int action) {
+    int N = state.N;
+    int ns = state.num_stones;
+    bool ok = action == ns * N ? state.make_move(std::nullopt, std::nullopt)
+                               : state.make_move(action % N, action / N + 1);
+    if (!ok)
+        throw std::runtime_error("apply_action: illegal action " + std::to_string(action) + " at ply " +
+                                 std::to_string(state.ply_count()));
 }
 
 torch::Tensor legal_action_mask(const BoardState& state) {
-    int N = state.N;
-    int ns = state.num_stones;
-    auto legal_mask = torch::zeros({ns * N + 1}, torch::kBool);
+    auto legal_mask = torch::zeros({state.num_stones * state.N + 1}, torch::kBool);
     auto mask_a = legal_mask.accessor<bool, 1>();
-    for (int s = 1; s <= ns; s++)
-        for (int i = 0; i < N; i++)
-            if (state.legal_moves_data().captures[s][i].has_value())
-                mask_a[(s - 1) * N + i] = true;
-    if (!state.game_over()) {
-        bool can_pass = (!state.forced_pass_only) || state.no_trad_legal();
-        if (can_pass) mask_a[ns * N] = true;
-    }
+    for (int a : legal_actions(state)) mask_a[a] = true;
     return legal_mask;
 }
 

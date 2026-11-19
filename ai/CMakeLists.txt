@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.18)
 project(goes_ai CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+# C++20: LibTorch 2.14+ requires it.
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # LibTorch: set via -DCMAKE_PREFIX_PATH=/path/to/libtorch
@@ -81,7 +82,7 @@ add_library(goes_core STATIC
 )
 target_include_directories(goes_core PUBLIC include third_party)
 target_link_libraries(goes_core PUBLIC "${TORCH_LIBRARIES}")
-target_compile_features(goes_core PUBLIC cxx_std_17)
+target_compile_features(goes_core PUBLIC cxx_std_20)
 
 add_executable(goes_train src/train.cpp)
 target_link_libraries(goes_train goes_core)

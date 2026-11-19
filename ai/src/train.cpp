@@ -243,18 +243,6 @@ static std::string effective_arch(const Args& args, const std::string& board_des
     std::exit(1);
 }
 
-static AnyModel build_model(const BoardConfig& bc, const ModelConfig& cfg, const GameConfig& game_cfg) {
-    if (cfg.model_type == "cnn")
-        return CNN(bc, static_cast<const CNNConfig&>(cfg), game_cfg.num_stones, game_cfg.num_players);
-    if (cfg.model_type == "unet")
-        return UNet(bc, static_cast<const UNetConfig&>(cfg), game_cfg.num_stones, game_cfg.num_players);
-    if (cfg.model_type == "transformer")
-        return Transformer(bc, static_cast<const TransformerConfig&>(cfg), game_cfg.num_stones, game_cfg.num_players);
-    // Only needed to size the GNN's neighbor-count embedding table.
-    auto adj_norms = compute_adj_norms(bc, torch::kCPU);
-    return MessagePassingGNN(static_cast<const GNNConfig&>(cfg), game_cfg.num_stones, game_cfg.num_players, adj_norms);
-}
-
 // TransformerConfig::history_descr for a Transformer run, else nullptr.
 static const json* history_descr_ptr(const ModelConfig& cfg) {
     return cfg.model_type == "transformer" ? &static_cast<const TransformerConfig&>(cfg).history_descr : nullptr;
@@ -269,7 +257,7 @@ static AnyModel clone_model(AnyModel& src, const BoardConfig& bc, const ModelCon
                             const GameConfig& game_cfg, torch::Device device) {
     std::ostringstream oss;
     std::visit([&](auto& m) { torch::save(m, oss); }, src);
-    AnyModel fresh = build_model(bc, cfg, game_cfg);
+    AnyModel fresh = build_model(bc, cfg, game_cfg.num_stones, game_cfg.num_players);
     std::istringstream iss(oss.str());
     std::visit([&](auto& m) { torch::load(m, iss); m->to(device); m->eval(); }, fresh);
     return fresh;
@@ -348,17 +336,6 @@ static std::string iter_name(const std::string& arch, int iter, const std::strin
     std::ostringstream oss;
     oss << arch << "_" << std::setfill('0') << std::setw(6) << iter << suffix;
     return oss.str();
-}
-
-static std::optional<fs::path> find_config_json(const fs::path& dir) {
-    if (!fs::exists(dir)) return std::nullopt;
-    const std::string suffix = "_config.json";
-    for (auto& e : fs::directory_iterator(dir)) {
-        auto name = e.path().filename().string();
-        if (name.size() > suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0)
-            return e.path();
-    }
-    return std::nullopt;
 }
 
 // A fresh directory named by a hash of the configs and a timestamp.
@@ -597,9 +574,8 @@ static void export_and_save(Trainer& t, TrainState& st, const fs::path& dir, con
 static void print_game_result(int game_num, int total_games, int model_id, const BoardState& state) {
     auto& score = state.score();
     auto at = [](const std::unordered_map<int, int>& m, int s) { auto it = m.find(s); return it != m.end() ? it->second : 0; };
-    std::cout << "  game " << game_num << "/" << total_games << "  players=[";
-    for (int p = 0; p < state.num_players; p++) std::cout << model_id << ",";
-    std::cout << "]  plies=" << state.ply_count() << "  stones=[";
+    std::cout << "  game " << game_num << "/" << total_games << "  model=" << model_id
+              << "  plies=" << state.ply_count() << "  stones=[";
     for (int s = 1; s <= state.num_stones; s++) std::cout << at(score.stone_count, s) << ",";
     std::cout << "]  territories=[";
     for (int s = 1; s <= state.num_stones; s++) std::cout << at(score.territory, s) << ",";
@@ -618,8 +594,6 @@ int main(int argc, char* argv[]) {
     json cfg_json;
     cfg_file >> cfg_json;
     GameConfig game_cfg = parse_game_cfg(cfg_json);
-    // A self-play sampling knob for BoardState::max_plies, not part of the game's rules.
-    game_cfg.linear_move_bound = args.linear_move_bound;
 
     // One board per run, from a fresh random seed (game_cfg.board_seed is ignored).
     const uint32_t board_seed = std::random_device{}();
@@ -680,7 +654,7 @@ int main(int argc, char* argv[]) {
     else model_cfg = std::make_unique<GNNConfig>(in_dim, hidden_dim, args.num_layers, input_descr);
     const json* hist_descr = history_descr_ptr(*model_cfg);
 
-    Trainer trainer{build_model(bc, *model_cfg, game_cfg), std::nullopt, nullptr};
+    Trainer trainer{build_model(bc, *model_cfg, game_cfg.num_stones, game_cfg.num_players), std::nullopt, nullptr};
     std::visit([&](auto& m) { m->to(device); }, trainer.model);
     trainer.optimizer = std::make_unique<torch::optim::Adam>(
         parameters_of(trainer.model), torch::optim::AdamOptions(args.lr).weight_decay(args.l2));
@@ -706,7 +680,7 @@ int main(int argc, char* argv[]) {
             torch::load(*trainer.optimizer, (ckpt_dir / "trainer" / "optimizer.pt").string());
         }
         if (fs::exists(ckpt_dir / "trainer" / "weight_average.pt")) {
-            trainer.average = build_model(bc, *model_cfg, game_cfg);
+            trainer.average = build_model(bc, *model_cfg, game_cfg.num_stones, game_cfg.num_players);
             std::visit([&](auto& m) {
                 torch::load(m, (ckpt_dir / "trainer" / "weight_average.pt").string());
                 m->to(device);
@@ -755,6 +729,7 @@ int main(int argc, char* argv[]) {
             train_iteration(trainer, st, buffer, new_rows, args, game_cfg, bc, *model_cfg, adj_norms, device, rng, it);
             st.iteration = it;
             if (st.bucket_started) export_and_save(trainer, st, ckpt_dir, arch, it, keeps_model_file(it, args));
+            else std::ofstream(ckpt_dir / "trainer" / "state.json") << st.to_json().dump(2) << "\n";
         }
     }
 
@@ -766,6 +741,7 @@ int main(int argc, char* argv[]) {
     sp_params.cheap_visits = std::min(args.cheap_visits, args.full_visits);
     sp_params.reduced_visits_min = std::min(sp_params.reduced_visits_min, args.full_visits);
     sp_params.cheap_prob = args.cheap_prob;
+    sp_params.linear_move_bound = args.linear_move_bound;
     SelfPlayRunner runner(game_cfg, bc, model_cfg->input_descr, hist_descr, sp_params, search_params,
                           args.gamegen_batch_size, args.nn_server_threads, args.nn_max_batch,
                           std::random_device{}());

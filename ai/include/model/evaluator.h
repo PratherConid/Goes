@@ -16,7 +16,8 @@
 // it evaluated (thread-safe), and run() evaluates a batch of prepared inputs in one forward pass.
 // Wraps any of the four architectures (see make_evaluator(), any_model.h) - for a
 // MessagePassingGNN, its adj_norms are captured inside run, so every wrapped model presents the same
-// interface regardless of what it needs internally.
+// interface regardless of what it needs internally - or the untrained stand-in
+// (make_uniform_evaluator(), below).
 struct Evaluator {
     std::function<ModelInput(const BoardState&)> prepare;
     std::function<ModelOutput(const std::vector<const ModelInput*>&)> run;
@@ -40,8 +41,8 @@ struct Evaluator {
 // player- not stone-indexed - see estimate_player_totals(), which folds
 // them in separately). `ownership` may be the model's own (B,2,N,num_stones+1)
 // softmax output, or a one-hot-encoded ground-truth tensor of the same shape
-// (see train.cpp's point_loss, which uses this for both the predicted and
-// actual point totals).
+// (see train.cpp's compute_losses(), whose point loss uses this for both the
+// predicted and actual point totals).
 inline torch::Tensor estimate_stone_points(const torch::Tensor& ownership, const std::string& rule) {
     auto stone_est     = ownership.select(1, 0);  // (B, 2, N, num_stones+1) -> (B, N, num_stones+1)
     auto territory_est = ownership.select(1, 1);  // (B, N, num_stones+1)
@@ -59,8 +60,10 @@ inline torch::Tensor estimate_stone_points(const torch::Tensor& ownership, const
 // stone_to_player_map, plus komi and, under "territory", each state's captures so far - the same
 // quantities compute_player_totals() (board_state.h) sums exactly at a terminal state. A stone
 // mapping to several players credits each of them its full total. A player no stone credits gets
-// komi alone. MCTS batches always share one game's config, so a single rule/map per call is
-// correct; capture counts differ between positions, so capture_counts has one row per batch entry
+// only komi (and, under "territory", its captures). Every position in a batch shares one game
+// config - an NNServer (mcts/nn_server.h) batches one SelfPlayRunner's games, and server.cpp
+// evaluates one position at a time - so a single rule/map per call is correct; capture counts
+// differ between positions, so capture_counts has one row per batch entry
 // (BoardState::capture_count()). Returns (B, num_players).
 inline torch::Tensor estimate_player_totals(
     const torch::Tensor& ownership, const std::vector<std::vector<int>>& capture_counts,

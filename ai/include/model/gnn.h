@@ -31,14 +31,14 @@ TORCH_MODULE(GNNPolicyHead);
 // Input features per node: F = cfg.feature_dim (see model_config.h; computed
 // via compute_input_descr(), training/self_play.h, at model-build time)
 // Outputs:
-//   policy    : (numStones*N+1,) softmax over legal actions (numStones*N placements + pass)
-//   ownership : (2, N, num_stones+1) per-location stone/territory ownership estimates -
+//   policy    : (B, numStones*N+1) softmax over legal actions (numStones*N placements + pass)
+//   ownership : (B, 2, N, num_stones+1) per-location stone/territory ownership estimates -
 //               index 0 = stone estimate, index 1 = territory estimate; each (N, num_stones+1)
 //               slice is a softmax over "which stone type occupies/holds territory at this
 //               location at game end" (channel 0 = none) - stone-type indexed to match
 //               ScoreData/BoardState::board; player-level aggregation (via stone_to_player_map)
 //               happens downstream, e.g. in estimate_player_totals() (evaluator.h)
-//   rank      : (num_rank_pairs, 3) pairwise outcome probabilities - RankHead (rank_head.h) over
+//   rank      : (B, num_rank_pairs, 3) pairwise outcome probabilities - RankHead (rank_head.h) over
 //               the final per-node states
 struct MessagePassingGNNImpl : torch::nn::Module {
     torch::nn::Linear input_proj{nullptr};
@@ -60,9 +60,7 @@ struct MessagePassingGNNImpl : torch::nn::Module {
 
     MessagePassingGNNImpl(const GNNConfig& cfg, int num_stones, int num_players, const AdjNorms& adj_norms);
 
-    // Returns a ModelOutput (model_output.h).
-    //   Unbatched: x (N,F),   legal_mask (numStones*N+1,)
-    //   Batched:   x (B,N,F), legal_mask (B,numStones*N+1)
+    // x (B,N,F), legal_mask (B,numStones*N+1). Returns a ModelOutput (model_output.h).
     // Layer i uses: adj (i%4==0,2), adj2 (i%4==1), adj4 (i%4==3); each layer
     // also concatenates that adjacency tier's per-node neighbor-count embedding
     // (deg_embed_ looked up via adj_norms.deg1/deg2/deg4) so aggregation isn't

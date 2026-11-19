@@ -1,8 +1,9 @@
 // HTTP inference server.
 //
-// Usage: goes_server [--checkpoint-dir PATH] [--port 8765] [--sims 200]
-//                    [--temperature 0.0] [--cpu]
-// Also reads GOES_CHECKPOINT_DIR, GOES_NUM_SIMS, and GOES_TEMPERATURE env vars.
+// Usage: goes_server [--checkpoint-dir ai/checkpoints] [--port 8765] [--sims 200]
+//                    [--temperature 0.0] [--cpu] [--help]
+// The GOES_CHECKPOINT_DIR, GOES_NUM_SIMS and GOES_TEMPERATURE env vars, when set, override
+// --checkpoint-dir, --sims and --temperature (they're applied after the flags).
 //
 // POST /move - JSON body fields:
 //   config            object - shared/gameConfig.ts's GameConfig.toJSON() shape (see
@@ -23,10 +24,9 @@
 //                        (mcts/utility.h)
 //     komi              float[] (optional, default all-zero)
 //     koRule            "positional"|"situational" (optional, default "situational")
-//   moves             array - full move history; each entry is EITHER a legacy
-//                      int|null (null = pass, int = board index; stone auto-picked
-//                      if the turn offers exactly one) OR a shared/types.ts
-//                      ReplayMove object {"pos": int|null, "stone": int|null}.
+//   moves             {"pos": int|null, "stone": int|null}[] - full move history as
+//                      shared/types.ts's ReplayMove (pos null = pass; stone null =
+//                      auto-picked if the turn offers exactly one) - see parse_move_ref().
 //   resigns           array (optional, default none) - shared/gameConfig.ts's
 //                      FinishedGame.toJSON()'s `resigns` shape, [[ply, [player, ...]], ...];
 //                      replayed interleaved with `moves` (see replay_tail()).
@@ -55,7 +55,7 @@
 // GET /health - returns {"status":"ok","loaded_tags":[...],"device":...}
 //
 // Checkpoint directories are opaque hash names (see train.cpp's
-// handle_checkpoint_dir()), not derivable from a request's config - the
+// fresh_checkpoint_dir()), not derivable from a request's config - the
 // server instead scans ckpt_dir's subdirectories once (cached in
 // ServerState::checkpoint_index; directories created after that first scan
 // need a server restart to be picked up) and matches a request's GameConfig
@@ -90,32 +90,30 @@
 #include <cstdlib>
 #include <random>
 #include <cstdio>
+#include <cctype>
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 // ── Checkpoint helpers ────────────────────────────────────────────────────────
 
-// Returns the latest checkpoint, preferring CNN over UNet over Transformer over GNN when multiple are present.
-static std::optional<fs::path> latest_checkpoint(const fs::path& dir) {
-    if (!fs::exists(dir)) return std::nullopt;
-    std::vector<fs::path> cnn_ckpts, unet_ckpts, transformer_ckpts, gnn_ckpts;
+// The <arch>_<iter>.pt (train.cpp's iter_name()) directly in `dir` with the highest iteration.
+static std::optional<fs::path> latest_model_file(const fs::path& dir, const std::string& arch) {
+    const std::string prefix = arch + "_", suffix = ".pt";
+    std::optional<fs::path> latest;
+    long long latest_iter = -1;
     for (auto& e : fs::directory_iterator(dir)) {
-        if (e.path().extension() != ".pt") continue;
+        if (!e.is_regular_file()) continue;
         auto name = e.path().filename().string();
-        if      (name.rfind("cnn_", 0) == 0)  cnn_ckpts.push_back(e.path());
-        else if (name.rfind("unet_", 0) == 0) unet_ckpts.push_back(e.path());
-        else if (name.rfind("transformer_", 0) == 0) transformer_ckpts.push_back(e.path());
-        else if (name.rfind("gnn_", 0) == 0)  gnn_ckpts.push_back(e.path());
+        if (name.size() <= prefix.size() + suffix.size() || name.rfind(prefix, 0) != 0 ||
+            name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0)
+            continue;
+        std::string iter = name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
+        if (!std::all_of(iter.begin(), iter.end(), [](unsigned char c) { return std::isdigit(c); })) continue;
+        long long n = std::stoll(iter);
+        if (n > latest_iter) { latest_iter = n; latest = e.path(); }
     }
-    if (!cnn_ckpts.empty()) { std::sort(cnn_ckpts.begin(), cnn_ckpts.end()); return cnn_ckpts.back(); }
-    if (!unet_ckpts.empty()) { std::sort(unet_ckpts.begin(), unet_ckpts.end()); return unet_ckpts.back(); }
-    if (!transformer_ckpts.empty()) {
-        std::sort(transformer_ckpts.begin(), transformer_ckpts.end());
-        return transformer_ckpts.back();
-    }
-    if (!gnn_ckpts.empty()) { std::sort(gnn_ckpts.begin(), gnn_ckpts.end()); return gnn_ckpts.back(); }
-    return std::nullopt;
+    return latest;
 }
 
 // ── Session ID ────────────────────────────────────────────────────────────────
@@ -141,7 +139,7 @@ struct MoveRef {
 };
 
 struct SessionState {
-    std::string tag;                     // model/config tag - must match incoming request
+    std::string tag;                     // checkpoint directory name - must match the incoming request's
     std::unique_ptr<BoardState> state;   // board state after all replayed moves
     std::vector<MoveRef> moves;          // moves applied so far
 };
@@ -153,7 +151,8 @@ struct ServerState {
     std::unordered_map<std::string, std::unique_ptr<SessionState>> sessions;
     torch::Device device{torch::kCPU};
     int default_sims = 200;
-    float default_temperature = 0.0f;  // 0 = argmax visit count; >0 = sample
+    // 0 = the search's best move; >0 = sample from its play-selection values at that temperature.
+    float default_temperature = 0.0f;
     std::string ckpt_dir;
     // (checkpoint directory name, its stored GameConfig) for every
     // subdirectory of ckpt_dir - populated lazily, once, on the first /move
@@ -173,14 +172,13 @@ struct ServerState {
 
 // ── Request helpers ───────────────────────────────────────────────────────────
 
-// Each entry is either a legacy int|null, or {"pos": int|null, "stone": int|null}.
+// One `moves` entry, a {"pos": int|null, "stone": int|null} object (a missing field counts as null).
 static MoveRef parse_move_ref(const json& m) {
-    if (m.is_object()) {
-        int pos   = (!m.contains("pos")   || m["pos"].is_null())   ? -1 : m["pos"].get<int>();
-        int stone = (!m.contains("stone") || m["stone"].is_null()) ? 0  : m["stone"].get<int>();
-        return {pos, stone};
-    }
-    return {m.is_null() ? -1 : m.get<int>(), 0};
+    if (!m.is_object())
+        throw std::runtime_error("each moves entry must be a {pos, stone} object, got " + m.dump());
+    int pos   = (!m.contains("pos")   || m["pos"].is_null())   ? -1 : m["pos"].get<int>();
+    int stone = (!m.contains("stone") || m["stone"].is_null()) ? 0  : m["stone"].get<int>();
+    return {pos, stone};
 }
 
 // Mirrors shared/gameConfig.ts's FinishedGame.fromJSON()'s `resigns` parsing, into a std::map.
@@ -208,30 +206,10 @@ static void replay_tail(BoardState& state, const std::vector<MoveRef>& moves, si
     if (rit != resigns.end()) for (int p : rit->second) state.resign(p);
 }
 
-// Finds the single <arch>_config.json in a checkpoint directory, without
-// assuming which <arch> - mirrors train.cpp's identically-named helper.
-static std::optional<fs::path> find_config_json(const fs::path& dir) {
-    const std::string suffix = "_config.json";
-    for (auto& e : fs::directory_iterator(dir)) {
-        auto name = e.path().filename().string();
-        if (name.size() > suffix.size() &&
-            name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0)
-            return e.path();
-    }
-    return std::nullopt;
-}
-
-// Finds which checkpoint directory (now an opaque hash name, not derivable
-// from request_cfg the way the old model_tag()-named directories were)
-// satisfies a /move request's game config. Scans ss.ckpt_dir's subdirectories
-// and caches (directory name, parsed GameConfig) in ss.checkpoint_index the
-// first time this is called (see that field's own doc comment for the
-// no-live-refresh caveat), then returns the first entry that weak_equal-
-// matches request_cfg (training/self_play.h) - i.e. agrees on every field
-// the old model_tag() encoded into its directory name. A directory whose
-// config can't be read or parsed is skipped with a warning rather than
-// failing every request, and the index is only stored once the whole scan
-// has finished.
+// The name of the first checkpoint directory whose stored GameConfig weak_equal()s request_cfg
+// (training/self_play.h); throws if none does. The first call scans ss.ckpt_dir's subdirectories
+// into ss.checkpoint_index (see that field for the no-live-refresh caveat), skipping with a warning
+// any whose config can't be read or parsed, and stores the index only once the scan has finished.
 static const std::string& find_checkpoint_dir(ServerState& ss, const GameConfig& request_cfg) {
     if (!ss.checkpoint_index.has_value()) {
         std::vector<std::pair<std::string, GameConfig>> index;
@@ -256,66 +234,43 @@ static const std::string& find_checkpoint_dir(ServerState& ss, const GameConfig&
     throw std::runtime_error("No checkpoint found matching the requested config");
 }
 
-// Load (or return cached) model for the given tag.
-// bc is needed to construct UNet/CNN (which require grid dimensions at build time).
+// Loads (or returns the cached) model for checkpoint directory `tag`: the newest model file of the
+// architecture its <arch>_config.json names (train.cpp's checkpoint directory layout), built for
+// the request's board `bc`.
 static AnyModel& load_model(ServerState& ss, const std::string& tag,
                              const BoardConfig& bc) {
     auto it = ss.models.find(tag);
     if (it != ss.models.end()) return it->second;
 
-    fs::path subdir = fs::path(ss.ckpt_dir) / tag;
-    auto latest = latest_checkpoint(subdir);
-    if (!latest.has_value()) {
-        std::cerr << "[inference] No checkpoint found for tag=" << tag
-                  << " (looked in " << subdir << ")\n";
-        throw std::runtime_error("No checkpoint found for config: " + subdir.string());
-    }
-
-    const std::string fname = latest.value().filename().string();
-    std::string arch = (fname.rfind("cnn_", 0) == 0)  ? "cnn"
-                      : (fname.rfind("unet_", 0) == 0) ? "unet"
-                      : (fname.rfind("transformer_", 0) == 0) ? "transformer"
-                                                        : "gnn";
-    fs::path json_path = latest.value().parent_path() / (arch + "_config.json");
-    if (!fs::exists(json_path)) {
-        std::cerr << "[inference] Config JSON missing: " << json_path << "\n";
-        throw std::runtime_error("Config JSON missing: " + json_path.string());
+    fs::path dir = fs::path(ss.ckpt_dir) / tag;
+    auto cfg_path = find_config_json(dir);
+    if (!cfg_path) {
+        std::cerr << "[inference] No <arch>_config.json in " << dir << "\n";
+        throw std::runtime_error("No <arch>_config.json in checkpoint directory " + dir.string());
     }
 
     // featureDim/inputDescr persisted directly by train.cpp rather than
     // recomputed here - see compute_input_descr()'s doc comment
     // (training/self_play.h) for why.
-    json cfg_json                          = json::parse(std::ifstream(json_path));
+    json cfg_json                          = json::parse(std::ifstream(*cfg_path));
     GameConfig game_cfg                    = parse_game_cfg(cfg_json);
     std::unique_ptr<ModelConfig> model_cfg = parse_model_config(cfg_json);
+    const std::string& arch                = model_cfg->model_type;
 
-    // model_cfg's dynamic type always matches arch (both come from the same
-    // checkpoint file: arch from the .pt filename prefix, model_cfg's type
-    // from that same file's sibling _config.json's modelType key), so the
-    // static_casts below are safe downcasts, not a real runtime type check.
-    AnyModel model_any = [&]() -> AnyModel {
-        if (arch == "cnn") {
-            return CNN(bc, static_cast<const CNNConfig&>(*model_cfg), game_cfg.num_stones, game_cfg.num_players);
-        } else if (arch == "unet") {
-            return UNet(bc, static_cast<const UNetConfig&>(*model_cfg), game_cfg.num_stones, game_cfg.num_players);
-        } else if (arch == "transformer") {
-            return Transformer(bc, static_cast<const TransformerConfig&>(*model_cfg), game_cfg.num_stones, game_cfg.num_players);
-        } else {
-            // adj_norms is only needed to size the GNN's neighbor-count embedding
-            // table (max_degree); compute it locally rather than threading it
-            // through load_model's signature for architectures that don't use it.
-            auto adj_norms = compute_adj_norms(bc, torch::kCPU);
-            return MessagePassingGNN(static_cast<const GNNConfig&>(*model_cfg), game_cfg.num_stones, game_cfg.num_players, adj_norms);
-        }
-    }();
+    auto model_path = latest_model_file(dir, arch);
+    if (!model_path) {
+        std::cerr << "[inference] No " << arch << "_<iter>.pt model file in " << dir << "\n";
+        throw std::runtime_error("No " + arch + "_<iter>.pt model file in checkpoint directory " + dir.string());
+    }
 
+    AnyModel model_any = build_model(bc, *model_cfg, game_cfg.num_stones, game_cfg.num_players);
     std::visit([&](auto& m) {
-        torch::load(m, latest.value().string());
+        torch::load(m, model_path->string());
         m->to(ss.device);
         m->eval();
     }, model_any);
 
-    std::cout << "[inference] Loaded " << latest.value().filename()
+    std::cout << "[inference] Loaded " << model_path->filename()
               << " for tag=" << tag
               << " (in_dim=" << model_cfg->feature_dim << ", model=" << arch << ")\n";
 
@@ -325,6 +280,17 @@ static AnyModel& load_model(ServerState& ss, const std::string& tag,
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
+static void print_usage(std::ostream& out, const char* prog) {
+    out << "Usage: " << prog << " [options]\n"
+        << "  --checkpoint-dir PATH  Directory of goes_train checkpoint directories (default: ai/checkpoints)\n"
+        << "  --port N               HTTP port (default: 8765)\n"
+        << "  --sims N               Default search visits per move, >= 1 (default: 200)\n"
+        << "  --temperature F        Default move temperature, 0 = the search's best move (default: 0)\n"
+        << "  --cpu                  Force CPU even if CUDA is available\n"
+        << "GOES_CHECKPOINT_DIR, GOES_NUM_SIMS and GOES_TEMPERATURE, when set, override\n"
+        << "--checkpoint-dir, --sims and --temperature.\n";
+}
+
 int main(int argc, char* argv[]) {
     std::string ckpt_dir = "ai/checkpoints";
     int port = 8765;
@@ -332,17 +298,30 @@ int main(int argc, char* argv[]) {
     float default_temperature = 0.0f;
     bool use_cpu = false;
 
-    // Simple arg parsing
+    auto need = [&](int& i) -> std::string {
+        if (i + 1 >= argc) {
+            std::cerr << argv[i] << " requires a value\n";
+            print_usage(std::cerr, argv[0]);
+            std::exit(1);
+        }
+        return argv[++i];
+    };
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
-        if (a == "--checkpoint-dir") ckpt_dir = argv[++i];
-        else if (a == "--port")        port = std::stoi(argv[++i]);
-        else if (a == "--sims")        default_sims = std::stoi(argv[++i]);
-        else if (a == "--temperature") default_temperature = std::stof(argv[++i]);
-        else if (a == "--cpu")         use_cpu = true;
+        if (a == "--help" || a == "-h") { print_usage(std::cout, argv[0]); return 0; }
+        else if (a == "--checkpoint-dir") ckpt_dir = need(i);
+        else if (a == "--port")           port = std::stoi(need(i));
+        else if (a == "--sims")           default_sims = std::stoi(need(i));
+        else if (a == "--temperature")    default_temperature = std::stof(need(i));
+        else if (a == "--cpu")            use_cpu = true;
+        else {
+            std::cerr << "Unknown argument: " << a << "\n";
+            print_usage(std::cerr, argv[0]);
+            return 1;
+        }
     }
 
-    // Environment variable overrides
+    // Applied after the flags, so they take precedence.
     if (const char* e = std::getenv("GOES_CHECKPOINT_DIR")) ckpt_dir = e;
     if (const char* e = std::getenv("GOES_NUM_SIMS"))      default_sims = std::stoi(e);
     if (const char* e = std::getenv("GOES_TEMPERATURE"))   default_temperature = std::stof(e);
@@ -385,8 +364,7 @@ int main(int argc, char* argv[]) {
             auto& model_v           = load_model(ss, tag, bc);
             auto evaluator          = make_evaluator(model_v, adj_norms);
 
-            // Moves list from client: each entry is a legacy int|null or a
-            // {"pos","stone"} object - see parse_move_ref().
+            // Full move history, one {"pos","stone"} object per ply - see parse_move_ref().
             std::vector<MoveRef> req_moves;
             if (j.contains("moves")) {
                 for (const auto& m : j["moves"])
@@ -491,7 +469,10 @@ int main(int argc, char* argv[]) {
             res.set_content(resp.dump(), "application/json");
         } catch (const std::exception& ex) {
             res.status = 500;
-            res.set_content(std::string("{\"error\":\"") + ex.what() + "\"}", "application/json");
+            // dump() escapes the message's quotes and backslashes (e.g. a Windows path's).
+            json err;
+            err["error"] = ex.what();
+            res.set_content(err.dump(-1, ' ', false, json::error_handler_t::replace), "application/json");
         }
     });
 

@@ -84,14 +84,6 @@ ModelOutput TransformerImpl::forward(
     torch::Tensor hist_x, torch::Tensor hist_mask,
     torch::Tensor cur_x, torch::Tensor legal_mask)
 {
-    bool batched = (cur_x.dim() == 3);
-    if (!batched) {
-        hist_x     = hist_x.unsqueeze(0);      // (1,T,N,F)
-        hist_mask  = hist_mask.unsqueeze(0);   // (1,T)
-        cur_x      = cur_x.unsqueeze(0);       // (1,N,F)
-        legal_mask = legal_mask.unsqueeze(0);
-    }
-
     int64_t B = cur_x.size(0);
     int64_t T = hist_x.size(1);
     int D = cfg_.hidden_dim;
@@ -146,9 +138,6 @@ ModelOutput TransformerImpl::forward(
     logits = logits.masked_fill(legal_mask.logical_not(), NEG_INF);
     logits = logits.masked_fill(legal_mask.any(-1, true).logical_not(), 0.0f);
     auto policy = torch::softmax(logits, -1);
-
-    if (!batched)
-        return {policy.squeeze(0), ownership.squeeze(0), rank.squeeze(0)};
     return {policy, ownership, rank};
 }
 
@@ -162,7 +151,7 @@ ModelInput TransformerImpl::prepare_input(const BoardState& state) const {
     } else {
         history = torch::empty({0, N_, history_feature_dim_}, torch::kFloat32);
     }
-    auto [ft, mask] = board_to_features(state, torch::kCPU, cfg_.input_descr);
+    auto [ft, mask] = board_to_features(state, cfg_.input_descr);
     return {ft, mask, history};
 }
 

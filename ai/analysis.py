@@ -5,19 +5,13 @@ import json
 import re
 from pathlib import Path
 
-# Matches goes_train's per-game self-play log line, e.g.:
-#   "  game 40/64  players=[0,0,]  plies=354  stones=[21,109,]  territories=[0,0,]  winners=[2,]"
-# (see train.cpp's print_game_result()) - stones/territories are stone-type-indexed lists with a
-# trailing comma after every element (including the last), so the captured groups are stripped of
-# empty entries by _parse_int_list below rather than split naively. Anchored at the start of the
-# (already per-line) string so it only matches self-play lines - print_game_result() also produces
-# tournament-game lines with a "tournament " prefix before "game" ("  tournament game 1/512  ..."),
-# which this deliberately excludes: tournament games are played by whatever's in that round's
-# tournament pool, not the run's actual self-play models, so mixing them into a self-play trend
-# would be misleading. players=[...] (which model evaluated each player) is matched but not
-# captured - not needed for the stats this module computes.
+# Matches goes_train's per-game self-play log line (train.cpp's print_game_result()), e.g.:
+#   "  game 40/64  model=12  plies=354  stones=[21,109,]  territories=[0,0,]  winners=[2,]"
+# model= (the iteration of the model that played it, -1 = uniform evaluator) is matched but not
+# captured. stones/territories are stone-type-indexed lists with a trailing comma after every
+# element (including the last), so _parse_int_list below drops the empty entries.
 _GAME_LINE_RE = re.compile(
-    r"^\s*game\s+\d+/\d+\s+players=\[[\d,]*\]\s+plies=(\d+)\s+stones=\[([\d,]*)\]\s+territories=\[([\d,]*)\]\s+winners=\[([\d,]*)\]"
+    r"^\s*game\s+\d+/\d+\s+model=-?\d+\s+plies=(\d+)\s+stones=\[([\d,]*)\]\s+territories=\[([\d,]*)\]\s+winners=\[([\d,]*)\]"
 )
 
 def _parse_int_list(s):
@@ -101,17 +95,15 @@ def print_game(path, idx):
         content = json.load(f)
     if not isinstance(content, list):
         print("print_game :: content of trajectory file is not a list")
+        return
     if idx >= len(content):
         print(f"print_game :: Index {idx} out of bound {len(content)}")
+        return
     print(json.dumps(content[idx]))
 
 def entry_print_game():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "path", nargs="?", default="ai/checkpoints",
-        help="Path to a *_traj.json file, or a directory to search for one "
-             "(defaults to the most recently modified trajectory file found "
-             "under it). Default: ai/checkpoints")
+    parser.add_argument("path", help="Path to a *_traj.json file")
     parser.add_argument("game_index", type=int, help="Index of the game to print")
     args = parser.parse_args()
 

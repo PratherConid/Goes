@@ -45,9 +45,6 @@ struct MoveInfo {
     bool all_passed = false;
 };
 
-// Human-readable description of a move: "PLACE <cell>", "PASS", etc.
-std::string move_to_string(const MoveInfo& m);
-
 // Mirrors shared/types.ts's ScoreData.
 struct ScoreData {
     std::unordered_map<int,int> stone_count;  // stones on the board, per stone type (1..num_stones)
@@ -147,7 +144,6 @@ public:
                bool forced_pass_only,
                std::string score_rule,
                std::vector<float> komi,
-               std::vector<int> player_model_id,
                KoRule ko_rule,
                bool allow_suicide,
                std::optional<int> max_plies,
@@ -260,10 +256,6 @@ public:
     // count before winner determination (compute_winners()) and in
     // compute_player_totals() - 1-indexed via komi[p-1].
     std::vector<float> komi;
-    // Which model plays each player, 1-indexed via player_model_id[p-1]. Self-play and the server
-    // both search every player with a single model, so new_state() sets every entry to 1 and
-    // nothing reads it.
-    std::vector<int> player_model_id;
     KoRule ko_rule;
     bool allow_suicide;
     std::optional<int> max_plies;

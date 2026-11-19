@@ -67,12 +67,6 @@ ModelOutput MessagePassingGNNImpl::forward(
     const AdjNorms& adj_norms,
     torch::Tensor legal_mask)
 {
-    bool batched = (x.dim() == 3);
-    if (!batched) {
-        x          = x.unsqueeze(0);
-        legal_mask = legal_mask.unsqueeze(0);
-    }
-
     // Input projection: (B, N, hidden)
     auto h = torch::relu(input_proj->forward(x));
 
@@ -111,14 +105,11 @@ ModelOutput MessagePassingGNNImpl::forward(
     logits = logits.masked_fill(all_illegal, 0.0f);
 
     auto policy = torch::softmax(logits, -1); // (B, num_stones*N+1)
-
-    if (!batched)
-        return {policy.squeeze(0), ownership.squeeze(0), rank.squeeze(0)};
     return {policy, ownership, rank};
 }
 
 ModelInput MessagePassingGNNImpl::prepare_input(const BoardState& state) const {
-    auto [ft, mask] = board_to_features(state, torch::kCPU, cfg_.input_descr);
+    auto [ft, mask] = board_to_features(state, cfg_.input_descr);
     return {ft, mask, {}};
 }
 

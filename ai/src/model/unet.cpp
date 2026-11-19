@@ -181,18 +181,16 @@ torch::Tensor UNetPolicyHeadImpl::forward(const torch::Tensor& h) {
 }
 
 torch::Tensor UNetImpl::features_to_grid(const torch::Tensor& x) const {
-    bool batched = x.dim() == 3;
-    auto x3 = batched ? x : x.unsqueeze(0);
-    int64_t B = x3.size(0);
-    int64_t N = x3.size(1);
-    int64_t F = x3.size(2);
+    int64_t B = x.size(0);
+    int64_t N = x.size(1);
+    int64_t F = x.size(2);
 
     // flat: (B, F+1, side*side), all zeros
-    auto flat = torch::zeros({B, F + 1, (int64_t)side_ * side_}, x3.options());
+    auto flat = torch::zeros({B, F + 1, (int64_t)side_ * side_}, x.options());
 
     // Scatter node features into channels 0..F-1
     auto idx = lin_idx_.unsqueeze(0).unsqueeze(0).expand({B, F, N});
-    flat.slice(1, 0, F).scatter_(2, idx, x3.permute({0, 2, 1}));
+    flat.slice(1, 0, F).scatter_(2, idx, x.permute({0, 2, 1}));
 
     // Validity channel (same for all batch items)
     flat.select(1, F).copy_(valid_tensor_.view({1, -1}).expand({B, -1}));
@@ -204,12 +202,6 @@ ModelOutput UNetImpl::forward(
     torch::Tensor x,
     torch::Tensor legal_mask)
 {
-    bool batched = x.dim() == 3;
-    if (!batched) {
-        x          = x.unsqueeze(0);
-        legal_mask = legal_mask.unsqueeze(0);
-    }
-
     int64_t B = x.size(0);
 
     // Encoder: apply each block (with a parameter-free residual shortcut
@@ -262,14 +254,11 @@ ModelOutput UNetImpl::forward(
     logits = logits.masked_fill(legal_mask.logical_not(), NEG_INF);
     logits = logits.masked_fill(legal_mask.any(-1, true).logical_not(), 0.0f);
     auto policy = torch::softmax(logits, -1);
-
-    if (!batched)
-        return {policy.squeeze(0), ownership.squeeze(0), rank.squeeze(0)};
     return {policy, ownership, rank};
 }
 
 ModelInput UNetImpl::prepare_input(const BoardState& state) const {
-    auto [ft, mask] = board_to_features(state, torch::kCPU, cfg_.input_descr);
+    auto [ft, mask] = board_to_features(state, cfg_.input_descr);
     return {ft, mask, {}};
 }
 
