@@ -66,7 +66,8 @@ struct Args {
     double taper_window_scale = 50000;
     double taper_window_exponent = 0.65;
     double expand_window_per_row = 0.4;
-    double max_train_per_data = 8;
+    // KataGo's is 8: Goes has no symmetry augmentation, so each reuse of a row is an identical input.
+    double max_train_per_data = 4;
     int64_t max_train_samples_per_iteration = 500000;
     double swa_scale = 8;
     int64_t swa_period_samples = 80000;
@@ -111,7 +112,7 @@ static void print_usage(const char* prog) {
               << "  --taper-window-scale F    Training-window power-law scale (default: 50000)\n"
               << "  --taper-window-exponent F Training-window power-law exponent (default: 0.65)\n"
               << "  --expand-window-per-row F Training-window growth per new row (default: 0.4)\n"
-              << "  --max-train-per-data F    Training samples per new data row (default: 8)\n"
+              << "  --max-train-per-data F    Training samples per new data row (default: 4)\n"
               << "  --max-train-samples-per-iteration N  Cap on samples per cycle (default: 500000)\n"
               << "  --swa-scale F             Weight-average window, in snapshots (default: 8)\n"
               << "  --swa-period-samples N    Samples between weight-average snapshots (default: 80000;\n"

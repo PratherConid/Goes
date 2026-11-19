@@ -269,7 +269,7 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
 | `--taper-window-scale F` | `50000` | Training-window power-law scale |
 | `--taper-window-exponent F` | `0.65` | Training-window power-law exponent |
 | `--expand-window-per-row F` | `0.4` | Training-window growth per new row |
-| `--max-train-per-data F` | `8` | Training samples allowed per new row |
+| `--max-train-per-data F` | `4` | Training samples allowed per new row (KataGo's is 8; Goes has no symmetry augmentation, so every reuse of a row is an identical input) |
 | `--max-train-samples-per-iteration N` | `500000` | Cap on training samples per cycle |
 | `--swa-scale F` | `8` | Window of the exported weight average, in snapshots |
 | `--swa-period-samples N` | `80000` | Training samples between weight-average snapshots; `0` exports the raw model |
@@ -412,7 +412,7 @@ and the row's target is `(Z + TD_0.176 + TD_0.056 + TD_0.016) / 4`. KataGo train
 `ai/src/train.cpp`, KataGo's `shuffle.py` + `train.py` + export steps, in memory:
 
 - **Rows and the window**: a `GameRecord` stores each training row once with its row count; `ReplayBuffer` gives every row a global index and samples uniformly (without repeats within a batch) from the newest `window` rows. The window follows KataGo's power law - nothing until `--min-rows` rows exist (rows from the uniform evaluator count only up to `--min-rows`), then `window = min_rows + 0.4 · ((x^0.65 − s^0.65) / (0.65 · s^−0.35))` with `x` the usable rows past `--min-rows` plus the scale `s` (`--taper-window-scale`) - so it keeps growing, ever more slowly. Games that fall out of the window are dropped.
-- **How much to train**: a sample bucket gains `--max-train-per-data` (8) samples per new row - the first time, one sample per existing row - capped at `--max-train-samples-per-iteration`; training takes batches while the bucket holds one.
+- **How much to train**: a sample bucket gains `--max-train-per-data` (4) samples per new row - the first time, one sample per existing row - capped at `--max-train-samples-per-iteration`; training takes batches while the bucket holds one.
 - **Optimizer**: Adam (`--lr`, `--l2`), gradient-norm clipping at 1, with KataGo's learning-rate warmup (×1/20 rising to ×1 over the first 2M samples).
 - **Weight average**: every `--swa-period-samples` samples, `average += (model − average) / --swa-scale` (KataGo's SWA); the average is what gets exported.
 - **Losses**: policy cross-entropy against the play-selection target (scaled by `1/log(numStones·N+1)`), the ownership and point losses (see **Ownership Heads**), and the rank head's cross-entropy against its blended target (scaled by `1/log 3`), all with weight 1.
