@@ -56,9 +56,10 @@ struct GameConfig {
 
 // True iff a and b agree on the fields that determine which trained model fits a ruleset:
 // board_descr (exact text), num_stones, num_players, turn_list, stone_to_player_map (as a sorted
-// (stone,player) set), forced_pass_only, allow_suicide, score_rule, komi and ko_rule. board_seed is
-// excluded because training draws its own board seed; place limits and max_plies are excluded too.
-// Used by server.cpp to find the checkpoint directory for a /move request's config.
+// (stone,player) set), which place limits are set (not their values), forced_pass_only,
+// allow_suicide, score_rule, komi and ko_rule. board_seed is excluded because training draws its
+// own board seed; max_plies is excluded too. Used by server.cpp to find the checkpoint directory
+// for a /move request's config.
 bool weak_equal(const GameConfig& a, const GameConfig& b);
 
 // True iff a and b are identical in every field (== GameConfig::to_json()

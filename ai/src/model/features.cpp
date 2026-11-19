@@ -161,7 +161,7 @@ static torch::Tensor board_to_features_at_ply(const BoardState& state, int ply, 
                 for (size_t p = 0; p < row.size(); p++) {
                     int bits = row[p].get<int>();
                     if (bits == 0) continue;
-                    int lim = *state.player_stone_place_limit[s][p];
+                    int lim = state.player_stone_place_limit[s][p].value();
                     int remaining = lim - place_cnt[s][p];
                     for (int b = 0; b < bits; b++) {
                         float v = clamp_scale(remaining, b);
@@ -175,7 +175,7 @@ static torch::Tensor board_to_features_at_ply(const BoardState& state, int ply, 
             for (size_t s = 0; s < row.size(); s++) {
                 int bits = row[s].get<int>();
                 if (bits == 0) continue;
-                int lim = *state.global_stone_place_limit[s];
+                int lim = state.global_stone_place_limit[s].value();
                 int placed = 0;
                 for (int p = 0; p < state.num_players; p++) placed += place_cnt[s][p];
                 int remaining = lim - placed;

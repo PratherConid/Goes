@@ -32,6 +32,22 @@ bool weak_equal(const GameConfig& a, const GameConfig& b) {
         return pairs;
     };
     if (flatten(a.stone_to_player_map) != flatten(b.stone_to_player_map)) return false;
+    // Which place limits are set decides the input's budget channels (compute_input_descr()); their
+    // values may differ.
+    auto set_entries = [](const std::vector<std::vector<std::optional<int>>>& limits) {
+        std::vector<std::vector<bool>> set;
+        for (auto& row : limits) {
+            auto& r = set.emplace_back();
+            for (auto& v : row) r.push_back(v.has_value());
+        }
+        return set;
+    };
+    if (set_entries(resolve_player_stone_place_limit(a.player_stone_place_limit, a.num_stones, a.num_players)) !=
+        set_entries(resolve_player_stone_place_limit(b.player_stone_place_limit, b.num_stones, b.num_players)))
+        return false;
+    if (set_entries({resolve_global_stone_place_limit(a.global_stone_place_limit, a.num_stones)}) !=
+        set_entries({resolve_global_stone_place_limit(b.global_stone_place_limit, b.num_stones)}))
+        return false;
     if (a.forced_pass_only != b.forced_pass_only) return false;
     if (a.allow_suicide != b.allow_suicide) return false;
     if (a.score_rule != b.score_rule) return false;

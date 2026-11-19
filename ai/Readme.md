@@ -358,10 +358,11 @@ config doesn't match byte-for-byte would silently train an architecture-or-rules
 to be picked up), reads each one's saved `GameConfig`, and picks the first whose saved config
 `weak_equal()`-matches the request. `weak_equal()` compares only the fields that affect which
 trained model is appropriate for a given ruleset - `boardDescr`, `numStones`, `numPlayers`,
-`turnList`, `stoneToPlayerMap`, `forcedPassOnly`, `allowSuicide`, `scoreRule`, `komi`, `koRule` -
-so `boardSeed`, `playerStonePlaceLimit`, `globalStonePlaceLimit` and `maxPlies` may differ between
-the request and the matched checkpoint. (`boardSeed` is left out because training builds its board
-from a fresh random seed each run.)
+`turnList`, `stoneToPlayerMap`, `forcedPassOnly`, `allowSuicide`, `scoreRule`, `komi`, `koRule`,
+and which `playerStonePlaceLimit`/`globalStonePlaceLimit` entries are set (they decide the model's
+budget input channels - see **Input Features**) - so `boardSeed`, `maxPlies` and the place limits'
+values may differ between the request and the matched checkpoint. (`boardSeed` is left out because
+training builds its board from a fresh random seed each run.)
 
 The matched directory's model is loaded on its first request and cached: the newest
 `<arch>_XXXXXX.pt` of the architecture named by the directory's `<arch>_config.json` (a run directory
