@@ -118,31 +118,32 @@ Run from the project root:
 
 ```bash
 export OMP_NUM_THREADS=8
-ai/build/goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5
+ai/build/goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5 --min-rows 10000
 ```
 
 The defaults are KataGo's `synchronous_loop.sh` sizes (500 games per iteration, 600-visit full
-searches and 100-visit cheap ones, training once 100k rows exist). For larger runs:
+searches and 100-visit cheap ones, training once 100k rows exist); these commands start training
+at 10k rows instead (`--min-rows 10000`). For larger runs:
 
 ```bash
 export OMP_NUM_THREADS=8
 
-ai/build/goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 1000 --cnn-hidden-dim 128
+ai/build/goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 1000 --cnn-hidden-dim 128 --min-rows 10000
 
-ai/build/goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 1000 --net-arch gnn --gnn-hidden-dim 256
+ai/build/goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 1000 --net-arch gnn --gnn-hidden-dim 256 --min-rows 10000
 
-ai/build/goes_train --game-config public/game_presets/7x7x2_twsq_go.json --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 1000 --cnn-hidden-dim 128
+ai/build/goes_train --game-config public/game_presets/7x7x2_twsq_go.json --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 1000 --cnn-hidden-dim 128 --min-rows 10000
 
-ai/build/goes_train --game-config public/game_presets/3x3_go_fpo.json --gamegen-batch-size 256 --iterations 1000 --net-arch transformer --transformer-hidden-dim 128
+ai/build/goes_train --game-config public/game_presets/3x3_go_fpo.json --gamegen-batch-size 256 --iterations 1000 --net-arch transformer --transformer-hidden-dim 128 --min-rows 10000
 
-ai/build/goes_train --game-config public/game_presets/13x13_two_ply_go.json --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 1000 --cnn-hidden-dim 128
+ai/build/goes_train --game-config public/game_presets/13x13_two_ply_go.json --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 1000 --cnn-hidden-dim 128 --min-rows 10000
 ```
 
 **Windows:**
 
 ```powershell
 $env:OMP_NUM_THREADS = "8"
-ai\build\Release\goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5
+ai\build\Release\goes_train --game-config public/game_presets/9x9_go.json --linear-move-bound 1.5 2.5 --min-rows 10000
 ```
 
 A run's files go to `ai/checkpoints/<hash>/`, where `<hash>` is a fresh 64-character SHA-256 of the
