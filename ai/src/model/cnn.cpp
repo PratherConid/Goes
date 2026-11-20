@@ -10,18 +10,18 @@ CNNImpl::CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_stones, in
 {
     // A real (always-active) check, not assert() - assert compiles out under NDEBUG (this project's
     // Release builds), which would otherwise let a non-2D-embedded board (e.g. regpoly/dodeca/icosa
-    // - see board_config.h - all use emb_dim=0 with an empty embed[] per node) fall through into the
-    // bc.embed[i][0]/[1] accesses below as undefined behavior instead of failing loudly here.
-    if (bc.emb_dim() != 2)
+    // - see board_config.h - all use emb_dim=0 with an empty pos[] per node) fall through into the
+    // bc.emb.pos[i][0]/[1] accesses below as undefined behavior instead of failing loudly here.
+    if (bc.emb.emb_dim() != 2)
         throw std::runtime_error(
-            "CNN requires a 2D embedding (bc.emb_dim() == 2), got emb_dim=" + std::to_string(bc.emb_dim()));
+            "CNN requires a 2D embedding (bc.emb.emb_dim() == 2), got emb_dim=" + std::to_string(bc.emb.emb_dim()));
     assert(bc.N > 0);
 
     // Compute the board's tight bounding box from embedding (no padding).
     int gw = 0, gh = 0;
     for (int i = 0; i < bc.N; i++) {
-        gw = std::max(gw, (int)bc.embed[i][0] + 1);
-        gh = std::max(gh, (int)bc.embed[i][1] + 1);
+        gw = std::max(gw, (int)bc.emb.pos[i][0] + 1);
+        gh = std::max(gh, (int)bc.emb.pos[i][1] + 1);
     }
     grid_w_ = gw;
     grid_h_ = gh;
@@ -33,8 +33,8 @@ CNNImpl::CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_stones, in
         auto lin_a = lin_cpu.accessor<int64_t, 1>();
         auto val_a = val_cpu.accessor<float, 4>();
         for (int i = 0; i < bc.N; i++) {
-            int col = (int)bc.embed[i][0];
-            int row = (int)bc.embed[i][1];
+            int col = (int)bc.emb.pos[i][0];
+            int row = (int)bc.emb.pos[i][1];
             lin_a[i]              = row * gw + col;
             val_a[0][0][row][col] = 1.0f;
         }

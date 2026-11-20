@@ -303,12 +303,12 @@ static std::vector<int> tuple_of_full_index(const FullProductIndex& fpi, long lo
 struct RestrictResult { BoardConfig bc; std::vector<int> survivors; };
 static RestrictResult restrict_board_by_selector(const BoardConfig& board, const Selector& sel, ClegRandom& random) {
     if (sel.type == SelectorType{SelectorKind::Node}) {
-        auto kept = select_node(board.adj, board.embed, sel, random);
+        auto kept = select_node(board.adj, board.emb.pos, sel, random);
         std::vector<int> survivors(kept.begin(), kept.end()); // std::set already ascending
         return {node_induced_subgraph(board, kept), std::move(survivors)};
     }
     if (sel.type == SelectorType{SelectorKind::Edge}) {
-        auto edges = select_edge(board.adj, board.embed, sel, random);
+        auto edges = select_edge(board.adj, board.emb.pos, sel, random);
         std::set<int> kept;
         for (auto& e : edges) { kept.insert(e.n1); kept.insert(e.n2); }
         std::vector<int> survivors(kept.begin(), kept.end());
@@ -323,8 +323,8 @@ static RestrictResult restrict_board_by_selector(const BoardConfig& board, const
 static RestrictResult restrict_board_by_node_and_edge_selector(
     const BoardConfig& board, const Selector& node_sel, const Selector& edge_sel, ClegRandom& random)
 {
-    auto extra_nodes = select_node(board.adj, board.embed, node_sel, random);
-    auto edges = select_edge(board.adj, board.embed, edge_sel, random);
+    auto extra_nodes = select_node(board.adj, board.emb.pos, node_sel, random);
+    auto edges = select_edge(board.adj, board.emb.pos, edge_sel, random);
     std::set<int> kept = extra_nodes;
     for (auto& e : edges) { kept.insert(e.n1); kept.insert(e.n2); }
     std::vector<int> survivors(kept.begin(), kept.end());
@@ -367,13 +367,13 @@ static BuiltResult build_from_nodes_and_edges(
     tuples.reserve(orig_index.size());
     for (long long idx : orig_index) tuples.push_back(tuple_of_full_index(fpi, idx));
     std::vector<unsigned> side_lens;
-    for (auto& b : boards) side_lens.insert(side_lens.end(), b.side_lens.begin(), b.side_lens.end());
+    for (auto& b : boards) side_lens.insert(side_lens.end(), b.emb.side_lens.begin(), b.emb.side_lens.end());
     size_t K = orig_index.size();
     std::vector<std::vector<unsigned>> pos(K);
     for (size_t i = 0; i < K; i++) {
         pos[i].reserve(side_lens.size());
         for (size_t k = 0; k < boards.size(); k++) {
-            auto& bp = boards[k].embed[tuples[i][k]];
+            auto& bp = boards[k].emb.pos[tuples[i][k]];
             pos[i].insert(pos[i].end(), bp.begin(), bp.end());
         }
     }
@@ -503,7 +503,7 @@ static void parse_hcublat_bounds(const ClegValue& bounds_val, std::vector<int>& 
     }
 }
 
-// Mirrors shared/clegEval.ts's buildSubHcublat(), except for the embedding: BoardConfig::embed is
+// Mirrors shared/clegEval.ts's buildSubHcublat(), except for the embedding: Embedding::pos is
 // non-negative-integer-only, so instead of recenterPositions() each surviving node's position
 // (`pos`) is its local, 0-based lattice coordinate (hypercuboid_board's convention). `cond`/`econd`
 // still receive the real absolute coordinates (`abs_pos`), as in TS.
@@ -1020,7 +1020,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             [](const std::vector<ClegValue>& args, GlobalInfo& globals) {
                 Selector sel = resolve_selector_arg("selectNode", args[0], SelectorType{SelectorKind::Node}, parse_node_selector);
                 const BoardConfig& bc = *args[1].egr_v;
-                auto nodes = select_node(bc.adj, bc.embed, sel, globals.random);
+                auto nodes = select_node(bc.adj, bc.emb.pos, sel, globals.random);
                 std::vector<ClegValue> values;
                 for (int n : nodes) values.push_back(make_number(n));
                 return make_cleg_set(NUMBER_TYPE, std::move(values));
@@ -1031,7 +1031,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             [](const std::vector<ClegValue>& args, GlobalInfo& globals) {
                 Selector sel = resolve_selector_arg("selectEdge", args[0], SelectorType{SelectorKind::Edge}, parse_edge_selector);
                 const BoardConfig& bc = *args[1].egr_v;
-                auto edges = select_edge(bc.adj, bc.embed, sel, globals.random);
+                auto edges = select_edge(bc.adj, bc.emb.pos, sel, globals.random);
                 std::vector<ClegValue> values;
                 for (auto& e : edges) values.push_back(make_edge_v(e));
                 return make_cleg_set(EDGE_TYPE, std::move(values));
@@ -1042,7 +1042,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             [](const std::vector<ClegValue>& args, GlobalInfo& globals) {
                 Selector sel = resolve_selector_arg("selectTriangle", args[0], simp_type(2), parse_triangle_selector);
                 const BoardConfig& bc = *args[1].egr_v;
-                auto tris = select_triangle(bc.adj, bc.embed, sel, globals.random);
+                auto tris = select_triangle(bc.adj, bc.emb.pos, sel, globals.random);
                 std::vector<ClegValue> values;
                 for (auto& t : tris) values.push_back(make_simp_v(t));
                 return make_cleg_set(SIMP_TYPE, std::move(values));
@@ -1057,7 +1057,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                     throw std::runtime_error(
                         "cleg: 'selectSimp' expects a simp selector, got a '" + selector_type_word(sel.type) + "' selector");
                 const BoardConfig& bc = *args[1].egr_v;
-                auto simps = select_simp(bc.adj, bc.embed, sel, globals.random);
+                auto simps = select_simp(bc.adj, bc.emb.pos, sel, globals.random);
                 std::vector<ClegValue> values;
                 for (auto& t : simps) values.push_back(make_simp_v(t));
                 return make_cleg_set(SIMP_TYPE, std::move(values));
@@ -1068,7 +1068,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             [](const std::vector<ClegValue>& args, GlobalInfo& globals) {
                 Selector sel = resolve_selector_arg("selectQuad", args[0], SelectorType{SelectorKind::Quad}, parse_quad_selector);
                 const BoardConfig& bc = *args[1].egr_v;
-                auto quads = select_quad(bc.adj, bc.embed, sel, globals.random);
+                auto quads = select_quad(bc.adj, bc.emb.pos, sel, globals.random);
                 std::vector<ClegValue> values;
                 for (auto& q : quads) values.push_back(make_quad_v(q));
                 return make_cleg_set(QUAD_TYPE, std::move(values));

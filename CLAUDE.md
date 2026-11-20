@@ -9,7 +9,7 @@
 **Mirror the TS algorithm/structure as closely as possible** - same helper functions, same
 recursive shape, same variable roles - not just the same external behavior via a different
 approach, even if that approach is simpler. Only deviate for a genuine correctness issue (e.g. a
-data-type constraint the TS side doesn't have - `BoardConfig::embed` here is exact-integer only,
+data-type constraint the TS side doesn't have - `Embedding::pos` here is exact-integer only,
 so a board whose TS positions are irrational needs a different embedding scheme) or a large
 performance overhead. A deviation like that should be scoped as narrowly as possible - e.g. the
 embedding/coordinate values may need to differ, but the surrounding algorithm that builds and

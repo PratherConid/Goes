@@ -13,29 +13,29 @@
 
 BoardConfig make_bc(std::vector<std::vector<int>> adj,
                      std::vector<unsigned> side_lens,
-                     std::vector<std::vector<unsigned>> emb) {
-    int N = static_cast<int>(emb.size());
+                     std::vector<std::vector<unsigned>> pos) {
+    int N = static_cast<int>(pos.size());
     assert(static_cast<int>(adj.size()) == N &&
            (N == 0 || static_cast<int>(adj[0].size()) == N) && "adj must be N×N");
     for (int i = 0; i < N; i++)
         for (int j = 0; j < N; j++)
             assert(adj[i][j] == adj[j][i] && "adj must be symmetric");
-    for (const auto& p : emb) {
-        assert(p.size() == side_lens.size() && "embed rows must have one coordinate per side length");
+    for (const auto& p : pos) {
+        assert(p.size() == side_lens.size() && "pos rows must have one coordinate per side length");
         for (size_t k = 0; k < p.size(); k++)
-            assert(p[k] < side_lens[k] && "embed coordinate must be below its side length");
+            assert(p[k] < side_lens[k] && "pos coordinate must be below its side length");
     }
     std::vector<std::vector<int>> adlist(N);
     for (int i = 0; i < N; i++)
         for (int j = 0; j < N; j++)
             if (adj[i][j]) adlist[i].push_back(j);
-    return {N, std::move(adj), std::move(adlist), std::move(side_lens), std::move(emb)};
+    return {N, std::move(adj), std::move(adlist), Embedding{std::move(side_lens), std::move(pos)}};
 }
 
 int num_cells(const BoardConfig& bc) {
-    if (bc.side_lens.empty()) return bc.N;
+    if (bc.emb.side_lens.empty()) return bc.N;
     int cells = 1;
-    for (unsigned s : bc.side_lens) cells *= static_cast<int>(s);
+    for (unsigned s : bc.emb.side_lens) cells *= static_cast<int>(s);
     return cells;
 }
 
@@ -78,15 +78,15 @@ BoardConfig quotient_board(const BoardConfig& bc,
     for (int i = 0; i < N; i++) node_to_new[i] = root_to_new[roots[i]];
 
     // New positions: average of class members, over all emb_dim coordinates.
-    std::vector<std::vector<unsigned>> new_embed(new_n, std::vector<unsigned>(bc.emb_dim(), 0u));
+    std::vector<std::vector<unsigned>> new_embed(new_n, std::vector<unsigned>(bc.emb.emb_dim(), 0u));
     std::vector<int> cnt(new_n, 0);
     for (int i = 0; i < N; i++) {
         int ni = node_to_new[i];
-        for (unsigned k = 0; k < bc.emb_dim(); k++) new_embed[ni][k] += bc.embed[i][k];
+        for (unsigned k = 0; k < bc.emb.emb_dim(); k++) new_embed[ni][k] += bc.emb.pos[i][k];
         cnt[ni]++;
     }
     for (int ni = 0; ni < new_n; ni++)
-        for (unsigned k = 0; k < bc.emb_dim(); k++) new_embed[ni][k] /= cnt[ni];
+        for (unsigned k = 0; k < bc.emb.emb_dim(); k++) new_embed[ni][k] /= cnt[ni];
 
     auto new_adj = zero_adj(new_n);
     for (int i = 0; i < N; i++)
@@ -96,7 +96,7 @@ BoardConfig quotient_board(const BoardConfig& bc,
             if (ni != nj) new_adj[ni][nj] = 1;
         }
 
-    return make_bc(std::move(new_adj), bc.side_lens, std::move(new_embed));
+    return make_bc(std::move(new_adj), bc.emb.side_lens, std::move(new_embed));
 }
 
 BoardConfig edge_split(const BoardConfig& bc, int split_n) {
@@ -104,9 +104,9 @@ BoardConfig edge_split(const BoardConfig& bc, int split_n) {
     int N = bc.N;
     std::vector<std::vector<unsigned>> pos(N);
     for (int i = 0; i < N; i++) {
-        pos[i].resize(bc.emb_dim());
-        for (unsigned k = 0; k < bc.emb_dim(); k++)
-            pos[i][k] = bc.embed[i][k] * split_n;
+        pos[i].resize(bc.emb.emb_dim());
+        for (unsigned k = 0; k < bc.emb.emb_dim(); k++)
+            pos[i][k] = bc.emb.pos[i][k] * split_n;
     }
     std::vector<std::pair<int,int>> edges;
     for (int i = 0; i < N; i++)
@@ -114,9 +114,9 @@ BoardConfig edge_split(const BoardConfig& bc, int split_n) {
             if (!bc.adj[i][j]) continue;
             int prev = i;
             for (int k = 1; k < split_n; k++) {
-                std::vector<unsigned> np(bc.emb_dim());
-                for (unsigned d = 0; d < bc.emb_dim(); d++)
-                    np[d] = (unsigned)((int)pos[i][d] + k * ((int)bc.embed[j][d] - (int)bc.embed[i][d]));
+                std::vector<unsigned> np(bc.emb.emb_dim());
+                for (unsigned d = 0; d < bc.emb.emb_dim(); d++)
+                    np[d] = (unsigned)((int)pos[i][d] + k * ((int)bc.emb.pos[j][d] - (int)bc.emb.pos[i][d]));
                 int idx = (int)pos.size();
                 pos.push_back(std::move(np));
                 edges.push_back({prev, idx});
@@ -127,21 +127,21 @@ BoardConfig edge_split(const BoardConfig& bc, int split_n) {
     int new_n = (int)pos.size();
     auto adj = zero_adj(new_n);
     for (auto& [a, b] : edges) { adj[a][b] = 1; adj[b][a] = 1; }
-    return make_bc(std::move(adj), scaled_side_lens(bc.side_lens, split_n), std::move(pos));
+    return make_bc(std::move(adj), scaled_side_lens(bc.emb.side_lens, split_n), std::move(pos));
 }
 
 BoardConfig rectify(const BoardConfig& bc) {
     // A real (always-active) check, not assert(): an emb_dim=0 board (e.g. dodeca/icosa/regpoly, or
     // triform/sqform output - see board_config.h) has no edge directions, and the convex-hull LP
     // would silently return no edges on 0-dimensional points rather than failing loudly.
-    if (bc.emb_dim() == 0)
+    if (bc.emb.emb_dim() == 0)
         throw std::runtime_error(
             "rectify: requires a real (non-zero) embedding, got emb_dim=0 - this board has no "
             "coordinates to compute edge directions from");
     int N = bc.N;
-    unsigned emb_dim = bc.emb_dim();
+    unsigned emb_dim = bc.emb.emb_dim();
 
-    // One new node per original edge (i<j), at the midpoint - embed[i]+embed[j] is already 2x the
+    // One new node per original edge (i<j), at the midpoint - pos[i]+pos[j] is already 2x the
     // true midpoint (exact integer, no rounding).
     std::map<std::pair<int,int>, int> edge_idx;
     std::vector<std::vector<unsigned>> pos;
@@ -150,7 +150,7 @@ BoardConfig rectify(const BoardConfig& bc) {
             if (!bc.adj[i][j]) continue;
             edge_idx[{i, j}] = (int)pos.size();
             std::vector<unsigned> mid(emb_dim);
-            for (unsigned k = 0; k < emb_dim; k++) mid[k] = bc.embed[i][k] + bc.embed[j][k];
+            for (unsigned k = 0; k < emb_dim; k++) mid[k] = bc.emb.pos[i][k] + bc.emb.pos[j][k];
             pos.push_back(std::move(mid));
         }
 
@@ -165,13 +165,13 @@ BoardConfig rectify(const BoardConfig& bc) {
     for (int v = 0; v < N; v++) {
         auto& mids = incident[v];
         if (mids.size() < 2) continue;
-        // pos[mid_idx] is at the doubled scale (see above), so subtract 2*embed[v] (TS's pos2[v]).
+        // pos[mid_idx] is at the doubled scale (see above), so subtract 2*pos[v] (TS's pos2[v]).
         std::vector<std::vector<double>> dirs;
         for (int mid_idx : mids) {
             std::vector<double> d(emb_dim);
             double len_sq = 0;
             for (unsigned k = 0; k < emb_dim; k++) {
-                d[k] = (double)pos[mid_idx][k] - 2.0 * (double)bc.embed[v][k];
+                d[k] = (double)pos[mid_idx][k] - 2.0 * (double)bc.emb.pos[v][k];
                 len_sq += d[k] * d[k];
             }
             double len = std::sqrt(len_sq);
@@ -184,26 +184,26 @@ BoardConfig rectify(const BoardConfig& bc) {
         }
     }
 
-    return make_bc(std::move(adj), scaled_side_lens(bc.side_lens, 2), std::move(pos));
+    return make_bc(std::move(adj), scaled_side_lens(bc.emb.side_lens, 2), std::move(pos));
 }
 
 // Mirrors shared/boardConfig.ts's truncate()'s connectivity but not its position formula: TS's
 // per-vertex fraction t_v is irrational in general, so here every near-point instead sits a fixed
 // 1/3 of the way along its edge from its own endpoint, exact-integer after scaling the whole board
-// by 3: the near-i point of edge (i,j) is 3*embed[i] + (embed[j]-embed[i]) = 2*embed[i]+embed[j],
-// and symmetrically the near-j point is embed[i]+2*embed[j].
+// by 3: the near-i point of edge (i,j) is 3*pos[i] + (pos[j]-pos[i]) = 2*pos[i]+pos[j],
+// and symmetrically the near-j point is pos[i]+2*pos[j].
 BoardConfig truncate(const BoardConfig& bc) {
     // Same rationale as rectify's own real-embedding check above - the vertex-ring connectivity
     // needs real edge directions.
-    if (bc.emb_dim() == 0)
+    if (bc.emb.emb_dim() == 0)
         throw std::runtime_error(
             "truncate: requires a real (non-zero) embedding, got emb_dim=0 - this board has no "
             "coordinates to compute edge directions from");
     int N = bc.N;
-    unsigned emb_dim = bc.emb_dim();
+    unsigned emb_dim = bc.emb.emb_dim();
 
-    // Two new nodes per original edge (i<j): near_i (2*embed[i]+embed[j]) and near_j
-    // (embed[i]+2*embed[j]) - see this function's own doc comment above.
+    // Two new nodes per original edge (i<j): near_i (2*pos[i]+pos[j]) and near_j
+    // (pos[i]+2*pos[j]) - see this function's own doc comment above.
     std::map<std::pair<int,int>, std::pair<int,int>> near_idx; // (i,j) -> (near_i idx, near_j idx)
     std::vector<std::vector<unsigned>> pos;
     for (int i = 0; i < N; i++)
@@ -211,8 +211,8 @@ BoardConfig truncate(const BoardConfig& bc) {
             if (!bc.adj[i][j]) continue;
             std::vector<unsigned> near_i(emb_dim), near_j(emb_dim);
             for (unsigned k = 0; k < emb_dim; k++) {
-                near_i[k] = 2 * bc.embed[i][k] + bc.embed[j][k];
-                near_j[k] = bc.embed[i][k] + 2 * bc.embed[j][k];
+                near_i[k] = 2 * bc.emb.pos[i][k] + bc.emb.pos[j][k];
+                near_j[k] = bc.emb.pos[i][k] + 2 * bc.emb.pos[j][k];
             }
             int idx_i = static_cast<int>(pos.size()); pos.push_back(std::move(near_i));
             int idx_j = static_cast<int>(pos.size()); pos.push_back(std::move(near_j));
@@ -250,7 +250,7 @@ BoardConfig truncate(const BoardConfig& bc) {
             std::vector<double> d(emb_dim);
             double len_sq = 0;
             for (unsigned k = 0; k < emb_dim; k++) {
-                d[k] = static_cast<double>(bc.embed[u][k]) - static_cast<double>(bc.embed[v][k]);
+                d[k] = static_cast<double>(bc.emb.pos[u][k]) - static_cast<double>(bc.emb.pos[v][k]);
                 len_sq += d[k] * d[k];
             }
             double len = std::sqrt(len_sq);
@@ -263,7 +263,7 @@ BoardConfig truncate(const BoardConfig& bc) {
         }
     }
 
-    return make_bc(std::move(adj), scaled_side_lens(bc.side_lens, 3), std::move(pos));
+    return make_bc(std::move(adj), scaled_side_lens(bc.emb.side_lens, 3), std::move(pos));
 }
 
 BoardConfig merge_close(const BoardConfig& bc, double dist) {
@@ -272,7 +272,7 @@ BoardConfig merge_close(const BoardConfig& bc, double dist) {
     // meaningful distance. Left unchecked, an emb_dim=0 board (e.g. dodeca/icosa/regpoly, or
     // triform/sqform output - see board_config.h) makes every pairwise distance compute to 0 (the
     // loop over emb_dim coordinates never runs), silently collapsing the entire board into one node.
-    if (bc.emb_dim() == 0)
+    if (bc.emb.emb_dim() == 0)
         throw std::runtime_error(
             "merge_close: requires a real (non-zero) embedding, got emb_dim=0 - this board has no "
             "coordinates to compute a distance from");
@@ -282,8 +282,8 @@ BoardConfig merge_close(const BoardConfig& bc, double dist) {
     for (int i = 0; i < N; i++)
         for (int j = i + 1; j < N; j++) {
             double d2 = 0.0;
-            for (unsigned k = 0; k < bc.emb_dim(); k++) {
-                double diff = (double)bc.embed[i][k] - (double)bc.embed[j][k];
+            for (unsigned k = 0; k < bc.emb.emb_dim(); k++) {
+                double diff = (double)bc.emb.pos[i][k] - (double)bc.emb.pos[j][k];
                 d2 += diff * diff;
             }
             if (d2 < dist2) quot.push_back({i, j});
@@ -341,7 +341,7 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
     for (auto& fsel : sels) {
         if (fsel.kind == FormSelKind::TriForm) {
             auto sel = fsel.sel.value_or(Selector{SelectorOp::All, simp_type(2)});
-            auto triangles = select_triangle(bc.adj, bc.embed, sel, random);
+            auto triangles = select_triangle(bc.adj, bc.emb.pos, sel, random);
             int n_face = w * (w + 1) / 2;
             auto local_idx = [](int i, int j) { return i * (i + 1) / 2 + j; };
             const int dirs[6][2] = {{1,0},{1,1},{0,1},{-1,0},{-1,-1},{0,-1}};
@@ -366,17 +366,17 @@ BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSel
             }
         } else if (fsel.kind == FormSelKind::QuadForm) {
             auto sel = fsel.sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
-            build_quad_grid_lattice(select_quad(bc.adj, bc.embed, sel, random), {{0,1},{1,0},{0,-1},{-1,0}});
+            build_quad_grid_lattice(select_quad(bc.adj, bc.emb.pos, sel, random), {{0,1},{1,0},{0,-1},{-1,0}});
         } else if (fsel.kind == FormSelKind::QuadKnightForm) {
             auto sel = fsel.sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
-            build_quad_grid_lattice(select_quad(bc.adj, bc.embed, sel, random),
+            build_quad_grid_lattice(select_quad(bc.adj, bc.emb.pos, sel, random),
                 {{1,2},{2,1},{2,-1},{1,-2},{-1,-2},{-2,-1},{-2,1},{-1,2}});
         } else if (fsel.kind == FormSelKind::QuadBishopForm) {
             auto sel = fsel.sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
-            build_quad_grid_lattice(select_quad(bc.adj, bc.embed, sel, random), {{1,1},{1,-1},{-1,1},{-1,-1}});
+            build_quad_grid_lattice(select_quad(bc.adj, bc.emb.pos, sel, random), {{1,1},{1,-1},{-1,1},{-1,-1}});
         } else { // FormSelKind::QuadDiagForm
             auto sel = fsel.sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
-            auto quads = select_quad(bc.adj, bc.embed, sel, random);
+            auto quads = select_quad(bc.adj, bc.emb.pos, sel, random);
             int n_primary = w * w;
             auto primary_idx = [&](int i, int j) { return i * w + j; };
             auto center_idx = [&](int i, int j) { return n_primary + i * (w - 1) + j; };
@@ -464,7 +464,7 @@ BoardConfig generic_local_replace(const BoardConfig& bc, const std::vector<Local
         if (s.kind == LocalReplaceKind::QuadCentralize || s.kind == LocalReplaceKind::QuadOctarize ||
             s.kind == LocalReplaceKind::QuadCentering) {
             Selector sel = s.sel.value_or(Selector{SelectorOp::All, SelectorType{SelectorKind::Quad}});
-            auto quads = select_quad(bc.adj, bc.embed, sel, random);
+            auto quads = select_quad(bc.adj, bc.emb.pos, sel, random);
             for (auto& [A, B, C, D] : quads) {
                 mark_consumed(A, B); mark_consumed(B, C); mark_consumed(C, D); mark_consumed(D, A);
                 if (s.kind != LocalReplaceKind::QuadCentering) {
@@ -493,7 +493,7 @@ BoardConfig generic_local_replace(const BoardConfig& bc, const std::vector<Local
             int n = s.n;
             assert(n >= 2 && "generic_local_replace: n must be at least 2");
             Selector sel = s.sel.value_or(Selector{SelectorOp::All, simp_type(n)});
-            auto simplices = select_simp(bc.adj, bc.embed, sel, random);
+            auto simplices = select_simp(bc.adj, bc.emb.pos, sel, random);
             for (auto& simplex : simplices) {
                 auto& nodes = simplex.nodes;
                 for (size_t i = 0; i < nodes.size(); i++)
@@ -581,8 +581,8 @@ BoardConfig scale_board(const BoardConfig& bc, double /*factor*/) {
 
 BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2) {
     int N1 = bc1.N, N2 = bc2.N;
-    std::vector<unsigned> side_lens = bc1.side_lens;
-    side_lens.insert(side_lens.end(), bc2.side_lens.begin(), bc2.side_lens.end());
+    std::vector<unsigned> side_lens = bc1.emb.side_lens;
+    side_lens.insert(side_lens.end(), bc2.emb.side_lens.begin(), bc2.emb.side_lens.end());
     auto idx = [&](int i, int j) { return i * N2 + j; };
 
     std::vector<std::vector<unsigned>> embed(N1 * N2);
@@ -590,8 +590,8 @@ BoardConfig product(const BoardConfig& bc1, const BoardConfig& bc2) {
         for (int j = 0; j < N2; j++) {
             auto& e = embed[idx(i, j)];
             e.reserve(side_lens.size());
-            e.insert(e.end(), bc1.embed[i].begin(), bc1.embed[i].end());
-            e.insert(e.end(), bc2.embed[j].begin(), bc2.embed[j].end());
+            e.insert(e.end(), bc1.emb.pos[i].begin(), bc1.emb.pos[i].end());
+            e.insert(e.end(), bc2.emb.pos[j].begin(), bc2.emb.pos[j].end());
         }
 
     auto adj = zero_adj(N1 * N2);
@@ -612,14 +612,14 @@ BoardConfig node_induced_subgraph(const BoardConfig& bc, const std::set<int>& no
 
     std::vector<std::vector<unsigned>> embed;
     embed.reserve(kept.size());
-    for (int i : kept) embed.push_back(bc.embed[i]);
+    for (int i : kept) embed.push_back(bc.emb.pos[i]);
 
     auto adj = zero_adj(static_cast<int>(kept.size()));
     for (size_t a = 0; a < kept.size(); a++)
         for (size_t b = a + 1; b < kept.size(); b++)
             if (bc.adj[kept[a]][kept[b]]) { adj[a][b] = 1; adj[b][a] = 1; }
 
-    return make_bc(std::move(adj), bc.side_lens, std::move(embed));
+    return make_bc(std::move(adj), bc.emb.side_lens, std::move(embed));
 }
 
 // Mirrors shared/boardConfig.ts's inducedSubgraphFromEdges().
@@ -635,7 +635,7 @@ static BoardConfig induced_subgraph_from_edges(
 
     std::vector<std::vector<unsigned>> embed;
     embed.reserve(kept.size());
-    for (int i : kept) embed.push_back(bc.embed[i]);
+    for (int i : kept) embed.push_back(bc.emb.pos[i]);
 
     auto adj = zero_adj(static_cast<int>(kept.size()));
     for (auto& e : edges) {
@@ -644,7 +644,7 @@ static BoardConfig induced_subgraph_from_edges(
         adj[b][a] = 1;
     }
 
-    return make_bc(std::move(adj), bc.side_lens, std::move(embed));
+    return make_bc(std::move(adj), bc.emb.side_lens, std::move(embed));
 }
 
 BoardConfig edge_induced_subgraph(const BoardConfig& bc, const std::vector<BoardEdge>& edges) {
@@ -672,8 +672,8 @@ BoardConfig apply_modifier(const BoardConfig& bc, const BoardModifier& modifier,
         case ModifierKind::LocalReplace: return generic_local_replace(bc, modifier.selectors, random);
         case ModifierKind::GlobalCentralize: return global_centralize(bc);
         case ModifierKind::Scale: return scale_board(bc, modifier.dist);
-        case ModifierKind::NodeInducedSubgraph: return node_induced_subgraph(bc, select_node(bc.adj, bc.embed, modifier.sel, random));
-        case ModifierKind::EdgeInducedSubgraph: return edge_induced_subgraph(bc, select_edge(bc.adj, bc.embed, modifier.sel, random));
+        case ModifierKind::NodeInducedSubgraph: return node_induced_subgraph(bc, select_node(bc.adj, bc.emb.pos, modifier.sel, random));
+        case ModifierKind::EdgeInducedSubgraph: return edge_induced_subgraph(bc, select_edge(bc.adj, bc.emb.pos, modifier.sel, random));
     }
     throw std::runtime_error("apply_modifier: unknown ModifierKind");
 }
@@ -728,7 +728,7 @@ BoardConfig cube_lattice_board(int w, int h, int d) {
 
 // Mirrors shared/boardConfig.ts's hypercuboidBoard(), except positions are the uncentered
 // [0, dims[i]) integer coordinates rather than TS's `- (dims[i]-1)/2`-centered ones: centering
-// would need half-integers for an even-sized dimension, which exact-integer embed[] can't represent.
+// would need half-integers for an even-sized dimension, which exact-integer pos[] can't represent.
 BoardConfig hypercuboid_board(int meshdim, const std::vector<int>& dims) {
     assert(!dims.empty() && "dims must have at least 1 entry");
     for (int d : dims) assert(d > 0 && "every dimension must be positive");
@@ -940,7 +940,7 @@ BoardConfig regular_polygon_board(int n) {
         adj[k][next] = 1;
         adj[next][k] = 1;
     }
-    std::vector<std::vector<unsigned>> embed(n); // emb_dim=0: every node's embed[] is empty
+    std::vector<std::vector<unsigned>> embed(n); // emb_dim=0: every node's pos[] is empty
     return make_bc(std::move(adj), {}, std::move(embed));
 }
 
@@ -1025,7 +1025,7 @@ BoardConfig orthoplex_board(int n) {
     return make_bc(std::move(adj), std::vector<unsigned>(n, 3u), std::move(pos));
 }
 
-// Mirrors shared/boardConfig.ts's reg24CellBoard(), except embed[] must be non-negative: stored
+// Mirrors shared/boardConfig.ts's reg24CellBoard(), except pos[] must be non-negative: stored
 // positions are the raw {-1,0,1} coordinates shifted by +1 to {0,1,2} (instead of TS's 1/sqrt(2)
 // scaling), while adjacency still uses the un-shifted raw dot product.
 BoardConfig reg_24_cell_board() {
@@ -1401,7 +1401,7 @@ tilted_disconnected_square_board(int w, int h, int g, int gap) {
 BoardConfig snub_square_board(int w, int h) {
     assert(w > 0 && h > 0 && "w and h must be positive");
     // Same 45deg-integer-rotation embedding as tilted_disconnected_square_board (gap=0, i.e. the
-    // glue_twisted_square_board case) - embed coordinates must be integers, unlike
+    // glue_twisted_square_board case) - pos coordinates must be integers, unlike
     // shared/boardConfig.ts's own literal +-30-degree floating-point layout.
     std::vector<std::vector<unsigned>> pos;
     for (int rb = 0; rb < h; rb++)

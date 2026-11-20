@@ -6,25 +6,31 @@
 #include <optional>
 #include <set>
 
-struct BoardConfig {
-    int N;
-    std::vector<std::vector<int>> adj;       // N×N symmetric adjacency matrix (0/1)
-    std::vector<std::vector<int>> adlist;    // adjacency list: adlist[i] = i's neighbors in ascending order, built from adj by make_bc()
-    // C++-only (TS's Embedding carries just embDim): the embedding box's side lengths, one per
-    // embedding dimension - every embed[i][k] < side_lens[k]. Each construction function derives
-    // them from its own arguments and its input boards' side_lens, never from which nodes it keeps,
-    // so random node/edge removal doesn't change them.
+// Mirrors shared/types.ts's Embedding, with exact-integer positions and side lengths in place of
+// embDim (emb_dim() is their count).
+struct Embedding {
+    // The embedding box's side lengths, one per embedding dimension - every pos[i][k] <
+    // side_lens[k]. Each construction function derives them from its own arguments and its input
+    // boards' side_lens, never from which nodes it keeps, so random node/edge removal doesn't change
+    // them.
     std::vector<unsigned> side_lens;
-    std::vector<std::vector<unsigned>> embed; // N×emb_dim() node positions
+    std::vector<std::vector<unsigned>> pos; // N×emb_dim() node positions
 
     unsigned emb_dim() const { return static_cast<unsigned>(side_lens.size()); }
 };
 
-// Mirrors shared/boardConfig.ts's make(), taking an exact-integer embedding and its side lengths.
-BoardConfig make_bc(std::vector<std::vector<int>> adj, std::vector<unsigned> side_lens,
-                    std::vector<std::vector<unsigned>> emb);
+struct BoardConfig {
+    int N;
+    std::vector<std::vector<int>> adj;       // N×N symmetric adjacency matrix (0/1)
+    std::vector<std::vector<int>> adlist;    // adjacency list: adlist[i] = i's neighbors in ascending order, built from adj by make_bc()
+    Embedding emb;
+};
 
-// The product of bc.side_lens (N for a board without an embedding): what N-dependent input features
+// Mirrors shared/boardConfig.ts's make(), taking the embedding's side lengths and positions.
+BoardConfig make_bc(std::vector<std::vector<int>> adj, std::vector<unsigned> side_lens,
+                    std::vector<std::vector<unsigned>> pos);
+
+// The product of bc.emb.side_lens (N for a board without an embedding): what N-dependent input features
 // (compute_input_descr()'s liberty and groupSize blocks) are sized by instead of N.
 int num_cells(const BoardConfig& bc);
 
@@ -33,23 +39,23 @@ BoardConfig quotient_board(const BoardConfig& bc,
                            const std::vector<std::pair<int,int>>& quot);
 
 // Mirrors shared/boardConfig.ts's edgeSplit(), in integer arithmetic: new node k along edge (i, j)
-// is embed[i]*split_n + k*(embed[j] - embed[i]) - exact, no division.
+// is pos[i]*split_n + k*(pos[j] - pos[i]) - exact, no division.
 BoardConfig edge_split(const BoardConfig& bc, int split_n);
 
-// Mirrors shared/boardConfig.ts's rectify(). Midpoints (embed[i]+embed[j], the same doubled scale)
+// Mirrors shared/boardConfig.ts's rectify(). Midpoints (pos[i]+pos[j], the same doubled scale)
 // stay exact integers; only the direction normalization is floating point (see geometry.h's doc
-// comment). Throws if bc.emb_dim() == 0 - there are no real coordinates to compute edge directions
+// comment). Throws if bc.emb.emb_dim() == 0 - there are no real coordinates to compute edge directions
 // from.
 BoardConfig rectify(const BoardConfig& bc);
 
 // Mirrors shared/boardConfig.ts's truncate()'s connectivity but not its per-vertex-fraction
 // positions (irrational in general - no exact-integer analog): every near-point instead sits at a
 // fixed 1/3 or 2/3 of the way along its edge, on a 3x-scaled board (see the .cpp file's comment).
-// Throws if bc.emb_dim() == 0, same as rectify().
+// Throws if bc.emb.emb_dim() == 0, same as rectify().
 BoardConfig truncate(const BoardConfig& bc);
 
-// Mirrors shared/boardConfig.ts's mergeClose(). embed coordinates stay exact integers throughout;
-// only dist and the distance test are floating point. Throws if bc.emb_dim() == 0 - there are no real
+// Mirrors shared/boardConfig.ts's mergeClose(). pos coordinates stay exact integers throughout;
+// only dist and the distance test are floating point. Throws if bc.emb.emb_dim() == 0 - there are no real
 // coordinates to compute a distance from.
 BoardConfig merge_close(const BoardConfig& bc, double dist);
 
@@ -126,7 +132,7 @@ BoardConfig global_centralize(const BoardConfig& bc);
 // with no exact-integer equivalent.
 BoardConfig quad_octarize(const BoardConfig& bc, ClegRandom& random, std::optional<Selector> sel = std::nullopt);
 
-// A no-op: mirrors shared/boardConfig.ts's scaleBoard() in name only. embed[] coordinates must stay
+// A no-op: mirrors shared/boardConfig.ts's scaleBoard() in name only. pos[] coordinates must stay
 // exact integers and are otherwise unrelated to gameplay, so multiplying them by an arbitrary factor
 // would only lose precision for no benefit. Returns bc unchanged.
 BoardConfig scale_board(const BoardConfig& bc, double factor);
@@ -242,7 +248,7 @@ BoardConfig sierpinski_simplex_board(int dim, int n);
 BoardConfig simplex_board(int meshdim, int dim, int w);
 
 // Mirrors shared/boardConfig.ts's regularPolygonBoard() connectivity only: a unit-edge regular
-// n-gon has no exact-integer embedding for general n, so this uses emb_dim = 0 and an empty embed[]
+// n-gon has no exact-integer embedding for general n, so this uses emb_dim = 0 and an empty pos[]
 // per node. Only CNN/UNet need real 2D coordinates (see cnn.cpp/unet.cpp), and this board isn't
 // grid-shaped anyway, so nothing is lost.
 BoardConfig regular_polygon_board(int n);
@@ -269,7 +275,7 @@ BoardConfig octahedron_board();
 BoardConfig orthoplex_board(int n);
 
 // Mirrors shared/boardConfig.ts's reg24CellBoard(), exact-integer - see the .cpp file's comment for
-// the +1 shift its stored embed[] coordinates need (BoardConfig::embed is unsigned-only).
+// the +1 shift its stored pos[] coordinates need (Embedding::pos is unsigned-only).
 BoardConfig reg_24_cell_board();
 
 // Mirrors shared/boardConfig.ts's reg120CellBoard(), but always produces an emb_dim = 0 board -
@@ -339,7 +345,7 @@ BoardConfig trihex_board(int d);
 
 // Mirrors shared/boardConfig.ts's snubSquareBoard() for the connectivity, but embeds nodes the same
 // integer way as tilted_disconnected_square_board/glue_twisted_square_board (each unit square
-// rotated 45 degrees) rather than the TS side's +-30-degree floating-point layout, since embed
+// rotated 45 degrees) rather than the TS side's +-30-degree floating-point layout, since pos
 // coordinates must be integers here.
 BoardConfig snub_square_board(int w, int h);
 

@@ -7,7 +7,7 @@
 #include <set>
 
 // Mirrors shared/fractal.ts's computeFlakeGlue(). `verts` are plain doubles used only as scratch
-// data for this one-time search - unlike BoardConfig::embed, they need not be exact integers and are
+// data for this one-time search - unlike Embedding::pos, they need not be exact integers and are
 // never exposed as board positions.
 static std::vector<std::array<int, 6>> compute_flake_glue(
     const std::vector<std::vector<double>>& verts, const std::vector<std::pair<int, int>>& edges,

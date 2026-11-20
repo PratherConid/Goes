@@ -599,7 +599,7 @@ int main(int argc, char* argv[]) {
     const uint32_t board_seed = std::random_device{}();
     auto bc = build_board_from_cleg(*parse_cleg(game_cfg.board_descr), board_seed);
     std::cout << "Board:\n" << game_cfg.board_descr << "  N=" << bc.N << "  seed=" << board_seed << std::endl;
-    const std::string arch = effective_arch(args, game_cfg.board_descr, bc.emb_dim());
+    const std::string arch = effective_arch(args, game_cfg.board_descr, bc.emb.emb_dim());
 
     // With forced_pass_only, the game's end depends on the full move history, which only the
     // history-aware Transformer sees.
