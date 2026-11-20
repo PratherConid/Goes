@@ -210,7 +210,8 @@ static int bits_for(int c) {
     return b;
 }
 
-nlohmann::json compute_input_descr(const GameConfig& cfg, const std::vector<unsigned>& side_lens, int n_bound) {
+nlohmann::json compute_input_descr(const GameConfig& cfg, unsigned emb_dim, const std::vector<unsigned>& side_lens,
+                                   int n_bound, int conn_px) {
     int ns     = cfg.num_stones;
     int np     = cfg.num_players;
     int tl_len = (int)cfg.turn_list.size();
@@ -248,7 +249,13 @@ nlohmann::json compute_input_descr(const GameConfig& cfg, const std::vector<unsi
     }
     blocks.push_back(json::array({"globalStoneBudget", global_budget_bits}));
 
-    return {{"blocks", blocks}, {"totalDims", total}, {"sideLens", side_lens}, {"nBound", n_bound}};
+    if (conn_px > 0) {
+        int channels = 1;
+        for (unsigned k = 0; k < emb_dim; k++) channels *= conn_px;
+        blocks.push_back(json::array({"connImg", conn_px})); total += channels;
+    }
+
+    return {{"blocks", blocks}, {"totalDims", total}, {"embDim", emb_dim}, {"sideLens", side_lens}, {"nBound", n_bound}};
 }
 
 BoardState new_state(const GameConfig& cfg, std::shared_ptr<const BoardConfig> bc) {

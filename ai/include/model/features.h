@@ -38,6 +38,8 @@ struct GameInput {
     NodeSlots slots;
     torch::Tensor action_index;  // (num_stones*N+1,) - slot_action_index(slots, num_stones)
     NeighborTiers tiers;
+    torch::Tensor conn_img;      // (S, conn_px^embDim) float - the connImg block's channels
+                                 // (render_conn_img()); undefined without that block
 };
 
 // Compute per-node feature matrix and legal mask for one state, as CPU tensors. descr is the
@@ -76,12 +78,13 @@ torch::Tensor legal_action_mask(const BoardState& state);
 // callers that need a mask use board_to_features() for that ply instead.
 torch::Tensor history_features_at_ply(const BoardState& state, int ply, const nlohmann::json& descr);
 
-// The networks' slot count for boards like `bc` (see NodeSlots): num_cells(descr's sideLens) with
-// an embedding, else descr's nBound.
-int num_node_slots(const BoardConfig& bc, const nlohmann::json& descr);
+// The networks' slot count under `descr` (see NodeSlots): num_cells(sideLens) with an embedding
+// (embDim > 0), else nBound.
+int num_node_slots(const nlohmann::json& descr);
 
-// bc's NodeSlots under `descr`. Throws std::runtime_error if bc doesn't fit: its N in nBound and,
-// with an embedding, its side lengths in sideLens (fits_in(), game/board_config.h).
+// bc's NodeSlots under `descr`. Throws std::runtime_error if bc doesn't fit: its embedding dimension
+// must be embDim, its N at most nBound and, with an embedding, its side lengths within sideLens
+// (fits_in(), game/board_config.h).
 NodeSlots compute_node_slots(const BoardConfig& bc, const nlohmann::json& descr);
 
 // Every flat stone-major action's slot-space index: placement (s-1)*N + i -> (s-1)*S + slot[i], pass
@@ -97,6 +100,19 @@ torch::Tensor actions_to_slots(const torch::Tensor& per_action, const GameInput&
 
 // bc's neighbor tiers in `slots`' indexing, by a breadth-first search to depth 4 from every node.
 NeighborTiers neighbor_tiers(const BoardConfig& bc, const NodeSlots& slots);
+
+// The connImg block's channels for bc under `descr`, conn_px the block's arg: every point of the
+// sideLens box owns a cube of conn_px pixels per side, centered on the point, and every edge is drawn
+// between its two nodes' cube centers as a line one pixel wide, anti-aliased as in Xiaolin Wu's
+// algorithm generalized to any dimension (at each pixel center along the line's longest axis, weight
+// 1 is split among the pixels around the line across the other axes by linear interpolation along
+// each; overlapping lines keep the larger value). Row s lists slot s's cube, dimension 0 fastest:
+// (S, conn_px^embDim).
+torch::Tensor render_conn_img(const BoardConfig& bc, const nlohmann::json& descr, int conn_px);
+
+// A position's (N, F) features zero-extended to its game's slots, with the game's connImg channels,
+// when the descriptor has that block, filled in at every slot.
+torch::Tensor slot_features(const torch::Tensor& node_features, const GameInput& game);
 
 // The GameInput of the game `state` is a position of, under the run's input descriptor `descr`.
 // Its neighbor tiers are built whatever the architecture, so a game's input doesn't depend on which

@@ -77,6 +77,7 @@ struct Args {
     std::string net_arch = "auto";
     std::optional<std::vector<unsigned>> side_lens;  // default: bc.emb.side_lens
     std::optional<int> n_bound;                      // overrides num_cells(side_lens)
+    std::optional<int> conn_px;                      // the connImg block's cube side; CNN/UNet only
     bool cpu = false;
     int verbosity = 1;
     std::optional<std::pair<float, float>> linear_move_bound;
@@ -104,6 +105,9 @@ static void print_usage(const char* prog) {
               << "  --n-bound N               The node bound sizing the liberty/groupSize features, >= the\n"
               << "                            board's node count (default: the product of the side lengths;\n"
               << "                            this or --side-lens is required for a board without an embedding)\n"
+              << "  --conn-px N               CNN/UNet only: add the connImg features - each grid point's cube of\n"
+              << "                            N pixels per side of the board's edges, drawn anti-aliased on the\n"
+              << "                            N-times-finer grid (default: 0, none)\n"
               << "  --iterations N            Self-play/train/export cycles (default: 200)\n"
               << "  --saves-every N           Keep the exported model file of every Nth iteration and of\n"
               << "                            iteration --iterations (default: 8)\n"
@@ -134,7 +138,7 @@ static void print_usage(const char* prog) {
               << "  --checkpoint-dir PATH     Checkpoint directory (default: ai/checkpoints)\n"
               << "  --resume TAG              Continue the run in <checkpoint-dir>/TAG - errors if its saved\n"
               << "                            config doesn't exactly match --game-config/architecture flags\n"
-              << "                            (including --side-lens/--n-bound)\n"
+              << "                            (including --side-lens/--n-bound/--conn-px)\n"
               << "  --retrain TAG             Train a fresh model on <checkpoint-dir>/TAG's recorded games,\n"
               << "                            in order, into a new directory, then continue with self-play\n"
               << "                            for any remaining --iterations (exclusive with --resume)\n"
@@ -194,6 +198,10 @@ static Args parse_args(int argc, char* argv[]) {
             args.side_lens.emplace(lens.begin(), lens.end());
         }
         else if (a == "--n-bound") { args.n_bound = std::stoi(need(i)); positive(a, *args.n_bound); }
+        else if (a == "--conn-px") {
+            args.conn_px = std::stoi(need(i));
+            if (*args.conn_px < 0) { std::cerr << "--conn-px must be >= 0 (got " << *args.conn_px << ")\n"; std::exit(1); }
+        }
         else if (a == "--iterations") args.iterations = std::stoi(need(i));
         else if (a == "--saves-every") { args.saves_every = std::stoi(need(i)); positive(a, args.saves_every); }
         else if (a == "--games-per-iteration") { args.games_per_iteration = std::stoi(need(i)); positive(a, args.games_per_iteration); }
@@ -639,6 +647,10 @@ int main(int argc, char* argv[]) {
         std::cerr << "Error: forced_pass_only=true requires --net-arch transformer (got '" << arch << "').\n";
         return 1;
     }
+    if (args.conn_px && (arch == "gnn" || arch == "transformer")) {
+        std::cerr << "Error: --conn-px only applies to the CNN/UNet (got '" << arch << "')\n";
+        return 1;
+    }
 
     const std::vector<unsigned> side_lens = args.side_lens.value_or(bc.emb.side_lens);
     if (bc.emb.emb_dim() != 0 && !fits_in(bc.emb, side_lens)) {
@@ -686,7 +698,7 @@ int main(int argc, char* argv[]) {
         std::cout << std::endl;
     }
 
-    json input_descr = compute_input_descr(game_cfg, side_lens, n_bound);
+    json input_descr = compute_input_descr(game_cfg, bc.emb.emb_dim(), side_lens, n_bound, args.conn_px.value_or(0));
     int in_dim = input_descr.at("totalDims").get<int>();
     // The Transformer's per-ply history input: just the turn position and stones.
     json history_descr;

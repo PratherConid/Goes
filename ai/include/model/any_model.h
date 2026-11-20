@@ -22,7 +22,7 @@ inline AnyModel build_model(const BoardConfig& bc, const ModelConfig& cfg, int n
     if (cfg.model_type == "unet")
         return UNet(bc, static_cast<const UNetConfig&>(cfg), num_stones, num_players);
     if (cfg.model_type == "transformer")
-        return Transformer(bc, static_cast<const TransformerConfig&>(cfg), num_stones, num_players);
+        return Transformer(static_cast<const TransformerConfig&>(cfg), num_stones, num_players);
     if (cfg.model_type == "gnn")
         return MessagePassingGNN(static_cast<const GNNConfig&>(cfg), num_stones, num_players);
     throw std::runtime_error("build_model: unknown model type '" + cfg.model_type + "'");

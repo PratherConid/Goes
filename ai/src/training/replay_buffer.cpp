@@ -60,7 +60,7 @@ Batch ReplayBuffer::gather(const std::vector<std::pair<size_t, int>>& picks) con
     for (auto& [si, row] : picks) {
         const GameRecord& r = slots_[si].record;
         const NodeSlots& ns = r.game->slots;
-        feats.push_back(nodes_to_slots(r.features[row], ns));
+        feats.push_back(slot_features(r.features[row], *r.game));
         valids.push_back(ns.valid);
         masks.push_back(actions_to_slots(r.legal_mask[row], *r.game));
         policies.push_back(actions_to_slots(r.policy_target[row], *r.game));

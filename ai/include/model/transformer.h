@@ -111,7 +111,7 @@ struct TransformerImpl : torch::nn::Module {
     int history_feature_dim_;  // cfg_.history_descr's totalDims, cached at construction time
     static constexpr int kNumHeads = 4;  // hardcoded, not CLI-configurable - see .cpp ctor
 
-    TransformerImpl(const BoardConfig& bc, const TransformerConfig& cfg, int num_stones, int num_players);
+    TransformerImpl(const TransformerConfig& cfg, int num_stones, int num_players);
 
     // All in the model's slot space (NodeSlots, model/features.h): hist_x: (B,T,S,F) float32 (T past
     // plies, zero-padded to the batch's own max); hist_mask: (B,T) bool, True = padded/invalid ply;

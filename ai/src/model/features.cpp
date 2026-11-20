@@ -1,27 +1,31 @@
 #include "model/features.h"
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <iostream>
 #include <numeric>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
-int num_node_slots(const BoardConfig& bc, const nlohmann::json& descr) {
-    return bc.emb.emb_dim() != 0 ? num_cells(descr.at("sideLens").get<std::vector<unsigned>>())
-                                 : descr.at("nBound").get<int>();
+int num_node_slots(const nlohmann::json& descr) {
+    return descr.at("embDim").get<unsigned>() != 0 ? num_cells(descr.at("sideLens").get<std::vector<unsigned>>())
+                                                   : descr.at("nBound").get<int>();
 }
 
 NodeSlots compute_node_slots(const BoardConfig& bc, const nlohmann::json& descr) {
     const auto side_lens = descr.at("sideLens").get<std::vector<unsigned>>();
     const int n_bound = descr.at("nBound").get<int>();
+    if (bc.emb.emb_dim() != descr.at("embDim").get<unsigned>())
+        throw std::runtime_error("the board's embedding dimension " + std::to_string(bc.emb.emb_dim()) +
+                                 " differs from the model's embDim " + descr.at("embDim").dump());
     if (bc.N > n_bound)
         throw std::runtime_error("the board's " + std::to_string(bc.N) + " nodes exceed the model's nBound " +
                                  std::to_string(n_bound));
     if (bc.emb.emb_dim() != 0 && !fits_in(bc.emb, side_lens))
         throw std::runtime_error("the board's side lengths " + nlohmann::json(bc.emb.side_lens).dump() +
                                  " don't fit in the model's sideLens " + descr.at("sideLens").dump());
-    const int num_slots = num_node_slots(bc, descr);
+    const int num_slots = num_node_slots(descr);
 
     auto slot  = torch::empty({bc.N}, torch::kLong);
     auto valid = torch::zeros({num_slots}, torch::kFloat32);
@@ -103,12 +107,92 @@ std::shared_ptr<const GameInput> make_game_input(const BoardState& state, const 
     game->slots = compute_node_slots(*state.bc, descr);
     game->action_index = slot_action_index(game->slots, state.num_stones);
     game->tiers = neighbor_tiers(*state.bc, game->slots);
+    const auto& last = descr.at("blocks").back();
+    if (last.at(0).get<std::string>() == "connImg")
+        game->conn_img = render_conn_img(*state.bc, descr, last.at(1).get<int>());
     return game;
+}
+
+torch::Tensor render_conn_img(const BoardConfig& bc, const nlohmann::json& descr, int conn_px) {
+    const auto side_lens = descr.at("sideLens").get<std::vector<unsigned>>();
+    const size_t d = side_lens.size();
+    const double px = conn_px;
+    // The conn_px-scaled image, dimension 0 fastest.
+    std::vector<int64_t> dims(d), stride(d);
+    int64_t pixels = 1;
+    for (size_t k = 0; k < d; k++) {
+        dims[k] = static_cast<int64_t>(side_lens[k]) * conn_px;
+        stride[k] = pixels;
+        pixels *= dims[k];
+    }
+    std::vector<float> img(pixels, 0.0f);
+    std::vector<double> a(d), b(d), frac(d);
+    std::vector<int64_t> lo(d);
+    for (int i = 0; i < bc.N; i++)
+        for (int j : bc.adlist[i]) {
+            if (j < i) continue;
+            size_t m = 0;  // the line's longest axis
+            for (size_t k = 0; k < d; k++) {
+                a[k] = (bc.emb.pos[i][k] + 0.5) * px;
+                b[k] = (bc.emb.pos[j][k] + 0.5) * px;
+                if (std::abs(b[k] - a[k]) > std::abs(b[m] - a[m])) m = k;
+            }
+            if (a[m] == b[m]) continue;
+            int64_t first = static_cast<int64_t>(std::ceil(std::min(a[m], b[m]) - 0.5));
+            int64_t last  = static_cast<int64_t>(std::floor(std::max(a[m], b[m]) - 0.5));
+            for (int64_t t = first; t <= last; t++) {
+                double s = (t + 0.5 - a[m]) / (b[m] - a[m]);
+                for (size_t k = 0; k < d; k++) {
+                    if (k == m) continue;
+                    double u = a[k] + s * (b[k] - a[k]) - 0.5;
+                    lo[k] = static_cast<int64_t>(std::floor(u));
+                    frac[k] = u - lo[k];
+                }
+                for (size_t corner = 0; corner < (size_t{1} << d); corner++) {
+                    if (corner >> m & 1) continue;
+                    double w = 1.0;
+                    int64_t idx = t * stride[m];
+                    bool inside = true;
+                    for (size_t k = 0; k < d && inside; k++) {
+                        if (k == m) continue;
+                        bool up = corner >> k & 1;
+                        int64_t c = lo[k] + up;
+                        w *= up ? frac[k] : 1.0 - frac[k];
+                        inside = c >= 0 && c < dims[k];
+                        idx += c * stride[k];
+                    }
+                    if (inside && w > 0) img[idx] = std::max(img[idx], static_cast<float>(w));
+                }
+            }
+        }
+
+    int64_t S = num_cells(side_lens), C = 1;
+    for (size_t k = 0; k < d; k++) C *= conn_px;
+    auto out = torch::empty({S, C}, torch::kFloat32);
+    auto out_a = out.accessor<float, 2>();
+    for (int64_t s = 0; s < S; s++)
+        for (int64_t r = 0; r < C; r++) {
+            int64_t idx = 0, q = s, rr = r;
+            for (size_t k = 0; k < d; k++) {
+                idx += ((q % side_lens[k]) * conn_px + rr % conn_px) * stride[k];
+                q /= side_lens[k];
+                rr /= conn_px;
+            }
+            out_a[s][r] = img[idx];
+        }
+    return out;
+}
+
+torch::Tensor slot_features(const torch::Tensor& node_features, const GameInput& game) {
+    auto x = nodes_to_slots(node_features, game.slots);
+    if (game.conn_img.defined())
+        x.narrow(1, x.size(1) - game.conn_img.size(1), game.conn_img.size(1)).copy_(game.conn_img);
+    return x;
 }
 
 ModelInput slot_input(const BoardState& state, const nlohmann::json& descr, std::shared_ptr<const GameInput> game) {
     auto [features, legal_mask] = board_to_features(state, descr);
-    auto x = nodes_to_slots(features, game->slots);
+    auto x = slot_features(features, *game);
     auto mask = actions_to_slots(legal_mask, *game);
     return {std::move(x), std::move(mask), {}, std::move(game)};
 }
@@ -261,6 +345,14 @@ static torch::Tensor board_to_features_at_ply(const BoardState& state, int ply, 
                 }
                 off += bits;
             }
+        } else if (name == "connImg") {
+            // Board-derived and per slot rather than per node: slot_features() fills these channels
+            // in from the game's GameInput after zero-extension, as the last ones.
+            if (&entry != &descr.at("blocks").back())
+                throw std::runtime_error("board_to_features_at_ply: connImg must be the last feature block");
+            int channels = 1;
+            for (unsigned k = 0; k < descr.at("embDim").get<unsigned>(); k++) channels *= entry.at(1).get<int>();
+            off += channels;
         } else {
             throw std::runtime_error("board_to_features_at_ply: unknown feature block: " + name);
         }

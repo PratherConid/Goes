@@ -47,9 +47,8 @@ torch::Tensor TransformerBlockImpl::forward(const torch::Tensor& q, const torch:
     return x;
 }
 
-TransformerImpl::TransformerImpl(const BoardConfig& bc, const TransformerConfig& cfg,
-                                  int num_stones, int num_players)
-    : cfg_(cfg), num_stones_(num_stones), num_slots_(num_node_slots(bc, cfg.input_descr)),
+TransformerImpl::TransformerImpl(const TransformerConfig& cfg, int num_stones, int num_players)
+    : cfg_(cfg), num_stones_(num_stones), num_slots_(num_node_slots(cfg.input_descr)),
       history_feature_dim_(cfg_.history_descr.at("totalDims").get<int>())
 {
     assert(cfg_.hidden_dim % kNumHeads == 0 && "TransformerImpl: hidden_dim must be divisible by kNumHeads");
