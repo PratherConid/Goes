@@ -898,6 +898,9 @@ static void run(const Args& args) {
 }
 
 int main(int argc, char* argv[]) {
+    // libtorch's CPU ops would otherwise give each calling thread (e.g. every NN server thread) its
+    // own OpenMP team of OMP_NUM_THREADS workers, whose spin-waiting starves the self-play threads.
+    torch::set_num_threads(1);
     try {
         run(parse_args(argc, argv));
         return 0;
