@@ -1,4 +1,5 @@
-**TODO** Render board edges into an image
+**TODO:** Render board edges into an image  
+**Prompt:** To support boards with the same nodes but different edge connectivity, we want to add another set of input features keyed "connImg" in the input description. There should be an additional nonnegative integer option "conn-px". For board with embeddings and a cnn-based architecture, for each point in the bounding box, make a pixel cube of side-length conn-px, with the point in the middle. The union of all the pixel cubes form a hypercuboid. Then, render edge connectivity on the hypercuboid using line rasterization. Finally, the pixel cube of each point is turned into a list and appended to that point's feature 
 
 ## AI Training Pipeline
 
