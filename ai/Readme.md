@@ -1,3 +1,5 @@
+**TODO** Render board edges into an image
+
 ## AI Training Pipeline
 
 Self-play training pipeline for Goes using Monte Carlo Tree Search (MCTS) - KataGo's training and search algorithm, ported to Goes' more general rules engine (see **How It Works**).
