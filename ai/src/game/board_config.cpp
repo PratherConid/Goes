@@ -32,11 +32,17 @@ BoardConfig make_bc(std::vector<std::vector<int>> adj,
     return {N, std::move(adj), std::move(adlist), Embedding{std::move(side_lens), std::move(pos)}};
 }
 
-int num_cells(const BoardConfig& bc) {
-    if (bc.emb.side_lens.empty()) return bc.N;
+int num_cells(const std::vector<unsigned>& side_lens) {
     int cells = 1;
-    for (unsigned s : bc.emb.side_lens) cells *= static_cast<int>(s);
+    for (unsigned s : side_lens) cells *= static_cast<int>(s);
     return cells;
+}
+
+bool fits_in(const Embedding& emb, const std::vector<unsigned>& side_lens) {
+    if (emb.side_lens.size() != side_lens.size()) return false;
+    for (size_t k = 0; k < side_lens.size(); k++)
+        if (emb.side_lens[k] > side_lens[k]) return false;
+    return true;
 }
 
 // The side lengths after multiplying every coordinate by `factor` - edge_split/rectify/truncate's

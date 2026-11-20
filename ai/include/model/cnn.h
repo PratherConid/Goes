@@ -34,8 +34,8 @@ TORCH_MODULE(CNNPolicyHead);
 
 // Plain residual CNN for policy + per-location ownership estimation on boards
 // with a 2D integer embedding. Unlike UNet, there is no pooling/downsampling:
-// every block operates at the board's tight bounding box resolution (no
-// power-of-two padding either).
+// every block operates at the input descriptor's sideLens (no power-of-two
+// padding either).
 //
 // A 1×1 conv (input_proj, same role as MessagePassingGNN's own input_proj)
 // maps the feature_dim+1 input channels (validity channel included - see
@@ -65,7 +65,7 @@ struct CNNImpl : torch::nn::Module {
     CNNConfig cfg_;
     int num_stones_;
     int num_blocks_;
-    int grid_h_, grid_w_;  // tight bounding box (no padding)
+    int grid_h_, grid_w_;  // the input descriptor's sideLens (no padding)
 
     torch::Tensor lin_idx_;      // (N,) long - row*grid_w_+col for each board node
     torch::Tensor valid_tensor_; // (1,1,grid_h_,grid_w_) float - 1 at valid (true board) cells

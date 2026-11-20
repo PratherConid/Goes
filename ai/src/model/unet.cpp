@@ -48,16 +48,16 @@ UNetImpl::UNetImpl(const BoardConfig& bc, const UNetConfig& cfg, int num_stones,
             "UNet requires a 2D embedding (bc.emb.emb_dim() == 2), got emb_dim=" + std::to_string(bc.emb.emb_dim()));
     assert(bc.N > 0);
 
-    // Compute the board's tight bounding box from embedding, then pad it up to
-    // a square whose side is the least power of two >= both dimensions. Every
-    // level's MaxPool2d(2,2) then halves exactly with no remainder, so no
-    // board row/column is ever silently dropped by floor-mode pooling on an
-    // odd or non-power-of-two board size.
-    int gw = 0, gh = 0;
-    for (int i = 0; i < bc.N; i++) {
-        gw = std::max(gw, (int)bc.emb.pos[i][0] + 1);
-        gh = std::max(gh, (int)bc.emb.pos[i][1] + 1);
-    }
+    // Pad the input descriptor's sideLens, which the board must fit in, up to a
+    // square whose side is the least power of two >= both dimensions. Every
+    // level's MaxPool2d(2,2) then halves exactly with no remainder, so no board
+    // row/column is ever silently dropped by floor-mode pooling on an odd or
+    // non-power-of-two board size.
+    const auto side_lens = cfg.input_descr.at("sideLens").get<std::vector<unsigned>>();
+    if (!fits_in(bc.emb, side_lens))
+        throw std::runtime_error("UNet: the board's side lengths " + nlohmann::json(bc.emb.side_lens).dump() +
+                                 " don't fit in the model's sideLens " + nlohmann::json(side_lens).dump());
+    int gw = static_cast<int>(side_lens[0]), gh = static_cast<int>(side_lens[1]);
     int side = 1;
     while (side < std::max(gw, gh)) side <<= 1;
     side_ = side;

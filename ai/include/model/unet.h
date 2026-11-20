@@ -31,7 +31,7 @@ TORCH_MODULE(UNetPolicyHead);
 
 // U-Net for policy + per-location ownership estimation on boards with a 2D integer embedding.
 //
-// The board's tight bounding box is padded up to a square whose side (side_)
+// The input descriptor's sideLens are padded up to a square whose side (side_)
 // is the least power of two >= both dimensions; cells outside the true board
 // are marked invalid in valid_tensor_. This guarantees every encoder level's
 // MaxPool2d(2,2) halves exactly, so no board row/column is ever silently

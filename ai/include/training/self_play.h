@@ -83,15 +83,17 @@ std::vector<std::optional<int>> resolve_global_stone_place_limit(
 
 // Builds the full self-describing feature-block descriptor for a training run - the JSON stored
 // as ModelConfig::input_descr (model/model_config.h), consumed by board_to_features()
-// (model/features.h). Board size is separate - `num_cells` is num_cells(bc) (game/board_config.h),
-// which sizes the liberty and groupSize blocks - since GameConfig has no board-geometry fields of
-// its own. Only
-// train.cpp calls this (on --resume, the result must match
-// the checkpoint's stored model config); server.cpp's load_model() reads the descriptor stored in a
+// (model/features.h). Board size is separate, since GameConfig has no board-geometry fields of its
+// own: `side_lens` (goes_train's --side-lens, else the board's own) is stored as "sideLens", the
+// CNN/UNet grid, which every board they run on must fit in (fits_in(), game/board_config.h), and
+// `n_bound`, an upper bound on the board's node count (goes_train's --n-bound, else
+// num_cells(side_lens)), as "nBound", which sizes the liberty and groupSize blocks. Only train.cpp calls this (on --resume, the
+// result must match the checkpoint's stored model config); server.cpp's load_model() reads the descriptor stored in a
 // checkpoint's _config.json, so a checkpoint stays self-describing even if this function's own
 // block formulas change later.
 //
-// Shape: {"blocks": [[name, ...args], ...], "totalDims": N}. Each block's
+// Shape: {"blocks": [[name, ...args], ...], "totalDims": F, "sideLens": side_lens, "nBound": n_bound}.
+// Each block's
 // args already fully determine its width without needing a GameConfig to
 // reinterpret - see board_to_features()'s doc comment for the exact per-block
 // arg meaning and the "0 bits = absent, dense grid" convention used by
@@ -102,7 +104,7 @@ std::vector<std::optional<int>> resolve_global_stone_place_limit(
 // Transformer, whose separate, much smaller per-ply HISTORY descriptor (plyMod + stoneOccupancy
 // only) is built directly in train.cpp and stored as TransformerConfig::history_descr, entirely
 // independent of this function.
-nlohmann::json compute_input_descr(const GameConfig& cfg, int num_cells);
+nlohmann::json compute_input_descr(const GameConfig& cfg, const std::vector<unsigned>& side_lens, int n_bound);
 
 // Create a fresh starting board state for a game.
 BoardState new_state(const GameConfig& cfg, const BoardConfig& bc);

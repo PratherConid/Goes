@@ -17,12 +17,12 @@ CNNImpl::CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_stones, in
             "CNN requires a 2D embedding (bc.emb.emb_dim() == 2), got emb_dim=" + std::to_string(bc.emb.emb_dim()));
     assert(bc.N > 0);
 
-    // Compute the board's tight bounding box from embedding (no padding).
-    int gw = 0, gh = 0;
-    for (int i = 0; i < bc.N; i++) {
-        gw = std::max(gw, (int)bc.emb.pos[i][0] + 1);
-        gh = std::max(gh, (int)bc.emb.pos[i][1] + 1);
-    }
+    // The grid is the input descriptor's sideLens (no padding), which the board must fit in.
+    const auto side_lens = cfg.input_descr.at("sideLens").get<std::vector<unsigned>>();
+    if (!fits_in(bc.emb, side_lens))
+        throw std::runtime_error("CNN: the board's side lengths " + nlohmann::json(bc.emb.side_lens).dump() +
+                                 " don't fit in the model's sideLens " + nlohmann::json(side_lens).dump());
+    int gw = static_cast<int>(side_lens[0]), gh = static_cast<int>(side_lens[1]);
     grid_w_ = gw;
     grid_h_ = gh;
 

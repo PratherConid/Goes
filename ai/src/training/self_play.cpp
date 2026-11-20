@@ -207,11 +207,11 @@ static int bits_for(int c) {
     return b;
 }
 
-nlohmann::json compute_input_descr(const GameConfig& cfg, int num_cells) {
+nlohmann::json compute_input_descr(const GameConfig& cfg, const std::vector<unsigned>& side_lens, int n_bound) {
     int ns     = cfg.num_stones;
     int np     = cfg.num_players;
     int tl_len = (int)cfg.turn_list.size();
-    int lib_bits = bits_for(num_cells);
+    int lib_bits = bits_for(n_bound);
 
     json blocks = json::array();
     int total = 0;
@@ -219,7 +219,7 @@ nlohmann::json compute_input_descr(const GameConfig& cfg, int num_cells) {
     blocks.push_back(json::array({"stoneOccupancy", ns})); total += ns + 1;
     blocks.push_back(json::array({"legalPlace", ns}));      total += ns;
     blocks.push_back(json::array({"liberty", lib_bits}));    total += lib_bits;
-    blocks.push_back(json::array({"groupSize", num_cells}));   total += 1;
+    blocks.push_back(json::array({"groupSize"}));              total += 1;
     blocks.push_back(json::array({"plyMod", tl_len}));          total += tl_len;
     blocks.push_back(json::array({"consectivePassOneHot", tl_len + 1})); total += tl_len + 1;
 
@@ -245,7 +245,7 @@ nlohmann::json compute_input_descr(const GameConfig& cfg, int num_cells) {
     }
     blocks.push_back(json::array({"globalStoneBudget", global_budget_bits}));
 
-    return {{"blocks", blocks}, {"totalDims", total}};
+    return {{"blocks", blocks}, {"totalDims", total}, {"sideLens", side_lens}, {"nBound", n_bound}};
 }
 
 BoardState new_state(const GameConfig& cfg, const BoardConfig& bc) {

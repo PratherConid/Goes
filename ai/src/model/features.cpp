@@ -136,9 +136,9 @@ static torch::Tensor board_to_features_at_ply(const BoardState& state, int ply, 
             }
             off += bits;
         } else if (name == "groupSize") {
-            float inv_cells = 1.0f / std::max(entry.at(1).get<int>(), 1);
+            float inv_n_bound = 1.0f / std::max(descr.at("nBound").get<int>(), 1);
             for (int i = 0; i < N; i++)
-                feat_a[i][off] = node_group_size[i] * inv_cells;
+                feat_a[i][off] = node_group_size[i] * inv_n_bound;
             off += 1;
         } else if (name == "plyMod") {
             int block_tl_len = entry.at(1).get<int>();

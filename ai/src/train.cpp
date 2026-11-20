@@ -74,6 +74,8 @@ struct Args {
     int64_t swa_period_samples = 80000;
     std::string checkpoint_dir = "ai/checkpoints";
     std::string net_arch = "auto";
+    std::optional<std::vector<unsigned>> side_lens;  // default: bc.emb.side_lens
+    std::optional<int> n_bound;                      // overrides num_cells(side_lens)
     bool cpu = false;
     int verbosity = 1;
     std::optional<std::pair<float, float>> linear_move_bound;
@@ -94,6 +96,12 @@ static void print_usage(const char* prog) {
               << "  --transformer-hidden-dim N  Transformer hidden dimension (default: 128)\n"
               << "  --num-layers N            GNN message-passing layers (default: 9)\n"
               << "  --num-attn-layers N       Transformer cross-attention layers (default: 8)\n"
+              << "  --side-lens L1,L2,...     A standard box for boards of several sizes (the CNN/UNet grid),\n"
+              << "                            containing the board's own side lengths (default: the board's own;\n"
+              << "                            any for a board without an embedding)\n"
+              << "  --n-bound N               The node bound sizing the liberty/groupSize features, >= the\n"
+              << "                            board's node count (default: the product of the side lengths;\n"
+              << "                            this or --side-lens is required for a board without an embedding)\n"
               << "  --iterations N            Self-play/train/export cycles (default: 200)\n"
               << "  --saves-every N           Keep the exported model file of every Nth iteration and of\n"
               << "                            iteration --iterations (default: 8)\n"
@@ -124,12 +132,32 @@ static void print_usage(const char* prog) {
               << "  --checkpoint-dir PATH     Checkpoint directory (default: ai/checkpoints)\n"
               << "  --resume TAG              Continue the run in <checkpoint-dir>/TAG - errors if its saved\n"
               << "                            config doesn't exactly match --game-config/architecture flags\n"
+              << "                            (including --side-lens/--n-bound)\n"
               << "  --retrain TAG             Train a fresh model on <checkpoint-dir>/TAG's recorded games,\n"
               << "                            in order, into a new directory, then continue with self-play\n"
               << "                            for any remaining --iterations (exclusive with --resume)\n"
               << "  --linear-move-bound K1 K2 End games after Uniform(K1,K2)*N plies, resampled per game\n"
               << "  --cpu                     Force CPU even if CUDA is available\n"
               << "  --verbosity N             0=silent, 1=per-game, >=2=network batch stats (default: 1)\n";
+}
+
+// The comma-separated integers of `flag`'s `value`, each >= `min`; exits on anything else.
+static std::vector<int> parse_int_list(const std::string& flag, const std::string& value, int min) {
+    std::vector<int> out;
+    std::stringstream list(value);
+    std::string item;
+    while (std::getline(list, item, ',')) {
+        size_t used = 0;
+        int v = min - 1;
+        try { v = std::stoi(item, &used); } catch (const std::exception&) {}
+        if (v < min || used != item.size()) {
+            std::cerr << flag << " expects comma-separated integers >= " << min << ", got '" << item << "'\n";
+            std::exit(1);
+        }
+        out.push_back(v);
+    }
+    if (out.empty()) { std::cerr << flag << " needs at least one value\n"; std::exit(1); }
+    return out;
 }
 
 static Args parse_args(int argc, char* argv[]) {
@@ -159,27 +187,18 @@ static Args parse_args(int argc, char* argv[]) {
         else if (a == "--transformer-hidden-dim") args.transformer_hidden_dim = std::stoi(need(i));
         else if (a == "--num-layers") args.num_layers = std::stoi(need(i));
         else if (a == "--num-attn-layers") args.num_attn_layers = std::stoi(need(i));
+        else if (a == "--side-lens") {
+            auto lens = parse_int_list(a, need(i), 1);
+            args.side_lens.emplace(lens.begin(), lens.end());
+        }
+        else if (a == "--n-bound") { args.n_bound = std::stoi(need(i)); positive(a, *args.n_bound); }
         else if (a == "--iterations") args.iterations = std::stoi(need(i));
         else if (a == "--saves-every") { args.saves_every = std::stoi(need(i)); positive(a, args.saves_every); }
         else if (a == "--games-per-iteration") { args.games_per_iteration = std::stoi(need(i)); positive(a, args.games_per_iteration); }
         else if (a == "--gamegen-batch-size") { args.gamegen_batch_size = std::stoi(need(i)); positive(a, args.gamegen_batch_size); }
         else if (a == "--nn-server-threads") { args.nn_server_threads = std::stoi(need(i)); positive(a, args.nn_server_threads); }
         else if (a == "--nn-max-batch") { args.nn_max_batch = std::stoi(need(i)); positive(a, args.nn_max_batch); }
-        else if (a == "--selfplay-gpus") {
-            std::stringstream list(need(i));
-            std::string item;
-            while (std::getline(list, item, ',')) {
-                size_t used = 0;
-                int gpu = -1;
-                try { gpu = std::stoi(item, &used); } catch (const std::exception&) {}
-                if (gpu < 0 || used != item.size()) {
-                    std::cerr << "--selfplay-gpus expects comma-separated CUDA device indices, got '" << item << "'\n";
-                    std::exit(1);
-                }
-                args.selfplay_gpus.push_back(gpu);
-            }
-            if (args.selfplay_gpus.empty()) { std::cerr << "--selfplay-gpus needs at least one device\n"; std::exit(1); }
-        }
+        else if (a == "--selfplay-gpus") args.selfplay_gpus = parse_int_list(a, need(i), 0);
         else if (a == "--full-visits") { args.full_visits = std::stoi(need(i)); positive(a, args.full_visits); }
         else if (a == "--cheap-visits") { args.cheap_visits = std::stoi(need(i)); positive(a, args.cheap_visits); }
         else if (a == "--cheap-prob") {
@@ -608,6 +627,25 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    const std::vector<unsigned> side_lens = args.side_lens.value_or(bc.emb.side_lens);
+    if (bc.emb.emb_dim() != 0 && !fits_in(bc.emb, side_lens)) {
+        std::cerr << "Error: --side-lens " << json(side_lens).dump() << " doesn't contain the board's side lengths "
+                  << json(bc.emb.side_lens).dump() << "\n";
+        return 1;
+    }
+    if (!args.n_bound && side_lens.empty()) {
+        std::cerr << "Error: a board without an embedding needs --n-bound or --side-lens (an upper bound on its "
+                     "node count)\n";
+        return 1;
+    }
+    const int n_bound = args.n_bound.value_or(num_cells(side_lens));
+    if (n_bound < bc.N) {
+        std::cerr << "Error: nBound " << n_bound << (args.n_bound ? " (--n-bound)" : " (the product of the side lengths)")
+                  << " is below the board's node count " << bc.N << "\n";
+        return 1;
+    }
+    std::cout << "sideLens=" << json(side_lens).dump() << "  nBound=" << n_bound << std::endl;
+
     torch::Device device = (torch::cuda::is_available() && !args.cpu) ? torch::kCUDA : torch::kCPU;
     std::cout << "Device: " << device << std::endl;
 
@@ -635,7 +673,7 @@ int main(int argc, char* argv[]) {
         std::cout << std::endl;
     }
 
-    json input_descr = compute_input_descr(game_cfg, num_cells(bc));
+    json input_descr = compute_input_descr(game_cfg, side_lens, n_bound);
     int in_dim = input_descr.at("totalDims").get<int>();
     // The Transformer's per-ply history input: just the turn position and stones.
     json history_descr;

@@ -30,9 +30,13 @@ struct BoardConfig {
 BoardConfig make_bc(std::vector<std::vector<int>> adj, std::vector<unsigned> side_lens,
                     std::vector<std::vector<unsigned>> pos);
 
-// The product of bc.emb.side_lens (N for a board without an embedding): what N-dependent input features
-// (compute_input_descr()'s liberty and groupSize blocks) are sized by instead of N.
-int num_cells(const BoardConfig& bc);
+// The product of side_lens: train.cpp's default for the input descriptor's nBound (see
+// compute_input_descr()).
+int num_cells(const std::vector<unsigned>& side_lens);
+
+// Whether emb's box fits in `side_lens` (the input descriptor's sideLens - e.g. goes_train's
+// --side-lens, a standard box for boards of several sizes): as many dimensions, none longer.
+bool fits_in(const Embedding& emb, const std::vector<unsigned>& side_lens);
 
 // Mirrors shared/boardConfig.ts's quotientBoard().
 BoardConfig quotient_board(const BoardConfig& bc,
