@@ -1,9 +1,8 @@
 #include "model/gnn.h"
-#include <limits>
 #include <cmath>
 
 MessagePassingGNNImpl::MessagePassingGNNImpl(const GNNConfig& cfg, int num_stones, int num_players)
-    : cfg_(cfg), num_stones_(num_stones)
+    : cfg_(cfg)
 {
     input_proj = register_module("input_proj", torch::nn::Linear(cfg_.feature_dim, cfg_.hidden_dim));
 
@@ -25,40 +24,7 @@ MessagePassingGNNImpl::MessagePassingGNNImpl(const GNNConfig& cfg, int num_stone
         layer_norms.push_back(ln);
     }
 
-    stone_head = register_module("stone_head", torch::nn::Sequential(
-        torch::nn::Linear(cfg_.hidden_dim, cfg_.hidden_dim),
-        torch::nn::ReLU(),
-        torch::nn::Linear(cfg_.hidden_dim, num_stones + 1)
-    ));
-    territory_head = register_module("territory_head", torch::nn::Sequential(
-        torch::nn::Linear(cfg_.hidden_dim, cfg_.hidden_dim),
-        torch::nn::ReLU(),
-        torch::nn::Linear(cfg_.hidden_dim, num_stones + 1)
-    ));
-    policy_head = register_module("policy_head", GNNPolicyHead(cfg_.hidden_dim, num_stones));
-    rank_head = register_module("rank_head", RankHead(cfg_.hidden_dim, num_rank_pairs(num_players)));
-}
-
-GNNPolicyHeadImpl::GNNPolicyHeadImpl(int hidden_dim, int num_stones)
-    : num_stones_(num_stones)
-{
-    proj = register_module("proj", torch::nn::Linear(hidden_dim, num_stones + 1));
-    attn = register_module("attn", torch::nn::Linear(hidden_dim, 1));
-}
-
-torch::Tensor GNNPolicyHeadImpl::forward(const torch::Tensor& h) {
-    int64_t B = h.size(0), S = h.size(1);
-    auto out          = proj->forward(h);                        // (B, S, ns+1)
-    // Place logits are slot-major out of `proj` ((B,S,numStones)) but must be flattened
-    // stone-major (index (stone-1)*S+slot, matching legal_mask's layout - see slot_input(),
-    // features.h) - permute before reshaping to make this happen.
-    auto place_logits = out.slice(-1, 0, num_stones_)
-                            .permute({0, 2, 1})
-                            .reshape({B, num_stones_ * S});        // (B, ns*S)
-    auto pass_field   = out.select(-1, num_stones_);               // (B, S)
-    auto attn_weights = torch::softmax(attn->forward(h).squeeze(-1), -1); // (B, S)
-    auto pass_logit   = (attn_weights * pass_field).sum(-1, /*keepdim=*/true); // (B, 1)
-    return torch::cat({place_logits, pass_logit}, -1);            // (B, ns*S+1)
+    heads.register_on(*this, cfg_.hidden_dim, num_stones, num_players);
 }
 
 ModelOutput MessagePassingGNNImpl::forward(
@@ -101,25 +67,7 @@ ModelOutput MessagePassingGNNImpl::forward(
         h = layer_norms[i]->forward(torch::relu(layers[i]->forward(h_cat)) + h);
     }
 
-    // Ownership: per-location stone/territory softmax, applied directly to the per-slot hidden
-    // state h (B, S, hidden) - no pooling, since every node needs its own distribution over "who
-    // owns this location at game end".
-    auto stone_est     = torch::softmax(stone_head->forward(h), -1);      // (B, S, num_stones+1)
-    auto territory_est = torch::softmax(territory_head->forward(h), -1);  // (B, S, num_stones+1)
-    auto ownership = torch::stack({stone_est, territory_est}, 1);        // (B, 2, S, num_stones+1)
-    auto rank = rank_head->forward(h);                                   // (B, num_rank_pairs, 3)
-
-    auto logits = policy_head->forward(h); // (B, num_stones*S+1)
-
-    // Mask illegal actions with -inf
-    const float NEG_INF = -std::numeric_limits<float>::infinity();
-    logits = logits.masked_fill(legal_mask.logical_not(), NEG_INF);
-    // Guard against all-illegal (game over): avoid NaN in softmax
-    auto all_illegal = legal_mask.any(-1, true).logical_not(); // (B, 1)
-    logits = logits.masked_fill(all_illegal, 0.0f);
-
-    auto policy = torch::softmax(logits, -1); // (B, num_stones*S+1)
-    return {policy, ownership, rank};
+    return heads.forward(h, legal_mask);
 }
 
 ModelInput MessagePassingGNNImpl::prepare_input(const BoardState& state, const std::shared_ptr<const GameInput>& game) const {

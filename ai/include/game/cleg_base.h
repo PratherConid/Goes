@@ -95,8 +95,8 @@ inline ClegValue make_form_sel_v(FormSelector s) { ClegValue v; v.kind = CTKind:
 inline ClegValue make_lrs_v(LocalReplaceSelector s) { ClegValue v; v.kind = CTKind::Lrs; v.lrs_v = std::move(s); return v; }
 inline ClegValue make_psel(ProdSelector p) { ClegValue v; v.kind = CTKind::Psel; v.psel_v = std::move(p); return v; }
 
-// Stands in for JS's Number->string (error messages, number/string concatenation) - an integral
-// value prints with no decimal point, matching JS; otherwise 15 significant digits.
+// Stands in for JS's Number->string (error messages, number/string concatenation) - see
+// game/always_assert.h's js_number_string().
 std::string format_number_display(double d);
 
 // Mirrors shared/clegBase.ts's clegSetKey().

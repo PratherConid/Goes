@@ -14,7 +14,7 @@ struct ModelOutput {
     torch::Tensor ownership;  // (B, 2, S, numStones+1) stone/territory ownership estimates
                               // (meaningless at slots no node occupies)
     torch::Tensor rank;       // (B, num_rank_pairs, 3) pairwise outcome probabilities (RankHead,
-                              // rank_head.h)
+                              // heads.h)
 };
 
 // One position's network input, on the CPU, in the model's slot space (slot_input(), features.h),

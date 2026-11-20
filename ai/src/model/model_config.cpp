@@ -32,7 +32,7 @@ nlohmann::json TransformerConfig::to_json() const {
 }
 
 std::unique_ptr<ModelConfig> parse_model_config(const json& cfg) {
-    // .at(), not operator[] - see parse_game_cfg() (training/self_play.cpp) for why.
+    // .at(), not operator[] - see parse_game_cfg() (game/game_config.cpp) for why.
     std::string model_type = cfg.at("modelType").get<std::string>();
     int feature_dim         = cfg.at("featureDim").get<int>();
     int hidden_dim           = cfg.at("hiddenDim").get<int>();
@@ -46,17 +46,6 @@ std::unique_ptr<ModelConfig> parse_model_config(const json& cfg) {
     if (model_type == "gnn")
         return std::make_unique<GNNConfig>(feature_dim, hidden_dim, cfg.at("numLayers").get<int>(), descr);
     throw std::runtime_error("parse_model_config: unknown modelType '" + model_type + "'");
-}
-
-std::optional<std::filesystem::path> find_config_json(const std::filesystem::path& dir) {
-    if (!std::filesystem::exists(dir)) return std::nullopt;
-    const std::string suffix = "_config.json";
-    for (auto& e : std::filesystem::directory_iterator(dir)) {
-        auto name = e.path().filename().string();
-        if (name.size() > suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0)
-            return e.path();
-    }
-    return std::nullopt;
 }
 
 bool strong_equal(const ModelConfig& a, const ModelConfig& b) {

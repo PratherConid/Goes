@@ -3,7 +3,7 @@
 #include <vector>
 
 // The quantity MCTS maximizes for each player - KataGo's search utility, generalized from two
-// players to any number by summing over the rank_pairs() pairs (model/rank_head.h) a player is part
+// players to any number by summing over the rank_pairs() pairs (model/rank_pairs.h) a player is part
 // of. For player p with opponents q (P players):
 //
 //   win_p    = 1/(P-1) * sum_q [P(p ahead of q) - P(q ahead of p)]                     in [-1, 1]
@@ -30,7 +30,7 @@ struct UtilityParams {
 };
 
 // One position's evaluation per rank_pairs() pair: the outcome distribution (FIRST_AHEAD, TIED,
-// SECOND_AHEAD - model/rank_head.h's RankOutcome order) and the expected final total difference
+// SECOND_AHEAD - model/rank_pairs.h's RankOutcome order) and the expected final total difference
 // (first player's minus second's).
 struct PairEval {
     std::vector<float> probs;  // num_rank_pairs * 3

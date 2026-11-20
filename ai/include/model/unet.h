@@ -1,32 +1,12 @@
 #pragma once
 #include <torch/torch.h>
 #include "game/board_state.h"
-#include "game/board_config.h"
 #include "model/features.h"
+#include "model/heads.h"
 #include "model/model_config.h"
 #include "model/model_output.h"
-#include "model/rank_head.h"
 #include <vector>
 #include <utility>
-
-// Policy head: per-node Linear produces num_stones place-logit channels and 1
-// pass-field channel; the pass field is reduced to a single pass logit via a
-// learned attention-weighted sum over nodes, so it stays valid for any N
-// (attention weights come from node features, not fixed node positions) -
-// identical in structure to MessagePassingGNN's own policy head
-// (GNNPolicyHeadImpl, gnn.h/gnn.cpp). Place logits are flattened stone-major
-// (index (stone-1)*N+pos), matching legal_mask's layout in features.cpp.
-struct UNetPolicyHeadImpl : torch::nn::Module {
-    torch::nn::Linear proj{nullptr};  // hidden_dim -> num_stones+1 (place logits, pass field)
-    torch::nn::Linear attn{nullptr};  // hidden_dim -> 1 (unnormalised attention score)
-    int num_stones_;
-
-    UNetPolicyHeadImpl(int hidden_dim, int num_stones);
-
-    // h: (B, S, hidden_dim) over the model's slots. Returns (B, num_stones*S+1) logits.
-    torch::Tensor forward(const torch::Tensor& h);
-};
-TORCH_MODULE(UNetPolicyHead);
 
 // U-Net for policy + per-location ownership estimation on boards with a 2D integer embedding.
 //
@@ -55,30 +35,22 @@ TORCH_MODULE(UNetPolicyHead);
 //          identity add (dec_reduce_'s 1×1 conv plus the skip add above
 //          already bring h to dec_blocks_[k]'s constant enc_channels_[k]
 //          width, so no channel matching is ever needed here).
-// Ownership: same full-resolution decoder output as the policy head, at every slot, passed
-//            through two independent softmax heads (stone estimate, territory estimate) - see
-//            MessagePassingGNN's ownership doc.
-// Policy:    extracted from the full-resolution decoder output via UNetPolicyHead.
-// Rank:      RankHead (rank_head.h) over the same per-slot output.
+// Heads:   OutputHeads (heads.h) over the full-resolution decoder output at every slot.
 //
 // Conv counts: 4 at encoder level 0, 2 at deeper encoder levels; 3 at decoder
 //              level 0, 1 at deeper decoder levels (one fewer than the
 //              matching encoder level, since dec_reduce_'s 1×1 conv already
 //              contributes one conv's worth of depth at each level).
 // num_layers is not a parameter - depth is determined by grid dimensions.
-// Requires bc.emb.emb_dim() == 2.
+// Requires the input descriptor's embDim == 2.
 struct UNetImpl : torch::nn::Module {
     torch::nn::Conv2d input_proj{nullptr};           // 1x1 conv: feature_dim+1 -> hidden_dim
     std::vector<torch::nn::Sequential> enc_blocks_;  // [k=0..L]: encoder conv groups
     std::vector<torch::nn::Conv2d>     dec_reduce_;  // [k=0..L-1]: C_{k+1}→C_k, 1×1
     std::vector<torch::nn::Sequential> dec_blocks_;  // [k=0..L-1]: decoder conv groups
-    torch::nn::Sequential stone_head{nullptr};
-    torch::nn::Sequential territory_head{nullptr};
-    UNetPolicyHead policy_head{nullptr};
-    RankHead rank_head{nullptr};
+    OutputHeads heads;
 
     UNetConfig cfg_;
-    int num_stones_;
     int num_levels_;                            // L+1 (total encoder blocks)
     int grid_h_, grid_w_;                       // the input descriptor's sideLens (before padding)
     int side_;                                  // padded power-of-two square side
@@ -88,7 +60,7 @@ struct UNetImpl : torch::nn::Module {
     // cfg.feature_dim: per-node feature dimension F (as produced by board_to_features), NOT
     // the number of input channels to input_proj. features_to_grid appends
     // a validity channel, so input_proj actually receives feature_dim + 1 channels.
-    UNetImpl(const BoardConfig& bc, const UNetConfig& cfg, int num_stones, int num_players);
+    UNetImpl(const UNetConfig& cfg, int num_stones, int num_players);
 
     // x: (B,S,F), valid: (B,S) → (B,F+1,side,side), the validity channel last
     torch::Tensor features_to_grid(const torch::Tensor& x, const torch::Tensor& valid) const;

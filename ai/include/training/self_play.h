@@ -1,117 +1,21 @@
 #pragma once
 #include "game/board_config.h"
 #include "game/board_state.h"
+#include "game/game_config.h"
 #include "model/features.h"
 #include "model/evaluator.h"
-#include "model/model_config.h"
 #include "mcts/mcts.h"
 #include "mcts/nn_server.h"
 #include "training/replay_buffer.h"
 #include "nlohmann/json.hpp"
 #include <vector>
-#include <unordered_map>
-#include <map>
 #include <optional>
 #include <cstdint>
-#include <string>
+#include <memory>
+#include <random>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
-
-struct GameConfig {
-    // Mirrors shared/gameConfig.ts's GameConfig.boardDescr, but held as cleg source text (its
-    // toJSON() form), not a parsed ClegProgram - re-parsed on demand (game/cleg_parser.h's
-    // parse_cleg) wherever a board is needed, since nothing here keeps the AST around.
-    std::string board_descr;
-    // Mirrors shared/gameConfig.ts's GameConfig.boardSeed; nullopt = null. server.cpp requires it on
-    // a /move request's config. train.cpp ignores it and draws its own seed per run.
-    std::optional<uint32_t> board_seed;
-    int num_stones;
-    int num_players;
-    std::vector<TurnInfo> turn_list;
-    // Mirrors shared/gameConfig.ts's GameConfig.playerStonePlaceLimit; nullopt = null. If left
-    // empty, new_state() defaults to all-unlimited, sized to num_stones x num_players.
-    std::vector<std::vector<std::optional<int>>> player_stone_place_limit;
-    // Mirrors shared/gameConfig.ts's GameConfig.globalStonePlaceLimit; nullopt = null. If left
-    // empty, new_state() defaults to all-unlimited, sized to num_stones.
-    std::vector<std::optional<int>> global_stone_place_limit;
-    std::unordered_map<int, std::vector<int>> stone_to_player_map;
-    bool forced_pass_only = true;
-    // Mirrors shared/gameConfig.ts's GameConfig.scoreRule, as a plain string.
-    std::string score_rule = "area";
-    // Mirrors shared/gameConfig.ts's GameConfig.komi. If left empty, new_state() defaults to
-    // all-zero, sized to num_players.
-    std::vector<float> komi;
-    // Mirrors shared/gameConfig.ts's GameConfig.koRule.
-    KoRule ko_rule = KoRule::Situational;
-    // Mirrors shared/gameConfig.ts's GameConfig.allowSuicide.
-    bool allow_suicide = false;
-    // Mirrors shared/gameConfig.ts's GameConfig.maxPlies; nullopt = null.
-    std::optional<int> max_plies;
-
-    // Mirrors shared/gameConfig.ts's GameConfig.toJSON(), minus `players` (the engine doesn't
-    // track PlayerInfo). Used for train.cpp's checkpoint config.json.
-    nlohmann::json to_json() const;
-};
-
-// True iff a and b agree on the fields that determine which trained model fits a ruleset:
-// board_descr (exact text), num_stones, num_players, turn_list, stone_to_player_map (as a sorted
-// (stone,player) set), which place limits are set (not their values), forced_pass_only,
-// allow_suicide, score_rule, komi and ko_rule. board_seed is excluded because training draws its
-// own board seed; max_plies is excluded too. Used by server.cpp to find the checkpoint directory
-// for a /move request's config.
-bool weak_equal(const GameConfig& a, const GameConfig& b);
-
-// True iff a and b are identical in every field (== GameConfig::to_json()
-// equality). Used by train.cpp's --resume/--retrain validation, where the game
-// rules must match the checkpoint's exactly, not just on the weak_equal subset.
-bool strong_equal(const GameConfig& a, const GameConfig& b);
-
-// Mirrors shared/gameConfig.ts's GameConfig.fromJSON(), minus `players`. Shared by server.cpp's
-// /move handler (its request `config` object) and train.cpp's --game-config file.
-GameConfig parse_game_cfg(const nlohmann::json& cfg);
-
-// Resolves an empty player_stone_place_limit/global_stone_place_limit
-// ("not set" - see GameConfig's own field doc comments, above) to an
-// explicit all-unlimited array of the right shape. Shared by new_state()
-// and any caller (e.g. train.cpp's model input-width computation) that
-// needs the resolved shape before a BoardState exists.
-std::vector<std::vector<std::optional<int>>> resolve_player_stone_place_limit(
-    const std::vector<std::vector<std::optional<int>>>& limit, int num_stones, int num_players);
-std::vector<std::optional<int>> resolve_global_stone_place_limit(
-    const std::vector<std::optional<int>>& limit, int num_stones);
-
-// Builds the full self-describing feature-block descriptor for a training run - the JSON stored
-// as ModelConfig::input_descr (model/model_config.h), consumed by board_to_features()
-// (model/features.h). Board geometry is separate, since GameConfig has no board-geometry fields of
-// its own: `emb_dim`, the board's embedding dimension (0 without one), is stored as "embDim";
-// `side_lens` (goes_train's --side-lens, else the board's own) is stored as "sideLens", the
-// box of the slot space every network's input and output live in (NodeSlots, model/features.h), and
-// `n_bound`, an upper bound on the board's node count (goes_train's --n-bound, else
-// num_cells(side_lens)), as "nBound", which sizes the liberty and groupSize blocks. A positive
-// `conn_px` (goes_train's --conn-px) appends the connImg block, always last (see board_to_features()).
-// Only train.cpp calls this (on --resume, the
-// result must match the checkpoint's stored model config); server.cpp's load_model() reads the descriptor stored in a
-// checkpoint's _config.json, so a checkpoint stays self-describing even if this function's own
-// block formulas change later.
-//
-// Shape: {"blocks": [[name, ...args], ...], "totalDims": F, "embDim": emb_dim, "sideLens": side_lens,
-// "nBound": n_bound}. Each block's
-// args, with the top-level fields, already fully determine its width without needing a GameConfig to
-// reinterpret - see board_to_features()'s doc comment for the exact per-block
-// arg meaning and the "0 bits = absent, dense grid" convention used by
-// playerStoneBudget/globalStoneBudget. cfg's place limits may be left empty (unset); this
-// resolves them itself.
-//
-// Used identically by all four architectures for their CURRENT-ply-only input - including the
-// Transformer, whose separate, much smaller per-ply HISTORY descriptor (plyMod + stoneOccupancy
-// only) is built directly in train.cpp and stored as TransformerConfig::history_descr, entirely
-// independent of this function.
-nlohmann::json compute_input_descr(const GameConfig& cfg, unsigned emb_dim, const std::vector<unsigned>& side_lens,
-                                   int n_bound, int conn_px);
-
-// Create a fresh starting board state for a game.
-BoardState new_state(const GameConfig& cfg, std::shared_ptr<const BoardConfig> bc);
 
 // KataGo's self-play settings (its PlaySettings) that Goes ports - defaults are KataGo's
 // cpp/configs/training/selfplay1.cfg values. See ai/Readme.md's "Self-Play".
@@ -171,7 +75,8 @@ struct FinishedGame {
 // NNServer, and starts a new game as soon as one finishes. Every thread plays all its games on its
 // own board: the game config's board program run with a seed no other thread has. The constructor
 // builds every thread's board before starting any, and throws std::runtime_error, naming the seed,
-// if one doesn't fit the input descriptor (compute_node_slots(), model/features.h).
+// if one doesn't fit the input descriptor (compute_node_slots(), model/features.h). `cfg` must be a
+// config new_state() accepts: a game thread has no way to report its error.
 //
 // play() runs every thread until `num_games` games have finished, then pauses each thread at its
 // next ply boundary and returns every game finished by then (possibly more than `num_games`, since

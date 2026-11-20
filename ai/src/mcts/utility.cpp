@@ -1,5 +1,5 @@
 #include "mcts/utility.h"
-#include "model/rank_head.h"
+#include "model/rank_pairs.h"
 #include <algorithm>
 #include <cmath>
 

@@ -1,19 +1,15 @@
 #pragma once
 #include "model/features.h"
 #include "nlohmann/json.hpp"
-#include <filesystem>
 #include <memory>
-#include <optional>
 #include <string>
 
 // Model-building metadata, disjoint from GameConfig (game rules, shared with
-// the TS client, see training/self_play.h) - written alongside a GameConfig
+// the TS client, see game/game_config.h) - written alongside a GameConfig
 // to each checkpoint's <arch>_config.json by train.cpp (the two to_json()
 // objects are joined into one file), read back separately by
 // parse_model_config(). Has no shared/types.ts analog - it's purely an
-// ai/-internal artifact. Lives in model/ (rather than training/, alongside
-// GameConfig) so cnn.h/unet.h/gnn.h can depend on it without a model/ ->
-// training/ layering inversion.
+// ai/-internal artifact.
 //
 // Base holds only the fields every architecture needs (modelType/featureDim/
 // hiddenDim); architecture-specific fields (e.g. GNNConfig::num_layers) live
@@ -28,7 +24,7 @@ struct ModelConfig {
     // actually trained is persisted here.
     int hidden_dim;
     // Self-describing feature-block descriptor this model was trained with -
-    // see compute_input_descr() (training/self_play.h) for how it's built and
+    // see compute_input_descr() (model/input_descr.h) for how it's built and
     // board_to_features() (features.cpp) for how it's consumed. Common to all
     // architectures (unlike num_layers below), so it lives on the base rather
     // than a subclass. No meaningful default exists without a GameConfig to
@@ -43,15 +39,15 @@ struct ModelConfig {
 
     // modelType/featureDim/hiddenDim/inputDescr only - subclasses with
     // additional fields (e.g. GNNConfig::num_layers) override this and extend
-    // the result. Join with a GameConfig::to_json() (training/self_play.h) at
+    // the result. Join with a GameConfig::to_json() (game/game_config.h) at
     // the call site for the full checkpoint JSON.
     virtual nlohmann::json to_json() const;
 };
 
-// CNN-specific model config. CNN's block count (num_blocks_) is derived from
-// board geometry at construction time, not user-configurable (see CNNImpl's
-// ctor) - kept as its own type for symmetry with UNetConfig/GNNConfig and so
-// CNNImpl only depends on CNN's own fields.
+// CNN-specific model config. CNN's block count (num_blocks_) is derived from the input
+// descriptor's sideLens at construction time, not user-configurable (see CNNImpl's ctor) - kept as
+// its own type for symmetry with UNetConfig/GNNConfig and so CNNImpl only depends on CNN's own
+// fields.
 struct CNNConfig : ModelConfig {
     // Convolution kernel size for every conv in every block (see CNNImpl's
     // ctor) - must be odd (so "same" padding via conv_size/2 keeps spatial
@@ -66,9 +62,9 @@ struct CNNConfig : ModelConfig {
     nlohmann::json to_json() const override;
 };
 
-// UNet-specific model config. No additional fields today - UNet's depth is
-// derived from board grid dimensions, not user-configurable (see UNetImpl's
-// ctor doc comment) - kept as its own type for the same reason as CNNConfig.
+// UNet-specific model config. No additional fields today - UNet's depth is derived from the input
+// descriptor's sideLens, not user-configurable (see UNetImpl's ctor doc comment) - kept as its own
+// type for the same reason as CNNConfig.
 struct UNetConfig : ModelConfig {
     UNetConfig(int feature_dim, int hidden_dim, nlohmann::json input_descr)
         : ModelConfig("unet", feature_dim, hidden_dim, std::move(input_descr)) {}
@@ -92,7 +88,7 @@ struct TransformerConfig : ModelConfig {
     // explicit decision not to complicate the shared --num-layers default or its meaning.
     int num_attn_layers;
     // Minimal per-ply feature descriptor for PAST plies only (plyMod + stoneOccupancy) - built
-    // directly in train.cpp from the GameConfig, independent of compute_input_descr(). The
+    // by compute_history_descr() (model/input_descr.h), independent of compute_input_descr(). The
     // inherited ModelConfig::input_descr is the full descriptor, used for the CURRENT ply only,
     // same meaning as CNN/UNet/GNN's input_descr. See TransformerImpl's ctor for
     // how this sizes the separate history-encoder MLP.
@@ -110,14 +106,10 @@ struct TransformerConfig : ModelConfig {
 // whichever extra keys the named architecture's own subclass carries (convSize for cnn, numLayers
 // for gnn, numAttnLayers/historyDescr for transformer) - into the matching concrete subclass,
 // selected by the modelType key. Every key is required; throws on a missing key or an unknown
-// modelType. Call parse_game_cfg (training/self_play.h) on the same JSON separately for the
+// modelType. Call parse_game_cfg (game/game_config.h) on the same JSON separately for the
 // GameConfig (numStones/numPlayers/etc.) fields joined into the same file. Used by server.cpp's
 // load_model() and train.cpp's --resume validation.
 std::unique_ptr<ModelConfig> parse_model_config(const nlohmann::json& cfg);
-
-// The <arch>_config.json in checkpoint directory `dir` (the first entry whose name ends in
-// "_config.json"), or nullopt if `dir` doesn't exist or has none.
-std::optional<std::filesystem::path> find_config_json(const std::filesystem::path& dir);
 
 // True iff a and b are identical in every field (== ModelConfig::to_json()
 // equality, which each subclass already overrides to include its own extra

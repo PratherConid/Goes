@@ -368,14 +368,15 @@ static torch::Tensor board_to_features_at_ply(const BoardState& state, int ply, 
 //   features  : float32 (N, F)               per-node feature matrix
 //   legal_mask: bool    (num_stones*N + 1,)   True = legal action (stone-major
 //                                             flattened: index (stone-1)*N+pos;
-//                                             last entry = pass) - see the
-//                                             matching policy-head layout in
-//                                             cnn.cpp/gnn.cpp/unet.cpp/transformer.cpp.
+//                                             last entry = pass) - slot_input()
+//                                             zero-extends it to the slot-space
+//                                             layout PolicyHead (heads.h) outputs.
 //
 // descr is the self-describing feature-block descriptor built once by
-// compute_input_descr() (training/self_play.h) at the start of a fresh
+// compute_input_descr() (model/input_descr.h) at the start of a fresh
 // training run and persisted verbatim thereafter (ModelConfig::input_descr,
-// model_config.h) - shape {"blocks": [[name, ...args], ...], "totalDims": F}.
+// model_config.h) - shape {"blocks": [[name, ...args], ...], "totalDims": F,
+// "embDim": emb_dim, "sideLens": side_lens, "nBound": n_bound}.
 // See board_to_features_at_ply() above for the recognized block names/args
 // and per-block fill logic (shared with this function).
 //

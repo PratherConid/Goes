@@ -9,7 +9,7 @@
 #include "game/board_state.h"
 #include "model/features.h"
 #include "model/model_output.h"
-#include "model/rank_head.h"
+#include "model/rank_pairs.h"
 
 // Type-erased neural-network evaluator used by MCTS and self-play, split as KataGo's NNEvaluator
 // splits an evaluation: prepare() builds one position's input on the CPU in whichever thread wants
@@ -33,15 +33,14 @@ struct Evaluator {
 // (see train.cpp's compute_losses(), whose point loss uses this for both the
 // predicted and actual point totals).
 inline torch::Tensor estimate_stone_points(const torch::Tensor& ownership, const std::string& rule) {
-    auto stone_est     = ownership.select(1, 0);  // (B, 2, N, num_stones+1) -> (B, N, num_stones+1)
-    auto territory_est = ownership.select(1, 1);  // (B, N, num_stones+1)
+    auto stone_est     = ownership.select(1, 0);  // (B, 2, S, num_stones+1) -> (B, S, num_stones+1)
+    auto territory_est = ownership.select(1, 1);  // (B, S, num_stones+1)
     torch::Tensor points_est = (rule == "stone")                                  ? stone_est
                               : (rule == "territoryonly" || rule == "territory")  ? territory_est
                               :                                                     stone_est + territory_est;  // "area"
 
-    int64_t S = points_est.size(-1) - 1;
     // Expected per-stone-type points: sum over locations of that stone type's channel.
-    return points_est.slice(-1, 1, S + 1).sum(1); // (B, num_stones)
+    return points_est.slice(-1, 1).sum(1); // (B, num_stones)
 }
 
 // The model's expected final per-player totals for a batch of non-terminal states: the ownership

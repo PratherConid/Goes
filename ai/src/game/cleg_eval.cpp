@@ -2,6 +2,7 @@
 #include "game/cleg_eval_internal.h"
 #include "game/cleg_check.h"
 #include "game/topology.h"
+#include "game/always_assert.h"
 #include <algorithm>
 #include <climits>
 #include <cmath>
@@ -206,11 +207,11 @@ static BoardArgEntry value_to_board_arg_entry(BoardArgKind kind, const ClegValue
         case BoardArgKind::Number:
             if (val.kind != CTKind::Number)
                 throw std::runtime_error("cleg: expected a number argument, got " + type_to_string(cleg_value_type(val)));
-            return num_arg(static_cast<int>(val.number));
+            return num_arg(val.number);
         case BoardArgKind::CommaSeparatedNumbers: {
             if (val.kind != CTKind::Array || val.elem.kind != CTKind::Number)
                 throw std::runtime_error("cleg: expected a number[] argument, got " + type_to_string(cleg_value_type(val)));
-            std::vector<int> nums;
+            std::vector<int> nums; // truncated - see BoardArgEntry (game/board_config.h)
             for (auto& v : val.arr_v) nums.push_back(static_cast<int>(v.number));
             return csv_arg(std::move(nums));
         }
@@ -737,7 +738,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             rand_rm_check_call,
             [](const std::vector<ClegValue>& args, GlobalInfo& globals) {
                 double count = args[1].number;
-                if (count != std::floor(count) || count < 0)
+                if (!is_integer(count) || count < 0)
                     throw std::runtime_error("cleg: 'randRmN' count must be a nonnegative integer, got " + format_number_display(count));
                 auto kept = randomly_remove(args[0].arr_v, static_cast<int>(count), cleg_set_elem_less, globals.random);
                 ClegValue v; v.kind = CTKind::Set; v.elem = args[0].elem; v.arr_v = std::move(kept);
@@ -762,7 +763,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             rand_rm_check_call,
             [](const std::vector<ClegValue>& args, GlobalInfo& globals) {
                 double count = args[1].number;
-                if (count != std::floor(count) || count < 0)
+                if (!is_integer(count) || count < 0)
                     throw std::runtime_error("cleg: 'randTakeN' count must be a nonnegative integer, got " + format_number_display(count));
                 auto kept = randomly_take(args[0].arr_v, static_cast<int>(count), cleg_set_elem_less, globals.random);
                 ClegValue v; v.kind = CTKind::Set; v.elem = args[0].elem; v.arr_v = std::move(kept);
@@ -793,6 +794,20 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                 double v = args[0].number;
                 if (v < 0) throw std::runtime_error("cleg: 'sqrt' argument must be nonnegative, got " + format_number_display(v));
                 return make_number(std::sqrt(v));
+            },
+        };
+        // Mirrors shared/clegEval.ts's BUILTIN_FUNCTIONS['trunc']/['round']. std::round rounds halves
+        // away from zero; JS's Math.round rounds them up, and gives -0 for x in [-0.5, 0).
+        m["trunc"] = BuiltinFunction{
+            fixed_signature({NUMBER_TYPE}, NUMBER_TYPE),
+            [](const std::vector<ClegValue>& args, GlobalInfo&) { return make_number(std::trunc(args[0].number)); },
+        };
+        m["round"] = BuiltinFunction{
+            fixed_signature({NUMBER_TYPE}, NUMBER_TYPE),
+            [](const std::vector<ClegValue>& args, GlobalInfo&) {
+                double x = args[0].number, r = std::floor(x);
+                if (x - r >= 0.5) r += 1.0;
+                return make_number(r == 0.0 ? std::copysign(0.0, x) : r);
             },
         };
         // Mirrors shared/clegEval.ts's BUILTIN_FUNCTIONS['pow'].
@@ -870,7 +885,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                 std::vector<double> nums;
                 for (auto& a : args) nums.push_back(a.number);
                 for (size_t i = 0; i < nums.size(); i++)
-                    if (nums[i] != std::floor(nums[i]))
+                    if (!is_integer(nums[i]))
                         throw std::runtime_error(
                             "cleg: 'range' argument " + std::to_string(i + 1) + " must be an integer, got " +
                             format_number_display(nums[i]));
@@ -1220,7 +1235,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                     if (!sel)
                         throw std::runtime_error(
                             "cleg: 'mkLRS' requires argument 2 for '" + type_str + "', to infer its own simplex arity from");
-                    int n = simp_n(sel->type);
+                    double n = simp_n(sel->type);
                     if (n < 0)
                         throw std::runtime_error(
                             "cleg: 'mkLRS' expects a simp selector for '" + type_str + "', got a '" +
@@ -1293,30 +1308,41 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
                 throw std::runtime_error("cleg: '" + callee + "' argument 2: expected sel, string, or set, got " + type_to_string(arg_types[1]));
             return MOD_TYPE;
         };
-        auto one_shape_simp_mod = [](LocalReplaceKind kind, int n, std::optional<Selector> sel) -> ClegValue {
+        auto one_shape_simp_mod = [](LocalReplaceKind kind, double n, std::optional<Selector> sel) -> ClegValue {
             BoardModifier bm{ModifierKind::LocalReplace};
             bm.selectors.push_back(LocalReplaceSelector{kind, n, sel});
             return make_mod(bm);
         };
+        // simp_type() holds an int arity, so the non-integer n that TS's simpType(n) keeps (which
+        // TS's resolveSelectorArg() then rejects as a kind mismatch) is rejected here instead, with
+        // genericLocalReplace's own message.
+        auto simp_selector_arity = [](double n) {
+            always_assert(is_integer(n), "genericLocalReplace: n must be an integer >= 2, got ", n);
+            return static_cast<int>(n);
+        };
         m["simpCentralize"] = BuiltinFunction{
             simp_centralize_mod_check_call,
-            [one_shape_simp_mod](const std::vector<ClegValue>& args, GlobalInfo&) {
-                int n = static_cast<int>(args[0].number);
+            [one_shape_simp_mod, simp_selector_arity](const std::vector<ClegValue>& args, GlobalInfo&) {
+                double n = args[0].number;
                 std::optional<Selector> sel;
-                if (args.size() == 2)
+                if (args.size() == 2) {
+                    int arity = simp_selector_arity(n);
                     sel = resolve_selector_arg(
-                        "simpCentralize", args[1], simp_type(n), [n](const std::string& s) { return parse_simp_selector(n, s); });
+                        "simpCentralize", args[1], simp_type(arity), [arity](const std::string& s) { return parse_simp_selector(arity, s); });
+                }
                 return one_shape_simp_mod(LocalReplaceKind::SimpCentralize, n, sel);
             },
         };
         m["simpCentering"] = BuiltinFunction{
             simp_centralize_mod_check_call,
-            [one_shape_simp_mod](const std::vector<ClegValue>& args, GlobalInfo&) {
-                int n = static_cast<int>(args[0].number);
+            [one_shape_simp_mod, simp_selector_arity](const std::vector<ClegValue>& args, GlobalInfo&) {
+                double n = args[0].number;
                 std::optional<Selector> sel;
-                if (args.size() == 2)
+                if (args.size() == 2) {
+                    int arity = simp_selector_arity(n);
                     sel = resolve_selector_arg(
-                        "simpCentering", args[1], simp_type(n), [n](const std::string& s) { return parse_simp_selector(n, s); });
+                        "simpCentering", args[1], simp_type(arity), [arity](const std::string& s) { return parse_simp_selector(arity, s); });
+                }
                 return one_shape_simp_mod(LocalReplaceKind::SimpCentering, n, sel);
             },
         };
@@ -1361,7 +1387,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
             [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 double number = args[0].number;
-                if (number != std::floor(number) || number < 0)
+                if (!is_integer(number) || number < 0)
                     throw std::runtime_error("cleg: psBase: number must be a nonnegative integer, got " + format_number_display(number));
                 ProdSelector ps; ps.op = PSelOp::Base; ps.number = static_cast<int>(number);
                 ps.sel = std::make_shared<Selector>(resolve_any_kind_selector_arg("psBase", args[1]));
@@ -1383,7 +1409,7 @@ const std::unordered_map<std::string, BuiltinFunction>& builtin_functions() {
             },
             [](const std::vector<ClegValue>& args, GlobalInfo&) {
                 double number = args[0].number;
-                if (number != std::floor(number) || number < 0)
+                if (!is_integer(number) || number < 0)
                     throw std::runtime_error("cleg: psBaseNE: number must be a nonnegative integer, got " + format_number_display(number));
                 ProdSelector ps; ps.op = PSelOp::BaseNE; ps.number = static_cast<int>(number);
                 ps.node_sel = std::make_shared<Selector>(

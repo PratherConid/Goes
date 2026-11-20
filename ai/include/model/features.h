@@ -44,7 +44,7 @@ struct GameInput {
 
 // Compute per-node feature matrix and legal mask for one state, as CPU tensors. descr is the
 // self-describing feature-block descriptor built by
-// compute_input_descr() (training/self_play.h) - see
+// compute_input_descr() (model/input_descr.h) - see
 // that function's doc comment for the JSON shape and this function's own doc
 // comment (features.cpp) for the recognized block names/args. The feature
 // width F is read directly from descr["totalDims"], not recomputed here.
@@ -71,11 +71,11 @@ torch::Tensor legal_action_mask(const BoardState& state);
 // board_to_features() runs at ply_count(). Used exclusively by the Transformer architecture
 // (transformer.cpp), for every PAST ply (0..ply_count()-1); the current ply's features and legal
 // mask come from board_to_features(). The Transformer passes TransformerConfig::history_descr
-// here - a small 2-block (plyMod, stoneOccupancy) descriptor built directly in train.cpp,
-// independent of compute_input_descr() (training/self_play.h), not board_to_features()'s full
-// descr. Returns (N, F) float32 on CPU (caller stacks across plies/states and moves to device
-// once). No legal mask - only the current ply's legality matters for the policy output, so
-// callers that need a mask use board_to_features() for that ply instead.
+// here - a small 2-block (plyMod, stoneOccupancy) descriptor built by compute_history_descr()
+// (model/input_descr.h), not board_to_features()'s full descr. Returns (N, F) float32 on CPU
+// (caller stacks across plies/states and moves to device once). No legal mask - only the current
+// ply's legality matters for the policy output, so callers that need a mask use
+// board_to_features() for that ply instead.
 torch::Tensor history_features_at_ply(const BoardState& state, int ply, const nlohmann::json& descr);
 
 // The networks' slot count under `descr` (see NodeSlots): num_cells(sideLens) with an embedding

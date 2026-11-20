@@ -1,6 +1,6 @@
 #include "game/fractal.h"
 #include "game/topology.h"
-#include <cassert>
+#include "game/always_assert.h"
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -44,7 +44,8 @@ static std::vector<std::array<int, 6>> compute_flake_glue(
             seen.insert(m);
             canon.push_back(m);
         }
-        assert(canon.size() == 1 && "expected exactly one glue relation per base edge");
+        always_assert(canon.size() == 1, "computeFlakeGlue: expected exactly one glue relation for edge (", i, ",", j,
+                      "), found ", canon.size());
         glue.push_back({ i, j, canon[0][0], canon[0][1], canon[0][2], canon[0][3] });
     }
     return glue;
@@ -73,7 +74,8 @@ static std::vector<std::array<int, 4>> compute_node_glue(
             for (size_t p = 0; p < verts.size(); p++)
                 if (dist(transform(i, static_cast<int>(m)), transform(j, static_cast<int>(p))) < 1e-9)
                     matches.push_back({ static_cast<int>(m), static_cast<int>(p) });
-        assert(matches.size() == 1 && "expected exactly one node-glue relation per base edge");
+        always_assert(matches.size() == 1, "computeNodeGlue: expected exactly one node-glue relation for edge (", i,
+                      ",", j, "), found ", matches.size());
         glue.push_back({ i, j, matches[0].first, matches[0].second });
     }
     return glue;
@@ -461,7 +463,7 @@ static GlueObjectType menger_hyperface_glue_object(int dim, std::vector<int> ind
                 for (const auto& c : coords) if (c[axis] != coords[0][axis]) { all_agree = false; break; }
                 if (all_agree) fixed_axes.push_back(axis);
             }
-            assert(!fixed_axes.empty() && "menger_hyperface_glue_object: tags do not lie on a common sub-face");
+            always_assert(!fixed_axes.empty(), "mengerHyperfaceGlueObject: tags do not lie on a common sub-face: ", tags);
             std::vector<int> free_axes;
             for (int a = 0; a < dim; a++)
                 if (std::find(fixed_axes.begin(), fixed_axes.end(), a) == fixed_axes.end()) free_axes.push_back(a);
@@ -477,7 +479,7 @@ static GlueObjectType menger_hyperface_glue_object(int dim, std::vector<int> ind
                 for (size_t j = 0; j < free_axes.size(); j++) grid[free_axes[j]] = free[j];
                 if (!is_menger_grid_kept(grid, indicator)) continue;
                 auto it = slot_of.find(join_grid(grid));
-                assert(it != slot_of.end() && "menger_hyperface_glue_object: no sub-cube at grid position");
+                always_assert(it != slot_of.end(), "mengerHyperfaceGlueObject: no sub-cube at grid ", grid);
                 steps.push_back(GlueStep{ it->second, menger_face_tags(dim, fixed_axes, fixed_vals) });
             }
             return steps;
@@ -487,10 +489,10 @@ static GlueObjectType menger_hyperface_glue_object(int dim, std::vector<int> ind
 
 const FractalDescr& menger_fractal_descr(int dim, const std::vector<int>& indicator) {
     static std::map<int, std::map<int, FractalDescr>> cache;
-    assert(dim >= 1 && "dim must be a positive integer");
-    assert(static_cast<int>(indicator.size()) == dim + 1 &&
-           std::all_of(indicator.begin(), indicator.end(), [](int b) { return b == 0 || b == 1; }) &&
-        "indicator must be a length-(dim+1) list of 0/1 entries");
+    always_assert(dim >= 1, "dim must be a positive integer, got ", dim);
+    always_assert(static_cast<int>(indicator.size()) == dim + 1 &&
+                      std::all_of(indicator.begin(), indicator.end(), [](int b) { return b == 0 || b == 1; }),
+                  "indicator must be a length-", dim + 1, " list of 0/1 entries, got [", indicator, "]");
 
     int indicator_bits = 0;
     for (int b : indicator) indicator_bits = indicator_bits * 2 + b;

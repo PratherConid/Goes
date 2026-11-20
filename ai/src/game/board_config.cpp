@@ -2,7 +2,7 @@
 #include "game/geometry.h"
 #include "game/topology.h"
 #include "game/fractal.h"
-#include <cassert>
+#include "game/always_assert.h"
 #include <algorithm>
 #include <functional>
 #include <numeric>
@@ -15,15 +15,15 @@ BoardConfig make_bc(std::vector<std::vector<int>> adj,
                      std::vector<unsigned> side_lens,
                      std::vector<std::vector<unsigned>> pos) {
     int N = static_cast<int>(pos.size());
-    assert(static_cast<int>(adj.size()) == N &&
-           (N == 0 || static_cast<int>(adj[0].size()) == N) && "adj must be N×N");
+    always_assert(static_cast<int>(adj.size()) == N && (N == 0 || static_cast<int>(adj[0].size()) == N),
+                  "adj dimensions must match pos length");
     for (int i = 0; i < N; i++)
         for (int j = 0; j < N; j++)
-            assert(adj[i][j] == adj[j][i] && "adj must be symmetric");
+            always_assert(adj[i][j] == adj[j][i], "adj must be symmetric: [", i, "][", j, "]");
     for (const auto& p : pos) {
-        assert(p.size() == side_lens.size() && "pos rows must have one coordinate per side length");
+        always_assert(p.size() == side_lens.size(), "pos rows must have one coordinate per side length");
         for (size_t k = 0; k < p.size(); k++)
-            assert(p[k] < side_lens[k] && "pos coordinate must be below its side length");
+            always_assert(p[k] < side_lens[k], "pos coordinate must be below its side length");
     }
     std::vector<std::vector<int>> adlist(N);
     for (int i = 0; i < N; i++)
@@ -65,7 +65,7 @@ BoardConfig quotient_board(const BoardConfig& bc,
     };
 
     for (auto [a, b] : quot) {
-        assert(0 <= a && a < N && 0 <= b && b < N && "quot indices out of bounds");
+        always_assert(0 <= a && a < N && 0 <= b && b < N, "quot indices [", a, ", ", b, "] out of bounds for N=", N);
         int pa = find(a), pb = find(b);
         if (pa != pb) parent[pa] = pb;
     }
@@ -106,7 +106,7 @@ BoardConfig quotient_board(const BoardConfig& bc,
 }
 
 BoardConfig edge_split(const BoardConfig& bc, int split_n) {
-    assert(split_n >= 1 && "split_n must be at least 1");
+    always_assert(split_n >= 1, "splitN must be at least 1, got ", split_n);
     int N = bc.N;
     std::vector<std::vector<unsigned>> pos(N);
     for (int i = 0; i < N; i++) {
@@ -273,7 +273,7 @@ BoardConfig truncate(const BoardConfig& bc) {
 }
 
 BoardConfig merge_close(const BoardConfig& bc, double dist) {
-    assert(dist > 0 && "dist must be positive");
+    always_assert(dist > 0, "dist must be positive, got ", dist);
     // A real (always-active) check, not assert() - merge_close needs real coordinates to compute a
     // meaningful distance. Left unchecked, an emb_dim=0 board (e.g. dodeca/icosa/regpoly, or
     // triform/sqform output - see board_config.h) makes every pairwise distance compute to 0 (the
@@ -298,7 +298,7 @@ BoardConfig merge_close(const BoardConfig& bc, double dist) {
 }
 
 BoardConfig generic_form(const BoardConfig& bc, int w, const std::vector<FormSelector>& sels, ClegRandom& random) {
-    assert(w >= 1 && "w must be at least 1");
+    always_assert(w >= 1, "w must be at least 1, got ", w);
     int N = bc.N;
 
     std::set<std::pair<int,int>> is_face_side; // (p,q), p<q - an original edge consumed by some face
@@ -496,9 +496,9 @@ BoardConfig generic_local_replace(const BoardConfig& bc, const std::vector<Local
                 }
             }
         } else {
-            int n = s.n;
-            assert(n >= 2 && "generic_local_replace: n must be at least 2");
-            Selector sel = s.sel.value_or(Selector{SelectorOp::All, simp_type(n)});
+            double n = s.n;
+            always_assert(is_integer(n) && n >= 2, "genericLocalReplace: n must be an integer >= 2, got ", n);
+            Selector sel = s.sel.value_or(Selector{SelectorOp::All, simp_type(static_cast<int>(n))});
             auto simplices = select_simp(bc.adj, bc.emb.pos, sel, random);
             for (auto& simplex : simplices) {
                 auto& nodes = simplex.nodes;
@@ -532,13 +532,13 @@ BoardConfig generic_local_replace(const BoardConfig& bc, const std::vector<Local
     return make_bc(std::move(adj), {}, std::move(embed));
 }
 
-BoardConfig simp_centralize(const BoardConfig& bc, int n, ClegRandom& random, std::optional<Selector> sel) {
-    assert(n >= 2 && "simp_centralize: n must be at least 2");
+BoardConfig simp_centralize(const BoardConfig& bc, double n, ClegRandom& random, std::optional<Selector> sel) {
+    always_assert(is_integer(n) && n >= 2, "simpCentralize: n must be an integer >= 2, got ", n);
     return generic_local_replace(bc, { LocalReplaceSelector{LocalReplaceKind::SimpCentralize, n, sel} }, random);
 }
 
-BoardConfig simp_centering(const BoardConfig& bc, int n, ClegRandom& random, std::optional<Selector> sel) {
-    assert(n >= 2 && "simp_centering: n must be at least 2");
+BoardConfig simp_centering(const BoardConfig& bc, double n, ClegRandom& random, std::optional<Selector> sel) {
+    always_assert(is_integer(n) && n >= 2, "simpCentering: n must be an integer >= 2, got ", n);
     return generic_local_replace(bc, { LocalReplaceSelector{LocalReplaceKind::SimpCentering, n, sel} }, random);
 }
 
@@ -691,7 +691,7 @@ BoardConfig apply_modifiers(const BoardConfig& bc, const std::vector<BoardModifi
 }
 
 BoardConfig linear_board(int w) {
-    assert(w > 0 && "w must be positive");
+    always_assert(w > 0, "w must be positive, got w=", w);
     std::vector<std::vector<unsigned>> pos;
     for (unsigned i = 0; i < (unsigned)w; i++) pos.push_back({i});
     auto adj = zero_adj(w);
@@ -707,7 +707,7 @@ BoardConfig rectangular_board(int w, int h) {
 }
 
 BoardConfig rectangular_diagonal_board(int w, int h, int m) {
-    assert(w > 0 && h > 0 && m > 0 && "w, h, m must be positive");
+    always_assert(w > 0 && h > 0 && m > 0, "w, h, and m must be positive, got w=", w, " h=", h, " m=", m);
     auto adj = zero_adj(w * h);
     std::vector<std::vector<unsigned>> pos;
     for (unsigned r = 0; r < h; r++)
@@ -735,10 +735,13 @@ BoardConfig cube_lattice_board(int w, int h, int d) {
 // Mirrors shared/boardConfig.ts's hypercuboidBoard(), except positions are the uncentered
 // [0, dims[i]) integer coordinates rather than TS's `- (dims[i]-1)/2`-centered ones: centering
 // would need half-integers for an even-sized dimension, which exact-integer pos[] can't represent.
-BoardConfig hypercuboid_board(int meshdim, const std::vector<int>& dims) {
-    assert(!dims.empty() && "dims must have at least 1 entry");
-    for (int d : dims) assert(d > 0 && "every dimension must be positive");
-    assert(meshdim >= 0 && "meshdim must be non-negative");
+BoardConfig hypercuboid_board(double meshdim, const std::vector<int>& dims) {
+    always_assert(!dims.empty(), "dims must have at least 1 entry, got ", dims.size());
+    std::string dims_joined; // TS's dims.join(', ')
+    for (int d : dims) dims_joined += (dims_joined.empty() ? "" : ", ") + std::to_string(d);
+    always_assert(std::all_of(dims.begin(), dims.end(), [](int d) { return d > 0; }),
+                  "every dimension must be positive, got [", dims_joined, "]");
+    always_assert(is_integer(meshdim) && meshdim >= 0, "meshdim must be a non-negative integer, got ", meshdim);
     int k = static_cast<int>(dims.size());
     int full_n = 1;
     for (int d : dims) full_n *= d;
@@ -795,7 +798,7 @@ BoardConfig hypercuboid_board(int meshdim, const std::vector<int>& dims) {
 }
 
 BoardConfig triangular_board(int w) {
-    assert(w > 0 && "w must be positive");
+    always_assert(w > 0, "w must be positive, got w=", w);
     std::vector<std::vector<unsigned>> pos;
     for (unsigned i = 0; i < w; i++)
         for (unsigned j = 0; j <= i; j++)
@@ -858,9 +861,10 @@ sierpinski_rec(int n, const std::vector<std::vector<unsigned>>& corners) {
 // regularSimplexCoords() is irrational for dim >= 2, so here corner 0 of the outer simplex sits at
 // the origin and corner k (1 <= k <= dim) at `side` times the k-th standard basis vector.
 // Recursive midpoints stay exact integers since `side` = 2^(n-1).
-BoardConfig sierpinski_simplex_board(int dim, int n) {
-    assert(dim >= 1 && "dim must be at least 1");
-    assert(n >= 1 && "n must be at least 1");
+BoardConfig sierpinski_simplex_board(double dim_arg, double n_arg) {
+    always_assert(is_integer(dim_arg) && dim_arg >= 1, "dim must be a positive integer, got ", dim_arg);
+    always_assert(is_integer(n_arg) && n_arg >= 1, "n must be a positive integer, got ", n_arg);
+    int dim = static_cast<int>(dim_arg), n = static_cast<int>(n_arg);
 
     unsigned side = 1u << (n - 1);
     std::vector<std::vector<unsigned>> corners(dim + 1, std::vector<unsigned>(dim, 0u));
@@ -874,10 +878,11 @@ BoardConfig sierpinski_simplex_board(int dim, int n) {
 // Mirrors shared/boardConfig.ts's simplexBoard(), with sierpinski_simplex_board()'s exact-integer
 // corners (corner 0 at the origin, corner k at the k-th standard basis vector) in place of
 // regularSimplexCoords(dim), so barycentric (c_0, ..., c_dim) embeds as simply (c_1, ..., c_dim).
-BoardConfig simplex_board(int meshdim, int dim, int w) {
-    assert(dim >= 1 && "dim must be at least 1");
-    assert(w >= 1 && "w must be at least 1");
-    assert(meshdim >= 0 && "meshdim must be non-negative");
+BoardConfig simplex_board(double meshdim, double dim_arg, double w_arg) {
+    always_assert(is_integer(dim_arg) && dim_arg >= 1, "dim must be a positive integer, got ", dim_arg);
+    always_assert(is_integer(w_arg) && w_arg >= 1, "w must be a positive integer, got ", w_arg);
+    always_assert(is_integer(meshdim) && meshdim >= 0, "meshdim must be a non-negative integer, got ", meshdim);
+    int dim = static_cast<int>(dim_arg), w = static_cast<int>(w_arg);
     int m = dim + 1, n = w - 1;
 
     std::vector<std::vector<int>> all_coords;
@@ -939,7 +944,7 @@ BoardConfig simplex_board(int meshdim, int dim, int w) {
 }
 
 BoardConfig regular_polygon_board(int n) {
-    assert(n >= 3 && "n must be at least 3");
+    always_assert(n >= 3, "n must be at least 3, got ", n);
     auto adj = zero_adj(n);
     for (int k = 0; k < n; k++) {
         int next = (k + 1) % n;
@@ -952,7 +957,7 @@ BoardConfig regular_polygon_board(int n) {
 
 // Mirrors shared/boardConfig.ts's starBoard(), adjacency only (emb_dim=0 - see board_config.h).
 BoardConfig star_board(int n) {
-    assert(n >= 1 && "n must be at least 1");
+    always_assert(n >= 1, "n must be at least 1, got ", n);
     auto adj = zero_adj(n + 1);
     for (int k = 1; k <= n; k++) {
         adj[0][k] = 1;
@@ -969,9 +974,9 @@ BoardConfig tetrahedron_board() {
 
 // Mirrors shared/boardConfig.ts's diamondCubicBoard(), adjacency only (emb_dim=0 - see
 // board_config.h).
-BoardConfig diamond_cubic_board(int w) {
-    assert(w >= 1 && "w must be at least 1");
-    int n = w - 1;
+BoardConfig diamond_cubic_board(double w) {
+    always_assert(is_integer(w) && w >= 1, "w must be a positive integer, got ", w);
+    int n = static_cast<int>(w) - 1;
 
     // flat_key/node_idx: a flat-array stand-in for TS's Map-based nodeIdx.
     int stride = n + 1;
@@ -1016,7 +1021,7 @@ BoardConfig octahedron_board() {
 // +-1/sqrt(2): vertex 2k (the "+" pole on axis k) has coordinate k = 2, vertex 2k+1 (the "-" pole)
 // has coordinate k = 1, every other coordinate 0; connectivity is unaffected.
 BoardConfig orthoplex_board(int n) {
-    assert(n >= 1 && "n must be at least 1");
+    always_assert(n >= 1, "n must be at least 1, got ", n);
     int N = 2 * n;
     std::vector<std::vector<unsigned>> pos(N, std::vector<unsigned>(n, 0u));
     for (int k = 0; k < n; k++) {
@@ -1185,7 +1190,7 @@ BoardConfig reg_600_cell_board() {
 // Mirrors shared/boardConfig.ts's antiprismBoard(), adjacency only (emb_dim=0 - see
 // board_config.h).
 BoardConfig antiprism_board(int n) {
-    assert(n >= 3 && "n must be at least 3");
+    always_assert(n >= 3, "n must be at least 3, got ", n);
     int N = 2 * n;
     auto top = [](int k) { return k; };
     auto bot = [n](int k) { return n + k; };
@@ -1225,62 +1230,62 @@ BoardConfig icosahedron_board() {
 // board_config.h's doc comment on dodecahedron_flake_board()). ---
 
 // Mirrors shared/boardConfig.ts's dodecahedronFlake().
-BoardConfig dodecahedron_flake_board(int n) {
-    assert(n >= 1 && "n must be at least 1");
-    auto adj = build_fractal(n, dodecahedron_fractal_descr());
+BoardConfig dodecahedron_flake_board(double n) {
+    always_assert(is_integer(n) && n >= 1, "n must be a positive integer, got ", n);
+    auto adj = build_fractal(static_cast<int>(n), dodecahedron_fractal_descr());
     std::vector<std::vector<unsigned>> embed(adj.size()); // emb_dim=0
     return make_bc(std::move(adj), {}, std::move(embed));
 }
 
 // Mirrors shared/boardConfig.ts's icosahedronFlake().
-BoardConfig icosahedron_flake_board(int n) {
-    assert(n >= 1 && "n must be at least 1");
-    auto adj = build_fractal(n, icosahedron_fractal_descr());
+BoardConfig icosahedron_flake_board(double n) {
+    always_assert(is_integer(n) && n >= 1, "n must be a positive integer, got ", n);
+    auto adj = build_fractal(static_cast<int>(n), icosahedron_fractal_descr());
     std::vector<std::vector<unsigned>> embed(adj.size()); // emb_dim=0
     return make_bc(std::move(adj), {}, std::move(embed));
 }
 
 // Mirrors shared/boardConfig.ts's octahedronFlake().
-BoardConfig octahedron_flake_board(int n) {
-    assert(n >= 1 && "n must be at least 1");
-    auto adj = build_fractal(n, octahedron_fractal_descr());
+BoardConfig octahedron_flake_board(double n) {
+    always_assert(is_integer(n) && n >= 1, "n must be a positive integer, got ", n);
+    auto adj = build_fractal(static_cast<int>(n), octahedron_fractal_descr());
     std::vector<std::vector<unsigned>> embed(adj.size()); // emb_dim=0
     return make_bc(std::move(adj), {}, std::move(embed));
 }
 
 // Mirrors shared/boardConfig.ts's regularPolygonFlake().
-BoardConfig regular_polygon_flake_board(int n_sides, int order) {
-    assert(n_sides >= 3 && "n_sides must be at least 3");
-    assert(order >= 1 && "order must be at least 1");
-    auto adj = build_fractal(order, regular_polygon_fractal_descr(n_sides, false));
+BoardConfig regular_polygon_flake_board(double n_sides, double order) {
+    always_assert(is_integer(n_sides) && n_sides >= 3, "nSides must be an integer at least 3, got ", n_sides);
+    always_assert(is_integer(order) && order >= 1, "order must be a positive integer, got ", order);
+    auto adj = build_fractal(static_cast<int>(order), regular_polygon_fractal_descr(static_cast<int>(n_sides), false));
     std::vector<std::vector<unsigned>> embed(adj.size()); // emb_dim=0
     return make_bc(std::move(adj), {}, std::move(embed));
 }
 
 // Mirrors shared/boardConfig.ts's centralRegularPolygonFlake().
-BoardConfig central_regular_polygon_flake_board(int n_sides, int order) {
-    assert(n_sides >= 3 && "n_sides must be at least 3");
-    assert(order >= 1 && "order must be at least 1");
-    auto adj = build_fractal(order, regular_polygon_fractal_descr(n_sides, true));
+BoardConfig central_regular_polygon_flake_board(double n_sides, double order) {
+    always_assert(is_integer(n_sides) && n_sides >= 3, "nSides must be an integer at least 3, got ", n_sides);
+    always_assert(is_integer(order) && order >= 1, "order must be a positive integer, got ", order);
+    auto adj = build_fractal(static_cast<int>(order), regular_polygon_fractal_descr(static_cast<int>(n_sides), true));
     std::vector<std::vector<unsigned>> embed(adj.size()); // emb_dim=0
     return make_bc(std::move(adj), {}, std::move(embed));
 }
 
 // Mirrors shared/boardConfig.ts's centralPentagonFlake().
-BoardConfig central_pentagon_flake_board(int order) {
-    assert(order >= 1 && "order must be at least 1");
-    auto adj = build_fractal(order, central_pentagon_fractal_descr());
+BoardConfig central_pentagon_flake_board(double order) {
+    always_assert(is_integer(order) && order >= 1, "order must be a positive integer, got ", order);
+    auto adj = build_fractal(static_cast<int>(order), central_pentagon_fractal_descr());
     std::vector<std::vector<unsigned>> embed(adj.size()); // emb_dim=0
     return make_bc(std::move(adj), {}, std::move(embed));
 }
 
 // Mirrors shared/boardConfig.ts's mengerSpongeFlake().
-BoardConfig menger_sponge_flake_board(int order, int dim, const std::vector<int>& indicator) {
-    assert(order >= 1 && "order must be at least 1");
-    assert(dim >= 1 && "dim must be at least 1");
-    assert(static_cast<int>(indicator.size()) == dim + 1 &&
-        "indicator must be a length-(dim+1) list of 0/1 entries");
-    auto adj = build_fractal(order, menger_fractal_descr(dim, indicator));
+BoardConfig menger_sponge_flake_board(double order, double dim, const std::vector<int>& indicator) {
+    always_assert(is_integer(order) && order >= 1, "order must be a positive integer, got ", order);
+    always_assert(is_integer(dim) && dim >= 1, "dim must be a positive integer, got ", dim);
+    always_assert(static_cast<double>(indicator.size()) == dim + 1,
+                  "indicator must be a length-", dim + 1, " list of 0/1 entries, got [", indicator, "]");
+    auto adj = build_fractal(static_cast<int>(order), menger_fractal_descr(static_cast<int>(dim), indicator));
     std::vector<std::vector<unsigned>> embed(adj.size()); // emb_dim=0
     return make_bc(std::move(adj), {}, std::move(embed));
 }
@@ -1313,7 +1318,7 @@ static BoardConfig triangular_lattice_board(const std::vector<std::pair<int,int>
 }
 
 BoardConfig triangular_hex_board(int d) {
-    assert(d >= 0 && "d must be non-negative");
+    always_assert(d >= 0, "d must be non-negative, got d=", d);
     std::vector<std::pair<int,int>> coords;
     for (int q = -d; q <= d; q++)
         for (int r = std::max(-d, -d - q); r <= std::min(d, d - q); r++)
@@ -1322,7 +1327,7 @@ BoardConfig triangular_hex_board(int d) {
 }
 
 BoardConfig hex_board(int d) {
-    assert(d >= 0 && "d must be non-negative");
+    always_assert(d >= 0, "d must be non-negative, got d=", d);
     std::vector<std::pair<int,int>> centers;
     for (int a = -d; a <= d; a++)
         for (int b = std::max(-d, -d - a); b <= std::min(d, d - a); b++)
@@ -1336,7 +1341,7 @@ BoardConfig hex_board(int d) {
 }
 
 BoardConfig trihex_board(int d) {
-    assert(d >= 0 && "d must be non-negative");
+    always_assert(d >= 0, "d must be non-negative, got d=", d);
     std::vector<std::pair<int,int>> centers;
     for (int a = -d; a <= d; a++)
         for (int b = std::max(-d, -d - a); b <= std::min(d, d - a); b++)
@@ -1405,7 +1410,7 @@ tilted_disconnected_square_board(int w, int h, int g, int gap) {
 }
 
 BoardConfig snub_square_board(int w, int h) {
-    assert(w > 0 && h > 0 && "w and h must be positive");
+    always_assert(w > 0 && h > 0, "w and h must be positive, got w=", w, " h=", h);
     // Same 45deg-integer-rotation embedding as tilted_disconnected_square_board (gap=0, i.e. the
     // glue_twisted_square_board case) - pos coordinates must be integers, unlike
     // shared/boardConfig.ts's own literal +-30-degree floating-point layout.
@@ -1466,13 +1471,13 @@ BoardConfig snub_square_board(int w, int h) {
 }
 
 BoardConfig glue_twisted_square_board(int w, int h, int g) {
-    assert(w > 0 && h > 0 && g > 0 && "w, h, g must be positive");
+    always_assert(w > 0 && h > 0 && g > 0, "w, h, and g must be positive, got w=", w, " h=", h, " g=", g);
     auto [pos, adj, inter_conn, side_lens] = tilted_disconnected_square_board(w, h, g, 0);
     return quotient_board(make_bc(std::move(adj), std::move(side_lens), std::move(pos)), inter_conn);
 }
 
 BoardConfig twisted_square_board(int w, int h, int g) {
-    assert(w > 0 && h > 0 && g > 0 && "w, h, g must be positive");
+    always_assert(w > 0 && h > 0 && g > 0, "w, h, and g must be positive, got w=", w, " h=", h, " g=", g);
     auto [pos, adj, inter_conn, side_lens] = tilted_disconnected_square_board(w, h, g, 1);
     for (auto [i, j] : inter_conn) {
         adj[i][j] = 1;
@@ -1481,17 +1486,27 @@ BoardConfig twisted_square_board(int w, int h, int g) {
     return make_bc(std::move(adj), std::move(side_lens), std::move(pos));
 }
 
-int board_arg_number(const BoardArgEntry& e) {
-    assert(e.kind == BoardArgKind::Number && "expected a Number board arg");
+// TS's BoardArgType string values.
+static const char* board_arg_kind_name(BoardArgKind kind) {
+    switch (kind) {
+        case BoardArgKind::Number: return "Number";
+        case BoardArgKind::CommaSeparatedNumbers: return "CommaSeparatedNumbers";
+        case BoardArgKind::ZeroOneList: return "ZeroOneList";
+    }
+    return "?";
+}
+
+double board_arg_number(const BoardArgEntry& e) {
+    always_assert(e.kind == BoardArgKind::Number, "expected a Number board arg, got ", board_arg_kind_name(e.kind));
     return e.value;
 }
 const std::vector<int>& board_arg_list(const BoardArgEntry& e) {
-    assert(e.kind != BoardArgKind::Number && "expected a list board arg");
+    always_assert(e.kind != BoardArgKind::Number, "expected a list board arg, got ", board_arg_kind_name(e.kind));
     return e.values;
 }
 
 std::string format_board_arg_entry(const BoardArgEntry& e) {
-    if (e.kind == BoardArgKind::Number) return std::to_string(e.value);
+    if (e.kind == BoardArgKind::Number) return js_number_string(e.value);
     std::string sep = e.kind == BoardArgKind::CommaSeparatedNumbers ? "," : "";
     std::string s;
     for (size_t i = 0; i < e.values.size(); i++) { if (i) s += sep; s += std::to_string(e.values[i]); }
@@ -1501,25 +1516,27 @@ std::string format_board_arg_entry(const BoardArgEntry& e) {
 BoardConfig build_board_config(const std::string& kind, const std::vector<BoardArgEntry>& args) {
     const auto& v = args;
     auto num = [](const BoardArgEntry& e) { return board_arg_number(e); };
+    // Truncates, for the int-typed boards below - see board_config.h.
+    auto int_num = [](const BoardArgEntry& e) { return static_cast<int>(board_arg_number(e)); };
     auto list = [](const BoardArgEntry& e) { return board_arg_list(e); };
-    if (kind == "line")  return linear_board(num(v[0]));
-    if (kind == "rect")  return rectangular_board(num(v[0]), num(v[1]));
-    if (kind == "rectd") return rectangular_diagonal_board(num(v[0]), num(v[1]), num(v[2]));
-    if (kind == "cublat") return cube_lattice_board(num(v[0]), num(v[1]), num(v[2]));
+    if (kind == "line")  return linear_board(int_num(v[0]));
+    if (kind == "rect")  return rectangular_board(int_num(v[0]), int_num(v[1]));
+    if (kind == "rectd") return rectangular_diagonal_board(int_num(v[0]), int_num(v[1]), int_num(v[2]));
+    if (kind == "cublat") return cube_lattice_board(int_num(v[0]), int_num(v[1]), int_num(v[2]));
     if (kind == "hcub")  return hypercuboid_board(num(v[0]), list(v[1]));
-    if (kind == "tri")   return triangular_board(num(v[0]));
+    if (kind == "tri")   return triangular_board(int_num(v[0]));
     if (kind == "sier")  return sierpinski_simplex_board(num(v[0]), num(v[1]));
     if (kind == "simplex") return simplex_board(num(v[0]), num(v[1]), num(v[2]));
-    if (kind == "regpoly") return regular_polygon_board(num(v[0]));
-    if (kind == "star")  return star_board(num(v[0]));
+    if (kind == "regpoly") return regular_polygon_board(int_num(v[0]));
+    if (kind == "star")  return star_board(int_num(v[0]));
     if (kind == "tetra") return tetrahedron_board();
     if (kind == "diamondCubic") return diamond_cubic_board(num(v[0]));
     if (kind == "octa") return octahedron_board();
-    if (kind == "ortho") return orthoplex_board(num(v[0]));
+    if (kind == "ortho") return orthoplex_board(int_num(v[0]));
     if (kind == "reg24Cell") return reg_24_cell_board();
     if (kind == "reg120Cell") return reg_120_cell_board();
     if (kind == "reg600Cell") return reg_600_cell_board();
-    if (kind == "ap")    return antiprism_board(num(v[0]));
+    if (kind == "ap")    return antiprism_board(int_num(v[0]));
     if (kind == "dodeca") return dodecahedron_board();
     if (kind == "icosa") return icosahedron_board();
     if (kind == "dodflake") return dodecahedron_flake_board(num(v[0]));
@@ -1529,11 +1546,11 @@ BoardConfig build_board_config(const std::string& kind, const std::vector<BoardA
     if (kind == "cpolyflake") return central_regular_polygon_flake_board(num(v[0]), num(v[1]));
     if (kind == "cpentflake") return central_pentagon_flake_board(num(v[0]));
     if (kind == "menger") return menger_sponge_flake_board(num(v[0]), num(v[1]), list(v[2]));
-    if (kind == "trihex") return triangular_hex_board(num(v[0]));
-    if (kind == "hex")   return hex_board(num(v[0]));
-    if (kind == "hexdel") return trihex_board(num(v[0]));
-    if (kind == "snubsq") return snub_square_board(num(v[0]), num(v[1]));
-    if (kind == "twsq")  return twisted_square_board(num(v[0]), num(v[1]), num(v[2]));
-    if (kind == "gtsq")  return glue_twisted_square_board(num(v[0]), num(v[1]), num(v[2]));
+    if (kind == "trihex") return triangular_hex_board(int_num(v[0]));
+    if (kind == "hex")   return hex_board(int_num(v[0]));
+    if (kind == "hexdel") return trihex_board(int_num(v[0]));
+    if (kind == "snubsq") return snub_square_board(int_num(v[0]), int_num(v[1]));
+    if (kind == "twsq")  return twisted_square_board(int_num(v[0]), int_num(v[1]), int_num(v[2]));
+    if (kind == "gtsq")  return glue_twisted_square_board(int_num(v[0]), int_num(v[1]), int_num(v[2]));
     throw std::runtime_error("Unknown board type: " + kind);
 }

@@ -8,9 +8,12 @@
 #include "game/board_config.h"
 #include "game/cleg_eval.h"
 #include "game/cleg_parser.h"
+#include "game/game_config.h"
 #include "model/any_model.h"
 #include "model/features.h"
+#include "model/input_descr.h"
 #include "model/model_config.h"
+#include "training/checkpoint_files.h"
 #include "training/self_play.h"
 #include "training/replay_buffer.h"
 #include "util/sha256.h"
@@ -252,24 +255,98 @@ static Args parse_args(int argc, char* argv[]) {
     return args;
 }
 
+// Throws std::runtime_error with `parts` streamed together - main() prints it as "Error: <parts>".
+template <class... Parts>
+[[noreturn]] static void fail(const Parts&... parts) {
+    std::ostringstream msg;
+    (msg << ... << parts);
+    throw std::runtime_error(msg.str());
+}
+
 // ── Model factory ─────────────────────────────────────────────────────────────
 
 // The architecture actually used: CNN/UNet need a 2D integer embedding (emb_dim == 2), which "auto"
-// prefers; otherwise the GNN. The Transformer is topology-agnostic.
-static std::string effective_arch(const Args& args, const std::string& board_descr, unsigned emb_dim) {
+// prefers; otherwise the GNN. The Transformer is topology-agnostic. Throws if the game config or
+// --conn-px doesn't fit it.
+static std::string effective_arch(const Args& args, const GameConfig& game_cfg, unsigned emb_dim) {
     bool grid2d = emb_dim == 2;
+    std::string arch;
     if (args.net_arch == "cnn" || args.net_arch == "unet") {
-        if (!grid2d) {
-            std::cerr << "Error: --net-arch " << args.net_arch << " is not supported for board description '"
-                      << board_descr << "' (emb_dim=" << emb_dim << "): it needs a 2D grid embedding.\n";
-            std::exit(1);
-        }
-        return args.net_arch;
+        if (!grid2d)
+            fail("--net-arch ", args.net_arch, " is not supported for board description '", game_cfg.board_descr,
+                 "' (emb_dim=", emb_dim, "): it needs a 2D grid embedding.");
+        arch = args.net_arch;
+    } else if (args.net_arch == "gnn" || args.net_arch == "transformer") {
+        arch = args.net_arch;
+    } else if (args.net_arch == "auto") {
+        arch = grid2d ? "cnn" : "gnn";
+    } else {
+        fail("unknown --net-arch '", args.net_arch, "'. Valid: auto, cnn, unet, gnn, transformer.");
     }
-    if (args.net_arch == "gnn" || args.net_arch == "transformer") return args.net_arch;
-    if (args.net_arch == "auto") return grid2d ? "cnn" : "gnn";
-    std::cerr << "Error: unknown --net-arch '" << args.net_arch << "'. Valid: auto, cnn, unet, gnn, transformer.\n";
-    std::exit(1);
+    // With forced_pass_only, the game's end depends on the full move history, which only the
+    // history-aware Transformer sees.
+    if (game_cfg.forced_pass_only && arch != "transformer")
+        fail("forced_pass_only=true requires --net-arch transformer (got '", arch, "').");
+    if (args.conn_px && (arch == "gnn" || arch == "transformer"))
+        fail("--conn-px only applies to the CNN/UNet (got '", arch, "')");
+    return arch;
+}
+
+// The slot-space box every network's input and output are zero-extended to, and the node bound
+// sizing the liberty/groupSize features (see compute_input_descr()).
+struct InputBounds {
+    std::vector<unsigned> side_lens;
+    int n_bound;
+};
+
+// --side-lens/--n-bound, defaulting to the reference board's own; throws unless they contain it.
+static InputBounds input_bounds(const Args& args, const BoardConfig& bc) {
+    std::vector<unsigned> side_lens = args.side_lens.value_or(bc.emb.side_lens);
+    if (bc.emb.emb_dim() != 0 && !fits_in(bc.emb, side_lens))
+        fail("--side-lens ", json(side_lens).dump(), " doesn't contain the board's side lengths ",
+             json(bc.emb.side_lens).dump());
+    if (!args.n_bound && side_lens.empty())
+        fail("a board without an embedding needs --n-bound or --side-lens (an upper bound on its node count)");
+    const int n_bound = args.n_bound.value_or(num_cells(side_lens));
+    if (n_bound < bc.N)
+        fail("nBound ", n_bound, (args.n_bound ? " (--n-bound)" : " (the product of the side lengths)"),
+             " is below the board's node count ", bc.N);
+    std::cout << "sideLens=" << json(side_lens).dump() << "  nBound=" << n_bound << std::endl;
+    return {side_lens, n_bound};
+}
+
+// Self-play's network evaluation devices; network server thread i uses the (i mod count)-th.
+static std::vector<torch::Device> selfplay_devices(const Args& args, torch::Device device) {
+    if (args.selfplay_gpus.empty()) return {device};
+    if (!device.is_cuda()) fail("--selfplay-gpus needs CUDA (and no --cpu)");
+    std::vector<torch::Device> devices;
+    int count = static_cast<int>(torch::cuda::device_count());
+    for (int gpu : args.selfplay_gpus) {
+        if (gpu >= count) fail("--selfplay-gpus: device ", gpu, " does not exist (", count, " visible)");
+        devices.emplace_back(torch::kCUDA, static_cast<torch::DeviceIndex>(gpu));
+    }
+    if (args.nn_server_threads < (int)devices.size())
+        fail("--nn-server-threads (", args.nn_server_threads, ") is less than the number of --selfplay-gpus (",
+             devices.size(), "), so some would go unused");
+    std::cout << "Self-play devices:";
+    for (auto& d : devices) std::cout << " " << d;
+    std::cout << std::endl;
+    return devices;
+}
+
+// A fresh run's model config for architecture `arch`, on the input descriptor compute_input_descr()
+// builds.
+static std::unique_ptr<ModelConfig> make_model_config(const Args& args, const std::string& arch,
+                                                      const GameConfig& game_cfg, unsigned emb_dim,
+                                                      const InputBounds& bounds) {
+    json input_descr = compute_input_descr(game_cfg, emb_dim, bounds.side_lens, bounds.n_bound, args.conn_px.value_or(0));
+    int in_dim = input_descr.at("totalDims").get<int>();
+    if (arch == "cnn") return std::make_unique<CNNConfig>(in_dim, args.cnn_hidden_dim, input_descr, args.cnn_conv_size);
+    if (arch == "unet") return std::make_unique<UNetConfig>(in_dim, args.unet_hidden_dim, input_descr);
+    if (arch == "transformer")
+        return std::make_unique<TransformerConfig>(in_dim, args.transformer_hidden_dim, args.num_attn_layers,
+                                                   input_descr, compute_history_descr(game_cfg));
+    return std::make_unique<GNNConfig>(in_dim, args.gnn_hidden_dim, args.num_layers, input_descr);
 }
 
 // TransformerConfig::history_descr for a Transformer run, else nullptr.
@@ -282,14 +359,12 @@ static std::vector<torch::Tensor> parameters_of(AnyModel& m) {
 }
 
 // An independent eval-mode copy of src's weights, through the same serialization checkpoints use.
-static AnyModel clone_model(AnyModel& src, const BoardConfig& bc, const ModelConfig& cfg,
-                            const GameConfig& game_cfg, torch::Device device) {
+static AnyModel clone_model(AnyModel& src, const ModelConfig& cfg, const GameConfig& game_cfg,
+                            torch::Device device) {
     std::ostringstream oss;
     std::visit([&](auto& m) { torch::save(m, oss); }, src);
-    AnyModel fresh = build_model(bc, cfg, game_cfg.num_stones, game_cfg.num_players);
     std::istringstream iss(oss.str());
-    std::visit([&](auto& m) { torch::load(m, iss); m->to(device); m->eval(); }, fresh);
-    return fresh;
+    return load_eval_model(cfg, game_cfg.num_stones, game_cfg.num_players, iss, device);
 }
 
 // ── Training state ────────────────────────────────────────────────────────────
@@ -353,37 +428,25 @@ static double lr_warmup_scale(int64_t samples) {
 
 // ── Checkpoint utilities ──────────────────────────────────────────────────────
 
-// Checkpoint directory layout:
-//   <arch>_config.json        game config + model config (what server.cpp matches /move requests on)
-//   <arch>_<iter>.pt          the model exported at the end of that iteration, kept every
-//                             --saves-every iterations and at iteration --iterations (what server.cpp
-//                             uses)
-//   <arch>_<iter>_traj.json   that iteration's self-play games (SelfPlayRunner's trajectory format)
-//   trainer/                  what --resume needs: model.pt, weight_average.pt, optimizer.pt, state.json
-
-static std::string iter_name(const std::string& arch, int iter, const std::string& suffix) {
-    std::ostringstream oss;
-    oss << arch << "_" << std::setfill('0') << std::setw(6) << iter << suffix;
-    return oss.str();
-}
+// Checkpoint directory layout: see training/checkpoint_files.h.
 
 // A fresh directory named by a hash of the configs and a timestamp.
 static fs::path fresh_checkpoint_dir(const Args& args, const GameConfig& game_cfg, const ModelConfig& model_cfg) {
     auto timestamp = std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
     std::string hash = sha256_hex(model_cfg.to_json().dump() + game_cfg.to_json().dump() + timestamp);
     fs::path dir = fs::path(args.checkpoint_dir) / hash;
-    if (fs::exists(dir)) { std::cerr << "Error: checkpoint directory already exists: " << dir << "\n"; std::exit(1); }
+    if (fs::exists(dir)) fail("checkpoint directory already exists: ", dir);
     fs::create_directories(dir / "trainer");
     std::cout << "New checkpoint directory: " << hash << " (pass --resume " << hash << " to continue it)\n";
     return dir;
 }
 
-// Exits unless `dir`'s saved config matches: the game config always, the model config too when
+// Throws unless `dir`'s saved config matches: the game config always, the model config too when
 // check_model (--resume loads weights into the current architecture; --retrain trains a fresh one).
 static void validate_dir_config(const fs::path& dir, const GameConfig& game_cfg, const ModelConfig& model_cfg,
                                 bool check_model, const std::string& flag) {
     auto cfg_path = find_config_json(dir);
-    if (!cfg_path) { std::cerr << "Error: " << flag << " directory has no config to validate against: " << dir << "\n"; std::exit(1); }
+    if (!cfg_path) fail(flag, " directory has no config to validate against: ", dir);
     json existing = json::parse(std::ifstream(*cfg_path));
     GameConfig existing_game = parse_game_cfg(existing);
     bool ok = strong_equal(game_cfg, existing_game);
@@ -392,38 +455,26 @@ static void validate_dir_config(const fs::path& dir, const GameConfig& game_cfg,
         json current = game_cfg.to_json();
         if (check_model) current.update(model_cfg.to_json());
         else existing = existing_game.to_json();
-        std::cerr << "Error: " << flag << " config mismatch with " << *cfg_path << "\n"
-                  << "Diff (current -> saved):\n" << json::diff(current, existing).dump(2) << "\n";
-        std::exit(1);
+        fail(flag, " config mismatch with ", *cfg_path, "\nDiff (current -> saved):\n",
+             json::diff(current, existing).dump(2));
     }
-}
-
-// Iterations with a saved <arch>_<iter>_traj.json in `dir`, ascending.
-static std::vector<int> trajectory_iterations(const fs::path& dir, const std::string& arch) {
-    std::vector<int> iters;
-    const std::string prefix = arch + "_", suffix = "_traj.json";
-    for (auto& e : fs::directory_iterator(dir)) {
-        auto name = e.path().filename().string();
-        if (name.rfind(prefix, 0) == 0 && name.size() > prefix.size() + suffix.size() &&
-            name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0)
-            iters.push_back(std::stoi(name.substr(prefix.size(), name.size() - prefix.size() - suffix.size())));
-    }
-    std::sort(iters.begin(), iters.end());
-    return iters;
 }
 
 static json load_trajectories(const fs::path& dir, const std::string& arch, int iter) {
-    std::ifstream f(dir / iter_name(arch, iter, "_traj.json"));
+    std::ifstream f(dir / iter_file_name(arch, iter, kTrajectorySuffix));
     json j;
     f >> j;
     return j;
 }
 
-static void save_config_json(const fs::path& dir, const std::string& arch, const GameConfig& game_cfg,
-                             const ModelConfig& model_cfg) {
+static void save_config_json(const fs::path& dir, const GameConfig& game_cfg, const ModelConfig& model_cfg) {
     json cfg_json = game_cfg.to_json();
     cfg_json.update(model_cfg.to_json());
-    std::ofstream(dir / (arch + "_config.json")) << cfg_json.dump(2) << "\n";
+    std::ofstream(dir / config_file_name(model_cfg.model_type)) << cfg_json.dump(2) << "\n";
+}
+
+static void save_train_state(const fs::path& dir, const TrainState& st) {
+    std::ofstream(dir / "trainer" / "state.json") << st.to_json().dump(2) << "\n";
 }
 
 // ── Training ──────────────────────────────────────────────────────────────────
@@ -471,31 +522,52 @@ static Losses compute_losses(const ModelOutput& out, const Batch& b, const std::
     return {total, policy_loss, stone_loss, territory_loss, point_loss, rank_loss};
 }
 
-// The trained model, its weight average, and the optimizer - the state that persists across iterations.
+// The training side of a run: the settings every training step reads, and the state that persists
+// across iterations - the trained model, its weight average, the optimizer, the training window and
+// the TrainState.
 struct Trainer {
+    const Args& args;
+    const GameConfig& game_cfg;
+    const ModelConfig& model_cfg;
+    torch::Device device;
     AnyModel model;
     std::optional<AnyModel> average;  // KataGo's SWA: an exponential moving average of snapshots
     std::unique_ptr<torch::optim::Adam> optimizer;
+    TrainState st;
+    ReplayBuffer buffer;
+    std::mt19937 rng{std::random_device{}()};
+
+    // A freshly initialized model on `device`, with a fresh optimizer.
+    Trainer(const Args& args_, const GameConfig& game_cfg_, const ModelConfig& model_cfg_, torch::Device device_)
+        : args(args_), game_cfg(game_cfg_), model_cfg(model_cfg_), device(device_),
+          model(build_model(model_cfg_, game_cfg_.num_stones, game_cfg_.num_players)) {
+        std::visit([&](auto& m) { m->to(device); }, model);
+        optimizer = std::make_unique<torch::optim::Adam>(
+            parameters_of(model), torch::optim::AdamOptions(args.lr).weight_decay(args.l2));
+    }
+
+    const std::string& arch() const { return model_cfg.model_type; }
+    // The model self-play and the server should use: the weight average once it exists.
+    AnyModel& exported() { return average ? *average : model; }
 };
 
 // KataGo's SWA snapshot: average += (model - average) / swa_scale; the first snapshot copies.
-static void snapshot_average(Trainer& t, TrainState& st, const Args& args, const BoardConfig& bc,
-                             const ModelConfig& cfg, const GameConfig& game_cfg, torch::Device device) {
-    if (!st.swa_started || !t.average) {
-        t.average = clone_model(t.model, bc, cfg, game_cfg, device);
-        st.swa_started = true;
+static void snapshot_average(Trainer& t) {
+    if (!t.st.swa_started || !t.average) {
+        t.average = clone_model(t.model, t.model_cfg, t.game_cfg, t.device);
+        t.st.swa_started = true;
         return;
     }
     torch::NoGradGuard ng;
     auto src = parameters_of(t.model), dst = parameters_of(*t.average);
-    for (size_t i = 0; i < src.size(); i++) dst[i].add_(src[i].detach() - dst[i], 1.0 / args.swa_scale);
+    for (size_t i = 0; i < src.size(); i++) dst[i].add_(src[i].detach() - dst[i], 1.0 / t.args.swa_scale);
 }
 
 // Trains while the bucket holds at least one batch, up to max_train_samples_per_iteration samples,
 // sampling uniformly from the newest `window` rows. Returns the number of steps taken.
-static int train_on_bucket(Trainer& t, TrainState& st, ReplayBuffer& buffer, int64_t window, const Args& args,
-                           const GameConfig& game_cfg, const BoardConfig& bc, const ModelConfig& model_cfg,
-                           torch::Device device, std::mt19937& rng, int iter) {
+static int train_on_bucket(Trainer& t, int64_t window, int iter) {
+    const Args& args = t.args;
+    TrainState& st = t.st;
     auto t0 = Clock::now();
     std::visit([](auto& m) { m->train(); }, t.model);
     double sums[6] = {0, 0, 0, 0, 0, 0};
@@ -511,24 +583,24 @@ static int train_on_bucket(Trainer& t, TrainState& st, ReplayBuffer& buffer, int
         std::visit([&](auto& m) {
             using M = std::decay_t<decltype(m)>;
             if constexpr (std::is_same_v<M, Transformer>) {
-                auto hb = buffer.sample_with_history(args.batch_size, window, rng);
+                auto hb = t.buffer.sample_with_history(args.batch_size, window, t.rng);
                 b = hb.current;
-                out = m->forward(hb.hist_features.to(device), hb.hist_mask.to(device),
-                                 b.features.to(device), b.legal_mask.to(device));
+                out = m->forward(hb.hist_features.to(t.device), hb.hist_mask.to(t.device),
+                                 b.features.to(t.device), b.legal_mask.to(t.device));
             } else {
-                b = buffer.sample(args.batch_size, window, rng);
+                b = t.buffer.sample(args.batch_size, window, t.rng);
                 if constexpr (std::is_same_v<M, MessagePassingGNN>)
-                    out = m->forward(b.features.to(device), b.games, b.legal_mask.to(device));
+                    out = m->forward(b.features.to(t.device), b.games, b.legal_mask.to(t.device));
                 else
-                    out = m->forward(b.features.to(device), b.valid.to(device), b.legal_mask.to(device));
+                    out = m->forward(b.features.to(t.device), b.valid.to(t.device), b.legal_mask.to(t.device));
             }
         }, t.model);
-        b.policy_target = b.policy_target.to(device);
-        b.stone_owner = b.stone_owner.to(device);
-        b.territory_owner = b.territory_owner.to(device);
-        b.rank_target = b.rank_target.to(device);
+        b.policy_target = b.policy_target.to(t.device);
+        b.stone_owner = b.stone_owner.to(t.device);
+        b.territory_owner = b.territory_owner.to(t.device);
+        b.rank_target = b.rank_target.to(t.device);
 
-        auto losses = compute_losses(out, b, game_cfg.score_rule, game_cfg.num_stones);
+        auto losses = compute_losses(out, b, t.game_cfg.score_rule, t.game_cfg.num_stones);
         t.optimizer->zero_grad();
         losses.total.backward();
         torch::nn::utils::clip_grad_norm_(parameters_of(t.model), 1.0);
@@ -543,7 +615,7 @@ static int train_on_bucket(Trainer& t, TrainState& st, ReplayBuffer& buffer, int
             st.swa_accum += n;
             if (st.swa_accum >= args.swa_period_samples) {
                 st.swa_accum = 0;
-                snapshot_average(t, st, args, bc, model_cfg, game_cfg, device);
+                snapshot_average(t);
             }
         }
         torch::Tensor parts[6] = {losses.total, losses.policy, losses.stone, losses.territory, losses.point, losses.rank};
@@ -564,9 +636,9 @@ static int train_on_bucket(Trainer& t, TrainState& st, ReplayBuffer& buffer, int
 
 // Adds the bucket allowance for `new_rows` new rows (one pass over all the data the first time
 // training is possible - KataGo's first cycle trains about one sample per existing row), then trains.
-static void train_iteration(Trainer& t, TrainState& st, ReplayBuffer& buffer, int64_t new_rows, const Args& args,
-                            const GameConfig& game_cfg, const BoardConfig& bc, const ModelConfig& model_cfg,
-                            torch::Device device, std::mt19937& rng, int iter) {
+static void train_iteration(Trainer& t, int64_t new_rows, int iter) {
+    const Args& args = t.args;
+    TrainState& st = t.st;
     int64_t window = desired_window_rows(st, args);
     if (window == 0) {
         if (args.verbosity >= 1)
@@ -581,8 +653,8 @@ static void train_iteration(Trainer& t, TrainState& st, ReplayBuffer& buffer, in
     } else {
         st.bucket = std::min(st.bucket + new_rows * args.max_train_per_data, cap);
     }
-    buffer.trim(window);
-    train_on_bucket(t, st, buffer, window, args, game_cfg, bc, model_cfg, device, rng, iter);
+    t.buffer.trim(window);
+    train_on_bucket(t, window, iter);
 }
 
 // Whether iteration `iter`'s export is kept as <arch>_<iter>.pt.
@@ -590,22 +662,31 @@ static bool keeps_model_file(int iter, const Args& args) {
     return iter % args.saves_every == 0 || iter == args.iterations;
 }
 
-// Exports the model self-play and the server should use - the weight average once it exists - and
-// saves everything --resume needs under trainer/. The export is also kept as <arch>_<iter>.pt when
-// keep_model_file.
-static void export_and_save(Trainer& t, TrainState& st, const fs::path& dir, const std::string& arch, int iter,
-                            bool keep_model_file) {
-    if (keep_model_file) {
-        AnyModel& exported = t.average ? *t.average : t.model;
-        fs::path path = dir / iter_name(arch, iter, ".pt");
-        std::visit([&](auto& m) { torch::save(m, path.string()); }, exported);
+// Exports Trainer::exported() and saves everything --resume needs under trainer/. The export is also
+// kept as <arch>_<iter>.pt when keeps_model_file().
+static void export_and_save(Trainer& t, const fs::path& dir, int iter) {
+    if (keeps_model_file(iter, t.args)) {
+        fs::path path = dir / iter_file_name(t.arch(), iter, kModelSuffix);
+        std::visit([&](auto& m) { torch::save(m, path.string()); }, t.exported());
     }
-    st.exported_iteration = iter;
+    t.st.exported_iteration = iter;
     fs::create_directories(dir / "trainer");
     std::visit([&](auto& m) { torch::save(m, (dir / "trainer" / "model.pt").string()); }, t.model);
     if (t.average) std::visit([&](auto& m) { torch::save(m, (dir / "trainer" / "weight_average.pt").string()); }, *t.average);
     torch::save(*t.optimizer, (dir / "trainer" / "optimizer.pt").string());
-    std::ofstream(dir / "trainer" / "state.json") << st.to_json().dump(2) << "\n";
+    save_train_state(dir, t.st);
+}
+
+// Completes iteration `iter`: export_and_save() once training has started, else just the state.
+// Returns whether it exported.
+static bool end_iteration(Trainer& t, const fs::path& dir, int iter) {
+    t.st.iteration = iter;
+    if (!t.st.bucket_started) {
+        save_train_state(dir, t.st);
+        return false;
+    }
+    export_and_save(t, dir, iter);
+    return true;
 }
 
 static void print_game_result(int game_num, int total_games, int model_id, const BoardState& state) {
@@ -621,189 +702,116 @@ static void print_game_result(int game_num, int total_games, int model_id, const
     std::cout << "]" << std::endl;
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+// ── Run steps ─────────────────────────────────────────────────────────────────
 
-int main(int argc, char* argv[]) {
-    auto args = parse_args(argc, argv);
-
-    std::ifstream cfg_file(args.game_config_path);
-    if (!cfg_file) { std::cerr << "Cannot open --game-config file: " << args.game_config_path << "\n"; return 1; }
+static GameConfig load_game_config(const std::string& path) {
+    std::ifstream cfg_file(path);
+    if (!cfg_file) { std::cerr << "Cannot open --game-config file: " << path << "\n"; std::exit(1); }
     json cfg_json;
     cfg_file >> cfg_json;
-    GameConfig game_cfg = parse_game_cfg(cfg_json);
+    return parse_game_cfg(cfg_json);
+}
 
-    // A reference board from a fresh random seed (game_cfg.board_seed is ignored) fixes the
-    // architecture and the side length/node bound defaults; self-play gives each game thread a board
-    // of its own (SelfPlayRunner).
-    const auto program = parse_cleg(game_cfg.board_descr);
+// A reference board from a fresh random seed (game_cfg.board_seed is ignored), which fixes the
+// architecture and the side length/node bound defaults; self-play gives each game thread a board of
+// its own (SelfPlayRunner).
+static std::shared_ptr<const BoardConfig> reference_board(const ClegProgram& program, const GameConfig& game_cfg) {
     const uint32_t board_seed = std::random_device{}();
-    const BoardConfig bc = build_board_from_cleg(*program, board_seed);
-    std::cout << "Board:\n" << game_cfg.board_descr << "  N=" << bc.N << "  seed=" << board_seed << std::endl;
-    const std::string arch = effective_arch(args, game_cfg.board_descr, bc.emb.emb_dim());
+    auto bc = std::make_shared<const BoardConfig>(build_board_from_cleg(program, board_seed));
+    std::cout << "Board:\n" << game_cfg.board_descr << "  N=" << bc->N << "  seed=" << board_seed << std::endl;
+    return bc;
+}
 
-    // With forced_pass_only, the game's end depends on the full move history, which only the
-    // history-aware Transformer sees.
-    if (game_cfg.forced_pass_only && arch != "transformer") {
-        std::cerr << "Error: forced_pass_only=true requires --net-arch transformer (got '" << arch << "').\n";
-        return 1;
+// Rebuilds recorded games' GameRecords (replay_trajectory()), building each board seed's board once -
+// a self-play thread's games all share its board.
+struct GameReplayer {
+    const ClegProgram& program;
+    const GameConfig& game_cfg;
+    const ModelConfig& model_cfg;
+    std::map<uint32_t, std::shared_ptr<const BoardConfig>> boards;
+
+    GameRecord operator()(const json& trajectory) {
+        const auto board_seed = trajectory.at("boardSeed").get<uint32_t>();
+        auto& board = boards[board_seed];
+        if (!board) board = std::make_shared<const BoardConfig>(build_board_from_cleg(program, board_seed));
+        return replay_trajectory(trajectory, game_cfg, board, model_cfg.input_descr, history_descr_ptr(model_cfg));
     }
-    if (args.conn_px && (arch == "gnn" || arch == "transformer")) {
-        std::cerr << "Error: --conn-px only applies to the CNN/UNet (got '" << arch << "')\n";
-        return 1;
+};
+
+// --resume: restores `t` from <checkpoint-dir>/<tag>'s trainer/ and refills its window from the
+// newest recorded games. Returns that directory.
+static fs::path resume(Trainer& t, GameReplayer& replay) {
+    const Args& args = t.args;
+    const fs::path dir = fs::path(args.checkpoint_dir) / args.resume_tag;
+    const fs::path trainer_dir = dir / "trainer";
+    if (!fs::exists(trainer_dir / "state.json")) fail("--resume directory has no trainer state: ", dir);
+    validate_dir_config(dir, t.game_cfg, t.model_cfg, /*check_model=*/true, "--resume");
+    t.st = TrainState::from_json(json::parse(std::ifstream(trainer_dir / "state.json")));
+    // Weights and optimizer state exist once the first model has been exported.
+    if (fs::exists(trainer_dir / "model.pt")) {
+        load_weights(t.model, (trainer_dir / "model.pt").string(), t.device);
+        torch::load(*t.optimizer, (trainer_dir / "optimizer.pt").string());
     }
-
-    const std::vector<unsigned> side_lens = args.side_lens.value_or(bc.emb.side_lens);
-    if (bc.emb.emb_dim() != 0 && !fits_in(bc.emb, side_lens)) {
-        std::cerr << "Error: --side-lens " << json(side_lens).dump() << " doesn't contain the board's side lengths "
-                  << json(bc.emb.side_lens).dump() << "\n";
-        return 1;
-    }
-    if (!args.n_bound && side_lens.empty()) {
-        std::cerr << "Error: a board without an embedding needs --n-bound or --side-lens (an upper bound on its "
-                     "node count)\n";
-        return 1;
-    }
-    const int n_bound = args.n_bound.value_or(num_cells(side_lens));
-    if (n_bound < bc.N) {
-        std::cerr << "Error: nBound " << n_bound << (args.n_bound ? " (--n-bound)" : " (the product of the side lengths)")
-                  << " is below the board's node count " << bc.N << "\n";
-        return 1;
-    }
-    std::cout << "sideLens=" << json(side_lens).dump() << "  nBound=" << n_bound << std::endl;
-
-    torch::Device device = (torch::cuda::is_available() && !args.cpu) ? torch::kCUDA : torch::kCPU;
-    std::cout << "Device: " << device << std::endl;
-
-    // Self-play's network evaluation devices; network server thread i uses the (i mod count)-th.
-    std::vector<torch::Device> selfplay_devices;
-    if (args.selfplay_gpus.empty()) {
-        selfplay_devices.push_back(device);
-    } else {
-        if (!device.is_cuda()) { std::cerr << "Error: --selfplay-gpus needs CUDA (and no --cpu)\n"; return 1; }
-        int count = static_cast<int>(torch::cuda::device_count());
-        for (int gpu : args.selfplay_gpus) {
-            if (gpu >= count) {
-                std::cerr << "Error: --selfplay-gpus: device " << gpu << " does not exist (" << count << " visible)\n";
-                return 1;
-            }
-            selfplay_devices.emplace_back(torch::kCUDA, static_cast<torch::DeviceIndex>(gpu));
-        }
-        if (args.nn_server_threads < (int)selfplay_devices.size()) {
-            std::cerr << "Error: --nn-server-threads (" << args.nn_server_threads << ") is less than the number of "
-                      << "--selfplay-gpus (" << selfplay_devices.size() << "), so some would go unused\n";
-            return 1;
-        }
-        std::cout << "Self-play devices:";
-        for (auto& d : selfplay_devices) std::cout << " " << d;
-        std::cout << std::endl;
-    }
-
-    json input_descr = compute_input_descr(game_cfg, bc.emb.emb_dim(), side_lens, n_bound, args.conn_px.value_or(0));
-    int in_dim = input_descr.at("totalDims").get<int>();
-    // The Transformer's per-ply history input: just the turn position and stones.
-    json history_descr;
-    if (arch == "transformer") {
-        int tl_len = (int)game_cfg.turn_list.size(), ns = game_cfg.num_stones;
-        history_descr = {{"blocks", json::array({json::array({"plyMod", tl_len}), json::array({"stoneOccupancy", ns})})},
-                         {"totalDims", tl_len + ns + 1}};
-    }
-    int hidden_dim = arch == "cnn" ? args.cnn_hidden_dim : arch == "unet" ? args.unet_hidden_dim
-                   : arch == "transformer" ? args.transformer_hidden_dim : args.gnn_hidden_dim;
-    std::unique_ptr<ModelConfig> model_cfg;
-    if (arch == "cnn") model_cfg = std::make_unique<CNNConfig>(in_dim, hidden_dim, input_descr, args.cnn_conv_size);
-    else if (arch == "unet") model_cfg = std::make_unique<UNetConfig>(in_dim, hidden_dim, input_descr);
-    else if (arch == "transformer")
-        model_cfg = std::make_unique<TransformerConfig>(in_dim, hidden_dim, args.num_attn_layers, input_descr, history_descr);
-    else model_cfg = std::make_unique<GNNConfig>(in_dim, hidden_dim, args.num_layers, input_descr);
-    const json* hist_descr = history_descr_ptr(*model_cfg);
-
-    Trainer trainer{build_model(bc, *model_cfg, game_cfg.num_stones, game_cfg.num_players), std::nullopt, nullptr};
-    std::visit([&](auto& m) { m->to(device); }, trainer.model);
-    trainer.optimizer = std::make_unique<torch::optim::Adam>(
-        parameters_of(trainer.model), torch::optim::AdamOptions(args.lr).weight_decay(args.l2));
-
-    TrainState st;
-    ReplayBuffer buffer;
-    // Replayed games' boards, one per board seed - a self-play thread's games all share its board.
-    std::map<uint32_t, std::shared_ptr<const BoardConfig>> replay_boards;
-    auto replay = [&](const json& trajectory) {
-        auto& board = replay_boards[trajectory.at("boardSeed").get<uint32_t>()];
-        if (!board) board = std::make_shared<const BoardConfig>(
-                            build_board_from_cleg(*program, trajectory.at("boardSeed").get<uint32_t>()));
-        return replay_trajectory(trajectory, game_cfg, board, model_cfg->input_descr, hist_descr);
-    };
-    fs::path ckpt_dir;
-    std::mt19937 rng(std::random_device{}());
-
-    if (!args.resume_tag.empty()) {
-        ckpt_dir = fs::path(args.checkpoint_dir) / args.resume_tag;
-        if (!fs::exists(ckpt_dir / "trainer" / "state.json")) {
-            std::cerr << "Error: --resume directory has no trainer state: " << ckpt_dir << "\n";
-            return 1;
-        }
-        validate_dir_config(ckpt_dir, game_cfg, *model_cfg, /*check_model=*/true, "--resume");
-        st = TrainState::from_json(json::parse(std::ifstream(ckpt_dir / "trainer" / "state.json")));
-        // Weights and optimizer state exist once the first model has been exported.
-        if (fs::exists(ckpt_dir / "trainer" / "model.pt")) {
-            std::visit([&](auto& m) { torch::load(m, (ckpt_dir / "trainer" / "model.pt").string()); m->to(device); },
-                       trainer.model);
-            torch::load(*trainer.optimizer, (ckpt_dir / "trainer" / "optimizer.pt").string());
-        }
-        if (fs::exists(ckpt_dir / "trainer" / "weight_average.pt")) {
-            trainer.average = build_model(bc, *model_cfg, game_cfg.num_stones, game_cfg.num_players);
-            std::visit([&](auto& m) {
-                torch::load(m, (ckpt_dir / "trainer" / "weight_average.pt").string());
-                m->to(device);
-                m->eval();
-            }, *trainer.average);
-        }
-        // Refill the window from the newest recorded games.
-        int64_t window = std::max<int64_t>(desired_window_rows(st, args), args.min_rows);
-        std::vector<GameRecord> records;
-        int64_t rows = 0;
-        auto iters = trajectory_iterations(ckpt_dir, arch);
-        for (auto it = iters.rbegin(); it != iters.rend() && rows < window; ++it) {
-            json games = load_trajectories(ckpt_dir, arch, *it);
-            for (auto g = games.rbegin(); g != games.rend() && rows < window; ++g) {
-                records.push_back(replay(*g));
-                rows += records.back().num_rows();
-            }
-        }
-        for (auto r = records.rbegin(); r != records.rend(); ++r) buffer.add(std::move(*r));
-        std::cout << "Resuming after iteration " << st.iteration << ": " << st.total_games << " games, "
-                  << st.total_rows << " rows (" << buffer.stored_rows() << " reloaded)" << std::endl;
-    } else {
-        ckpt_dir = fresh_checkpoint_dir(args, game_cfg, *model_cfg);
-    }
-    save_config_json(ckpt_dir, arch, game_cfg, *model_cfg);
-
-    // ── --retrain: train a fresh model on another run's recorded games, file by file ──
-    if (!args.retrain_tag.empty()) {
-        fs::path src = fs::path(args.checkpoint_dir) / args.retrain_tag;
-        if (!fs::exists(src)) { std::cerr << "Error: --retrain directory does not exist: " << src << "\n"; return 1; }
-        validate_dir_config(src, game_cfg, *model_cfg, /*check_model=*/false, "--retrain");
-        for (int it : trajectory_iterations(src, arch)) {
-            if (it > args.iterations) break;
-            json games = load_trajectories(src, arch, it);
-            int64_t new_rows = 0;
-            for (auto& g : games) {
-                GameRecord r = replay(g);
-                int64_t rows = r.num_rows();
-                new_rows += rows;
-                if (g.value("model", -1) < 0) st.random_rows += rows;
-                buffer.add(std::move(r));
-                st.total_games++;
-            }
-            st.total_rows += new_rows;
-            std::ofstream(ckpt_dir / iter_name(arch, it, "_traj.json")) << games.dump() << "\n";
-            train_iteration(trainer, st, buffer, new_rows, args, game_cfg, bc, *model_cfg, device, rng, it);
-            st.iteration = it;
-            if (st.bucket_started) export_and_save(trainer, st, ckpt_dir, arch, it, keeps_model_file(it, args));
-            else std::ofstream(ckpt_dir / "trainer" / "state.json") << st.to_json().dump(2) << "\n";
+    if (fs::exists(trainer_dir / "weight_average.pt"))
+        t.average = load_eval_model(t.model_cfg, t.game_cfg.num_stones, t.game_cfg.num_players,
+                                    (trainer_dir / "weight_average.pt").string(), t.device);
+    // Refill the window from the newest recorded games.
+    int64_t window = std::max<int64_t>(desired_window_rows(t.st, args), args.min_rows);
+    std::vector<GameRecord> records;
+    int64_t rows = 0;
+    auto iters = iter_files(dir, t.arch(), kTrajectorySuffix);
+    for (auto it = iters.rbegin(); it != iters.rend() && rows < window; ++it) {
+        json games = load_trajectories(dir, t.arch(), *it);
+        for (auto g = games.rbegin(); g != games.rend() && rows < window; ++g) {
+            records.push_back(replay(*g));
+            rows += records.back().num_rows();
         }
     }
+    for (auto r = records.rbegin(); r != records.rend(); ++r) t.buffer.add(std::move(*r));
+    std::cout << "Resuming after iteration " << t.st.iteration << ": " << t.st.total_games << " games, "
+              << t.st.total_rows << " rows (" << t.buffer.stored_rows() << " reloaded)" << std::endl;
+    return dir;
+}
 
-    // ── Self-play loop ───────────────────────────────────────────────────────
+// --retrain: trains `t` on <checkpoint-dir>/<tag>'s recorded games, file by file, copying each into
+// `dir`.
+static void retrain(Trainer& t, GameReplayer& replay, const fs::path& dir) {
+    const Args& args = t.args;
+    const fs::path src = fs::path(args.checkpoint_dir) / args.retrain_tag;
+    if (!fs::exists(src)) fail("--retrain directory does not exist: ", src);
+    validate_dir_config(src, t.game_cfg, t.model_cfg, /*check_model=*/false, "--retrain");
+    for (int it : iter_files(src, t.arch(), kTrajectorySuffix)) {
+        if (it > args.iterations) break;
+        json games = load_trajectories(src, t.arch(), it);
+        int64_t new_rows = 0;
+        for (auto& g : games) {
+            GameRecord r = replay(g);
+            int64_t rows = r.num_rows();
+            new_rows += rows;
+            if (g.value("model", -1) < 0) t.st.random_rows += rows;
+            t.buffer.add(std::move(r));
+            t.st.total_games++;
+        }
+        t.st.total_rows += new_rows;
+        std::ofstream(dir / iter_file_name(t.arch(), it, kTrajectorySuffix)) << games.dump() << "\n";
+        train_iteration(t, new_rows, it);
+        end_iteration(t, dir, it);
+    }
+}
+
+// The models self-play plays with: one copy of Trainer::exported() per self-play device (held
+// whether or not its <arch>_<iter>.pt was kept), or none - the uniform evaluator - before any export.
+static std::vector<AnyModel> selfplay_models(Trainer& t, const std::vector<torch::Device>& devices) {
+    std::vector<AnyModel> models;
+    if (t.st.exported_iteration < 0) return models;
+    for (auto& d : devices) models.push_back(clone_model(t.exported(), t.model_cfg, t.game_cfg, d));
+    return models;
+}
+
+// The self-play loop: plays, trains and exports each remaining iteration up to --iterations.
+static void self_play(Trainer& t, const fs::path& dir, const std::vector<torch::Device>& devices) {
+    const Args& args = t.args;
+    TrainState& st = t.st;
     SearchParams search_params = SearchParams::self_play();
     search_params.cpuct = args.c_puct;
     SelfPlayParams sp_params;
@@ -812,36 +820,18 @@ int main(int argc, char* argv[]) {
     sp_params.reduced_visits_min = std::min(sp_params.reduced_visits_min, args.full_visits);
     sp_params.cheap_prob = args.cheap_prob;
     sp_params.linear_move_bound = args.linear_move_bound;
-    std::unique_ptr<SelfPlayRunner> runner;
-    try {
-        runner = std::make_unique<SelfPlayRunner>(game_cfg, model_cfg->input_descr, hist_descr, sp_params,
-                                                  search_params, args.gamegen_batch_size, args.nn_server_threads,
-                                                  args.nn_max_batch, std::random_device{}());
-    } catch (const std::runtime_error& e) {
-        std::cerr << "Error: " << e.what() << "\n";
-        return 1;
-    }
-
-    // The model self-play plays with: one copy of the newest export per self-play device, taken from
-    // the trainer (which holds it whether or not its <arch>_<iter>.pt was kept), or the uniform
-    // evaluator before any.
-    std::vector<AnyModel> selfplay_models;
-    auto load_selfplay_model = [&]() {
-        selfplay_models.clear();
-        if (st.exported_iteration < 0) return;
-        for (auto& d : selfplay_devices)
-            selfplay_models.push_back(clone_model(trainer.average ? *trainer.average : trainer.model, bc, *model_cfg, game_cfg, d));
-    };
-    load_selfplay_model();
+    SelfPlayRunner runner(t.game_cfg, t.model_cfg.input_descr, history_descr_ptr(t.model_cfg), sp_params,
+                          search_params, args.gamegen_batch_size, args.nn_server_threads, args.nn_max_batch,
+                          std::random_device{}());
+    std::vector<AnyModel> models = selfplay_models(t, devices);
 
     for (int iter = st.iteration + 1; iter <= args.iterations; iter++) {
         auto t0 = Clock::now();
-        bool has_model = !selfplay_models.empty();
+        bool has_model = !models.empty();
         std::vector<Evaluator> evaluators;
-        for (size_t d = 0; d < selfplay_models.size(); d++)
-            evaluators.push_back(make_evaluator(selfplay_models[d]));
+        for (auto& m : models) evaluators.push_back(make_evaluator(m));
         if (!has_model)
-            evaluators.push_back(make_uniform_evaluator(game_cfg.num_stones, game_cfg.num_players));
+            evaluators.push_back(make_uniform_evaluator(t.game_cfg.num_stones, t.game_cfg.num_players));
         int model_id = has_model ? st.exported_iteration : -1;
         if (args.verbosity >= 1)
             std::cout << "[iter " << std::setw(4) << iter << "] self-play with "
@@ -851,8 +841,8 @@ int main(int argc, char* argv[]) {
         json traj = json::array();
         int64_t new_rows = 0;
         int games = 0;
-        auto finished = runner->play(evaluators, args.games_per_iteration);
-        NNServer::Stats nn = runner->take_nn_stats();
+        auto finished = runner.play(evaluators, args.games_per_iteration);
+        NNServer::Stats nn = runner.take_nn_stats();
         for (auto& g : finished) {
             games++;
             if (args.verbosity >= 1) print_game_result(games, (int)finished.size(), model_id, g.final_state);
@@ -861,7 +851,7 @@ int main(int argc, char* argv[]) {
             if (!has_model) st.random_rows += rows;
             g.trajectory["model"] = model_id;
             traj.push_back(std::move(g.trajectory));
-            buffer.add(std::move(g.record));
+            t.buffer.add(std::move(g.record));
         }
         if (args.verbosity >= 2 && nn.batches > 0)
             std::cout << std::fixed << std::setprecision(1) << "  network: " << nn.rows << " rows in " << nn.batches
@@ -869,20 +859,50 @@ int main(int argc, char* argv[]) {
                       << nn.seconds << "s evaluating" << std::defaultfloat << std::endl;
         st.total_games += games;
         st.total_rows += new_rows;
-        std::ofstream(ckpt_dir / iter_name(arch, iter, "_traj.json")) << traj.dump() << "\n";
+        std::ofstream(dir / iter_file_name(t.arch(), iter, kTrajectorySuffix)) << traj.dump() << "\n";
         if (args.verbosity >= 1)
             std::cout << "[iter " << std::setw(4) << iter << "] " << games << " games, " << new_rows << " new rows ("
                       << st.total_rows << " total), " << std::fixed << std::setprecision(1)
                       << std::chrono::duration<double>(Clock::now() - t0).count() << "s" << std::defaultfloat << std::endl;
 
-        train_iteration(trainer, st, buffer, new_rows, args, game_cfg, bc, *model_cfg, device, rng, iter);
-        st.iteration = iter;
-        if (st.bucket_started) {
-            export_and_save(trainer, st, ckpt_dir, arch, iter, keeps_model_file(iter, args));
-            load_selfplay_model();
-        } else {
-            std::ofstream(ckpt_dir / "trainer" / "state.json") << st.to_json().dump(2) << "\n";
-        }
+        train_iteration(t, new_rows, iter);
+        if (end_iteration(t, dir, iter)) models = selfplay_models(t, devices);
     }
-    return 0;
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+
+static void run(const Args& args) {
+    const GameConfig game_cfg = load_game_config(args.game_config_path);
+    const auto program = parse_cleg(game_cfg.board_descr);
+    const auto board = reference_board(*program, game_cfg);
+    // BoardState's constructor checks the game config. None of its checks depend on the board, so
+    // this also covers the self-play threads' boards, whose threads couldn't report the error.
+    new_state(game_cfg, board);
+    const unsigned emb_dim = board->emb.emb_dim();
+    const std::string arch = effective_arch(args, game_cfg, emb_dim);
+    const InputBounds bounds = input_bounds(args, *board);
+
+    torch::Device device = (torch::cuda::is_available() && !args.cpu) ? torch::kCUDA : torch::kCPU;
+    std::cout << "Device: " << device << std::endl;
+    const std::vector<torch::Device> devices = selfplay_devices(args, device);
+
+    const auto model_cfg = make_model_config(args, arch, game_cfg, emb_dim, bounds);
+    Trainer trainer(args, game_cfg, *model_cfg, device);
+    GameReplayer replay{*program, game_cfg, *model_cfg, {}};
+    const fs::path dir = args.resume_tag.empty() ? fresh_checkpoint_dir(args, game_cfg, *model_cfg)
+                                                 : resume(trainer, replay);
+    save_config_json(dir, game_cfg, *model_cfg);
+    if (!args.retrain_tag.empty()) retrain(trainer, replay, dir);
+    self_play(trainer, dir, devices);
+}
+
+int main(int argc, char* argv[]) {
+    try {
+        run(parse_args(argc, argv));
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1;
+    }
 }

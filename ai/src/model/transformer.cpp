@@ -1,30 +1,8 @@
 #include "model/transformer.h"
-#include <limits>
 #include <algorithm>
-#include <cassert>
 #include <cstring>
-
-TransformerPolicyHeadImpl::TransformerPolicyHeadImpl(int hidden_dim, int num_stones)
-    : num_stones_(num_stones)
-{
-    proj = register_module("proj", torch::nn::Linear(hidden_dim, num_stones + 1));
-    attn = register_module("attn", torch::nn::Linear(hidden_dim, 1));
-}
-
-torch::Tensor TransformerPolicyHeadImpl::forward(const torch::Tensor& h) {
-    int64_t B = h.size(0), S = h.size(1);
-    auto out          = proj->forward(h);                        // (B, S, ns+1)
-    // Place logits are slot-major out of `proj` ((B,S,numStones)) but must be flattened
-    // stone-major (index (stone-1)*S+slot, matching legal_mask's layout - see slot_input(),
-    // features.h) - permute before reshaping to make this happen.
-    auto place_logits = out.slice(-1, 0, num_stones_)
-                            .permute({0, 2, 1})
-                            .reshape({B, num_stones_ * S});        // (B, ns*S)
-    auto pass_field   = out.select(-1, num_stones_);               // (B, S)
-    auto attn_weights = torch::softmax(attn->forward(h).squeeze(-1), -1); // (B, S)
-    auto pass_logit   = (attn_weights * pass_field).sum(-1, /*keepdim=*/true); // (B, 1)
-    return torch::cat({place_logits, pass_logit}, -1);            // (B, ns*S+1)
-}
+#include <stdexcept>
+#include <string>
 
 TransformerBlockImpl::TransformerBlockImpl(int hidden_dim, int num_heads) {
     mha = register_module("mha", torch::nn::MultiheadAttention(
@@ -48,10 +26,12 @@ torch::Tensor TransformerBlockImpl::forward(const torch::Tensor& q, const torch:
 }
 
 TransformerImpl::TransformerImpl(const TransformerConfig& cfg, int num_stones, int num_players)
-    : cfg_(cfg), num_stones_(num_stones), num_slots_(num_node_slots(cfg.input_descr)),
+    : cfg_(cfg), num_slots_(num_node_slots(cfg.input_descr)),
       history_feature_dim_(cfg_.history_descr.at("totalDims").get<int>())
 {
-    assert(cfg_.hidden_dim % kNumHeads == 0 && "TransformerImpl: hidden_dim must be divisible by kNumHeads");
+    if (cfg_.hidden_dim % kNumHeads != 0)
+        throw std::runtime_error("Transformer: hidden_dim " + std::to_string(cfg_.hidden_dim) +
+                                 " must be divisible by its " + std::to_string(kNumHeads) + " attention heads");
 
     int D = cfg_.hidden_dim;
     encoder_in  = register_module("encoder_in",  torch::nn::Linear(num_slots_ * cfg_.feature_dim, D));
@@ -68,16 +48,7 @@ TransformerImpl::TransformerImpl(const TransformerConfig& cfg, int num_stones, i
     decoder_in  = register_module("decoder_in",  torch::nn::Linear(D, D));
     decoder_out = register_module("decoder_out", torch::nn::Linear(D, num_slots_ * D));
 
-    stone_head = register_module("stone_head", torch::nn::Sequential(
-        torch::nn::Linear(D, D),
-        torch::nn::ReLU(),
-        torch::nn::Linear(D, num_stones + 1)));
-    territory_head = register_module("territory_head", torch::nn::Sequential(
-        torch::nn::Linear(D, D),
-        torch::nn::ReLU(),
-        torch::nn::Linear(D, num_stones + 1)));
-    policy_head = register_module("policy_head", TransformerPolicyHead(D, num_stones));
-    rank_head = register_module("rank_head", RankHead(D, num_rank_pairs(num_players)));
+    heads.register_on(*this, D, num_stones, num_players);
 }
 
 ModelOutput TransformerImpl::forward(
@@ -128,17 +99,7 @@ ModelOutput TransformerImpl::forward(
     auto h_slots = torch::relu(decoder_in->forward(h_star));
     h_slots = decoder_out->forward(h_slots).reshape({B, num_slots_, D});  // (B, S, D)
 
-    auto stone_est     = torch::softmax(stone_head->forward(h_slots), -1);      // (B, S, num_stones+1)
-    auto territory_est = torch::softmax(territory_head->forward(h_slots), -1);  // (B, S, num_stones+1)
-    auto ownership = torch::stack({stone_est, territory_est}, 1);              // (B, 2, S, num_stones+1)
-    auto rank = rank_head->forward(h_slots);                            // (B, num_rank_pairs, 3)
-
-    auto logits = policy_head->forward(h_slots); // (B, num_stones*S+1)
-    const float NEG_INF = -std::numeric_limits<float>::infinity();
-    logits = logits.masked_fill(legal_mask.logical_not(), NEG_INF);
-    logits = logits.masked_fill(legal_mask.any(-1, true).logical_not(), 0.0f);
-    auto policy = torch::softmax(logits, -1);
-    return {policy, ownership, rank};
+    return heads.forward(h_slots, legal_mask);
 }
 
 ModelInput TransformerImpl::prepare_input(const BoardState& state, const std::shared_ptr<const GameInput>& game) const {

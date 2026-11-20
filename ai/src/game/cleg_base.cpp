@@ -1,4 +1,5 @@
 #include "game/cleg_base.h"
+#include "game/always_assert.h"
 #include <cmath>
 #include <set>
 #include <sstream>
@@ -60,13 +61,7 @@ ClegType cleg_value_type(const ClegValue& v) {
     return ClegType{v.kind, nullptr};
 }
 
-std::string format_number_display(double d) {
-    if (d == std::floor(d) && std::abs(d) < 1e15) return std::to_string(static_cast<long long>(d));
-    std::ostringstream oss;
-    oss.precision(15);
-    oss << d;
-    return oss.str();
-}
+std::string format_number_display(double d) { return js_number_string(d); }
 
 // Full round-trip precision, for cleg_set_key below only (an internal dedup key, never user-facing
 // text) - unlike format_number_display, this must never collide two distinct doubles.
@@ -213,7 +208,7 @@ static BinaryOverload array_concat_overload() {
 
 // Mirrors shared/clegBase.ts's requireRepeatCount().
 static int require_repeat_count(double n) {
-    if (n != std::floor(n) || n < 0)
+    if (!is_integer(n) || n < 0)
         throw std::runtime_error("cleg: '*' replication count must be a nonnegative integer, got " + format_number_display(n));
     return static_cast<int>(n);
 }

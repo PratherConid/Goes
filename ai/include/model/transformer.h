@@ -1,30 +1,12 @@
 #pragma once
 #include <torch/torch.h>
 #include "game/board_state.h"
-#include "game/board_config.h"
 #include "model/features.h"
+#include "model/heads.h"
 #include "model/model_config.h"
 #include "model/model_output.h"
-#include "model/rank_head.h"
 #include <vector>
 #include <utility>
-
-// Policy head: identical structure/formula to CNNPolicyHeadImpl/GNNPolicyHeadImpl/
-// UNetPolicyHeadImpl (deliberately one head type per architecture rather than one shared class,
-// matching this codebase's existing per-architecture convention). Per-node
-// linear produces num_stones place-logit channels and 1 pass-field channel; the pass field is
-// reduced to a single pass logit via a learned attention-weighted sum over nodes.
-struct TransformerPolicyHeadImpl : torch::nn::Module {
-    torch::nn::Linear proj{nullptr};  // hidden_dim -> num_stones+1 (place logits, pass field)
-    torch::nn::Linear attn{nullptr};  // hidden_dim -> 1 (unnormalised attention score)
-    int num_stones_;
-
-    TransformerPolicyHeadImpl(int hidden_dim, int num_stones);
-
-    // h: (B, S, hidden_dim) over the model's slots -> (B, num_stones*S+1) logits
-    torch::Tensor forward(const torch::Tensor& h);
-};
-TORCH_MODULE(TransformerPolicyHead);
 
 // One pre-LN attention + feed-forward block - the unit TransformerImpl's cross-attention stack is
 // built from, with the query and key/value sequences passed separately by the call site (see
@@ -76,9 +58,7 @@ TORCH_MODULE(TransformerBlock);
 // Decoder: h* -> one monolithic MLP (decoder_in -> ReLU -> decoder_out) -> reshape (num_slots,
 //          hidden_dim) - the literal inverse of the encoder's flatten, no per-slot operation
 //          anywhere in this path (unlike the other three architectures' topology-aware bodies).
-// Heads: the resulting (N, hidden_dim) tensor feeds the same stone_head/territory_head/policy
-//          head shapes CNN/UNet/GNN already share, unmodified - and the shared RankHead
-//          (rank_head.h) too.
+// Heads: OutputHeads (heads.h) over the resulting (S, hidden_dim) tensor.
 //
 // Known cost tradeoff: unlike the other three architectures' O(1)-per-leaf evaluation, this is
 // O(ply_count) per leaf (loops every historical ply via history_features_at_ply()) - materially
@@ -100,13 +80,9 @@ struct TransformerImpl : torch::nn::Module {
     torch::nn::Linear decoder_in{nullptr};   // hidden_dim -> hidden_dim
     torch::nn::Linear decoder_out{nullptr};  // hidden_dim -> num_slots*hidden_dim
 
-    torch::nn::Sequential stone_head{nullptr};
-    torch::nn::Sequential territory_head{nullptr};
-    TransformerPolicyHead policy_head{nullptr};
-    RankHead rank_head{nullptr};
+    OutputHeads heads;
 
     TransformerConfig cfg_;
-    int num_stones_;
     int num_slots_;            // num_node_slots(): the zero-extended input's slot count
     int history_feature_dim_;  // cfg_.history_descr's totalDims, cached at construction time
     static constexpr int kNumHeads = 4;  // hardcoded, not CLI-configurable - see .cpp ctor

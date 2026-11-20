@@ -66,13 +66,15 @@ add_library(goes_core STATIC
   src/game/geometry.cpp
   src/game/topology.cpp
   src/game/board_state.cpp
+  src/game/game_config.cpp
   src/model/features.cpp
+  src/model/input_descr.cpp
   src/model/model_config.cpp
   src/model/gnn.cpp
   src/model/unet.cpp
   src/model/cnn.cpp
   src/model/transformer.cpp
-  src/model/rank_head.cpp
+  src/model/heads.cpp
   src/mcts/mcts.cpp
   src/mcts/nn_server.cpp
   src/mcts/utility.cpp

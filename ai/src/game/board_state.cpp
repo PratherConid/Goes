@@ -1,4 +1,5 @@
 #include "game/board_state.h"
+#include "game/always_assert.h"
 #include <cassert>
 #include <algorithm>
 #include <unordered_set>
@@ -472,37 +473,41 @@ BoardState::BoardState(int num_stones_,
       adlist(bc, &bc->adlist),
       N(bc->N)
 {
-    assert(num_stones > 0 && "num_stones must be > 0");
-    assert(!turn_list.empty() && "turn_list must be non-empty");
+    auto all_zero_one = [](const std::vector<int>& xs) {
+        return std::all_of(xs.begin(), xs.end(), [](int p) { return p == 0 || p == 1; });
+    };
+    auto null_or_non_negative = [](const std::optional<int>& v) { return !v.has_value() || *v >= 0; };
+    always_assert(num_stones > 0, "numStones must be > 0, got ", num_stones);
+    always_assert(!turn_list.empty(), "turnList must be non-empty");
     for (const auto& t : turn_list) {
-        assert(t.player >= 1 && t.player <= num_players && "turn_list player out of range [1, num_players]");
-        assert((int)t.stones.size() == num_stones && "turn_list stones length must equal num_stones");
-        assert((int)t.is_protected.size() == num_stones && "turn_list is_protected length must equal num_stones");
-        assert((int)t.friendly.size() == num_stones && "turn_list friendly length must equal num_stones");
-        bool any_offered = false;
-        for (int v : t.stones) {
-            assert((v == 0 || v == 1) && "turn_list stones values must be 0 or 1");
-            if (v == 1) any_offered = true;
-        }
-        assert(any_offered && "turn_list stones must have at least one available stone");
-        for (int v : t.is_protected) assert((v == 0 || v == 1) && "turn_list is_protected values must be 0 or 1");
-        for (int v : t.friendly) assert((v == 0 || v == 1) && "turn_list friendly values must be 0 or 1");
+        always_assert(t.player >= 1 && t.player <= num_players,
+                      "turnList player ", t.player, " out of range [1, ", num_players, "]");
+        always_assert((int)t.stones.size() == num_stones,
+                      "turnList stones length ", t.stones.size(), " must equal numStones ", num_stones);
+        always_assert(all_zero_one(t.stones), "turnList stones values must be 0 or 1");
+        always_assert(std::any_of(t.stones.begin(), t.stones.end(), [](int p) { return p == 1; }),
+                      "turnList stones must have at least one available stone");
+        always_assert((int)t.is_protected.size() == num_stones,
+                      "turnList protected length ", t.is_protected.size(), " must equal numStones ", num_stones);
+        always_assert(all_zero_one(t.is_protected), "turnList protected values must be 0 or 1");
+        always_assert((int)t.friendly.size() == num_stones,
+                      "turnList friendly length ", t.friendly.size(), " must equal numStones ", num_stones);
+        always_assert(all_zero_one(t.friendly), "turnList friendly values must be 0 or 1");
     }
-    assert((int)player_stone_place_limit.size() == num_stones && "player_stone_place_limit length must equal num_stones");
-    for (auto& row : player_stone_place_limit) {
-        assert((int)row.size() == num_players && "player_stone_place_limit sublist length must equal num_players");
-        for (auto& v : row) {
-            assert((!v.has_value() || *v >= 0) &&
-                   "player_stone_place_limit values must be nullopt or non-negative");
-        }
+    always_assert((int)player_stone_place_limit.size() == num_stones,
+                  "playerStonePlaceLimit length ", player_stone_place_limit.size(), " must equal numStones ", num_stones);
+    for (const auto& row : player_stone_place_limit) {
+        always_assert((int)row.size() == num_players,
+                      "playerStonePlaceLimit sublist length ", row.size(), " must equal numPlayers ", num_players);
+        always_assert(std::all_of(row.begin(), row.end(), null_or_non_negative),
+                      "playerStonePlaceLimit values must be null or a non-negative integer");
     }
-    assert((int)global_stone_place_limit.size() == num_stones && "global_stone_place_limit length must equal num_stones");
-    for (auto& v : global_stone_place_limit) {
-        assert((!v.has_value() || *v >= 0) &&
-               "global_stone_place_limit values must be nullopt or non-negative");
-    }
-    assert((!max_plies.has_value() || *max_plies >= 1) && "max_plies must be nullopt or a positive integer");
-    assert(std::all_of(komi.begin(), komi.end(), [](float k) { return k >= 0.0f; }) && "komi values must be >= 0");
+    always_assert((int)global_stone_place_limit.size() == num_stones,
+                  "globalStonePlaceLimit length ", global_stone_place_limit.size(), " must equal numStones ", num_stones);
+    always_assert(std::all_of(global_stone_place_limit.begin(), global_stone_place_limit.end(), null_or_non_negative),
+                  "globalStonePlaceLimit values must be null or a non-negative integer");
+    always_assert(!max_plies.has_value() || *max_plies >= 1, "maxPlies must be null or a positive integer");
+    always_assert(std::all_of(komi.begin(), komi.end(), [](float k) { return k >= 0.0f; }), "komi values must be >= 0");
 
     owned_hm_ = std::make_unique<HistoryManager>();
     hm_ = owned_hm_.get();

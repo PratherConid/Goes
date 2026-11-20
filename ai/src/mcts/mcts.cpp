@@ -1,6 +1,6 @@
 #include "mcts/mcts.h"
 #include "model/features.h"
-#include "model/rank_head.h"
+#include "model/rank_pairs.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>

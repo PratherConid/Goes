@@ -1,6 +1,6 @@
 #include "game/topology.h"
+#include "game/always_assert.h"
 #include <algorithm>
-#include <cassert>
 #include <numeric>
 #include <functional>
 
@@ -87,7 +87,7 @@ AdjacencyList to_adjacency_list(const std::vector<std::vector<int>>& adj) {
 }
 
 std::vector<BoardSimplex> find_simplices(const std::vector<std::vector<int>>& adj, int n) {
-    assert(n >= 1 && "find_simplices: n must be at least 1");
+    always_assert(n >= 1, "findSimplices: n must be a positive integer, got ", n);
     int N = (int)adj.size();
     auto adj_list = to_adjacency_list(adj);
     std::vector<BoardSimplex> simplices;

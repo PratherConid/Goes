@@ -50,7 +50,14 @@
 //   finds the longest common prefix of the stored and incoming move lists, then
 //   withdraws/advances the cached state rather than replaying from scratch when
 //   that is cheaper (stored_len < 2 * lcp_len). Otherwise it replays all moves
-//   from an empty board and issues a fresh session_id.
+//   from an empty board and issues a fresh session_id, dropping the request's
+//   old session. At most kMaxSessions (64) sessions are kept: creating one past
+//   that evicts the least recently used, and a request naming an evicted (or
+//   otherwise unknown) session_id just takes the full-replay path.
+//
+// Requests are handled one at a time (ServerState::mutex): httplib serves them on
+// a thread pool, but sessions, the model and checkpoint caches, and board building
+// (fractal.cpp's caches) are shared and unsynchronized.
 //
 // GET /health - returns {"status":"ok","loaded_tags":[...],"device":...}
 //
@@ -59,18 +66,19 @@
 // server instead scans ckpt_dir's subdirectories once (cached in
 // ServerState::checkpoint_index; directories created after that first scan
 // need a server restart to be picked up) and matches a request's GameConfig
-// against each directory's stored one via weak_equal() (self_play.h) - see
+// against each directory's stored one via weak_equal() (game/game_config.h) - see
 // find_checkpoint_dir(), below. Models are then loaded lazily on first
 // request for each matched directory and cached by that directory name.
 #include "game/board_config.h"
 #include "game/cleg_eval.h"
 #include "game/cleg_parser.h"
 #include "game/board_state.h"
+#include "game/game_config.h"
 #include "model/any_model.h"
 #include "model/features.h"
 #include "model/model_config.h"
 #include "mcts/mcts.h"
-#include "training/self_play.h"
+#include "training/checkpoint_files.h"
 #include <torch/torch.h>
 // Single-header libraries in third_party/
 // (OpenSSL is opt-in - not defining CPPHTTPLIB_OPENSSL_SUPPORT keeps it plain HTTP)
@@ -86,34 +94,23 @@
 #include <algorithm>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <fstream>
 #include <cstdlib>
 #include <random>
 #include <cstdio>
-#include <cctype>
+#include <utility>
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 // ── Checkpoint helpers ────────────────────────────────────────────────────────
 
-// The <arch>_<iter>.pt (train.cpp's iter_name()) directly in `dir` with the highest iteration.
+// The <arch>_<iter>.pt directly in `dir` with the highest iteration.
 static std::optional<fs::path> latest_model_file(const fs::path& dir, const std::string& arch) {
-    const std::string prefix = arch + "_", suffix = ".pt";
-    std::optional<fs::path> latest;
-    long long latest_iter = -1;
-    for (auto& e : fs::directory_iterator(dir)) {
-        if (!e.is_regular_file()) continue;
-        auto name = e.path().filename().string();
-        if (name.size() <= prefix.size() + suffix.size() || name.rfind(prefix, 0) != 0 ||
-            name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0)
-            continue;
-        std::string iter = name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
-        if (!std::all_of(iter.begin(), iter.end(), [](unsigned char c) { return std::isdigit(c); })) continue;
-        long long n = std::stoll(iter);
-        if (n > latest_iter) { latest_iter = n; latest = e.path(); }
-    }
-    return latest;
+    auto iters = iter_files(dir, arch, kModelSuffix);
+    if (iters.empty()) return std::nullopt;
+    return dir / iter_file_name(arch, iters.back(), kModelSuffix);
 }
 
 // ── Session ID ────────────────────────────────────────────────────────────────
@@ -143,18 +140,28 @@ struct SessionState {
     std::unique_ptr<BoardState> state;   // board state after all replayed moves
     std::vector<MoveRef> moves;          // moves applied so far
     std::shared_ptr<const GameInput> game_input;  // built with the session (make_game_input())
+    uint64_t last_used = 0;              // ServerState::session_clock at its latest request
 };
+
+// The most sessions kept at once (see the header comment). The TS server runs one goes_server per
+// game, so a process normally holds only a few, and an evicted session costs its game one replay.
+static constexpr size_t kMaxSessions = 64;
 
 // ── Server state ──────────────────────────────────────────────────────────────
 
 struct ServerState {
-    std::unordered_map<std::string, AnyModel> models;
-    std::unordered_map<std::string, std::unique_ptr<SessionState>> sessions;
+    // Set at startup, read-only afterwards.
     torch::Device device{torch::kCPU};
     int default_sims = 200;
     // 0 = the search's best move; >0 = sample from its play-selection values at that temperature.
     float default_temperature = 0.0f;
     std::string ckpt_dir;
+
+    // Held while a request is handled; guards everything below.
+    std::mutex mutex;
+    std::unordered_map<std::string, AnyModel> models;
+    std::unordered_map<std::string, std::unique_ptr<SessionState>> sessions;  // at most kMaxSessions
+    uint64_t session_clock = 0;  // ticks at each request that uses or creates a session
     // (checkpoint directory name, its stored GameConfig) for every
     // subdirectory of ckpt_dir - populated lazily, once, on the first /move
     // request (see find_checkpoint_dir()). Checkpoint directories created
@@ -190,6 +197,39 @@ static std::map<int, std::vector<int>> parse_resigns(const json& j) {
     return result;
 }
 
+// A /move request's fields (see the header comment).
+struct MoveRequest {
+    GameConfig cfg;
+    std::string session_id;                   // "" = none
+    int num_sims = 0;
+    float temperature = 0.0f;
+    std::vector<MoveRef> moves;               // full move history - see parse_move_ref()
+    std::map<int, std::vector<int>> resigns;  // ply -> resigned players - see parse_resigns()
+    std::vector<int> board;                   // the client's current board
+};
+
+// Parses and checks a /move request body before any session or model work, so a rejected request
+// changes nothing. Reads only ss's startup settings.
+static MoveRequest parse_move_request(const std::string& body, const ServerState& ss) {
+    auto j = json::parse(body);
+    const auto& cfg = j["config"];
+    MoveRequest req;
+    if (j.contains("session_id") && j["session_id"].is_string())
+        req.session_id = j["session_id"].get<std::string>();
+    req.num_sims = j.value("num_simulations", ss.default_sims);
+    if (req.num_sims < 1)
+        throw std::runtime_error("num_simulations must be >= 1, got " + std::to_string(req.num_sims));
+    req.cfg = parse_game_cfg(cfg);
+    if (!req.cfg.board_seed)
+        throw std::runtime_error("config.boardSeed is required");
+    req.temperature = j.value("temperature", ss.default_temperature);
+    if (j.contains("moves"))
+        for (const auto& m : j["moves"]) req.moves.push_back(parse_move_ref(m));
+    if (j.contains("resigns")) req.resigns = parse_resigns(j["resigns"]);
+    req.board = j["board"].get<std::vector<int>>();
+    return req;
+}
+
 // Mirrors shared/boardState.ts's BoardState.fromFinishedGame()'s replay loop, but onto an existing
 // `state` from moves[from] onward, and throws on a rejected move.
 static void replay_tail(BoardState& state, const std::vector<MoveRef>& moves, size_t from,
@@ -208,7 +248,7 @@ static void replay_tail(BoardState& state, const std::vector<MoveRef>& moves, si
 }
 
 // The name of the first checkpoint directory whose stored GameConfig weak_equal()s request_cfg
-// (training/self_play.h); throws if none does. The first call scans ss.ckpt_dir's subdirectories
+// (game/game_config.h); throws if none does. The first call scans ss.ckpt_dir's subdirectories
 // into ss.checkpoint_index (see that field for the no-live-refresh caveat), skipping with a warning
 // any whose config can't be read or parsed, and stores the index only once the scan has finished.
 static const std::string& find_checkpoint_dir(ServerState& ss, const GameConfig& request_cfg) {
@@ -236,10 +276,8 @@ static const std::string& find_checkpoint_dir(ServerState& ss, const GameConfig&
 }
 
 // Loads (or returns the cached) model for checkpoint directory `tag`: the newest model file of the
-// architecture its <arch>_config.json names (train.cpp's checkpoint directory layout), built for
-// the request's board `bc`.
-static AnyModel& load_model(ServerState& ss, const std::string& tag,
-                             const BoardConfig& bc) {
+// architecture its <arch>_config.json names (training/checkpoint_files.h).
+static AnyModel& load_model(ServerState& ss, const std::string& tag) {
     auto it = ss.models.find(tag);
     if (it != ss.models.end()) return it->second;
 
@@ -252,7 +290,7 @@ static AnyModel& load_model(ServerState& ss, const std::string& tag,
 
     // featureDim/inputDescr persisted directly by train.cpp rather than
     // recomputed here - see compute_input_descr()'s doc comment
-    // (training/self_play.h) for why.
+    // (model/input_descr.h) for why.
     json cfg_json                          = json::parse(std::ifstream(*cfg_path));
     GameConfig game_cfg                    = parse_game_cfg(cfg_json);
     std::unique_ptr<ModelConfig> model_cfg = parse_model_config(cfg_json);
@@ -264,12 +302,8 @@ static AnyModel& load_model(ServerState& ss, const std::string& tag,
         throw std::runtime_error("No " + arch + "_<iter>.pt model file in checkpoint directory " + dir.string());
     }
 
-    AnyModel model_any = build_model(bc, *model_cfg, game_cfg.num_stones, game_cfg.num_players);
-    std::visit([&](auto& m) {
-        torch::load(m, model_path->string());
-        m->to(ss.device);
-        m->eval();
-    }, model_any);
+    AnyModel model_any = load_eval_model(*model_cfg, game_cfg.num_stones, game_cfg.num_players,
+                                         model_path->string(), ss.device);
 
     std::cout << "[inference] Loaded " << model_path->filename()
               << " for tag=" << tag
@@ -277,6 +311,123 @@ static AnyModel& load_model(ServerState& ss, const std::string& tag,
 
     auto [ins, ok] = ss.models.emplace(tag, std::move(model_any));
     return ins->second;
+}
+
+// ── /move ─────────────────────────────────────────────────────────────────────
+
+// Erases least recently used sessions until at most kMaxSessions remain.
+static void evict_sessions(ServerState& ss) {
+    while (ss.sessions.size() > kMaxSessions)
+        ss.sessions.erase(std::min_element(ss.sessions.begin(), ss.sessions.end(), [](const auto& a, const auto& b) {
+            return a.second->last_used < b.second->last_used;
+        }));
+}
+
+// The request's session, advanced to its moves, with its id: the request's own session when it
+// exists for `tag` and withdrawing/advancing it is cheaper than a full rebuild (see the header
+// comment), else a new session replaying every move on `bc`, which replaces the request's old one.
+static std::pair<std::string, SessionState*> advance_session(ServerState& ss, const MoveRequest& req,
+                                                             const std::string& tag,
+                                                             std::shared_ptr<const BoardConfig> bc,
+                                                             const json& input_descr) {
+    auto old = req.session_id.empty() ? ss.sessions.end() : ss.sessions.find(req.session_id);
+    if (old != ss.sessions.end() && old->second->tag == tag) {
+        SessionState& sess = *old->second;
+        // Find the longest common prefix of the stored and requested move lists.
+        const auto& stored = sess.moves;
+        size_t lcp = 0;
+        while (lcp < stored.size() && lcp < req.moves.size() && stored[lcp] == req.moves[lcp])
+            ++lcp;
+
+        // Use withdraw+forward when cheaper than a full rebuild:
+        //   withdraw+forward cost ≈ (stored.size()-lcp) + (req.size()-lcp)
+        //   full rebuild cost    ≈ req.size()
+        // withdraw+forward wins when stored.size() < 2*lcp.
+        if (stored.size() < 2 * lcp) {
+            try {
+                // Withdraw to the common prefix. Resignations recorded at earlier plies are
+                // never undone (permanent on both the TS client and this session's state), so
+                // no un-resigning is needed here.
+                size_t to_withdraw = stored.size() - lcp;
+                for (size_t i = 0; i < to_withdraw; i++)
+                    sess.state->withdraw_move();
+                // Forward-play the request's tail beyond the common prefix.
+                replay_tail(*sess.state, req.moves, lcp, req.resigns);
+            } catch (...) {
+                ss.sessions.erase(old);  // its state no longer matches its moves
+                throw;
+            }
+            sess.moves = req.moves;
+            sess.last_used = ++ss.session_clock;
+            return {req.session_id, &sess};
+        }
+    }
+
+    // Slow path: replay all moves from an empty board.
+    auto fresh = std::make_unique<BoardState>(new_state(req.cfg, bc));
+    replay_tail(*fresh, req.moves, 0, req.resigns);
+    if (old != ss.sessions.end()) ss.sessions.erase(old);
+
+    std::string session_id = make_session_id();
+    auto new_sess = std::make_unique<SessionState>();
+    new_sess->tag = tag;
+    new_sess->game_input = make_game_input(*fresh, input_descr);
+    new_sess->state = std::move(fresh);
+    new_sess->moves = req.moves;
+    new_sess->last_used = ++ss.session_clock;
+    SessionState* sess = new_sess.get();
+    ss.sessions[session_id] = std::move(new_sess);
+    evict_sessions(ss);
+    return {session_id, sess};
+}
+
+// Searches `sess`'s position with KataGo's play-mode search settings: no root noise, a small root
+// FPU reduction, and the move chosen from the LCB-adjusted play-selection values at the request's
+// temperature.
+static SearchResult search_move(AnyModel& model, const SessionState& sess, const MoveRequest& req) {
+    RootSettings root;
+    root.visits = req.num_sims;
+    root.fpu_reduction_max = 0.1f;
+    root.move_temperature = req.temperature;
+    Evaluator evaluator = make_evaluator(model);
+    MCTS mcts(SearchParams::server(), std::random_device{}());
+    return mcts.search(*sess.state, root, [&](const BoardState& s) {
+        return evaluate_rows(evaluator, {&s}, sess.game_input)[0];
+    });
+}
+
+// The /move response (see the header comment) for `result`, searched from `state` on an N-node board.
+static json move_response(const SearchResult& result, const BoardState& state, int N, const std::string& session_id) {
+    json resp;
+    // Decode the flat, stone-major action index into a (pos, stone) pair.
+    if (result.move == state.num_stones * N) {
+        resp["move"]  = nullptr;
+        resp["stone"] = nullptr;
+    } else {
+        resp["move"]  = result.move % N;
+        resp["stone"] = result.move / N + 1;
+    }
+    resp["policy"]     = result.policy_target;
+    // The mover is next_turn.player (stone_to_player_map is scoring-only - see
+    // shared/types.ts's TurnInfo).
+    resp["value"]      = result.utility[state.next_turn.player - 1];
+    resp["session_id"] = session_id;
+    return resp;
+}
+
+// The response to a parsed /move request. The caller holds ss.mutex.
+static json play_move(ServerState& ss, const MoveRequest& req) {
+    const std::string& tag = find_checkpoint_dir(ss, req.cfg);
+    auto bc = std::make_shared<const BoardConfig>(
+        build_board_from_cleg(*parse_cleg(req.cfg.board_descr), *req.cfg.board_seed));
+    AnyModel& model = load_model(ss, tag);
+    auto [session_id, sess] = advance_session(ss, req, tag, bc, input_descr_of(model));
+    // Verify the replayed board matches what the client sent.
+    if (sess->state->board != req.board)
+        throw std::runtime_error("Board state mismatch: replayed board does not match provided board");
+    if (sess->state->game_over())
+        throw std::runtime_error("the game is already over");
+    return move_response(search_move(model, *sess, req), *sess->state, bc->N, session_id);
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -344,131 +495,9 @@ int main(int argc, char* argv[]) {
 
     svr.Post("/move", [&](const httplib::Request& req, httplib::Response& res) {
         try {
-            auto j = json::parse(req.body);
-            const auto& cfg = j["config"];
-
-            std::string session_id;
-            if (j.contains("session_id") && j["session_id"].is_string())
-                session_id = j["session_id"].get<std::string>();
-
-            // Checked before any session/model work, so a rejected request changes nothing.
-            int num_sims = j.value("num_simulations", ss.default_sims);
-            if (num_sims < 1)
-                throw std::runtime_error("num_simulations must be >= 1, got " + std::to_string(num_sims));
-
-            GameConfig game_cfg     = parse_game_cfg(cfg);
-            if (!game_cfg.board_seed)
-                throw std::runtime_error("config.boardSeed is required");
-            const std::string& tag  = find_checkpoint_dir(ss, game_cfg);
-            auto bc                 = std::make_shared<const BoardConfig>(
-                                          build_board_from_cleg(*parse_cleg(game_cfg.board_descr), *game_cfg.board_seed));
-            auto& model_v           = load_model(ss, tag, *bc);
-            auto evaluator          = make_evaluator(model_v);
-
-            // Full move history, one {"pos","stone"} object per ply - see parse_move_ref().
-            std::vector<MoveRef> req_moves;
-            if (j.contains("moves")) {
-                for (const auto& m : j["moves"])
-                    req_moves.push_back(parse_move_ref(m));
-            }
-
-            // Ply -> resigned players, applied interleaved with move replay - see parse_resigns().
-            std::map<int, std::vector<int>> req_resigns;
-            if (j.contains("resigns")) req_resigns = parse_resigns(j["resigns"]);
-
-            // Current board sent by client - used to verify our replayed state matches.
-            std::vector<int> req_board = j["board"].get<std::vector<int>>();
-
-            // ── Find or create session ────────────────────────────────────────
-
-            SessionState* sess = nullptr;
-            std::string result_session_id;
-
-            auto sit = ss.sessions.find(session_id);
-            if (!session_id.empty() && sit != ss.sessions.end() && sit->second->tag == tag) {
-                sess = sit->second.get();
-            }
-
-            if (sess) {
-                // Find the longest common prefix of the stored and requested move lists.
-                const auto& stored = sess->moves;
-                size_t lcp = 0;
-                while (lcp < stored.size() && lcp < req_moves.size() && stored[lcp] == req_moves[lcp])
-                    ++lcp;
-
-                // Use withdraw+forward when cheaper than a full rebuild:
-                //   withdraw+forward cost ≈ (stored.size()-lcp) + (req.size()-lcp)
-                //   full rebuild cost    ≈ req.size()
-                // withdraw+forward wins when stored.size() < 2*lcp.
-                if (stored.size() < 2 * lcp) {
-                    // Withdraw to the common prefix. Resignations recorded at earlier plies are
-                    // never undone (permanent on both the TS client and this session's state), so
-                    // no un-resigning is needed here.
-                    size_t to_withdraw = stored.size() - lcp;
-                    for (size_t i = 0; i < to_withdraw; i++)
-                        sess->state->withdraw_move();
-                    // Forward-play the request's tail beyond the common prefix.
-                    replay_tail(*sess->state, req_moves, lcp, req_resigns);
-                    sess->moves = req_moves;
-                    result_session_id = session_id;
-                } else {
-                    sess = nullptr;  // full rebuild is cheaper; fall through
-                }
-            }
-
-            if (!sess) {
-                // Slow path: replay all moves from an empty board.
-                auto fresh = std::make_unique<BoardState>(new_state(game_cfg, bc));
-                replay_tail(*fresh, req_moves, 0, req_resigns);
-
-                result_session_id = make_session_id();
-                auto new_sess = std::make_unique<SessionState>();
-                new_sess->tag   = tag;
-                new_sess->game_input = make_game_input(*fresh, input_descr_of(model_v));
-                new_sess->state = std::move(fresh);
-                new_sess->moves = req_moves;
-                ss.sessions[result_session_id] = std::move(new_sess);
-                sess = ss.sessions[result_session_id].get();
-            }
-
-            // Verify the replayed board matches what the client sent.
-            if (sess->state->board != req_board)
-                throw std::runtime_error("Board state mismatch: replayed board does not match provided board");
-
-            // ── Run MCTS ─────────────────────────────────────────────────────
-
-            if (sess->state->game_over())
-                throw std::runtime_error("the game is already over");
-            // KataGo's play-mode search settings: no root noise, a small root FPU reduction, and the
-            // move chosen from the LCB-adjusted play-selection values at the request's temperature.
-            RootSettings root;
-            root.visits = num_sims;
-            root.fpu_reduction_max = 0.1f;
-            root.move_temperature = j.value("temperature", ss.default_temperature);
-            MCTS mcts(SearchParams::server(), std::random_device{}());
-            SearchResult result = mcts.search(*sess->state, root, [&](const BoardState& s) {
-                return evaluate_rows(evaluator, {&s}, sess->game_input)[0];
-            });
-            // The mover is next_turn.player (stone_to_player_map is scoring-only - see
-            // shared/types.ts's TurnInfo).
-            float value = result.utility[sess->state->next_turn.player - 1];
-
-            // Decode the flat, stone-major action index into a (pos, stone) pair.
-            int ns = sess->state->num_stones;
-            int move_idx = result.move;
-            json resp;
-            if (move_idx == ns * bc->N) {
-                resp["move"]  = nullptr;
-                resp["stone"] = nullptr;
-            } else {
-                resp["move"]  = move_idx % bc->N;
-                resp["stone"] = move_idx / bc->N + 1;
-            }
-            resp["policy"]     = result.policy_target;
-            resp["value"]      = value;
-            resp["session_id"] = result_session_id;
-
-            res.set_content(resp.dump(), "application/json");
+            MoveRequest move_req = parse_move_request(req.body, ss);
+            std::lock_guard<std::mutex> lock(ss.mutex);
+            res.set_content(play_move(ss, move_req).dump(), "application/json");
         } catch (const std::exception& ex) {
             res.status = 500;
             // dump() escapes the message's quotes and backslashes (e.g. a Windows path's).
@@ -479,6 +508,7 @@ int main(int argc, char* argv[]) {
     });
 
     svr.Get("/health", [&](const httplib::Request&, httplib::Response& res) {
+        std::lock_guard<std::mutex> lock(ss.mutex);
         json resp;
         resp["status"]  = "ok";
         resp["device"]  = (ss.device == torch::kCUDA) ? "cuda" : "cpu";

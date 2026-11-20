@@ -95,7 +95,7 @@ BoardConfig quad_bishop_form(const BoardConfig& bc, int w, ClegRandom& random, s
 enum class LocalReplaceKind { QuadCentralize, SimpCentralize, QuadOctarize, QuadCentering, SimpCentering };
 struct LocalReplaceSelector {
     LocalReplaceKind kind = LocalReplaceKind::QuadCentralize;
-    int n = 0; // meaningful iff kind == SimpCentralize/SimpCentering
+    double n = 0; // meaningful iff kind == SimpCentralize/SimpCentering
     std::optional<Selector> sel;
     bool operator==(const LocalReplaceSelector& other) const {
         return kind == other.kind && n == other.n && sel == other.sel;
@@ -108,10 +108,10 @@ struct LocalReplaceSelector {
 BoardConfig generic_local_replace(const BoardConfig& bc, const std::vector<LocalReplaceSelector>& selectors, ClegRandom& random);
 
 // Mirrors shared/boardConfig.ts's simpCentralize().
-BoardConfig simp_centralize(const BoardConfig& bc, int n, ClegRandom& random, std::optional<Selector> sel = std::nullopt);
+BoardConfig simp_centralize(const BoardConfig& bc, double n, ClegRandom& random, std::optional<Selector> sel = std::nullopt);
 
 // Mirrors shared/boardConfig.ts's simpCentering().
-BoardConfig simp_centering(const BoardConfig& bc, int n, ClegRandom& random, std::optional<Selector> sel = std::nullopt);
+BoardConfig simp_centering(const BoardConfig& bc, double n, ClegRandom& random, std::optional<Selector> sel = std::nullopt);
 
 // Mirrors shared/boardConfig.ts's triCentralize().
 BoardConfig tri_centralize(const BoardConfig& bc, ClegRandom& random, std::optional<Selector> sel = std::nullopt);
@@ -156,11 +156,12 @@ BoardConfig node_edge_induced_subgraph(
 
 // Mirrors shared/types.ts's BoardArgType/BoardArgEntry, as one struct rather than a union: `value`
 // is meaningful iff `kind == Number`, `values` otherwise. C++ never parses board-arg tokens from
-// text, so CommaSeparatedNumbers/ZeroOneList only differ as tags.
+// text, so CommaSeparatedNumbers/ZeroOneList only differ as tags. `values` are ints, since no TS
+// board function asserts a list entry is an integer (see build_board_config()).
 enum class BoardArgKind { Number, CommaSeparatedNumbers, ZeroOneList };
 struct BoardArgEntry {
     BoardArgKind kind = BoardArgKind::Number;
-    int value = 0;
+    double value = 0;
     std::vector<int> values;
 
     bool operator==(const BoardArgEntry& other) const {
@@ -169,7 +170,7 @@ struct BoardArgEntry {
 };
 
 // Mirrors shared/types.ts's numArg()/csvArg()/zolArg(). The only caller is game/cleg_eval.cpp.
-inline BoardArgEntry num_arg(int value) { return BoardArgEntry{ BoardArgKind::Number, value, {} }; }
+inline BoardArgEntry num_arg(double value) { return BoardArgEntry{ BoardArgKind::Number, value, {} }; }
 inline BoardArgEntry csv_arg(std::vector<int> values) {
     return BoardArgEntry{ BoardArgKind::CommaSeparatedNumbers, 0, std::move(values) };
 }
@@ -177,9 +178,8 @@ inline BoardArgEntry zol_arg(std::vector<int> values) {
     return BoardArgEntry{ BoardArgKind::ZeroOneList, 0, std::move(values) };
 }
 
-// Mirrors shared/types.ts's boardArgNumber()/boardArgList(), but asserts (not throws) on the wrong
-// kind.
-int board_arg_number(const BoardArgEntry& e);
+// Mirrors shared/types.ts's boardArgNumber()/boardArgList().
+double board_arg_number(const BoardArgEntry& e);
 const std::vector<int>& board_arg_list(const BoardArgEntry& e);
 
 // Mirrors shared/types.ts's formatBoardArgEntry(). Kept for parity; no C++ caller needs it (board
@@ -237,7 +237,7 @@ BoardConfig cube_lattice_board(int w, int h, int d);
 
 // Mirrors shared/boardConfig.ts's hypercuboidBoard(); see the .cpp file's comment for the
 // embedding difference.
-BoardConfig hypercuboid_board(int meshdim, const std::vector<int>& dims);
+BoardConfig hypercuboid_board(double meshdim, const std::vector<int>& dims);
 
 // Mirrors shared/boardConfig.ts's triangularBoard().
 BoardConfig triangular_board(int w);
@@ -245,11 +245,11 @@ BoardConfig triangular_board(int w);
 // Mirrors shared/boardConfig.ts's sierpinskiSimplex(), but instead of the real-valued
 // regularSimplexCoords() (irrational for dim >= 2), corner 0 sits at the origin and corner k at a
 // scaled standard basis vector (see the .cpp file's comment).
-BoardConfig sierpinski_simplex_board(int dim, int n);
+BoardConfig sierpinski_simplex_board(double dim, double n);
 
 // Mirrors shared/boardConfig.ts's simplexBoard(), with the same exact-integer embedding deviation as
 // sierpinski_simplex_board() (see the .cpp file's comment).
-BoardConfig simplex_board(int meshdim, int dim, int w);
+BoardConfig simplex_board(double meshdim, double dim, double w);
 
 // Mirrors shared/boardConfig.ts's regularPolygonBoard() connectivity only: a unit-edge regular
 // n-gon has no exact-integer embedding for general n, so this uses emb_dim = 0 and an empty pos[]
@@ -268,7 +268,7 @@ BoardConfig tetrahedron_board();
 // Mirrors shared/boardConfig.ts's diamondCubicBoard(), but always produces an emb_dim = 0 board: a
 // hub's position would need real-number barycenter averaging (same reasoning as
 // generic_local_replace()).
-BoardConfig diamond_cubic_board(int w);
+BoardConfig diamond_cubic_board(double w);
 
 // Mirrors shared/boardConfig.ts's octahedronBoard().
 BoardConfig octahedron_board();
@@ -307,32 +307,32 @@ BoardConfig icosahedron_board();
 // fractal.cpp's one-time glue-table search: the TS construction is built around a real-valued
 // position transform (S_i(x) = r*x + c*verts[i]), which this drops once the glue table is known,
 // since the recursive merge only needs *which* nodes coincide, never *where* they are.
-BoardConfig dodecahedron_flake_board(int n);
+BoardConfig dodecahedron_flake_board(double n);
 
 // Mirrors shared/boardConfig.ts's icosahedronFlake() - same no-position approach as
 // dodecahedron_flake_board().
-BoardConfig icosahedron_flake_board(int n);
+BoardConfig icosahedron_flake_board(double n);
 
 // Mirrors shared/boardConfig.ts's octahedronFlake() - same no-position approach as
 // dodecahedron_flake_board(), unlike octahedron_board() itself (which has an integer embedding via
 // orthoplex_board()).
-BoardConfig octahedron_flake_board(int n);
+BoardConfig octahedron_flake_board(double n);
 
 // Mirrors shared/boardConfig.ts's regularPolygonFlake() - same no-position approach as
 // dodecahedron_flake_board().
-BoardConfig regular_polygon_flake_board(int n_sides, int order);
+BoardConfig regular_polygon_flake_board(double n_sides, double order);
 
 // Mirrors shared/boardConfig.ts's centralRegularPolygonFlake() - same no-position approach as
 // dodecahedron_flake_board().
-BoardConfig central_regular_polygon_flake_board(int n_sides, int order);
+BoardConfig central_regular_polygon_flake_board(double n_sides, double order);
 
 // Mirrors shared/boardConfig.ts's centralPentagonFlake() - same no-position approach as
 // dodecahedron_flake_board().
-BoardConfig central_pentagon_flake_board(int order);
+BoardConfig central_pentagon_flake_board(double order);
 
 // Mirrors shared/boardConfig.ts's mengerSpongeFlake() - same no-position approach as
 // dodecahedron_flake_board().
-BoardConfig menger_sponge_flake_board(int order, int dim, const std::vector<int>& indicator);
+BoardConfig menger_sponge_flake_board(double order, double dim, const std::vector<int>& indicator);
 
 // Mirrors shared/boardConfig.ts's triangularHexBoard(), but embedded as axial (q+d, r+d) (shifted to
 // non-negative).
@@ -366,5 +366,7 @@ BoardConfig twisted_square_board(int w, int h, int g);
 // "menger" | "trihex" | "hex" | "hexdel" | "snubsq" | "twsq" | "gtsq" | "star"). Throws
 // std::runtime_error for an unknown kind. Only called by game/cleg_eval.cpp's board-constructor
 // builtins (cleg name = `kind` + "B", e.g. "rectB" -> "rect"); train.cpp/server.cpp go through
-// build_board_from_cleg() instead.
+// build_board_from_cleg() instead. A board function whose TS counterpart asserts Number.isInteger
+// on an argument takes it as a double, to assert that itself; every other argument is truncated to
+// int here, where TS runs on with the fractional value.
 BoardConfig build_board_config(const std::string& kind, const std::vector<BoardArgEntry>& args);
