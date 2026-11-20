@@ -96,8 +96,8 @@ static void print_usage(const char* prog) {
               << "  --transformer-hidden-dim N  Transformer hidden dimension (default: 128)\n"
               << "  --num-layers N            GNN message-passing layers (default: 9)\n"
               << "  --num-attn-layers N       Transformer cross-attention layers (default: 8)\n"
-              << "  --side-lens L1,L2,...     A standard box for boards of several sizes, which the CNN/UNet/\n"
-              << "                            Transformer zero-extend their input to, containing the board's own\n"
+              << "  --side-lens L1,L2,...     A standard box for boards of several sizes, which every network's\n"
+              << "                            input and output are zero-extended to, containing the board's own\n"
               << "                            side lengths (default: the board's own; any for a board without an\n"
               << "                            embedding)\n"
               << "  --n-bound N               The node bound sizing the liberty/groupSize features, >= the\n"
@@ -424,11 +424,16 @@ struct Losses {
 };
 
 static Losses compute_losses(const ModelOutput& out, const Batch& b, const std::string& score_rule,
-                             int num_stones, int N) {
+                             int num_stones) {
+    // Every row is in slot space; n is each row's own node count, and slots no node occupies are
+    // left out of every per-location term.
+    auto valid = b.valid.to(out.ownership.device());
+    auto n = valid.sum(1);  // (B,)
+
     // Policy: cross-entropy against the search's policy target, scaled by 1/log(action count) so
     // its magnitude is comparable across action-space sizes.
     auto log_policy = torch::log(out.policy.clamp_min(1e-8f));
-    auto policy_loss = -(b.policy_target * log_policy).sum(-1).mean() / std::log(static_cast<float>(N * num_stones + 1));
+    auto policy_loss = (-(b.policy_target * log_policy).sum(-1) / torch::log(n * num_stones + 1)).mean();
 
     // Ownership: per-location squared error of the stone/territory distributions (channel 0 =
     // none), summed over channels and averaged over locations and batch.
@@ -436,14 +441,17 @@ static Losses compute_losses(const ModelOutput& out, const Batch& b, const std::
     auto territory_est = out.ownership.select(1, 1);
     auto actual_stone = torch::one_hot(b.stone_owner, num_stones + 1).to(torch::kFloat32);
     auto actual_territory = torch::one_hot(b.territory_owner, num_stones + 1).to(torch::kFloat32);
-    auto stone_loss = (stone_est - actual_stone).pow(2).sum(-1).mean();
-    auto territory_loss = (territory_est - actual_territory).pow(2).sum(-1).mean();
+    auto location_mean = [&](const torch::Tensor& per_slot) { return ((per_slot * valid).sum(1) / n).mean(); };
+    auto stone_loss = location_mean((stone_est - actual_stone).pow(2).sum(-1));
+    auto territory_loss = location_mean((territory_est - actual_territory).pow(2).sum(-1));
 
     // Points: expected vs actual per-stone-type totals under the scoring rule, scaled by
-    // num_stones/N so they don't dwarf the per-location terms.
+    // num_stones/N so they don't dwarf the per-location terms. (The actual ownership is "none" at
+    // slots no node occupies, so it scores nothing there.)
     auto actual_ownership = torch::stack({actual_stone, actual_territory}, 1);
-    auto point_diff = (estimate_stone_points(out.ownership, score_rule)
-                       - estimate_stone_points(actual_ownership, score_rule)) / N * num_stones;
+    auto predicted_ownership = out.ownership * valid.view({valid.size(0), 1, -1, 1});
+    auto point_diff = (estimate_stone_points(predicted_ownership, score_rule)
+                       - estimate_stone_points(actual_ownership, score_rule)) / n.unsqueeze(1) * num_stones;
     auto point_loss = point_diff.pow(2).sum(-1).mean();
 
     // Rank: cross-entropy of each pair's predicted outcome against its blended target, scaled by
@@ -478,8 +486,7 @@ static void snapshot_average(Trainer& t, TrainState& st, const Args& args, const
 // sampling uniformly from the newest `window` rows. Returns the number of steps taken.
 static int train_on_bucket(Trainer& t, TrainState& st, ReplayBuffer& buffer, int64_t window, const Args& args,
                            const GameConfig& game_cfg, const BoardConfig& bc, const ModelConfig& model_cfg,
-                           const AdjNorms& adj_norms, const NodeSlots& node_slots, torch::Device device,
-                           std::mt19937& rng, int iter) {
+                           torch::Device device, std::mt19937& rng, int iter) {
     auto t0 = Clock::now();
     std::visit([](auto& m) { m->train(); }, t.model);
     double sums[6] = {0, 0, 0, 0, 0, 0};
@@ -498,13 +505,13 @@ static int train_on_bucket(Trainer& t, TrainState& st, ReplayBuffer& buffer, int
                 auto hb = buffer.sample_with_history(args.batch_size, window, rng);
                 b = hb.current;
                 out = m->forward(hb.hist_features.to(device), hb.hist_mask.to(device),
-                                 b.features.to(device), node_slots, b.legal_mask.to(device));
+                                 b.features.to(device), b.legal_mask.to(device));
             } else {
                 b = buffer.sample(args.batch_size, window, rng);
                 if constexpr (std::is_same_v<M, MessagePassingGNN>)
-                    out = m->forward(b.features.to(device), adj_norms, b.legal_mask.to(device));
+                    out = m->forward(b.features.to(device), b.boards, b.legal_mask.to(device));
                 else
-                    out = m->forward(b.features.to(device), node_slots, b.legal_mask.to(device));
+                    out = m->forward(b.features.to(device), b.valid.to(device), b.legal_mask.to(device));
             }
         }, t.model);
         b.policy_target = b.policy_target.to(device);
@@ -512,7 +519,7 @@ static int train_on_bucket(Trainer& t, TrainState& st, ReplayBuffer& buffer, int
         b.territory_owner = b.territory_owner.to(device);
         b.rank_target = b.rank_target.to(device);
 
-        auto losses = compute_losses(out, b, game_cfg.score_rule, game_cfg.num_stones, bc.N);
+        auto losses = compute_losses(out, b, game_cfg.score_rule, game_cfg.num_stones);
         t.optimizer->zero_grad();
         losses.total.backward();
         torch::nn::utils::clip_grad_norm_(parameters_of(t.model), 1.0);
@@ -550,8 +557,7 @@ static int train_on_bucket(Trainer& t, TrainState& st, ReplayBuffer& buffer, int
 // training is possible - KataGo's first cycle trains about one sample per existing row), then trains.
 static void train_iteration(Trainer& t, TrainState& st, ReplayBuffer& buffer, int64_t new_rows, const Args& args,
                             const GameConfig& game_cfg, const BoardConfig& bc, const ModelConfig& model_cfg,
-                            const AdjNorms& adj_norms, const NodeSlots& node_slots, torch::Device device,
-                            std::mt19937& rng, int iter) {
+                            torch::Device device, std::mt19937& rng, int iter) {
     int64_t window = desired_window_rows(st, args);
     if (window == 0) {
         if (args.verbosity >= 1)
@@ -567,7 +573,7 @@ static void train_iteration(Trainer& t, TrainState& st, ReplayBuffer& buffer, in
         st.bucket = std::min(st.bucket + new_rows * args.max_train_per_data, cap);
     }
     buffer.trim(window);
-    train_on_bucket(t, st, buffer, window, args, game_cfg, bc, model_cfg, adj_norms, node_slots, device, rng, iter);
+    train_on_bucket(t, st, buffer, window, args, game_cfg, bc, model_cfg, device, rng, iter);
 }
 
 // Whether iteration `iter`'s export is kept as <arch>_<iter>.pt.
@@ -619,7 +625,8 @@ int main(int argc, char* argv[]) {
 
     // One board per run, from a fresh random seed (game_cfg.board_seed is ignored).
     const uint32_t board_seed = std::random_device{}();
-    auto bc = build_board_from_cleg(*parse_cleg(game_cfg.board_descr), board_seed);
+    const auto board = std::make_shared<const BoardConfig>(build_board_from_cleg(*parse_cleg(game_cfg.board_descr), board_seed));
+    const BoardConfig& bc = *board;
     std::cout << "Board:\n" << game_cfg.board_descr << "  N=" << bc.N << "  seed=" << board_seed << std::endl;
     const std::string arch = effective_arch(args, game_cfg.board_descr, bc.emb.emb_dim());
 
@@ -703,8 +710,6 @@ int main(int argc, char* argv[]) {
     TrainState st;
     ReplayBuffer buffer;
     fs::path ckpt_dir;
-    auto adj_norms = compute_adj_norms(bc, device);
-    auto node_slots = compute_node_slots(bc, model_cfg->input_descr, device);
     std::mt19937 rng(std::random_device{}());
 
     if (!args.resume_tag.empty()) {
@@ -737,7 +742,7 @@ int main(int argc, char* argv[]) {
         for (auto it = iters.rbegin(); it != iters.rend() && rows < window; ++it) {
             json games = load_trajectories(ckpt_dir, arch, *it);
             for (auto g = games.rbegin(); g != games.rend() && rows < window; ++g) {
-                records.push_back(replay_trajectory(*g, game_cfg, bc, model_cfg->input_descr, hist_descr));
+                records.push_back(replay_trajectory(*g, game_cfg, board, model_cfg->input_descr, hist_descr));
                 rows += records.back().num_rows();
             }
         }
@@ -759,7 +764,7 @@ int main(int argc, char* argv[]) {
             json games = load_trajectories(src, arch, it);
             int64_t new_rows = 0;
             for (auto& g : games) {
-                GameRecord r = replay_trajectory(g, game_cfg, bc, model_cfg->input_descr, hist_descr);
+                GameRecord r = replay_trajectory(g, game_cfg, board, model_cfg->input_descr, hist_descr);
                 int64_t rows = r.num_rows();
                 new_rows += rows;
                 if (g.value("model", -1) < 0) st.random_rows += rows;
@@ -768,8 +773,7 @@ int main(int argc, char* argv[]) {
             }
             st.total_rows += new_rows;
             std::ofstream(ckpt_dir / iter_name(arch, it, "_traj.json")) << games.dump() << "\n";
-            train_iteration(trainer, st, buffer, new_rows, args, game_cfg, bc, *model_cfg, adj_norms, node_slots, device,
-                            rng, it);
+            train_iteration(trainer, st, buffer, new_rows, args, game_cfg, bc, *model_cfg, device, rng, it);
             st.iteration = it;
             if (st.bucket_started) export_and_save(trainer, st, ckpt_dir, arch, it, keeps_model_file(it, args));
             else std::ofstream(ckpt_dir / "trainer" / "state.json") << st.to_json().dump(2) << "\n";
@@ -785,19 +789,13 @@ int main(int argc, char* argv[]) {
     sp_params.reduced_visits_min = std::min(sp_params.reduced_visits_min, args.full_visits);
     sp_params.cheap_prob = args.cheap_prob;
     sp_params.linear_move_bound = args.linear_move_bound;
-    SelfPlayRunner runner(game_cfg, bc, model_cfg->input_descr, hist_descr, sp_params, search_params,
+    SelfPlayRunner runner(game_cfg, board, model_cfg->input_descr, hist_descr, sp_params, search_params,
                           args.gamegen_batch_size, args.nn_server_threads, args.nn_max_batch,
                           std::random_device{}());
 
     // The model self-play plays with: one copy of the newest export per self-play device, taken from
     // the trainer (which holds it whether or not its <arch>_<iter>.pt was kept), or the uniform
     // evaluator before any.
-    std::vector<AdjNorms> selfplay_adj_norms;
-    std::vector<NodeSlots> selfplay_node_slots;
-    for (auto& d : selfplay_devices) {
-        selfplay_adj_norms.push_back(d == device ? adj_norms : compute_adj_norms(bc, d));
-        selfplay_node_slots.push_back(compute_node_slots(bc, model_cfg->input_descr, d));
-    }
     std::vector<AnyModel> selfplay_models;
     auto load_selfplay_model = [&]() {
         selfplay_models.clear();
@@ -812,7 +810,7 @@ int main(int argc, char* argv[]) {
         bool has_model = !selfplay_models.empty();
         std::vector<Evaluator> evaluators;
         for (size_t d = 0; d < selfplay_models.size(); d++)
-            evaluators.push_back(make_evaluator(selfplay_models[d], selfplay_adj_norms[d], selfplay_node_slots[d]));
+            evaluators.push_back(make_evaluator(selfplay_models[d]));
         if (!has_model) evaluators.push_back(make_uniform_evaluator(bc.N, game_cfg.num_stones, game_cfg.num_players));
         int model_id = has_model ? st.exported_iteration : -1;
         if (args.verbosity >= 1)
@@ -847,8 +845,7 @@ int main(int argc, char* argv[]) {
                       << st.total_rows << " total), " << std::fixed << std::setprecision(1)
                       << std::chrono::duration<double>(Clock::now() - t0).count() << "s" << std::defaultfloat << std::endl;
 
-        train_iteration(trainer, st, buffer, new_rows, args, game_cfg, bc, *model_cfg, adj_norms, node_slots, device,
-                        rng, iter);
+        train_iteration(trainer, st, buffer, new_rows, args, game_cfg, bc, *model_cfg, device, rng, iter);
         st.iteration = iter;
         if (st.bucket_started) {
             export_and_save(trainer, st, ckpt_dir, arch, iter, keeps_model_file(iter, args));

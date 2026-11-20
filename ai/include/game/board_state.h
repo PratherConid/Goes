@@ -148,7 +148,7 @@ public:
                bool allow_suicide,
                std::optional<int> max_plies,
                std::vector<int> initial_board,
-               const BoardConfig& bc);
+               std::shared_ptr<const BoardConfig> bc);
 
     // Disable accidental copy; use copy() or copy_with_hm() instead
     BoardState(const BoardState&) = delete;
@@ -261,6 +261,9 @@ public:
     std::optional<int> max_plies;
     TurnInfo next_turn;
     std::vector<int> board;
+    // The board, shared by every state played on it (TS's emb/adj/adlist reference it the same
+    // way); adj and adlist alias into it.
+    std::shared_ptr<const BoardConfig> bc;
     std::shared_ptr<const std::vector<std::vector<int>>> adj; // shared, read-only
     std::shared_ptr<const std::vector<std::vector<int>>> adlist; // shared, read-only
     int N;

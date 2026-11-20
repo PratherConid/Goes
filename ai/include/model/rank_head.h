@@ -19,7 +19,7 @@ inline int num_rank_pairs(int num_players) { return num_players * (num_players -
 enum RankOutcome : int64_t { FIRST_AHEAD = 0, TIED = 1, SECOND_AHEAD = 2 };
 
 // Pairwise-outcome ("rank") head, shared by every architecture: mean- and max-pools the trunk's
-// per-node hidden states over the board, then an MLP gives, for every player pair (p, q), the
+// per-slot hidden states, then an MLP gives, for every player pair (p, q), the
 // probabilities that p finishes ahead of q, that they tie, and that q finishes ahead - see
 // ai/Readme.md's "Rank Head" section for why MCTS needs this rather than a value derived from the
 // ownership head.
@@ -29,7 +29,7 @@ struct RankHeadImpl : torch::nn::Module {
 
     RankHeadImpl(int hidden_dim, int num_pairs);
 
-    // h: (B, N, hidden_dim) -> (B, num_pairs, 3) probabilities, each row summing to 1.
+    // h: (B, S, hidden_dim) -> (B, num_pairs, 3) probabilities, each row summing to 1.
     torch::Tensor forward(const torch::Tensor& h);
 };
 TORCH_MODULE(RankHead);

@@ -21,7 +21,7 @@ struct TransformerPolicyHeadImpl : torch::nn::Module {
 
     TransformerPolicyHeadImpl(int hidden_dim, int num_stones);
 
-    // h: (B, N, hidden_dim) -> (B, num_stones*N+1) logits
+    // h: (B, S, hidden_dim) over the model's slots -> (B, num_stones*S+1) logits
     torch::Tensor forward(const torch::Tensor& h);
 };
 TORCH_MODULE(TransformerPolicyHead);
@@ -55,8 +55,8 @@ TORCH_MODULE(TransformerBlock);
 //          legalPlace bits across time), while every PAST ply uses a much narrower
 //          plyMod+stoneOccupancy-only descriptor (legalPlace in particular depends on transient
 //          per-turn context, not physical board content, so it can't be reused across time - see
-//          history_features_at_ply()'s doc comment, model/features.h). Both first zero-extend the
-//          board's N nodes to num_slots_ slots (NodeSlots, model/features.h), so the weights don't
+//          history_features_at_ply()'s doc comment, model/features.h). Both read the board in the
+//          model's slot space (num_slots_ slots - NodeSlots, model/features.h), so the weights don't
 //          depend on the board's own N. encoder_in/encoder_out (num_slots*feature_dim -> D -> D)
 //          embeds the current ply only; hist_encoder_in/hist_encoder_out
 //          (num_slots*history_feature_dim -> D -> D) embeds every past ply, with the SAME shared
@@ -74,9 +74,8 @@ TORCH_MODULE(TransformerBlock);
 //          architecture; only the query evolves layer-to-layer, the key/value set stays the same
 //          raw history embeddings throughout), producing an enriched h*.
 // Decoder: h* -> one monolithic MLP (decoder_in -> ReLU -> decoder_out) -> reshape (num_slots,
-//          hidden_dim) -> the board's N slots - the literal inverse of the encoder's flatten and
-//          zero-extension, no per-node operation anywhere in this path (unlike the other three
-//          architectures' topology-aware bodies).
+//          hidden_dim) - the literal inverse of the encoder's flatten, no per-slot operation
+//          anywhere in this path (unlike the other three architectures' topology-aware bodies).
 // Heads: the resulting (N, hidden_dim) tensor feeds the same stone_head/territory_head/policy
 //          head shapes CNN/UNet/GNN already share, unmodified - and the shared RankHead
 //          (rank_head.h) too.
@@ -114,13 +113,13 @@ struct TransformerImpl : torch::nn::Module {
 
     TransformerImpl(const BoardConfig& bc, const TransformerConfig& cfg, int num_stones, int num_players);
 
-    // hist_x: (B,T,N,F) float32 (T past plies, zero-padded to the batch's own max);
-    // hist_mask: (B,T) bool, True = padded/invalid slot; cur_x: (B,N,F) - the current ply;
-    // node_slots: the board's (on the model's device); legal_mask: (B,numStones*N+1).
+    // All in the model's slot space (NodeSlots, model/features.h): hist_x: (B,T,S,F) float32 (T past
+    // plies, zero-padded to the batch's own max); hist_mask: (B,T) bool, True = padded/invalid ply;
+    // cur_x: (B,S,F) - the current ply; legal_mask: (B,numStones*S+1).
     // Returns a ModelOutput (model_output.h) - same shapes as CNN/UNet/GNN's forward().
     ModelOutput forward(
         torch::Tensor hist_x, torch::Tensor hist_mask,
-        torch::Tensor cur_x, const NodeSlots& node_slots, torch::Tensor legal_mask);
+        torch::Tensor cur_x, torch::Tensor legal_mask);
 
     // One state's network input (model_output.h's ModelInput) - its current-ply features and legal
     // mask, plus history features for each of its ply_count() past plies - built on the CPU.
@@ -130,7 +129,7 @@ struct TransformerImpl : torch::nn::Module {
     // Evaluates prepared inputs (arbitrary, independently-varying history lengths, zero-padded to
     // the batch's longest) in one forward pass. Returns tensors on the model's device, matching
     // CNN/GNN/UNet's evaluate_inputs() contract exactly.
-    ModelOutput evaluate_inputs(const std::vector<const ModelInput*>& inputs, const NodeSlots& node_slots);
+    ModelOutput evaluate_inputs(const std::vector<const ModelInput*>& inputs);
 };
 
 TORCH_MODULE(Transformer);

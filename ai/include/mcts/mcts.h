@@ -19,8 +19,10 @@ struct NNRow {
 using NNQuery = std::function<NNRow(const BoardState&)>;
 
 // Splits a batch's network outputs into one row per state (`states` share one game config, in the
-// batch's order).
-std::vector<NNRow> output_rows(const ModelOutput& out, const std::vector<const BoardState*>& states);
+// batch's order), reading each row's slot-space policy and ownership back at its own board's nodes
+// (`inputs`' slots; make_uniform_evaluator()'s rows are per-node already).
+std::vector<NNRow> output_rows(const ModelOutput& out, const std::vector<const ModelInput*>& inputs,
+                               const std::vector<const BoardState*>& states);
 
 // Evaluates `states` (sharing one game config) in one call and splits the outputs into rows.
 std::vector<NNRow> evaluate_rows(const Evaluator& evaluator, const std::vector<const BoardState*>& states);

@@ -5,6 +5,9 @@
 #include "model/model_config.h"
 #include "model/model_output.h"
 #include "model/rank_head.h"
+#include <list>
+#include <memory>
+#include <mutex>
 #include <vector>
 
 // Policy head: per-node linear produces num_stones place-logit channels and 1
@@ -21,7 +24,7 @@ struct GNNPolicyHeadImpl : torch::nn::Module {
 
     GNNPolicyHeadImpl(int hidden_dim, int num_stones);
 
-    // h: (B, N, hidden_dim) -> (B, num_stones*N+1) logits
+    // h: (B, S, hidden_dim) over the model's slots -> (B, num_stones*S+1) logits
     torch::Tensor forward(const torch::Tensor& h);
 };
 TORCH_MODULE(GNNPolicyHead);
@@ -31,8 +34,10 @@ TORCH_MODULE(GNNPolicyHead);
 // Input features per node: F = cfg.feature_dim (see model_config.h; computed
 // via compute_input_descr(), training/self_play.h, at model-build time)
 // Outputs:
-//   policy    : (B, numStones*N+1) softmax over legal actions (numStones*N placements + pass)
-//   ownership : (B, 2, N, num_stones+1) per-location stone/territory ownership estimates -
+// Every input and output is in the model's slot space (NodeSlots, features.h), each row's board
+// padded to S slots with its own adjacency (adj_norms_of()), so one batch can mix boards.
+//   policy    : (B, numStones*S+1) softmax over legal actions (numStones*S placements + pass)
+//   ownership : (B, 2, S, num_stones+1) per-location stone/territory ownership estimates -
 //               index 0 = stone estimate, index 1 = territory estimate; each (N, num_stones+1)
 //               slice is a softmax over "which stone type occupies/holds territory at this
 //               location at game end" (channel 0 = none) - stone-type indexed to match
@@ -52,32 +57,42 @@ struct MessagePassingGNNImpl : torch::nn::Module {
     GNNConfig cfg_;
     int num_stones_;
     // Untrainable random Gaussian embedding table for neighbor counts:
-    // (max_degree+1, L) - row d is the fixed vector used whenever a node has
-    // d neighbors in the relevant adjacency tier. Sized from AdjNorms::max_degree
-    // at construction time, so the model must be built with the AdjNorms it will
-    // run against (deg_embed_ is saved/loaded with the model like any other buffer).
+    // (nBound+1, L) - row d is the fixed vector used whenever a node has
+    // d neighbors in the relevant adjacency tier. Sized from the input descriptor's
+    // nBound, which bounds every node count, and so every degree, the model runs on
+    // (deg_embed_ is saved/loaded with the model like any other buffer).
     torch::Tensor deg_embed_;
 
-    MessagePassingGNNImpl(const GNNConfig& cfg, int num_stones, int num_players, const AdjNorms& adj_norms);
+    MessagePassingGNNImpl(const GNNConfig& cfg, int num_stones, int num_players);
 
-    // x (B,N,F), legal_mask (B,numStones*N+1). Returns a ModelOutput (model_output.h).
-    // Layer i uses: adj (i%4==0,2), adj2 (i%4==1), adj4 (i%4==3); each layer
-    // also concatenates that adjacency tier's per-node neighbor-count embedding
-    // (deg_embed_ looked up via adj_norms.deg1/deg2/deg4) so aggregation isn't
-    // degree-agnostic.
+    // x (B,S,F), boards (each row's), legal_mask (B,numStones*S+1). Returns a
+    // ModelOutput (model_output.h). Layer i uses each row's board's adj (i%4==0,2), adj2 (i%4==1),
+    // adj4 (i%4==3); each layer also concatenates that adjacency tier's per-node neighbor-count
+    // embedding (deg_embed_ looked up via deg1/deg2/deg4) so aggregation isn't degree-agnostic.
     ModelOutput forward(
         torch::Tensor x,
-        const AdjNorms& adj_norms,
+        const std::vector<std::shared_ptr<const BoardConfig>>& boards,
         torch::Tensor legal_mask);
+
+    // bc's AdjNorms, padded to the model's slots and on its device: computed on first use, then
+    // kept for the kAdjCacheBoards most recently used boards. Thread-safe.
+    AdjNorms adj_norms_of(const std::shared_ptr<const BoardConfig>& bc) const;
 
     // One state's network input (model_output.h's ModelInput), built on the CPU. Thread-safe.
     ModelInput prepare_input(const BoardState& state) const;
 
-    // Evaluates prepared inputs (all from the same board) in one forward pass, copying each stacked
+    // Evaluates prepared inputs (from any boards that fit) in one forward pass, copying each stacked
     // input tensor to the model's device once. Every ModelOutput tensor is left on the model's
     // device - callers needing CPU access (e.g. via .accessor<T,N>()) must call .cpu() themselves
     // at their point of use.
-    ModelOutput evaluate_inputs(const std::vector<const ModelInput*>& inputs, const AdjNorms& adj_norms);
+    ModelOutput evaluate_inputs(const std::vector<const ModelInput*>& inputs);
+
+private:
+    static constexpr size_t kAdjCacheBoards = 64;
+    // adj_norms_of()'s boards, most recently used first; holding each BoardConfig keeps its address
+    // from being reused by another board while cached.
+    mutable std::mutex adj_cache_mutex_;
+    mutable std::list<std::pair<std::shared_ptr<const BoardConfig>, AdjNorms>> adj_cache_;
 };
 
 TORCH_MODULE(MessagePassingGNN);

@@ -453,7 +453,7 @@ BoardState::BoardState(int num_stones_,
                        bool allow_suicide_,
                        std::optional<int> max_plies_,
                        std::vector<int> initial_board,
-                       const BoardConfig& bc)
+                       std::shared_ptr<const BoardConfig> bc_)
     : num_stones(num_stones_),
       num_players(num_players_),
       turn_list(std::move(turn_list_)),
@@ -467,9 +467,10 @@ BoardState::BoardState(int num_stones_,
       allow_suicide(allow_suicide_),
       max_plies(max_plies_),
       board(std::move(initial_board)),
-      adj(std::make_shared<std::vector<std::vector<int>>>(bc.adj)),
-      adlist(std::make_shared<std::vector<std::vector<int>>>(bc.adlist)),
-      N(bc.N)
+      bc(std::move(bc_)),
+      adj(bc, &bc->adj),
+      adlist(bc, &bc->adlist),
+      N(bc->N)
 {
     assert(num_stones > 0 && "num_stones must be > 0");
     assert(!turn_list.empty() && "turn_list must be non-empty");
@@ -621,6 +622,7 @@ BoardState BoardState::make_copy_skeleton(const BoardState& src) {
     c.allow_suicide       = src.allow_suicide;
     c.max_plies           = src.max_plies;
     c.board               = src.board;
+    c.bc                  = src.bc;
     c.adj                 = src.adj;
     c.adlist              = src.adlist;
     c.N                   = src.N;

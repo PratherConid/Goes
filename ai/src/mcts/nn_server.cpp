@@ -65,7 +65,7 @@ void NNServer::serve(int thread_index) {
             states.push_back(r->state);
         }
         auto t0 = std::chrono::high_resolution_clock::now();
-        auto rows = output_rows(evaluator.run(inputs), states);
+        auto rows = output_rows(evaluator.run(inputs), inputs, states);
         double secs = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - t0).count();
         {
             std::lock_guard<std::mutex> lock(mutex_);

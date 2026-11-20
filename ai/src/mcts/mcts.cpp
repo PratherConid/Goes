@@ -242,30 +242,46 @@ int MCTS::choose_with_temperature(const std::vector<double>& values, float tempe
     return dist(rng_);
 }
 
-std::vector<NNRow> output_rows(const ModelOutput& out, const std::vector<const BoardState*>& states) {
+std::vector<NNRow> output_rows(const ModelOutput& out, const std::vector<const ModelInput*>& inputs,
+                               const std::vector<const BoardState*>& states) {
     std::vector<std::vector<int>> captures;
     captures.reserve(states.size());
     for (const BoardState* s : states) captures.push_back(s->capture_count());
     const BoardState& s0 = *states[0];
     int P = s0.num_players;
+    int64_t B = static_cast<int64_t>(states.size());
+    const bool slotted = inputs[0]->slot.defined();
 
-    auto totals = estimate_player_totals(out.ownership, captures, s0.score_rule, s0.stone_to_player_map, P, s0.komi)
+    // Slots no node occupies own nothing.
+    auto ownership = slotted ? out.ownership * stack_inputs(inputs, &ModelInput::valid)
+                                                   .to(out.ownership.device()).view({B, 1, -1, 1})
+                             : out.ownership;
+    auto totals = estimate_player_totals(ownership, captures, s0.score_rule, s0.stone_to_player_map, P, s0.komi)
                       .to(torch::kCPU).contiguous();
-    auto rank = out.rank.to(torch::kCPU).contiguous().view({(int64_t)states.size(), -1});
+    auto rank = out.rank.to(torch::kCPU).contiguous().view({B, -1});
     auto policy = out.policy.to(torch::kCPU).contiguous();
+    auto to_vec = [](const torch::Tensor& t) {
+        const float* p = t.data_ptr<float>();
+        return std::vector<float>(p, p + t.numel());
+    };
     std::vector<NNRow> rows(states.size());
-    for (size_t j = 0; j < states.size(); j++) {
-        auto row_of = [j](const torch::Tensor& t) {
-            const float* p = t[j].data_ptr<float>();
-            return std::vector<float>(p, p + t.size(1));
-        };
-        rows[j] = NNRow{row_of(policy), row_of(totals), row_of(rank)};
+    for (int64_t j = 0; j < B; j++) {
+        auto row_policy = slotted ? policy[j].index_select(0, slot_action_index({inputs[j]->slot, inputs[j]->valid},
+                                                                                s0.num_stones))
+                                  : policy[j];
+        rows[j] = NNRow{to_vec(row_policy.contiguous()), to_vec(totals[j]), to_vec(rank[j])};
     }
     return rows;
 }
 
 std::vector<NNRow> evaluate_rows(const Evaluator& evaluator, const std::vector<const BoardState*>& states) {
-    return output_rows(evaluator.evaluate_batch(states), states);
+    std::vector<ModelInput> inputs;
+    inputs.reserve(states.size());
+    for (const BoardState* s : states) inputs.push_back(evaluator.prepare(*s));
+    std::vector<const ModelInput*> ptrs;
+    ptrs.reserve(inputs.size());
+    for (const ModelInput& in : inputs) ptrs.push_back(&in);
+    return output_rows(evaluator.run(ptrs), ptrs, states);
 }
 
 // Fills a non-terminal node's legal actions, prior and own evaluation from its network row. With

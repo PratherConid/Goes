@@ -64,64 +64,52 @@ CNNPolicyHeadImpl::CNNPolicyHeadImpl(int hidden_dim, int num_stones)
 }
 
 torch::Tensor CNNPolicyHeadImpl::forward(const torch::Tensor& h) {
-    int64_t B = h.size(0), N = h.size(1);
-    auto out          = proj->forward(h);                        // (B, N, ns+1)
-    // Place logits are node-major out of `proj` ((B,N,numStones)) but must be
-    // flattened stone-major (index (stone-1)*N+pos, matching legal_mask's
-    // layout in features.cpp) - permute before reshaping to make this happen.
+    int64_t B = h.size(0), S = h.size(1);
+    auto out          = proj->forward(h);                        // (B, S, ns+1)
+    // Place logits are slot-major out of `proj` ((B,S,numStones)) but must be flattened
+    // stone-major (index (stone-1)*S+slot, matching legal_mask's layout - see slot_input(),
+    // features.h) - permute before reshaping to make this happen.
     auto place_logits = out.slice(-1, 0, num_stones_)
                             .permute({0, 2, 1})
-                            .reshape({B, num_stones_ * N});        // (B, ns*N)
-    auto pass_field   = out.select(-1, num_stones_);               // (B, N)
-    auto attn_weights = torch::softmax(attn->forward(h).squeeze(-1), -1); // (B, N)
+                            .reshape({B, num_stones_ * S});        // (B, ns*S)
+    auto pass_field   = out.select(-1, num_stones_);               // (B, S)
+    auto attn_weights = torch::softmax(attn->forward(h).squeeze(-1), -1); // (B, S)
     auto pass_logit   = (attn_weights * pass_field).sum(-1, /*keepdim=*/true); // (B, 1)
-    return torch::cat({place_logits, pass_logit}, -1);                 // (B, ns*N+1)
+    return torch::cat({place_logits, pass_logit}, -1);            // (B, ns*S+1)
 }
 
-torch::Tensor CNNImpl::features_to_grid(const torch::Tensor& x, const NodeSlots& node_slots) const {
-    int64_t B = x.size(0);
-    int64_t N = x.size(1);
-    int64_t F = x.size(2);
-
-    // flat: (B, F+1, H*W), all zeros
-    auto flat = torch::zeros({B, F + 1, (int64_t)grid_h_ * grid_w_}, x.options());
-
-    // Scatter node features into channels 0..F-1
-    auto idx = node_slots.slot.unsqueeze(0).unsqueeze(0).expand({B, F, N});
-    flat.slice(1, 0, F).scatter_(2, idx, x.permute({0, 2, 1}));
-
-    // Validity channel (same for all batch items)
-    flat.select(1, F).copy_(node_slots.valid.view({1, -1}).expand({B, -1}));
-
-    return flat.view({B, F + 1, grid_h_, grid_w_});
+torch::Tensor CNNImpl::features_to_grid(const torch::Tensor& x, const torch::Tensor& valid) const {
+    // Slot s is grid cell (s / W, s % W) (NodeSlots' layout: dimension 0, the column, fastest);
+    // the validity channel goes last.
+    auto grid = torch::cat({x, valid.unsqueeze(-1)}, -1).permute({0, 2, 1})
+                    .reshape({x.size(0), x.size(2) + 1, grid_h_, grid_w_});
+    return grid;
 }
 
 ModelOutput CNNImpl::forward(
     torch::Tensor x,
-    const NodeSlots& node_slots,
+    torch::Tensor valid,
     torch::Tensor legal_mask)
 {
     int64_t B = x.size(0);
 
-    auto h = torch::relu(input_proj->forward(features_to_grid(x, node_slots))); // (B, hidden_dim, H, W)
+    auto h = torch::relu(input_proj->forward(features_to_grid(x, valid))); // (B, hidden_dim, H, W)
     for (int k = 0; k < num_blocks_; k++) {
         auto out = blocks_[k]->forward(h);
         h = torch::relu(out + h);
     }
     // h: (B, hidden_dim, H, W)
 
-    // Gather the final block output at each node's grid position - feeds the ownership heads
-    // (stone/territory estimate), the policy head and the rank head, all of which operate purely on
-    // this per-node (B,N,hidden_dim) tensor rather than the raw grid.
-    auto h_nodes = h.reshape({B, cfg_.hidden_dim, -1})
-                    .index_select(2, node_slots.slot)
-                    .permute({0, 2, 1});                                  // (B, N, hidden_dim)
-    auto stone_est     = torch::softmax(stone_head->forward(h_nodes), -1);      // (B, N, num_stones+1)
-    auto territory_est = torch::softmax(territory_head->forward(h_nodes), -1);  // (B, N, num_stones+1)
-    auto ownership = torch::stack({stone_est, territory_est}, 1);              // (B, 2, N, num_stones+1)
-    auto rank = rank_head->forward(h_nodes);                                   // (B, num_rank_pairs, 3)
+    // The final block output at every slot - feeds the ownership heads (stone/territory estimate),
+    // the policy head and the rank head, all of which operate purely on this per-slot
+    // (B,S,hidden_dim) tensor rather than the raw grid.
+    auto h_slots = h.reshape({B, cfg_.hidden_dim, -1}).permute({0, 2, 1});  // (B, S, hidden_dim)
+    auto stone_est     = torch::softmax(stone_head->forward(h_slots), -1);      // (B, S, num_stones+1)
+    auto territory_est = torch::softmax(territory_head->forward(h_slots), -1);  // (B, S, num_stones+1)
+    auto ownership = torch::stack({stone_est, territory_est}, 1);              // (B, 2, S, num_stones+1)
+    auto rank = rank_head->forward(h_slots);                            // (B, num_rank_pairs, 3)
 
-    auto logits = policy_head->forward(h_nodes); // (B, num_stones*N+1)
+    auto logits = policy_head->forward(h_slots); // (B, num_stones*S+1)
     const float NEG_INF = -std::numeric_limits<float>::infinity();
     logits = logits.masked_fill(legal_mask.logical_not(), NEG_INF);
     logits = logits.masked_fill(legal_mask.any(-1, true).logical_not(), 0.0f);
@@ -130,14 +118,14 @@ ModelOutput CNNImpl::forward(
 }
 
 ModelInput CNNImpl::prepare_input(const BoardState& state) const {
-    auto [ft, mask] = board_to_features(state, cfg_.input_descr);
-    return {ft, mask, {}};
+    return slot_input(state, cfg_.input_descr);
 }
 
-ModelOutput CNNImpl::evaluate_inputs(const std::vector<const ModelInput*>& inputs, const NodeSlots& node_slots) {
+ModelOutput CNNImpl::evaluate_inputs(const std::vector<const ModelInput*>& inputs) {
     torch::NoGradGuard ng;
     auto dev = input_proj->weight.device();
-    auto x    = stack_inputs(inputs, &ModelInput::features).to(dev);   // (B, N, F)
-    auto mask = stack_inputs(inputs, &ModelInput::legal_mask).to(dev); // (B, ns*N+1)
-    return forward(x, node_slots, mask);
+    auto x     = stack_inputs(inputs, &ModelInput::features).to(dev);   // (B, S, F)
+    auto valid = stack_inputs(inputs, &ModelInput::valid).to(dev);      // (B, S)
+    auto mask  = stack_inputs(inputs, &ModelInput::legal_mask).to(dev); // (B, ns*S+1)
+    return forward(x, valid, mask);
 }

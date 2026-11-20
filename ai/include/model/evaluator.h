@@ -14,33 +14,20 @@
 // Type-erased neural-network evaluator used by MCTS and self-play, split as KataGo's NNEvaluator
 // splits an evaluation: prepare() builds one position's input on the CPU in whichever thread wants
 // it evaluated (thread-safe), and run() evaluates a batch of prepared inputs in one forward pass.
-// Wraps any of the four architectures (see make_evaluator(), any_model.h) - the board tensors a
-// model runs against (a MessagePassingGNN's adj_norms, the others' node_slots) are captured inside
-// run, so every wrapped model presents the same
-// interface regardless of what it needs internally - or the untrained stand-in
-// (make_uniform_evaluator(), below).
+// Wraps any of the four architectures (see make_evaluator(), any_model.h) or the untrained
+// stand-in (make_uniform_evaluator(), below) behind one interface. Each prepared input carries its
+// own board (ModelInput::board/slot), so one run() can mix boards.
 struct Evaluator {
     std::function<ModelInput(const BoardState&)> prepare;
     std::function<ModelOutput(const std::vector<const ModelInput*>&)> run;
-
-    // prepare() for each state, then one run().
-    ModelOutput evaluate_batch(const std::vector<const BoardState*>& states) const {
-        std::vector<ModelInput> inputs;
-        inputs.reserve(states.size());
-        for (const BoardState* s : states) inputs.push_back(prepare(*s));
-        std::vector<const ModelInput*> ptrs;
-        ptrs.reserve(inputs.size());
-        for (const ModelInput& in : inputs) ptrs.push_back(&in);
-        return run(ptrs);
-    }
 };
 
 // Combines the model's stone/territory ownership estimates into expected
 // per-stone-type point totals under `rule` ("stone" | "territoryonly" |
 // "area" | "territory"), mirroring BoardState::compute_points() - summed over
-// all N locations. "territory" matches "territoryonly" here (captures are
+// every location (a model's slot-space estimate must be zeroed at slots no node occupies first). "territory" matches "territoryonly" here (captures are
 // player- not stone-indexed - see estimate_player_totals(), which folds
-// them in separately). `ownership` may be the model's own (B,2,N,num_stones+1)
+// them in separately). `ownership` may be the model's own (B,2,S,num_stones+1)
 // softmax output, or a one-hot-encoded ground-truth tensor of the same shape
 // (see train.cpp's compute_losses(), whose point loss uses this for both the
 // predicted and actual point totals).
@@ -104,11 +91,11 @@ inline torch::Tensor estimate_player_totals(
 // self-play uses until enough data exists to train the first model. Costs no forward pass: the
 // policy is uniform over each state's legal actions, every node's ownership is uniform over
 // empty/each stone type, and every player pair's outcome is uniform. prepare() builds only the legal
-// mask. All states must share one game config (N nodes, num_stones stone types). Outputs are on the
-// CPU.
+// mask, per node (no slots). All states must share one game config (N nodes, num_stones stone
+// types). Outputs are on the CPU.
 inline Evaluator make_uniform_evaluator(int N, int num_stones, int num_players) {
     return Evaluator{
-        [](const BoardState& s) { return ModelInput{{}, legal_action_mask(s), {}}; },
+        [](const BoardState& s) { return ModelInput{{}, {}, legal_action_mask(s), {}, {}, {}}; },
         [N, num_stones, num_players](const std::vector<const ModelInput*>& inputs) {
             auto legal = stack_inputs(inputs, &ModelInput::legal_mask).to(torch::kFloat32);  // (B, ns*N+1)
             auto policy = legal / legal.sum(-1, true).clamp_min(1.0f);

@@ -1,23 +1,33 @@
 #pragma once
 #include <torch/torch.h>
+#include "game/board_config.h"
 #include <cstring>
+#include <memory>
 #include <vector>
 
-// What every architecture's forward()/evaluate_inputs() returns, all left on the model's device.
+// What every architecture's forward()/evaluate_inputs() returns, all left on the model's device, in
+// the model's slot space (NodeSlots, features.h) - output_rows() (mcts.h) reads each row back at its
+// own board's nodes.
 struct ModelOutput {
-    torch::Tensor policy;     // (B, numStones*N+1) softmax over legal actions
-    torch::Tensor ownership;  // (B, 2, N, numStones+1) stone/territory ownership estimates
+    torch::Tensor policy;     // (B, numStones*S+1) softmax over legal actions
+    torch::Tensor ownership;  // (B, 2, S, numStones+1) stone/territory ownership estimates
+                              // (meaningless at slots no node occupies)
     torch::Tensor rank;       // (B, num_rank_pairs, 3) pairwise outcome probabilities (RankHead,
                               // rank_head.h)
 };
 
-// One position's network input, on the CPU. Built by the thread that wants the position evaluated -
-// as KataGo's search threads fill their own input rows (NNInputs::fillRow*) before queueing them -
-// so the thread running the network only stacks a batch and copies it to the device.
+// One position's network input, on the CPU, in the model's slot space (slot_input(), features.h),
+// so rows from different boards batch together. Built by the thread that wants the position
+// evaluated - as KataGo's search threads fill their own input rows (NNInputs::fillRow*) before
+// queueing them - so the thread running the network only stacks a batch and copies it to the device.
 struct ModelInput {
-    torch::Tensor features;    // (N, F) float32 - the current ply's features
-    torch::Tensor legal_mask;  // (numStones*N+1,) bool
-    torch::Tensor history;     // Transformer only: (T, N, F_history) float32, every past ply
+    torch::Tensor features;    // (S, F) float32 - the current ply's features
+    torch::Tensor valid;       // (S,) float32 - 1 at the board's slots
+    torch::Tensor legal_mask;  // (numStones*S+1,) bool
+    torch::Tensor history;     // Transformer only: (T, S, F_history) float32, every past ply
+    torch::Tensor slot;        // (N,) int64 - each node's slot; undefined (with `valid`) for
+                               // make_uniform_evaluator()'s per-node rows
+    std::shared_ptr<const BoardConfig> board;  // the position's board - the GNN's per-row adjacency
 };
 
 // Stacks equally-shaped, contiguous CPU tensors into one (rows.size(), ...) CPU tensor with plain

@@ -85,7 +85,7 @@ std::vector<std::optional<int>> resolve_global_stone_place_limit(
 // as ModelConfig::input_descr (model/model_config.h), consumed by board_to_features()
 // (model/features.h). Board size is separate, since GameConfig has no board-geometry fields of its
 // own: `side_lens` (goes_train's --side-lens, else the board's own) is stored as "sideLens", the
-// box the CNN/UNet/Transformer zero-extend every board's input to (NodeSlots, model/features.h), and
+// box of the slot space every network's input and output live in (NodeSlots, model/features.h), and
 // `n_bound`, an upper bound on the board's node count (goes_train's --n-bound, else
 // num_cells(side_lens)), as "nBound", which sizes the liberty and groupSize blocks. Only train.cpp calls this (on --resume, the
 // result must match the checkpoint's stored model config); server.cpp's load_model() reads the descriptor stored in a
@@ -107,7 +107,7 @@ std::vector<std::optional<int>> resolve_global_stone_place_limit(
 nlohmann::json compute_input_descr(const GameConfig& cfg, const std::vector<unsigned>& side_lens, int n_bound);
 
 // Create a fresh starting board state for a game.
-BoardState new_state(const GameConfig& cfg, const BoardConfig& bc);
+BoardState new_state(const GameConfig& cfg, std::shared_ptr<const BoardConfig> bc);
 
 // KataGo's self-play settings (its PlaySettings) that Goes ports - defaults are KataGo's
 // cpp/configs/training/selfplay1.cfg values. See ai/Readme.md's "Self-Play".
@@ -151,8 +151,9 @@ struct PlyRecord {
 
 // Builds a finished game's GameRecord: rows are the searched plies with row_count > 0, each with
 // the blended pair-outcome target (see ai/Readme.md's "Value Targets"); stone/territory ownership
-// comes from final_state.
-GameRecord build_game_record(const std::vector<PlyRecord>& plies, const BoardState& final_state);
+// comes from final_state, and node slots from its board under the run's input descriptor `descr`.
+GameRecord build_game_record(const std::vector<PlyRecord>& plies, const BoardState& final_state,
+                             const nlohmann::json& descr);
 
 struct FinishedGame {
     GameRecord record;
@@ -178,7 +179,7 @@ struct FinishedGame {
 // rebuild the game's GameRecord exactly.
 class SelfPlayRunner {
 public:
-    SelfPlayRunner(const GameConfig& cfg, const BoardConfig& bc, nlohmann::json input_descr,
+    SelfPlayRunner(const GameConfig& cfg, std::shared_ptr<const BoardConfig> bc, nlohmann::json input_descr,
                    const nlohmann::json* history_descr, SelfPlayParams params, SearchParams search_params,
                    int num_games, int nn_server_threads, int nn_max_batch, uint64_t seed);
     ~SelfPlayRunner();
@@ -197,7 +198,7 @@ private:
     };
 
     const GameConfig& cfg_;
-    const BoardConfig& bc_;
+    std::shared_ptr<const BoardConfig> bc_;
     nlohmann::json input_descr_;
     const nlohmann::json* history_descr_;
     SelfPlayParams params_;
@@ -220,5 +221,6 @@ private:
 
 // Rebuilds a finished game's GameRecord from its trajectory (SelfPlayRunner's format) by replaying
 // its moves through a fresh BoardState - used by --resume (to refill the training window) and --retrain.
-GameRecord replay_trajectory(const nlohmann::json& trajectory, const GameConfig& cfg, const BoardConfig& bc,
-                             const nlohmann::json& descr, const nlohmann::json* history_descr);
+GameRecord replay_trajectory(const nlohmann::json& trajectory, const GameConfig& cfg,
+                             std::shared_ptr<const BoardConfig> bc, const nlohmann::json& descr,
+                             const nlohmann::json* history_descr);

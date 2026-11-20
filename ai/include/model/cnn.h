@@ -26,8 +26,7 @@ struct CNNPolicyHeadImpl : torch::nn::Module {
 
     CNNPolicyHeadImpl(int hidden_dim, int num_stones);
 
-    // h: (B, N, hidden_dim) - already gathered to real board nodes (see
-    // CNNImpl::forward()'s h_nodes). Returns (B, num_stones*N+1) logits.
+    // h: (B, S, hidden_dim) over the model's slots. Returns (B, num_stones*S+1) logits.
     torch::Tensor forward(const torch::Tensor& h);
 };
 TORCH_MODULE(CNNPolicyHead);
@@ -48,11 +47,11 @@ TORCH_MODULE(CNNPolicyHead);
 // convs (no normalization, "same" padding = conv_size/2 so spatial dims
 // never change) at a constant hidden_dim width, with a residual shortcut
 // from the block's input to its output.
-// Ownership: per-node gather (at node_slots.slot, same mechanism as the policy head) of the
-//            final block output, then two independent Linear/ReLU/Linear softmax heads
-//            (stone estimate, territory estimate) - see MessagePassingGNN's ownership doc.
+// Ownership: the final block output at every slot (same as the policy head reads), then two
+//            independent Linear/ReLU/Linear softmax heads (stone estimate, territory estimate) -
+//            see MessagePassingGNN's ownership doc.
 // Policy: extracted from the final block output via CNNPolicyHead.
-// Rank: RankHead (rank_head.h) over the same per-node gather.
+// Rank: RankHead (rank_head.h) over the same per-slot output.
 // Requires bc.emb.emb_dim() == 2.
 struct CNNImpl : torch::nn::Module {
     torch::nn::Conv2d input_proj{nullptr};       // 1x1 conv: feature_dim+1 -> hidden_dim
@@ -72,24 +71,24 @@ struct CNNImpl : torch::nn::Module {
     // a validity channel, so input_proj actually receives feature_dim + 1 channels.
     CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_stones, int num_players);
 
-    // x: (B,N,F) → (B,F+1,H,W), each node at its slot (see NodeSlots, model/features.h)
-    torch::Tensor features_to_grid(const torch::Tensor& x, const NodeSlots& node_slots) const;
+    // x: (B,S,F), valid: (B,S) → (B,F+1,H,W), the validity channel last
+    torch::Tensor features_to_grid(const torch::Tensor& x, const torch::Tensor& valid) const;
 
-    // x (B,N,F), node_slots (the board's, on the model's device), legal_mask (B,numStones*N+1).
-    // Returns a ModelOutput (model_output.h).
+    // x (B,S,F), valid (B,S), legal_mask (B,numStones*S+1) - the model's slot space (NodeSlots,
+    // model/features.h). Returns a ModelOutput (model_output.h).
     ModelOutput forward(
         torch::Tensor x,
-        const NodeSlots& node_slots,
+        torch::Tensor valid,
         torch::Tensor legal_mask);
 
     // One state's network input (model_output.h's ModelInput), built on the CPU. Thread-safe.
     ModelInput prepare_input(const BoardState& state) const;
 
-    // Evaluates prepared inputs (all from the same board) in one forward pass, copying each stacked
+    // Evaluates prepared inputs (from any boards that fit) in one forward pass, copying each stacked
     // input tensor to the model's device once. Every ModelOutput tensor is left on the model's
     // device - callers needing CPU access (e.g. via .accessor<T,N>()) must call .cpu() themselves
     // at their point of use.
-    ModelOutput evaluate_inputs(const std::vector<const ModelInput*>& inputs, const NodeSlots& node_slots);
+    ModelOutput evaluate_inputs(const std::vector<const ModelInput*>& inputs);
 };
 
 TORCH_MODULE(CNN);

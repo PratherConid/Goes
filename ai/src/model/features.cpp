@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-AdjNorms compute_adj_norms(const BoardConfig& bc, torch::Device device) {
+AdjNorms compute_adj_norms(const BoardConfig& bc, const NodeSlots& slots, torch::Device device) {
     int N = bc.N;
 
     // Binary adjacency without self-loops
@@ -36,12 +36,12 @@ AdjNorms compute_adj_norms(const BoardConfig& bc, torch::Device device) {
     auto deg1 = f1.sum(1, /*keepdim=*/true); // (N,1)
     auto deg2 = f2.sum(1, /*keepdim=*/true);
     auto deg4 = f4.sum(1, /*keepdim=*/true);
-    int max_degree = static_cast<int>(std::max({deg1.max().item<float>(),
-                                                  deg2.max().item<float>(),
-                                                  deg4.max().item<float>()}));
 
-    return {normalise(f1).to(device), normalise(f2).to(device), normalise(f4).to(device),
-            deg1.to(device), deg2.to(device), deg4.to(device), max_degree};
+    // Node i's row and column go to slot[i].
+    auto pad = [&](const torch::Tensor& m) { return nodes_to_slots(nodes_to_slots(m, slots, 0), slots, 1).to(device); };
+    return {pad(normalise(f1)), pad(normalise(f2)), pad(normalise(f4)),
+            nodes_to_slots(deg1, slots).to(device), nodes_to_slots(deg2, slots).to(device),
+            nodes_to_slots(deg4, slots).to(device)};
 }
 
 int num_node_slots(const BoardConfig& bc, const nlohmann::json& descr) {
@@ -49,15 +49,16 @@ int num_node_slots(const BoardConfig& bc, const nlohmann::json& descr) {
                                  : descr.at("nBound").get<int>();
 }
 
-NodeSlots compute_node_slots(const BoardConfig& bc, const nlohmann::json& descr, torch::Device device) {
+NodeSlots compute_node_slots(const BoardConfig& bc, const nlohmann::json& descr) {
     const auto side_lens = descr.at("sideLens").get<std::vector<unsigned>>();
-    const int num_slots = num_node_slots(bc, descr);
+    const int n_bound = descr.at("nBound").get<int>();
+    if (bc.N > n_bound)
+        throw std::runtime_error("the board's " + std::to_string(bc.N) + " nodes exceed the model's nBound " +
+                                 std::to_string(n_bound));
     if (bc.emb.emb_dim() != 0 && !fits_in(bc.emb, side_lens))
         throw std::runtime_error("the board's side lengths " + nlohmann::json(bc.emb.side_lens).dump() +
                                  " don't fit in the model's sideLens " + descr.at("sideLens").dump());
-    if (bc.emb.emb_dim() == 0 && bc.N > num_slots)
-        throw std::runtime_error("the board's " + std::to_string(bc.N) + " nodes exceed the model's nBound " +
-                                 std::to_string(num_slots));
+    const int num_slots = num_node_slots(bc, descr);
 
     auto slot  = torch::empty({bc.N}, torch::kLong);
     auto valid = torch::zeros({num_slots}, torch::kFloat32);
@@ -72,7 +73,33 @@ NodeSlots compute_node_slots(const BoardConfig& bc, const nlohmann::json& descr,
         slot_a[i]  = s;
         valid_a[s] = 1.0f;
     }
-    return {slot.to(device), valid.to(device)};
+    return {slot, valid};
+}
+
+torch::Tensor slot_action_index(const NodeSlots& slots, int num_stones) {
+    int64_t N = slots.slot.size(0), S = slots.valid.size(0);
+    auto idx = torch::empty({num_stones * N + 1}, torch::kLong);
+    for (int s = 0; s < num_stones; s++) idx.slice(0, s * N, (s + 1) * N).copy_(slots.slot + s * S);
+    idx[num_stones * N] = num_stones * S;
+    return idx;
+}
+
+torch::Tensor nodes_to_slots(const torch::Tensor& per_node, const NodeSlots& slots, int64_t dim) {
+    auto shape = per_node.sizes().vec();
+    shape[dim] = slots.valid.size(0);
+    return torch::zeros(shape, per_node.options()).index_copy_(dim, slots.slot, per_node);
+}
+
+torch::Tensor actions_to_slots(const torch::Tensor& per_action, const NodeSlots& slots, int num_stones) {
+    return torch::zeros({num_stones * slots.valid.size(0) + 1}, per_action.options())
+        .index_copy_(0, slot_action_index(slots, num_stones), per_action);
+}
+
+ModelInput slot_input(const BoardState& state, const nlohmann::json& descr) {
+    NodeSlots slots = compute_node_slots(*state.bc, descr);
+    auto [features, legal_mask] = board_to_features(state, descr);
+    return {nodes_to_slots(features, slots), slots.valid, actions_to_slots(legal_mask, slots, state.num_stones), {},
+            slots.slot, state.bc};
 }
 
 // Soft, monotonic stand-in for "bit i of value": 1 at value=0, ramping down

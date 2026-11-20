@@ -12,17 +12,18 @@ TransformerPolicyHeadImpl::TransformerPolicyHeadImpl(int hidden_dim, int num_sto
 }
 
 torch::Tensor TransformerPolicyHeadImpl::forward(const torch::Tensor& h) {
-    int64_t B = h.size(0), N = h.size(1);
-    auto out          = proj->forward(h);                        // (B, N, ns+1)
-    // Node-major (B,N,ns) -> stone-major (B,ns,N) -> flat (B,ns*N), matching legal_mask's
-    // stone-major flatten order (same structure as CNN/GNN/UNet's policy heads).
+    int64_t B = h.size(0), S = h.size(1);
+    auto out          = proj->forward(h);                        // (B, S, ns+1)
+    // Place logits are slot-major out of `proj` ((B,S,numStones)) but must be flattened
+    // stone-major (index (stone-1)*S+slot, matching legal_mask's layout - see slot_input(),
+    // features.h) - permute before reshaping to make this happen.
     auto place_logits = out.slice(-1, 0, num_stones_)
                             .permute({0, 2, 1})
-                            .reshape({B, num_stones_ * N});        // (B, ns*N)
-    auto pass_field   = out.select(-1, num_stones_);               // (B, N)
-    auto attn_weights = torch::softmax(attn->forward(h).squeeze(-1), -1); // (B, N)
+                            .reshape({B, num_stones_ * S});        // (B, ns*S)
+    auto pass_field   = out.select(-1, num_stones_);               // (B, S)
+    auto attn_weights = torch::softmax(attn->forward(h).squeeze(-1), -1); // (B, S)
     auto pass_logit   = (attn_weights * pass_field).sum(-1, /*keepdim=*/true); // (B, 1)
-    return torch::cat({place_logits, pass_logit}, -1);            // (B, ns*N+1)
+    return torch::cat({place_logits, pass_logit}, -1);            // (B, ns*S+1)
 }
 
 TransformerBlockImpl::TransformerBlockImpl(int hidden_dim, int num_heads) {
@@ -82,25 +83,21 @@ TransformerImpl::TransformerImpl(const BoardConfig& bc, const TransformerConfig&
 
 ModelOutput TransformerImpl::forward(
     torch::Tensor hist_x, torch::Tensor hist_mask,
-    torch::Tensor cur_x, const NodeSlots& node_slots, torch::Tensor legal_mask)
+    torch::Tensor cur_x, torch::Tensor legal_mask)
 {
     int64_t B = cur_x.size(0);
     int64_t T = hist_x.size(1);
     int D = cfg_.hidden_dim;
-    const torch::Tensor& slot = node_slots.slot;
 
-    // Encode the current state, zero-extended to num_slots_ slots.
-    auto cur_ext = torch::zeros({B, num_slots_, cfg_.feature_dim}, cur_x.options()).index_copy(1, slot, cur_x);
-    auto cur_emb = torch::relu(encoder_in->forward(cur_ext.reshape({B, num_slots_ * cfg_.feature_dim})));
+    // Encode the current state.
+    auto cur_emb = torch::relu(encoder_in->forward(cur_x.reshape({B, num_slots_ * cfg_.feature_dim})));
     cur_emb = encoder_out->forward(cur_emb); // (B, D)
 
     // Encode every past state with the SAME shared weights (a separate encoder from the current
     // state's, since past plies use the narrower history_descr, a different width).
     torch::Tensor hist_emb;
     if (T > 0) {
-        auto hist_ext = torch::zeros({B, T, num_slots_, history_feature_dim_}, hist_x.options())
-                            .index_copy(2, slot, hist_x);
-        auto hist_flat = hist_ext.reshape({B * T, num_slots_ * history_feature_dim_});
+        auto hist_flat = hist_x.reshape({B * T, num_slots_ * history_feature_dim_});
         auto he = torch::relu(hist_encoder_in->forward(hist_flat));
         he = hist_encoder_out->forward(he);
         hist_emb = he.reshape({B, T, D});
@@ -127,17 +124,17 @@ ModelOutput TransformerImpl::forward(
         q = blk->forward(q, seq_lbd, full_mask);
     auto h_star = q.squeeze(0);  // (B, D)
 
-    // Decode back to a per-node representation - the literal inverse of the encoder's flatten and
-    // zero-extension, no per-node operation anywhere in this path.
-    auto h_nodes = torch::relu(decoder_in->forward(h_star));
-    h_nodes = decoder_out->forward(h_nodes).reshape({B, num_slots_, D}).index_select(1, slot);  // (B, N, D)
+    // Decode back to a per-slot representation - the literal inverse of the encoder's flatten, no
+    // per-slot operation anywhere in this path.
+    auto h_slots = torch::relu(decoder_in->forward(h_star));
+    h_slots = decoder_out->forward(h_slots).reshape({B, num_slots_, D});  // (B, S, D)
 
-    auto stone_est     = torch::softmax(stone_head->forward(h_nodes), -1);      // (B, N, num_stones+1)
-    auto territory_est = torch::softmax(territory_head->forward(h_nodes), -1);  // (B, N, num_stones+1)
-    auto ownership = torch::stack({stone_est, territory_est}, 1);              // (B, 2, N, num_stones+1)
-    auto rank = rank_head->forward(h_nodes);                                   // (B, num_rank_pairs, 3)
+    auto stone_est     = torch::softmax(stone_head->forward(h_slots), -1);      // (B, S, num_stones+1)
+    auto territory_est = torch::softmax(territory_head->forward(h_slots), -1);  // (B, S, num_stones+1)
+    auto ownership = torch::stack({stone_est, territory_est}, 1);              // (B, 2, S, num_stones+1)
+    auto rank = rank_head->forward(h_slots);                            // (B, num_rank_pairs, 3)
 
-    auto logits = policy_head->forward(h_nodes); // (B, num_stones*N+1)
+    auto logits = policy_head->forward(h_slots); // (B, num_stones*S+1)
     const float NEG_INF = -std::numeric_limits<float>::infinity();
     logits = logits.masked_fill(legal_mask.logical_not(), NEG_INF);
     logits = logits.masked_fill(legal_mask.any(-1, true).logical_not(), 0.0f);
@@ -146,33 +143,30 @@ ModelOutput TransformerImpl::forward(
 }
 
 ModelInput TransformerImpl::prepare_input(const BoardState& state) const {
-    auto [ft, mask] = board_to_features(state, cfg_.input_descr);
+    ModelInput in = slot_input(state, cfg_.input_descr);
     int T = state.ply_count();
-    torch::Tensor history;
     if (T > 0) {
         std::vector<torch::Tensor> rows(T);
         for (int k = 0; k < T; k++) rows[k] = history_features_at_ply(state, k, cfg_.history_descr);
-        history = stack_cpu(rows);
+        in.history = nodes_to_slots(stack_cpu(rows), {in.slot, in.valid}, 1);
     } else {
-        history = torch::empty({0, ft.size(0), history_feature_dim_}, torch::kFloat32);
+        in.history = torch::empty({0, num_slots_, history_feature_dim_}, torch::kFloat32);
     }
-    return {ft, mask, history};
+    return in;
 }
 
-ModelOutput TransformerImpl::evaluate_inputs(const std::vector<const ModelInput*>& inputs,
-                                             const NodeSlots& node_slots) {
+ModelOutput TransformerImpl::evaluate_inputs(const std::vector<const ModelInput*>& inputs) {
     torch::NoGradGuard ng;
     auto dev = encoder_in->weight.device();
     int64_t B = static_cast<int64_t>(inputs.size());
-    int64_t N = inputs[0]->features.size(0);
     int64_t Tmax = 0;
     for (const ModelInput* in : inputs) Tmax = std::max(Tmax, in->history.size(0));
 
     // Each input's history, zero-padded to Tmax plies, copied in with plain memcpys/memsets for the
     // same reason as stack_cpu() (model_output.h).
-    auto hist_x    = torch::empty({B, Tmax, N, history_feature_dim_}, torch::kFloat32);
+    auto hist_x    = torch::empty({B, Tmax, num_slots_, history_feature_dim_}, torch::kFloat32);
     auto hist_mask = torch::empty({B, Tmax}, torch::kBool);  // True = pad
-    size_t ply_bytes = static_cast<size_t>(N) * history_feature_dim_ * sizeof(float);
+    size_t ply_bytes = static_cast<size_t>(num_slots_) * history_feature_dim_ * sizeof(float);
     auto* hist_dst = static_cast<char*>(hist_x.data_ptr());
     bool* mask_dst = hist_mask.data_ptr<bool>();
     for (int64_t i = 0; i < B; i++) {
@@ -185,7 +179,7 @@ ModelOutput TransformerImpl::evaluate_inputs(const std::vector<const ModelInput*
         std::fill(mask_dst + i * Tmax, mask_dst + i * Tmax + T, false);
         std::fill(mask_dst + i * Tmax + T, mask_dst + (i + 1) * Tmax, true);
     }
-    auto cur_x      = stack_inputs(inputs, &ModelInput::features).to(dev);   // (B, N, F)
-    auto legal_mask = stack_inputs(inputs, &ModelInput::legal_mask).to(dev); // (B, ns*N+1)
-    return forward(hist_x.to(dev), hist_mask.to(dev), cur_x, node_slots, legal_mask);
+    auto cur_x      = stack_inputs(inputs, &ModelInput::features).to(dev);   // (B, S, F)
+    auto legal_mask = stack_inputs(inputs, &ModelInput::legal_mask).to(dev); // (B, ns*S+1)
+    return forward(hist_x.to(dev), hist_mask.to(dev), cur_x, legal_mask);
 }

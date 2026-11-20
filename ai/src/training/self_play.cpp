@@ -248,7 +248,7 @@ nlohmann::json compute_input_descr(const GameConfig& cfg, const std::vector<unsi
     return {{"blocks", blocks}, {"totalDims", total}, {"sideLens", side_lens}, {"nBound", n_bound}};
 }
 
-BoardState new_state(const GameConfig& cfg, const BoardConfig& bc) {
+BoardState new_state(const GameConfig& cfg, std::shared_ptr<const BoardConfig> bc) {
     auto pspl = resolve_player_stone_place_limit(cfg.player_stone_place_limit, cfg.num_stones, cfg.num_players);
     auto gspl = resolve_global_stone_place_limit(cfg.global_stone_place_limit, cfg.num_stones);
     auto komi = cfg.komi;
@@ -259,7 +259,7 @@ BoardState new_state(const GameConfig& cfg, const BoardConfig& bc) {
         cfg.num_stones, cfg.num_players,
         cfg.turn_list, pspl, gspl, cfg.stone_to_player_map,
         cfg.forced_pass_only, cfg.score_rule, komi, cfg.ko_rule, cfg.allow_suicide, cfg.max_plies,
-        std::vector<int>(bc.N, 0),
+        std::vector<int>(bc->N, 0),
         bc);
 }
 
@@ -370,7 +370,8 @@ static void resolve_row_counts(std::vector<PlyRecord>& plies, const std::vector<
     }
 }
 
-GameRecord build_game_record(const std::vector<PlyRecord>& plies, const BoardState& final_state) {
+GameRecord build_game_record(const std::vector<PlyRecord>& plies, const BoardState& final_state,
+                             const nlohmann::json& descr) {
     int N = final_state.N;
     auto final_eval = exact_pair_eval(final_state);
     int num_pairs = num_rank_pairs(final_state.num_players);
@@ -420,16 +421,18 @@ GameRecord build_game_record(const std::vector<PlyRecord>& plies, const BoardSta
         for (auto& p : plies) hist.push_back(p.history_features.to(torch::kFloat16));
         record.history_features = torch::stack(hist, 0);
     }
+    record.node_slots = compute_node_slots(*final_state.bc, descr);
+    record.board = final_state.bc;
     return record;
 }
 
 // ── Self-play ─────────────────────────────────────────────────────────────────
 
-SelfPlayRunner::SelfPlayRunner(const GameConfig& cfg, const BoardConfig& bc, nlohmann::json input_descr,
+SelfPlayRunner::SelfPlayRunner(const GameConfig& cfg, std::shared_ptr<const BoardConfig> bc, nlohmann::json input_descr,
                                const nlohmann::json* history_descr, SelfPlayParams params,
                                SearchParams search_params, int num_games, int nn_server_threads,
                                int nn_max_batch, uint64_t seed)
-    : cfg_(cfg), bc_(bc), input_descr_(std::move(input_descr)), history_descr_(history_descr),
+    : cfg_(cfg), bc_(std::move(bc)), input_descr_(std::move(input_descr)), history_descr_(history_descr),
       params_(params), search_params_(search_params), nn_(nn_server_threads, nn_max_batch)
 {
     std::mt19937_64 seeder(seed);
@@ -493,16 +496,16 @@ SelfPlayRunner::Slot SelfPlayRunner::new_slot(std::mt19937_64& rng) const {
     Slot s{new_state(cfg_, bc_), {}, 0, {}};
     if (params_.linear_move_bound) {
         std::uniform_real_distribution<float> dist(params_.linear_move_bound->first, params_.linear_move_bound->second);
-        int sampled = static_cast<int>(dist(rng) * bc_.N);
+        int sampled = static_cast<int>(dist(rng) * bc_->N);
         s.state.max_plies = s.state.max_plies ? std::min(*s.state.max_plies, sampled) : sampled;
     }
     std::exponential_distribution<double> exp1(1.0);
-    s.opening_moves_left = static_cast<int>(std::floor(exp1(rng) * params_.policy_init_area_prop * bc_.N));
+    s.opening_moves_left = static_cast<int>(std::floor(exp1(rng) * params_.policy_init_area_prop * bc_->N));
     return s;
 }
 
 FinishedGame SelfPlayRunner::finish(Slot& slot, std::mt19937_64& rng) const {
-    resolve_row_counts(slot.plies, exact_pair_eval(slot.state).probs, bc_.N, params_, rng);
+    resolve_row_counts(slot.plies, exact_pair_eval(slot.state).probs, bc_->N, params_, rng);
     json plies = json::array();
     for (auto& p : slot.plies) {
         json j;
@@ -514,12 +517,12 @@ FinishedGame SelfPlayRunner::finish(Slot& slot, std::mt19937_64& rng) const {
         }
         plies.push_back(std::move(j));
     }
-    GameRecord record = build_game_record(slot.plies, slot.state);
+    GameRecord record = build_game_record(slot.plies, slot.state, input_descr_);
     return FinishedGame{std::move(record), json{{"plies", std::move(plies)}}, std::move(slot.state)};
 }
 
 void SelfPlayRunner::play_ply(Slot& slot, MCTS& mcts, std::mt19937_64& rng) {
-    int N = bc_.N;
+    int N = bc_->N;
     auto history_of = [&](const BoardState& s) {
         return history_descr_ ? board_to_features(s, *history_descr_).features : torch::Tensor();
     };
@@ -596,8 +599,9 @@ void SelfPlayRunner::play_ply(Slot& slot, MCTS& mcts, std::mt19937_64& rng) {
     slot.plies.push_back(std::move(rec));
 }
 
-GameRecord replay_trajectory(const nlohmann::json& trajectory, const GameConfig& cfg, const BoardConfig& bc,
-                             const nlohmann::json& descr, const nlohmann::json* history_descr) {
+GameRecord replay_trajectory(const nlohmann::json& trajectory, const GameConfig& cfg,
+                             std::shared_ptr<const BoardConfig> bc, const nlohmann::json& descr,
+                             const nlohmann::json* history_descr) {
     BoardState state = new_state(cfg, bc);
     state.max_plies = std::nullopt;  // the recorded game already obeyed its own (possibly sampled) bound
     std::vector<PlyRecord> plies;
@@ -619,5 +623,5 @@ GameRecord replay_trajectory(const nlohmann::json& trajectory, const GameConfig&
         apply_action(state, p.move);
         plies.push_back(std::move(p));
     }
-    return build_game_record(plies, state);
+    return build_game_record(plies, state, descr);
 }

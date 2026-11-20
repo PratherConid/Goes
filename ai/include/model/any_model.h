@@ -10,7 +10,6 @@
 #include <stdexcept>
 #include <string>
 #include <variant>
-#include <type_traits>
 
 // Variant holding either model type; used in both train and server.
 using AnyModel = std::variant<MessagePassingGNN, UNet, CNN, Transformer>;
@@ -24,35 +23,15 @@ inline AnyModel build_model(const BoardConfig& bc, const ModelConfig& cfg, int n
         return UNet(bc, static_cast<const UNetConfig&>(cfg), num_stones, num_players);
     if (cfg.model_type == "transformer")
         return Transformer(bc, static_cast<const TransformerConfig&>(cfg), num_stones, num_players);
-    // adj_norms only sizes the GNN's neighbor-count embedding table.
     if (cfg.model_type == "gnn")
-        return MessagePassingGNN(static_cast<const GNNConfig&>(cfg), num_stones, num_players,
-                                 compute_adj_norms(bc, torch::kCPU));
+        return MessagePassingGNN(static_cast<const GNNConfig&>(cfg), num_stones, num_players);
     throw std::runtime_error("build_model: unknown model type '" + cfg.model_type + "'");
 }
 
-// The input descriptor `model` was built with (ModelConfig::input_descr).
-inline const nlohmann::json& input_descr_of(const AnyModel& model) {
-    return std::visit([](const auto& m) -> const nlohmann::json& { return m->cfg_.input_descr; }, model);
-}
-
-// Build a type-erased Evaluator from a model variant, capturing by value the board tensors it runs
-// against, so the returned Evaluator is self-contained: adj_norms for GNN, node_slots for
-// UNet/CNN/Transformer (the other is unused).
-inline Evaluator make_evaluator(AnyModel& model, const AdjNorms& adj_norms, const NodeSlots& node_slots) {
-    return std::visit([&](auto& m) -> Evaluator {
-        using M = std::decay_t<decltype(m)>;
-        auto prepare = [m](const BoardState& s) { return m->prepare_input(s); };
-        if constexpr (std::is_same_v<M, MessagePassingGNN>) {
-            auto adj = adj_norms;
-            return Evaluator{prepare, [m, adj](const std::vector<const ModelInput*>& in) mutable {
-                return m->evaluate_inputs(in, adj);
-            }};
-        } else {
-            auto slots = node_slots;
-            return Evaluator{prepare, [m, slots](const std::vector<const ModelInput*>& in) mutable {
-                return m->evaluate_inputs(in, slots);
-            }};
-        }
+// Build a type-erased Evaluator from a model variant.
+inline Evaluator make_evaluator(AnyModel& model) {
+    return std::visit([](auto& m) -> Evaluator {
+        return Evaluator{[m](const BoardState& s) { return m->prepare_input(s); },
+                         [m](const std::vector<const ModelInput*>& in) mutable { return m->evaluate_inputs(in); }};
     }, model);
 }

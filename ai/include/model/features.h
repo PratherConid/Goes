@@ -1,6 +1,7 @@
 #pragma once
 #include <torch/torch.h>
 #include "game/board_state.h"
+#include "model/model_output.h"
 #include "nlohmann/json.hpp"
 #include <vector>
 
@@ -9,25 +10,27 @@ struct FeatureTensors {
     torch::Tensor legal_mask;  // (num_stones*N + 1,) bool
 };
 
-// Multi-scale adjacency matrices, computed once per BoardConfig.
-// Layers cycle through these as: adj, adj2, adj, adj4, adj, adj2, adj, adj4, ...
+// One board's multi-scale adjacency matrices, padded to the GNN's slots (NodeSlots): a slot no
+// node occupies has no edges and degree 0. The GNN computes them once per board
+// (MessagePassingGNNImpl::adj_norms_of()). Layers cycle through these as: adj, adj2, adj, adj4,
+// adj, adj2, adj, adj4, ...
 struct AdjNorms {
-    torch::Tensor adj;   // row-normalised 1-hop + self
-    torch::Tensor adj2;  // row-normalised exactly-2-hop neighbors
-    torch::Tensor adj4;  // row-normalised exactly-4-hop neighbors
-    torch::Tensor deg1;  // (N,1) float - neighbor count per node in adj's mask (1-hop+self)
-    torch::Tensor deg2;  // (N,1) float - neighbor count per node in adj2's mask
-    torch::Tensor deg4;  // (N,1) float - neighbor count per node in adj4's mask
-    int max_degree;      // max over deg1, deg2, deg4 (all nodes, all three tiers)
+    torch::Tensor adj;   // (S,S) row-normalised 1-hop + self
+    torch::Tensor adj2;  // (S,S) row-normalised exactly-2-hop neighbors
+    torch::Tensor adj4;  // (S,S) row-normalised exactly-4-hop neighbors
+    torch::Tensor deg1;  // (S,1) float - neighbor count per node in adj's mask (1-hop+self)
+    torch::Tensor deg2;  // (S,1) float - neighbor count per node in adj2's mask
+    torch::Tensor deg4;  // (S,1) float - neighbor count per node in adj4's mask
 };
 
-// A board's nodes' slots in the zero-extended input the CNN/UNet/Transformer run on, whose layout
-// the input descriptor alone fixes, so one model serves every board that fits: with an embedding,
-// node i's slot is its position's index in the descriptor's sideLens box (dimension 0 fastest);
-// without one, it is i, out of the descriptor's nBound. Computed once per BoardConfig.
+// A board's nodes' slots in the zero-extended space every network's input and output live in,
+// whose layout the input descriptor alone fixes, so one model serves - and one batch mixes -
+// every board that fits: with an embedding, node i's slot is its position's index in the
+// descriptor's sideLens box (dimension 0 fastest); without one, it is i, out of the descriptor's
+// nBound. CPU tensors, cheap (O(N * emb_dim)) to compute.
 struct NodeSlots {
     torch::Tensor slot;   // (N,) long - node i's slot
-    torch::Tensor valid;  // (num_node_slots(),) float - 1 at the board's slots
+    torch::Tensor valid;  // (S,) float - 1 at the board's slots (S = num_node_slots())
 };
 
 // Compute per-node feature matrix and legal mask for one state, as CPU tensors. descr is the
@@ -66,14 +69,29 @@ torch::Tensor legal_action_mask(const BoardState& state);
 // callers that need a mask use board_to_features() for that ply instead.
 torch::Tensor history_features_at_ply(const BoardState& state, int ply, const nlohmann::json& descr);
 
-// Compute the multi-scale adjacency set. Call once per BoardConfig.
-AdjNorms compute_adj_norms(const BoardConfig& bc, torch::Device device);
+// bc's multi-scale adjacency set, padded to `slots`.
+AdjNorms compute_adj_norms(const BoardConfig& bc, const NodeSlots& slots, torch::Device device);
 
-// The CNN/UNet/Transformer's slot count for boards like `bc` (see NodeSlots): num_cells(descr's
-// sideLens) with an embedding, else descr's nBound.
+// The networks' slot count for boards like `bc` (see NodeSlots): num_cells(descr's sideLens) with
+// an embedding, else descr's nBound.
 int num_node_slots(const BoardConfig& bc, const nlohmann::json& descr);
 
-// bc's NodeSlots under `descr`. Throws std::runtime_error if bc doesn't fit: its side lengths in
-// sideLens (fits_in(), game/board_config.h), or, without an embedding, its N in nBound. Call once
-// per BoardConfig.
-NodeSlots compute_node_slots(const BoardConfig& bc, const nlohmann::json& descr, torch::Device device);
+// bc's NodeSlots under `descr`. Throws std::runtime_error if bc doesn't fit: its N in nBound and,
+// with an embedding, its side lengths in sideLens (fits_in(), game/board_config.h).
+NodeSlots compute_node_slots(const BoardConfig& bc, const nlohmann::json& descr);
+
+// Every flat stone-major action's slot-space index: placement (s-1)*N + i -> (s-1)*S + slot[i], pass
+// num_stones*N -> num_stones*S.
+torch::Tensor slot_action_index(const NodeSlots& slots, int num_stones);
+
+// `per_node`, whose dimension `dim` is indexed by node, zero-extended along it to the S slots.
+torch::Tensor nodes_to_slots(const torch::Tensor& per_node, const NodeSlots& slots, int64_t dim = 0);
+
+// A (num_stones*N+1,) per-action tensor (a legal mask, a policy target) zero-extended to the
+// (num_stones*S+1,) slot-space actions.
+torch::Tensor actions_to_slots(const torch::Tensor& per_action, const NodeSlots& slots, int num_stones);
+
+// One state's network input in the model's slot space: board_to_features() under `descr`,
+// zero-extended to the NodeSlots of the state's board, plus those slots and the board itself.
+// Every architecture's prepare_input() builds on it (the Transformer adds history).
+ModelInput slot_input(const BoardState& state, const nlohmann::json& descr);

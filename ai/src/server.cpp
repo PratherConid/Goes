@@ -359,14 +359,10 @@ int main(int argc, char* argv[]) {
             if (!game_cfg.board_seed)
                 throw std::runtime_error("config.boardSeed is required");
             const std::string& tag  = find_checkpoint_dir(ss, game_cfg);
-            auto bc                 = build_board_from_cleg(*parse_cleg(game_cfg.board_descr), *game_cfg.board_seed);
-            auto adj_norms          = compute_adj_norms(bc, ss.device);
-            auto& model_v           = load_model(ss, tag, bc);
-            // The GNN doesn't run on node slots, so it needn't fit them either.
-            auto node_slots         = std::holds_alternative<MessagePassingGNN>(model_v)
-                                          ? NodeSlots{}
-                                          : compute_node_slots(bc, input_descr_of(model_v), ss.device);
-            auto evaluator          = make_evaluator(model_v, adj_norms, node_slots);
+            auto bc                 = std::make_shared<const BoardConfig>(
+                                          build_board_from_cleg(*parse_cleg(game_cfg.board_descr), *game_cfg.board_seed));
+            auto& model_v           = load_model(ss, tag, *bc);
+            auto evaluator          = make_evaluator(model_v);
 
             // Full move history, one {"pos","stone"} object per ply - see parse_move_ref().
             std::vector<MoveRef> req_moves;
@@ -459,12 +455,12 @@ int main(int argc, char* argv[]) {
             int ns = sess->state->num_stones;
             int move_idx = result.move;
             json resp;
-            if (move_idx == ns * bc.N) {
+            if (move_idx == ns * bc->N) {
                 resp["move"]  = nullptr;
                 resp["stone"] = nullptr;
             } else {
-                resp["move"]  = move_idx % bc.N;
-                resp["stone"] = move_idx / bc.N + 1;
+                resp["move"]  = move_idx % bc->N;
+                resp["stone"] = move_idx / bc->N + 1;
             }
             resp["policy"]     = result.policy_target;
             resp["value"]      = value;
