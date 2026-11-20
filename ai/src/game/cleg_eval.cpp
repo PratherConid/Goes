@@ -366,12 +366,12 @@ static BuiltResult build_from_nodes_and_edges(
     std::vector<std::vector<int>> tuples;
     tuples.reserve(orig_index.size());
     for (long long idx : orig_index) tuples.push_back(tuple_of_full_index(fpi, idx));
-    unsigned emb_dim = 0;
-    for (auto& b : boards) emb_dim += b.emb_dim;
+    std::vector<unsigned> side_lens;
+    for (auto& b : boards) side_lens.insert(side_lens.end(), b.side_lens.begin(), b.side_lens.end());
     size_t K = orig_index.size();
     std::vector<std::vector<unsigned>> pos(K);
     for (size_t i = 0; i < K; i++) {
-        pos[i].reserve(emb_dim);
+        pos[i].reserve(side_lens.size());
         for (size_t k = 0; k < boards.size(); k++) {
             auto& bp = boards[k].embed[tuples[i][k]];
             pos[i].insert(pos[i].end(), bp.begin(), bp.end());
@@ -387,7 +387,7 @@ static BuiltResult build_from_nodes_and_edges(
         adj[a][b] = 1;
         adj[b][a] = 1;
     }
-    return {make_bc(std::move(adj), emb_dim, std::move(pos)), std::move(orig_index)};
+    return {make_bc(std::move(adj), std::move(side_lens), std::move(pos)), std::move(orig_index)};
 }
 
 // Mirrors shared/clegEval.ts's combineRestrictedFactor().
@@ -566,7 +566,7 @@ static ClegValue build_sub_hcublat(
             adj[nbi][bi] = 1;
         }
     }
-    return make_egr(make_bc(std::move(adj), static_cast<unsigned>(k), std::move(pos)));
+    return make_egr(make_bc(std::move(adj), std::vector<unsigned>(dims.begin(), dims.end()), std::move(pos)));
 }
 
 // Mirrors shared/clegEval.ts's `point.join(',')` key in buildSubHcublatCustomAdj().
@@ -623,7 +623,7 @@ static ClegValue build_sub_hcublat_custom_adj(
             adj[it->second][bi] = 1;
         }
     }
-    return make_egr(make_bc(std::move(adj), static_cast<unsigned>(k), std::move(pos)));
+    return make_egr(make_bc(std::move(adj), std::vector<unsigned>(dims.begin(), dims.end()), std::move(pos)));
 }
 
 // Mirrors shared/clegEval.ts's compareClegSetElems(), as a std::sort-style "less" predicate. Strings

@@ -10,12 +10,23 @@ struct BoardConfig {
     int N;
     std::vector<std::vector<int>> adj;       // N×N symmetric adjacency matrix (0/1)
     std::vector<std::vector<int>> adlist;    // adjacency list: adlist[i] = i's neighbors in ascending order, built from adj by make_bc()
-    unsigned emb_dim;                        // embedding dimension of embed coordinates
-    std::vector<std::vector<unsigned>> embed; // N×emb_dim node positions
+    // C++-only (TS's Embedding carries just embDim): the embedding box's side lengths, one per
+    // embedding dimension - every embed[i][k] < side_lens[k]. Each construction function derives
+    // them from its own arguments and its input boards' side_lens, never from which nodes it keeps,
+    // so random node/edge removal doesn't change them.
+    std::vector<unsigned> side_lens;
+    std::vector<std::vector<unsigned>> embed; // N×emb_dim() node positions
+
+    unsigned emb_dim() const { return static_cast<unsigned>(side_lens.size()); }
 };
 
-// Mirrors shared/boardConfig.ts's make(), taking an exact-integer embedding.
-BoardConfig make_bc(std::vector<std::vector<int>> adj, unsigned emb_dim, std::vector<std::vector<unsigned>> emb);
+// Mirrors shared/boardConfig.ts's make(), taking an exact-integer embedding and its side lengths.
+BoardConfig make_bc(std::vector<std::vector<int>> adj, std::vector<unsigned> side_lens,
+                    std::vector<std::vector<unsigned>> emb);
+
+// The product of bc.side_lens (N for a board without an embedding): what N-dependent input features
+// (compute_input_descr()'s liberty and groupSize blocks) are sized by instead of N.
+int num_cells(const BoardConfig& bc);
 
 // Mirrors shared/boardConfig.ts's quotientBoard().
 BoardConfig quotient_board(const BoardConfig& bc,
@@ -27,18 +38,18 @@ BoardConfig edge_split(const BoardConfig& bc, int split_n);
 
 // Mirrors shared/boardConfig.ts's rectify(). Midpoints (embed[i]+embed[j], the same doubled scale)
 // stay exact integers; only the direction normalization is floating point (see geometry.h's doc
-// comment). Throws if bc.emb_dim == 0 - there are no real coordinates to compute edge directions
+// comment). Throws if bc.emb_dim() == 0 - there are no real coordinates to compute edge directions
 // from.
 BoardConfig rectify(const BoardConfig& bc);
 
 // Mirrors shared/boardConfig.ts's truncate()'s connectivity but not its per-vertex-fraction
 // positions (irrational in general - no exact-integer analog): every near-point instead sits at a
 // fixed 1/3 or 2/3 of the way along its edge, on a 3x-scaled board (see the .cpp file's comment).
-// Throws if bc.emb_dim == 0, same as rectify().
+// Throws if bc.emb_dim() == 0, same as rectify().
 BoardConfig truncate(const BoardConfig& bc);
 
 // Mirrors shared/boardConfig.ts's mergeClose(). embed coordinates stay exact integers throughout;
-// only dist and the distance test are floating point. Throws if bc.emb_dim == 0 - there are no real
+// only dist and the distance test are floating point. Throws if bc.emb_dim() == 0 - there are no real
 // coordinates to compute a distance from.
 BoardConfig merge_close(const BoardConfig& bc, double dist);
 

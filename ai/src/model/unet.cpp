@@ -43,9 +43,9 @@ UNetImpl::UNetImpl(const BoardConfig& bc, const UNetConfig& cfg, int num_stones,
     // Release builds), which would otherwise let a non-2D-embedded board (e.g. regpoly/dodeca/icosa
     // - see board_config.h - all use emb_dim=0 with an empty embed[] per node) fall through into the
     // bc.embed[i][0]/[1] accesses below as undefined behavior instead of failing loudly here.
-    if (bc.emb_dim != 2)
+    if (bc.emb_dim() != 2)
         throw std::runtime_error(
-            "UNet requires a 2D embedding (bc.emb_dim == 2), got emb_dim=" + std::to_string(bc.emb_dim));
+            "UNet requires a 2D embedding (bc.emb_dim() == 2), got emb_dim=" + std::to_string(bc.emb_dim()));
     assert(bc.N > 0);
 
     // Compute the board's tight bounding box from embedding, then pad it up to

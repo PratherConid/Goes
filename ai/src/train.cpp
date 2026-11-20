@@ -599,7 +599,7 @@ int main(int argc, char* argv[]) {
     const uint32_t board_seed = std::random_device{}();
     auto bc = build_board_from_cleg(*parse_cleg(game_cfg.board_descr), board_seed);
     std::cout << "Board:\n" << game_cfg.board_descr << "  N=" << bc.N << "  seed=" << board_seed << std::endl;
-    const std::string arch = effective_arch(args, game_cfg.board_descr, bc.emb_dim);
+    const std::string arch = effective_arch(args, game_cfg.board_descr, bc.emb_dim());
 
     // With forced_pass_only, the game's end depends on the full move history, which only the
     // history-aware Transformer sees.
@@ -635,7 +635,7 @@ int main(int argc, char* argv[]) {
         std::cout << std::endl;
     }
 
-    json input_descr = compute_input_descr(game_cfg, bc.N);
+    json input_descr = compute_input_descr(game_cfg, num_cells(bc));
     int in_dim = input_descr.at("totalDims").get<int>();
     // The Transformer's per-ply history input: just the turn position and stones.
     json history_descr;

@@ -67,7 +67,7 @@ TORCH_MODULE(UNetPolicyHead);
 //              matching encoder level, since dec_reduce_'s 1×1 conv already
 //              contributes one conv's worth of depth at each level).
 // num_layers is not a parameter - depth is determined by grid dimensions.
-// Requires bc.emb_dim == 2.
+// Requires bc.emb_dim() == 2.
 struct UNetImpl : torch::nn::Module {
     torch::nn::Conv2d input_proj{nullptr};           // 1x1 conv: feature_dim+1 -> hidden_dim
     std::vector<torch::nn::Sequential> enc_blocks_;  // [k=0..L]: encoder conv groups

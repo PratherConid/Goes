@@ -53,7 +53,7 @@ TORCH_MODULE(CNNPolicyHead);
 //            (stone estimate, territory estimate) - see MessagePassingGNN's ownership doc.
 // Policy: extracted from the final block output via CNNPolicyHead.
 // Rank: RankHead (rank_head.h) over the same per-node gather.
-// Requires bc.emb_dim == 2.
+// Requires bc.emb_dim() == 2.
 struct CNNImpl : torch::nn::Module {
     torch::nn::Conv2d input_proj{nullptr};       // 1x1 conv: feature_dim+1 -> hidden_dim
     std::vector<torch::nn::Sequential> blocks_;  // [k=0..num_blocks_-1]: Conv->ReLU->Conv (cfg.conv_size)
