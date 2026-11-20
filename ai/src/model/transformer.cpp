@@ -142,13 +142,13 @@ ModelOutput TransformerImpl::forward(
     return {policy, ownership, rank};
 }
 
-ModelInput TransformerImpl::prepare_input(const BoardState& state) const {
-    ModelInput in = slot_input(state, cfg_.input_descr);
+ModelInput TransformerImpl::prepare_input(const BoardState& state, const std::shared_ptr<const GameInput>& game) const {
+    ModelInput in = slot_input(state, cfg_.input_descr, game);
     int T = state.ply_count();
     if (T > 0) {
         std::vector<torch::Tensor> rows(T);
         for (int k = 0; k < T; k++) rows[k] = history_features_at_ply(state, k, cfg_.history_descr);
-        in.history = nodes_to_slots(stack_cpu(rows), {in.slot, in.valid}, 1);
+        in.history = nodes_to_slots(stack_cpu(rows), game->slots, 1);
     } else {
         in.history = torch::empty({0, num_slots_, history_feature_dim_}, torch::kFloat32);
     }

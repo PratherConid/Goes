@@ -56,19 +56,18 @@ std::vector<std::pair<size_t, int>> ReplayBuffer::pick(int batch_size, int64_t w
 
 Batch ReplayBuffer::gather(const std::vector<std::pair<size_t, int>>& picks) const {
     std::vector<torch::Tensor> feats, valids, masks, policies, stones, territories, ranks;
-    std::vector<std::shared_ptr<const BoardConfig>> boards;
+    std::vector<std::shared_ptr<const GameInput>> games;
     for (auto& [si, row] : picks) {
         const GameRecord& r = slots_[si].record;
-        const NodeSlots& ns = r.node_slots;
-        int num_stones = static_cast<int>((r.legal_mask.size(1) - 1) / ns.slot.size(0));
+        const NodeSlots& ns = r.game->slots;
         feats.push_back(nodes_to_slots(r.features[row], ns));
         valids.push_back(ns.valid);
-        masks.push_back(actions_to_slots(r.legal_mask[row], ns, num_stones));
-        policies.push_back(actions_to_slots(r.policy_target[row], ns, num_stones));
+        masks.push_back(actions_to_slots(r.legal_mask[row], *r.game));
+        policies.push_back(actions_to_slots(r.policy_target[row], *r.game));
         stones.push_back(nodes_to_slots(r.stone_owner, ns));
         territories.push_back(nodes_to_slots(r.territory_owner, ns));
         ranks.push_back(r.rank_target[row]);
-        boards.push_back(r.board);
+        games.push_back(r.game);
     }
     return Batch{
         torch::stack(feats, 0).to(torch::kFloat32),
@@ -78,7 +77,7 @@ Batch ReplayBuffer::gather(const std::vector<std::pair<size_t, int>>& picks) con
         torch::stack(stones, 0),
         torch::stack(territories, 0),
         torch::stack(ranks, 0),
-        std::move(boards),
+        std::move(games),
     };
 }
 
@@ -92,13 +91,13 @@ HistoryBatch ReplayBuffer::sample_with_history(int batch_size, int64_t window_ro
     int64_t t_max = 0;
     for (auto& [si, row] : picks) t_max = std::max<int64_t>(t_max, slots_[si].record.row_ply[row]);
     const GameRecord& r0 = slots_[picks[0].first].record;
-    auto hist = torch::zeros({B, t_max, r0.node_slots.valid.size(0), r0.history_features.size(2)}, torch::kFloat32);
+    auto hist = torch::zeros({B, t_max, r0.game->slots.valid.size(0), r0.history_features.size(2)}, torch::kFloat32);
     auto hist_mask = torch::ones({B, t_max}, torch::kBool);
     for (int i = 0; i < B; i++) {
         const GameRecord& r = slots_[picks[i].first].record;
         int64_t ply = r.row_ply[picks[i].second];
         if (ply > 0) {
-            hist[i].slice(0, 0, ply).index_copy_(1, r.node_slots.slot,
+            hist[i].slice(0, 0, ply).index_copy_(1, r.game->slots.slot,
                                                  r.history_features.slice(0, 0, ply).to(torch::kFloat32));
             hist_mask[i].slice(0, 0, ply).fill_(false);
         }

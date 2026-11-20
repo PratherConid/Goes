@@ -117,15 +117,15 @@ ModelOutput CNNImpl::forward(
     return {policy, ownership, rank};
 }
 
-ModelInput CNNImpl::prepare_input(const BoardState& state) const {
-    return slot_input(state, cfg_.input_descr);
+ModelInput CNNImpl::prepare_input(const BoardState& state, const std::shared_ptr<const GameInput>& game) const {
+    return slot_input(state, cfg_.input_descr, game);
 }
 
 ModelOutput CNNImpl::evaluate_inputs(const std::vector<const ModelInput*>& inputs) {
     torch::NoGradGuard ng;
     auto dev = input_proj->weight.device();
     auto x     = stack_inputs(inputs, &ModelInput::features).to(dev);   // (B, S, F)
-    auto valid = stack_inputs(inputs, &ModelInput::valid).to(dev);      // (B, S)
+    auto valid = stack_valid(inputs).to(dev);                           // (B, S)
     auto mask  = stack_inputs(inputs, &ModelInput::legal_mask).to(dev); // (B, ns*S+1)
     return forward(x, valid, mask);
 }

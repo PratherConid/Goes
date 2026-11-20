@@ -2,47 +2,10 @@
 #include <algorithm>
 #include <cassert>
 #include <iostream>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <vector>
-
-AdjNorms compute_adj_norms(const BoardConfig& bc, const NodeSlots& slots, torch::Device device) {
-    int N = bc.N;
-
-    // Binary adjacency without self-loops
-    auto A_raw = torch::zeros({N, N}, torch::kFloat32);
-    for (int i = 0; i < N; i++)
-        for (int j = 0; j < N; j++)
-            if (bc.adj[i][j]) A_raw[i][j] = 1.0f;
-
-    // A_self = A + I; (A_self)^k entry > 0 iff node reachable in ≤k hops
-    auto A_self = A_raw + torch::eye(N, torch::kFloat32);
-    auto A2 = torch::mm(A_self, A_self);
-    auto A3 = torch::mm(A2,    A_self);
-    auto A4 = torch::mm(A3,    A_self);
-
-    auto normalise = [](torch::Tensor mask_float) {
-        return mask_float / mask_float.sum(1, true).clamp_min(1.0f);
-    };
-
-    // adj:  1-hop + self
-    // adj2: reachable in ≤2 hops but not ≤1  (exclusive 2-hop ring)
-    // adj4: reachable in ≤4 hops but not ≤3  (exclusive 4-hop ring)
-    auto f1 = A_self.gt(0).to(torch::kFloat32);
-    auto f2 = (A2.gt(0).to(torch::kFloat32) - f1).clamp_min(0.0f);
-    auto f4 = (A4.gt(0).to(torch::kFloat32) - A3.gt(0).to(torch::kFloat32)).clamp_min(0.0f);
-
-    // Neighbor count per node in each hop-tier's mask, before row-normalisation.
-    auto deg1 = f1.sum(1, /*keepdim=*/true); // (N,1)
-    auto deg2 = f2.sum(1, /*keepdim=*/true);
-    auto deg4 = f4.sum(1, /*keepdim=*/true);
-
-    // Node i's row and column go to slot[i].
-    auto pad = [&](const torch::Tensor& m) { return nodes_to_slots(nodes_to_slots(m, slots, 0), slots, 1).to(device); };
-    return {pad(normalise(f1)), pad(normalise(f2)), pad(normalise(f4)),
-            nodes_to_slots(deg1, slots).to(device), nodes_to_slots(deg2, slots).to(device),
-            nodes_to_slots(deg4, slots).to(device)};
-}
 
 int num_node_slots(const BoardConfig& bc, const nlohmann::json& descr) {
     return bc.emb.emb_dim() != 0 ? num_cells(descr.at("sideLens").get<std::vector<unsigned>>())
@@ -90,16 +53,71 @@ torch::Tensor nodes_to_slots(const torch::Tensor& per_node, const NodeSlots& slo
     return torch::zeros(shape, per_node.options()).index_copy_(dim, slots.slot, per_node);
 }
 
-torch::Tensor actions_to_slots(const torch::Tensor& per_action, const NodeSlots& slots, int num_stones) {
-    return torch::zeros({num_stones * slots.valid.size(0) + 1}, per_action.options())
-        .index_copy_(0, slot_action_index(slots, num_stones), per_action);
+torch::Tensor actions_to_slots(const torch::Tensor& per_action, const GameInput& game) {
+    int64_t num_stones = (game.action_index.size(0) - 1) / game.slots.slot.size(0);
+    return torch::zeros({num_stones * game.slots.valid.size(0) + 1}, per_action.options())
+        .index_copy_(0, game.action_index, per_action);
 }
 
-ModelInput slot_input(const BoardState& state, const nlohmann::json& descr) {
-    NodeSlots slots = compute_node_slots(*state.bc, descr);
+NeighborTiers neighbor_tiers(const BoardConfig& bc, const NodeSlots& slots) {
+    const int N = bc.N;
+    auto slot_a = slots.slot.accessor<int64_t, 1>();
+    std::vector<int> by_slot(N);
+    std::iota(by_slot.begin(), by_slot.end(), 0);
+    std::sort(by_slot.begin(), by_slot.end(), [&](int a, int b) { return slot_a[a] < slot_a[b]; });
+
+    std::array<std::vector<int32_t>, 3> src;
+    auto deg = torch::zeros({3, slots.valid.size(0)}, torch::kLong);
+    auto deg_a = deg.accessor<int64_t, 2>();
+    std::vector<int> dist(N, -1), reached, frontier, next;
+    for (int i : by_slot) {
+        dist[i] = 0;
+        reached.assign(1, i);
+        frontier.assign(1, i);
+        for (int d = 1; d <= 4; d++) {
+            next.clear();
+            for (int u : frontier)
+                for (int v : bc.adlist[u])
+                    if (dist[v] < 0) { dist[v] = d; next.push_back(v); reached.push_back(v); }
+            frontier.swap(next);
+        }
+        for (int v : reached) {
+            int t = dist[v] <= 1 ? 0 : dist[v] == 2 ? 1 : dist[v] == 4 ? 2 : -1;
+            if (t < 0) continue;
+            src[t].push_back(static_cast<int32_t>(slot_a[v]));
+            deg_a[t][slot_a[i]]++;
+        }
+        for (int v : reached) dist[v] = -1;
+    }
+    NeighborTiers tiers;
+    for (int t = 0; t < 3; t++) {
+        tiers.src[t] = torch::empty({static_cast<int64_t>(src[t].size())}, torch::kInt32);
+        std::copy(src[t].begin(), src[t].end(), tiers.src[t].data_ptr<int32_t>());
+    }
+    tiers.deg = deg;
+    return tiers;
+}
+
+std::shared_ptr<const GameInput> make_game_input(const BoardState& state, const nlohmann::json& descr) {
+    auto game = std::make_shared<GameInput>();
+    game->slots = compute_node_slots(*state.bc, descr);
+    game->action_index = slot_action_index(game->slots, state.num_stones);
+    game->tiers = neighbor_tiers(*state.bc, game->slots);
+    return game;
+}
+
+ModelInput slot_input(const BoardState& state, const nlohmann::json& descr, std::shared_ptr<const GameInput> game) {
     auto [features, legal_mask] = board_to_features(state, descr);
-    return {nodes_to_slots(features, slots), slots.valid, actions_to_slots(legal_mask, slots, state.num_stones), {},
-            slots.slot, state.bc};
+    auto x = nodes_to_slots(features, game->slots);
+    auto mask = actions_to_slots(legal_mask, *game);
+    return {std::move(x), std::move(mask), {}, std::move(game)};
+}
+
+torch::Tensor stack_valid(const std::vector<const ModelInput*>& inputs) {
+    std::vector<torch::Tensor> rows;
+    rows.reserve(inputs.size());
+    for (const ModelInput* in : inputs) rows.push_back(in->game->slots.valid);
+    return stack_cpu(rows);
 }
 
 // Soft, monotonic stand-in for "bit i of value": 1 at value=0, ramping down

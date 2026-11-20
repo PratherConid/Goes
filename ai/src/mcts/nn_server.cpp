@@ -21,10 +21,10 @@ void NNServer::set_evaluators(std::vector<Evaluator> evaluators) {
     evaluators_ = std::move(evaluators);
 }
 
-NNRow NNServer::evaluate(const BoardState& state) {
+NNRow NNServer::evaluate(const BoardState& state, const std::shared_ptr<const GameInput>& game) {
     Request req;
     req.state = &state;
-    req.input = evaluators_.front().prepare(state);
+    req.input = evaluators_.front().prepare(state, game);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         queue_.push_back(&req);

@@ -28,10 +28,17 @@ inline AnyModel build_model(const BoardConfig& bc, const ModelConfig& cfg, int n
     throw std::runtime_error("build_model: unknown model type '" + cfg.model_type + "'");
 }
 
+// The input descriptor `model` was built with (ModelConfig::input_descr).
+inline const nlohmann::json& input_descr_of(const AnyModel& model) {
+    return std::visit([](const auto& m) -> const nlohmann::json& { return m->cfg_.input_descr; }, model);
+}
+
 // Build a type-erased Evaluator from a model variant.
 inline Evaluator make_evaluator(AnyModel& model) {
     return std::visit([](auto& m) -> Evaluator {
-        return Evaluator{[m](const BoardState& s) { return m->prepare_input(s); },
+        return Evaluator{[m](const BoardState& s, const std::shared_ptr<const GameInput>& game) {
+                             return m->prepare_input(s, game);
+                         },
                          [m](const std::vector<const ModelInput*>& in) mutable { return m->evaluate_inputs(in); }};
     }, model);
 }

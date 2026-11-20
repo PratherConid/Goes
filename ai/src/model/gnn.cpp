@@ -1,5 +1,4 @@
 #include "model/gnn.h"
-#include <algorithm>
 #include <limits>
 #include <cmath>
 
@@ -62,58 +61,42 @@ torch::Tensor GNNPolicyHeadImpl::forward(const torch::Tensor& h) {
     return torch::cat({place_logits, pass_logit}, -1);            // (B, ns*S+1)
 }
 
-AdjNorms MessagePassingGNNImpl::adj_norms_of(const std::shared_ptr<const BoardConfig>& bc) const {
-    torch::Device dev = input_proj->weight.device();
-    std::lock_guard<std::mutex> lock(adj_cache_mutex_);
-    for (auto it = adj_cache_.begin(); it != adj_cache_.end(); ++it) {
-        if (it->first != bc || it->second.adj.device() != dev) continue;
-        adj_cache_.splice(adj_cache_.begin(), adj_cache_, it);
-        return adj_cache_.front().second;
-    }
-    adj_cache_.emplace_front(bc, compute_adj_norms(*bc, compute_node_slots(*bc, cfg_.input_descr), dev));
-    if (adj_cache_.size() > kAdjCacheBoards) adj_cache_.pop_back();
-    return adj_cache_.front().second;
-}
-
 ModelOutput MessagePassingGNNImpl::forward(
     torch::Tensor x,
-    const std::vector<std::shared_ptr<const BoardConfig>>& boards,
+    const std::vector<std::shared_ptr<const GameInput>>& games,
     torch::Tensor legal_mask)
 {
     int64_t B = x.size(0), S = x.size(1);
 
-    // Every row's padded adjacency set: one (S,S) set for the whole batch when every row is on the
-    // same board, else one per row, stacked to (B,S,S).
-    const bool shared = std::all_of(boards.begin(), boards.end(), [&](const auto& b) { return b == boards[0]; });
-    AdjNorms a;
-    if (shared) {
-        a = adj_norms_of(boards[0]);
-    } else {
-        std::vector<AdjNorms> rows;
-        rows.reserve(boards.size());
-        for (const auto& b : boards) rows.push_back(adj_norms_of(b));
-        auto stack = [&](torch::Tensor AdjNorms::*field) {
-            std::vector<torch::Tensor> t;
-            t.reserve(rows.size());
-            for (const AdjNorms& r : rows) t.push_back(r.*field);
-            return torch::stack(t);
-        };
-        a = {stack(&AdjNorms::adj), stack(&AdjNorms::adj2), stack(&AdjNorms::adj4),
-             stack(&AdjNorms::deg1), stack(&AdjNorms::deg2), stack(&AdjNorms::deg4)};
+    // Every row's neighbor tiers (NeighborTiers, features.h) over the batch's B*S slots: tier t's
+    // edges take h at src[t] into the mean at dst[t] (dst follows from the degrees, since each row's
+    // src lists its slots' neighbors in slot order).
+    std::vector<torch::Tensor> degs;
+    degs.reserve(games.size());
+    for (const auto& g : games) degs.push_back(g->tiers.deg);
+    auto deg = stack_cpu(degs).to(x.device());  // (B, 3, S)
+    std::array<torch::Tensor, 3> src, dst;
+    for (int t = 0; t < 3; t++) {
+        std::vector<torch::Tensor> rows;
+        rows.reserve(games.size());
+        for (const auto& g : games) rows.push_back(g->tiers.src[t]);
+        auto deg_t = deg.select(1, t).reshape({-1});
+        dst[t] = torch::repeat_interleave(torch::arange(B * S, deg_t.options()), deg_t);
+        src[t] = torch::cat(rows).to(x.device()).to(torch::kLong) + dst[t].div(S, "floor") * S;
     }
 
     // Input projection: (B, S, hidden)
     auto h = torch::relu(input_proj->forward(x));
 
-    // Message-passing layers: cycle adj, adj2, adj, adj4, adj, adj2, adj, adj4, ...
+    // Message-passing layers: cycle tiers 0, 1, 0, 2, 0, 1, 0, 2, ...
     for (int i = 0; i < cfg_.num_layers; i++) {
-        const torch::Tensor& m   = (i % 4 == 1) ? a.adj2 : (i % 4 == 3) ? a.adj4 : a.adj;
-        const torch::Tensor& deg = (i % 4 == 1) ? a.deg2 : (i % 4 == 3) ? a.deg4 : a.deg1;
-        auto agg = torch::einsum(shared ? "nm,bmd->bnd" : "bnm,bmd->bnd", {m, h});  // (B, S, hidden)
-        auto deg_idx = deg.squeeze(-1).to(torch::kLong).flatten();                    // (S,) or (B*S,)
-        auto deg_b   = deg_embed_.index_select(0, deg_idx)
-                           .view({shared ? 1 : B, S, -1}).expand({B, S, -1});        // (B, S, L)
-        auto h_cat = torch::cat({h, agg, deg_b}, -1);      // (B, S, 2*hidden+L)
+        int t = (i % 4 == 1) ? 1 : (i % 4 == 3) ? 2 : 0;
+        auto deg_t = deg.select(1, t).reshape({-1});                                     // (B*S,)
+        auto h_flat = h.reshape({B * S, -1});
+        auto agg = torch::zeros_like(h_flat).index_add(0, dst[t], h_flat.index_select(0, src[t]))
+                   / deg_t.clamp_min(1).unsqueeze(1).to(h.scalar_type());
+        auto deg_b = deg_embed_.index_select(0, deg_t).view({B, S, -1});                // (B, S, L)
+        auto h_cat = torch::cat({h, agg.view({B, S, -1}), deg_b}, -1);  // (B, S, 2*hidden+L)
         // Residual: add input h before normalising so gradients bypass the linear
         h = layer_norms[i]->forward(torch::relu(layers[i]->forward(h_cat)) + h);
     }
@@ -123,8 +106,8 @@ ModelOutput MessagePassingGNNImpl::forward(
     // owns this location at game end".
     auto stone_est     = torch::softmax(stone_head->forward(h), -1);      // (B, S, num_stones+1)
     auto territory_est = torch::softmax(territory_head->forward(h), -1);  // (B, S, num_stones+1)
-    auto ownership = torch::stack({stone_est, territory_est}, 1);              // (B, 2, S, num_stones+1)
-    auto rank = rank_head->forward(h);                            // (B, num_rank_pairs, 3)
+    auto ownership = torch::stack({stone_est, territory_est}, 1);        // (B, 2, S, num_stones+1)
+    auto rank = rank_head->forward(h);                                   // (B, num_rank_pairs, 3)
 
     auto logits = policy_head->forward(h); // (B, num_stones*S+1)
 
@@ -139,8 +122,8 @@ ModelOutput MessagePassingGNNImpl::forward(
     return {policy, ownership, rank};
 }
 
-ModelInput MessagePassingGNNImpl::prepare_input(const BoardState& state) const {
-    return slot_input(state, cfg_.input_descr);
+ModelInput MessagePassingGNNImpl::prepare_input(const BoardState& state, const std::shared_ptr<const GameInput>& game) const {
+    return slot_input(state, cfg_.input_descr, game);
 }
 
 ModelOutput MessagePassingGNNImpl::evaluate_inputs(const std::vector<const ModelInput*>& inputs) {
@@ -148,8 +131,8 @@ ModelOutput MessagePassingGNNImpl::evaluate_inputs(const std::vector<const Model
     auto dev = input_proj->weight.device();
     auto x     = stack_inputs(inputs, &ModelInput::features).to(dev);   // (B, S, F)
     auto mask  = stack_inputs(inputs, &ModelInput::legal_mask).to(dev); // (B, ns*S+1)
-    std::vector<std::shared_ptr<const BoardConfig>> boards;
-    boards.reserve(inputs.size());
-    for (const ModelInput* in : inputs) boards.push_back(in->board);
-    return forward(x, boards, mask);
+    std::vector<std::shared_ptr<const GameInput>> games;
+    games.reserve(inputs.size());
+    for (const ModelInput* in : inputs) games.push_back(in->game);
+    return forward(x, games, mask);
 }

@@ -5,9 +5,7 @@
 #include "model/model_config.h"
 #include "model/model_output.h"
 #include "model/rank_head.h"
-#include <list>
 #include <memory>
-#include <mutex>
 #include <vector>
 
 // Policy head: per-node linear produces num_stones place-logit channels and 1
@@ -34,8 +32,9 @@ TORCH_MODULE(GNNPolicyHead);
 // Input features per node: F = cfg.feature_dim (see model_config.h; computed
 // via compute_input_descr(), training/self_play.h, at model-build time)
 // Outputs:
-// Every input and output is in the model's slot space (NodeSlots, features.h), each row's board
-// padded to S slots with its own adjacency (adj_norms_of()), so one batch can mix boards.
+// Every input and output is in the model's slot space (NodeSlots, features.h), and each row
+// aggregates over its own game's neighbor tiers (GameInput, features.h), so one batch can mix
+// boards.
 //   policy    : (B, numStones*S+1) softmax over legal actions (numStones*S placements + pass)
 //   ownership : (B, 2, S, num_stones+1) per-location stone/territory ownership estimates -
 //               index 0 = stone estimate, index 1 = territory estimate; each (N, num_stones+1)
@@ -65,34 +64,24 @@ struct MessagePassingGNNImpl : torch::nn::Module {
 
     MessagePassingGNNImpl(const GNNConfig& cfg, int num_stones, int num_players);
 
-    // x (B,S,F), boards (each row's), legal_mask (B,numStones*S+1). Returns a
-    // ModelOutput (model_output.h). Layer i uses each row's board's adj (i%4==0,2), adj2 (i%4==1),
-    // adj4 (i%4==3); each layer also concatenates that adjacency tier's per-node neighbor-count
-    // embedding (deg_embed_ looked up via deg1/deg2/deg4) so aggregation isn't degree-agnostic.
+    // x (B,S,F), games (each row's GameInput), legal_mask (B,numStones*S+1). Returns a ModelOutput
+    // (model_output.h). Layer i averages over each row's tier 0 (i%4==0,2), 1 (i%4==1) or 2
+    // (i%4==3) neighbors (NeighborTiers, features.h); each layer also concatenates that tier's
+    // per-node neighbor-count embedding (deg_embed_) so aggregation isn't degree-agnostic.
     ModelOutput forward(
         torch::Tensor x,
-        const std::vector<std::shared_ptr<const BoardConfig>>& boards,
+        const std::vector<std::shared_ptr<const GameInput>>& games,
         torch::Tensor legal_mask);
 
-    // bc's AdjNorms, padded to the model's slots and on its device: computed on first use, then
-    // kept for the kAdjCacheBoards most recently used boards. Thread-safe.
-    AdjNorms adj_norms_of(const std::shared_ptr<const BoardConfig>& bc) const;
-
-    // One state's network input (model_output.h's ModelInput), built on the CPU. Thread-safe.
-    ModelInput prepare_input(const BoardState& state) const;
+    // One state's network input (model_output.h's ModelInput), built on the CPU from it and its
+    // game's GameInput (make_game_input(), features.h). Thread-safe.
+    ModelInput prepare_input(const BoardState& state, const std::shared_ptr<const GameInput>& game) const;
 
     // Evaluates prepared inputs (from any boards that fit) in one forward pass, copying each stacked
     // input tensor to the model's device once. Every ModelOutput tensor is left on the model's
     // device - callers needing CPU access (e.g. via .accessor<T,N>()) must call .cpu() themselves
     // at their point of use.
     ModelOutput evaluate_inputs(const std::vector<const ModelInput*>& inputs);
-
-private:
-    static constexpr size_t kAdjCacheBoards = 64;
-    // adj_norms_of()'s boards, most recently used first; holding each BoardConfig keeps its address
-    // from being reused by another board while cached.
-    mutable std::mutex adj_cache_mutex_;
-    mutable std::list<std::pair<std::shared_ptr<const BoardConfig>, AdjNorms>> adj_cache_;
 };
 
 TORCH_MODULE(MessagePassingGNN);

@@ -28,8 +28,9 @@ public:
     // the first one's prepare().
     void set_evaluators(std::vector<Evaluator> evaluators);
 
-    // Blocks until `state`'s outputs are ready; `state` must stay alive until then.
-    NNRow evaluate(const BoardState& state);
+    // Blocks until `state`'s outputs are ready; `state`, a position of the game whose GameInput is
+    // `game`, must stay alive until then.
+    NNRow evaluate(const BoardState& state, const std::shared_ptr<const GameInput>& game);
 
     struct Stats {
         int64_t rows = 0;

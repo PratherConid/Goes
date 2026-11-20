@@ -3,24 +3,13 @@
 #include "game/board_state.h"
 #include "model/model_output.h"
 #include "nlohmann/json.hpp"
+#include <array>
+#include <memory>
 #include <vector>
 
 struct FeatureTensors {
     torch::Tensor features;    // (N, F) float32
     torch::Tensor legal_mask;  // (num_stones*N + 1,) bool
-};
-
-// One board's multi-scale adjacency matrices, padded to the GNN's slots (NodeSlots): a slot no
-// node occupies has no edges and degree 0. The GNN computes them once per board
-// (MessagePassingGNNImpl::adj_norms_of()). Layers cycle through these as: adj, adj2, adj, adj4,
-// adj, adj2, adj, adj4, ...
-struct AdjNorms {
-    torch::Tensor adj;   // (S,S) row-normalised 1-hop + self
-    torch::Tensor adj2;  // (S,S) row-normalised exactly-2-hop neighbors
-    torch::Tensor adj4;  // (S,S) row-normalised exactly-4-hop neighbors
-    torch::Tensor deg1;  // (S,1) float - neighbor count per node in adj's mask (1-hop+self)
-    torch::Tensor deg2;  // (S,1) float - neighbor count per node in adj2's mask
-    torch::Tensor deg4;  // (S,1) float - neighbor count per node in adj4's mask
 };
 
 // A board's nodes' slots in the zero-extended space every network's input and output live in,
@@ -31,6 +20,24 @@ struct AdjNorms {
 struct NodeSlots {
     torch::Tensor slot;   // (N,) long - node i's slot
     torch::Tensor valid;  // (S,) float - 1 at the board's slots (S = num_node_slots())
+};
+
+// A board's GNN message-passing neighborhoods in slot indexing. Tier 0 is a node's neighbors and
+// itself, tier 1 the nodes exactly 2 hops away, tier 2 those exactly 4 hops away; a node's tier-t
+// aggregate is the mean over its tier-t neighbors. src[t] lists every slot's tier-t neighbors,
+// grouped by slot in increasing slot order, and deg[t] counts each slot's (0 at slots no node
+// occupies). The GNN's layers cycle through the tiers 0, 1, 0, 2, 0, 1, 0, 2, ...
+struct NeighborTiers {
+    std::array<torch::Tensor, 3> src;  // (E_t,) int32
+    torch::Tensor deg;                 // (3, S) int64
+};
+
+// The board-derived part of every network input of one game, built once when the game starts
+// (make_game_input()) and shared by each of its positions' ModelInput.
+struct GameInput {
+    NodeSlots slots;
+    torch::Tensor action_index;  // (num_stones*N+1,) - slot_action_index(slots, num_stones)
+    NeighborTiers tiers;
 };
 
 // Compute per-node feature matrix and legal mask for one state, as CPU tensors. descr is the
@@ -69,9 +76,6 @@ torch::Tensor legal_action_mask(const BoardState& state);
 // callers that need a mask use board_to_features() for that ply instead.
 torch::Tensor history_features_at_ply(const BoardState& state, int ply, const nlohmann::json& descr);
 
-// bc's multi-scale adjacency set, padded to `slots`.
-AdjNorms compute_adj_norms(const BoardConfig& bc, const NodeSlots& slots, torch::Device device);
-
 // The networks' slot count for boards like `bc` (see NodeSlots): num_cells(descr's sideLens) with
 // an embedding, else descr's nBound.
 int num_node_slots(const BoardConfig& bc, const nlohmann::json& descr);
@@ -87,11 +91,22 @@ torch::Tensor slot_action_index(const NodeSlots& slots, int num_stones);
 // `per_node`, whose dimension `dim` is indexed by node, zero-extended along it to the S slots.
 torch::Tensor nodes_to_slots(const torch::Tensor& per_node, const NodeSlots& slots, int64_t dim = 0);
 
-// A (num_stones*N+1,) per-action tensor (a legal mask, a policy target) zero-extended to the
-// (num_stones*S+1,) slot-space actions.
-torch::Tensor actions_to_slots(const torch::Tensor& per_action, const NodeSlots& slots, int num_stones);
+// A (num_stones*N+1,) per-action tensor (a legal mask, a policy target) of one of `game`'s
+// positions, zero-extended to the (num_stones*S+1,) slot-space actions.
+torch::Tensor actions_to_slots(const torch::Tensor& per_action, const GameInput& game);
 
-// One state's network input in the model's slot space: board_to_features() under `descr`,
-// zero-extended to the NodeSlots of the state's board, plus those slots and the board itself.
-// Every architecture's prepare_input() builds on it (the Transformer adds history).
-ModelInput slot_input(const BoardState& state, const nlohmann::json& descr);
+// bc's neighbor tiers in `slots`' indexing, by a breadth-first search to depth 4 from every node.
+NeighborTiers neighbor_tiers(const BoardConfig& bc, const NodeSlots& slots);
+
+// The GameInput of the game `state` is a position of, under the run's input descriptor `descr`.
+// Its neighbor tiers are built whatever the architecture, so a game's input doesn't depend on which
+// model evaluates it. Throws std::runtime_error if its board doesn't fit (compute_node_slots()).
+std::shared_ptr<const GameInput> make_game_input(const BoardState& state, const nlohmann::json& descr);
+
+// One position's network input in the model's slot space: board_to_features() under `descr`,
+// zero-extended to its game's slots. Every architecture's prepare_input() builds on it (the
+// Transformer adds history).
+ModelInput slot_input(const BoardState& state, const nlohmann::json& descr, std::shared_ptr<const GameInput> game);
+
+// Every input's game's slot validity, stacked: (B, S) float32.
+torch::Tensor stack_valid(const std::vector<const ModelInput*>& inputs);

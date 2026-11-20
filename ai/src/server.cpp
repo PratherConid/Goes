@@ -142,6 +142,7 @@ struct SessionState {
     std::string tag;                     // checkpoint directory name - must match the incoming request's
     std::unique_ptr<BoardState> state;   // board state after all replayed moves
     std::vector<MoveRef> moves;          // moves applied so far
+    std::shared_ptr<const GameInput> game_input;  // built with the session (make_game_input())
 };
 
 // ── Server state ──────────────────────────────────────────────────────────────
@@ -423,6 +424,7 @@ int main(int argc, char* argv[]) {
                 result_session_id = make_session_id();
                 auto new_sess = std::make_unique<SessionState>();
                 new_sess->tag   = tag;
+                new_sess->game_input = make_game_input(*fresh, input_descr_of(model_v));
                 new_sess->state = std::move(fresh);
                 new_sess->moves = req_moves;
                 ss.sessions[result_session_id] = std::move(new_sess);
@@ -445,7 +447,7 @@ int main(int argc, char* argv[]) {
             root.move_temperature = j.value("temperature", ss.default_temperature);
             MCTS mcts(SearchParams::server(), std::random_device{}());
             SearchResult result = mcts.search(*sess->state, root, [&](const BoardState& s) {
-                return evaluate_rows(evaluator, {&s})[0];
+                return evaluate_rows(evaluator, {&s}, sess->game_input)[0];
             });
             // The mover is next_turn.player (stone_to_player_map is scoring-only - see
             // shared/types.ts's TurnInfo).

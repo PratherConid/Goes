@@ -1,9 +1,10 @@
 #pragma once
 #include <torch/torch.h>
-#include "game/board_config.h"
 #include <cstring>
 #include <memory>
 #include <vector>
+
+struct GameInput;  // features.h
 
 // What every architecture's forward()/evaluate_inputs() returns, all left on the model's device, in
 // the model's slot space (NodeSlots, features.h) - output_rows() (mcts.h) reads each row back at its
@@ -22,12 +23,9 @@ struct ModelOutput {
 // queueing them - so the thread running the network only stacks a batch and copies it to the device.
 struct ModelInput {
     torch::Tensor features;    // (S, F) float32 - the current ply's features
-    torch::Tensor valid;       // (S,) float32 - 1 at the board's slots
     torch::Tensor legal_mask;  // (numStones*S+1,) bool
     torch::Tensor history;     // Transformer only: (T, S, F_history) float32, every past ply
-    torch::Tensor slot;        // (N,) int64 - each node's slot; undefined (with `valid`) for
-                               // make_uniform_evaluator()'s per-node rows
-    std::shared_ptr<const BoardConfig> board;  // the position's board - the GNN's per-row adjacency
+    std::shared_ptr<const GameInput> game;  // the position's game's board-derived input
 };
 
 // Stacks equally-shaped, contiguous CPU tensors into one (rows.size(), ...) CPU tensor with plain

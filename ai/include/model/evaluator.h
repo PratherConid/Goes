@@ -15,10 +15,11 @@
 // splits an evaluation: prepare() builds one position's input on the CPU in whichever thread wants
 // it evaluated (thread-safe), and run() evaluates a batch of prepared inputs in one forward pass.
 // Wraps any of the four architectures (see make_evaluator(), any_model.h) or the untrained
-// stand-in (make_uniform_evaluator(), below) behind one interface. Each prepared input carries its
-// own board (ModelInput::board/slot), so one run() can mix boards.
+// stand-in (make_uniform_evaluator(), below) behind one interface. prepare() builds a position's
+// input from its state and its game's GameInput (make_game_input(), features.h, built once when the
+// game starts), which the input then carries, so one run() can mix boards.
 struct Evaluator {
-    std::function<ModelInput(const BoardState&)> prepare;
+    std::function<ModelInput(const BoardState&, const std::shared_ptr<const GameInput>&)> prepare;
     std::function<ModelOutput(const std::vector<const ModelInput*>&)> run;
 };
 
@@ -91,17 +92,18 @@ inline torch::Tensor estimate_player_totals(
 // self-play uses until enough data exists to train the first model. Costs no forward pass: the
 // policy is uniform over each state's legal actions, every node's ownership is uniform over
 // empty/each stone type, and every player pair's outcome is uniform. prepare() builds only the legal
-// mask, per node (no slots). All states must share one game config (N nodes, num_stones stone
-// types). Outputs are on the CPU.
-inline Evaluator make_uniform_evaluator(int N, int num_stones, int num_players) {
+// mask, in its game's slot space as a model's does, so states from different boards batch together.
+// Outputs are on the CPU.
+inline Evaluator make_uniform_evaluator(int num_stones, int num_players) {
     return Evaluator{
-        [](const BoardState& s) { return ModelInput{{}, {}, legal_action_mask(s), {}, {}, {}}; },
-        [N, num_stones, num_players](const std::vector<const ModelInput*>& inputs) {
-            auto legal = stack_inputs(inputs, &ModelInput::legal_mask).to(torch::kFloat32);  // (B, ns*N+1)
+        [](const BoardState& s, const std::shared_ptr<const GameInput>& game) {
+            return ModelInput{{}, actions_to_slots(legal_action_mask(s), *game), {}, game};
+        },
+        [num_stones, num_players](const std::vector<const ModelInput*>& inputs) {
+            auto legal = stack_inputs(inputs, &ModelInput::legal_mask).to(torch::kFloat32);  // (B, ns*S+1)
             auto policy = legal / legal.sum(-1, true).clamp_min(1.0f);
-            int64_t B = legal.size(0);
-            auto ownership = torch::full({B, 2, (int64_t)N, (int64_t)num_stones + 1},
-                                         1.0f / static_cast<float>(num_stones + 1));
+            int64_t B = legal.size(0), S = inputs[0]->game->slots.valid.size(0);
+            auto ownership = torch::full({B, 2, S, (int64_t)num_stones + 1}, 1.0f / static_cast<float>(num_stones + 1));
             auto rank = torch::full({B, (int64_t)num_rank_pairs(num_players), 3}, 1.0f / 3.0f);
             return ModelOutput{policy, ownership, rank};
         }};

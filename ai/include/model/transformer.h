@@ -122,9 +122,9 @@ struct TransformerImpl : torch::nn::Module {
         torch::Tensor cur_x, torch::Tensor legal_mask);
 
     // One state's network input (model_output.h's ModelInput) - its current-ply features and legal
-    // mask, plus history features for each of its ply_count() past plies - built on the CPU.
-    // Thread-safe.
-    ModelInput prepare_input(const BoardState& state) const;
+    // mask, plus history features for each of its ply_count() past plies - built on the CPU from it
+    // and its game's GameInput (make_game_input(), features.h). Thread-safe.
+    ModelInput prepare_input(const BoardState& state, const std::shared_ptr<const GameInput>& game) const;
 
     // Evaluates prepared inputs (arbitrary, independently-varying history lengths, zero-padded to
     // the batch's longest) in one forward pass. Returns tensors on the model's device, matching

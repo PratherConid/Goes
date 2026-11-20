@@ -1,8 +1,11 @@
 #include "training/self_play.h"
+#include "game/cleg_eval.h"
+#include "game/cleg_parser.h"
 #include "model/features.h"
 #include "model/rank_head.h"
 #include <algorithm>
 #include <random>
+#include <set>
 #include <cstdint>
 #include <cmath>
 #include <stdexcept>
@@ -371,7 +374,7 @@ static void resolve_row_counts(std::vector<PlyRecord>& plies, const std::vector<
 }
 
 GameRecord build_game_record(const std::vector<PlyRecord>& plies, const BoardState& final_state,
-                             const nlohmann::json& descr) {
+                             std::shared_ptr<const GameInput> game) {
     int N = final_state.N;
     auto final_eval = exact_pair_eval(final_state);
     int num_pairs = num_rank_pairs(final_state.num_players);
@@ -421,23 +424,37 @@ GameRecord build_game_record(const std::vector<PlyRecord>& plies, const BoardSta
         for (auto& p : plies) hist.push_back(p.history_features.to(torch::kFloat16));
         record.history_features = torch::stack(hist, 0);
     }
-    record.node_slots = compute_node_slots(*final_state.bc, descr);
-    record.board = final_state.bc;
+    record.game = std::move(game);
     return record;
 }
 
 // ── Self-play ─────────────────────────────────────────────────────────────────
 
-SelfPlayRunner::SelfPlayRunner(const GameConfig& cfg, std::shared_ptr<const BoardConfig> bc, nlohmann::json input_descr,
+SelfPlayRunner::SelfPlayRunner(const GameConfig& cfg, nlohmann::json input_descr,
                                const nlohmann::json* history_descr, SelfPlayParams params,
                                SearchParams search_params, int num_games, int nn_server_threads,
                                int nn_max_batch, uint64_t seed)
-    : cfg_(cfg), bc_(std::move(bc)), input_descr_(std::move(input_descr)), history_descr_(history_descr),
+    : cfg_(cfg), input_descr_(std::move(input_descr)), history_descr_(history_descr),
       params_(params), search_params_(search_params), nn_(nn_server_threads, nn_max_batch)
 {
     std::mt19937_64 seeder(seed);
+    auto program = parse_cleg(cfg_.board_descr);
+    std::set<uint32_t> used;
+    std::vector<std::pair<uint32_t, std::shared_ptr<const BoardConfig>>> boards;
+    while ((int)boards.size() < num_games) {
+        auto board_seed = static_cast<uint32_t>(seeder());
+        if (!used.insert(board_seed).second) continue;
+        auto bc = std::make_shared<const BoardConfig>(build_board_from_cleg(*program, board_seed));
+        try {
+            compute_node_slots(*bc, input_descr_);
+        } catch (const std::runtime_error& e) {
+            throw std::runtime_error("self-play board seed " + std::to_string(board_seed) + ": " + e.what());
+        }
+        boards.emplace_back(board_seed, std::move(bc));
+    }
     threads_.reserve(num_games);
-    for (int i = 0; i < num_games; i++) threads_.emplace_back([this, s = seeder()] { worker(s); });
+    for (auto& b : boards)
+        threads_.emplace_back([this, s = seeder(), board_seed = b.first, bc = b.second] { worker(s, board_seed, bc); });
 }
 
 SelfPlayRunner::~SelfPlayRunner() {
@@ -464,10 +481,10 @@ std::vector<FinishedGame> SelfPlayRunner::play(const std::vector<Evaluator>& eva
     return std::move(finished_);
 }
 
-void SelfPlayRunner::worker(uint64_t seed) {
+void SelfPlayRunner::worker(uint64_t seed, uint32_t board_seed, std::shared_ptr<const BoardConfig> board) {
     std::mt19937_64 rng(seed);
     MCTS mcts(search_params_, rng());
-    Slot slot = new_slot(rng);
+    Slot slot = new_slot(board, board_seed, rng);
     while (true) {
         {
             std::unique_lock<std::mutex> lock(mutex_);
@@ -482,7 +499,7 @@ void SelfPlayRunner::worker(uint64_t seed) {
         play_ply(slot, mcts, rng);
         if (slot.state.game_over()) {
             FinishedGame game = finish(slot, rng);
-            slot = new_slot(rng);
+            slot = new_slot(board, board_seed, rng);
             std::lock_guard<std::mutex> lock(mutex_);
             finished_.push_back(std::move(game));
             if ((int)finished_.size() >= target_games_) running_ = false;
@@ -492,20 +509,23 @@ void SelfPlayRunner::worker(uint64_t seed) {
 
 // A fresh game whose first floor(Exp(1) * policy_init_area_prop * N) moves are sampled from the raw
 // policy (KataGo's initGamesWithPolicy) for opening variety.
-SelfPlayRunner::Slot SelfPlayRunner::new_slot(std::mt19937_64& rng) const {
-    Slot s{new_state(cfg_, bc_), {}, 0, {}};
+SelfPlayRunner::Slot SelfPlayRunner::new_slot(std::shared_ptr<const BoardConfig> board, uint32_t board_seed,
+                                              std::mt19937_64& rng) const {
+    Slot s{new_state(cfg_, std::move(board)), {}, 0, {}, board_seed};
+    s.game_input = make_game_input(s.state, input_descr_);
+    int N = s.state.N;
     if (params_.linear_move_bound) {
         std::uniform_real_distribution<float> dist(params_.linear_move_bound->first, params_.linear_move_bound->second);
-        int sampled = static_cast<int>(dist(rng) * bc_->N);
+        int sampled = static_cast<int>(dist(rng) * N);
         s.state.max_plies = s.state.max_plies ? std::min(*s.state.max_plies, sampled) : sampled;
     }
     std::exponential_distribution<double> exp1(1.0);
-    s.opening_moves_left = static_cast<int>(std::floor(exp1(rng) * params_.policy_init_area_prop * bc_->N));
+    s.opening_moves_left = static_cast<int>(std::floor(exp1(rng) * params_.policy_init_area_prop * N));
     return s;
 }
 
 FinishedGame SelfPlayRunner::finish(Slot& slot, std::mt19937_64& rng) const {
-    resolve_row_counts(slot.plies, exact_pair_eval(slot.state).probs, bc_->N, params_, rng);
+    resolve_row_counts(slot.plies, exact_pair_eval(slot.state).probs, slot.state.N, params_, rng);
     json plies = json::array();
     for (auto& p : slot.plies) {
         json j;
@@ -517,18 +537,19 @@ FinishedGame SelfPlayRunner::finish(Slot& slot, std::mt19937_64& rng) const {
         }
         plies.push_back(std::move(j));
     }
-    GameRecord record = build_game_record(slot.plies, slot.state, input_descr_);
-    return FinishedGame{std::move(record), json{{"plies", std::move(plies)}}, std::move(slot.state)};
+    GameRecord record = build_game_record(slot.plies, slot.state, slot.game_input);
+    return FinishedGame{std::move(record), json{{"boardSeed", slot.board_seed}, {"plies", std::move(plies)}},
+                        std::move(slot.state)};
 }
 
 void SelfPlayRunner::play_ply(Slot& slot, MCTS& mcts, std::mt19937_64& rng) {
-    int N = bc_->N;
+    int N = slot.state.N;
     auto history_of = [&](const BoardState& s) {
         return history_descr_ ? board_to_features(s, *history_descr_).features : torch::Tensor();
     };
 
     if (slot.opening_moves_left > 0) {
-        NNRow row = nn_.evaluate(slot.state);
+        NNRow row = nn_.evaluate(slot.state, slot.game_input);
         std::vector<int> legal = legal_actions(slot.state);
         std::vector<double> w(legal.size(), 0.0);
         double total = 0.0;
@@ -581,7 +602,7 @@ void SelfPlayRunner::play_ply(Slot& slot, MCTS& mcts, std::mt19937_64& rng) {
         }
     }
 
-    SearchResult res = mcts.search(slot.state, rs, [this](const BoardState& s) { return nn_.evaluate(s); });
+    SearchResult res = mcts.search(slot.state, rs, [&](const BoardState& s) { return nn_.evaluate(s, slot.game_input); });
     PlyRecord rec;
     rec.move = res.move;
     rec.searched = true;
@@ -604,6 +625,7 @@ GameRecord replay_trajectory(const nlohmann::json& trajectory, const GameConfig&
                              const nlohmann::json* history_descr) {
     BoardState state = new_state(cfg, bc);
     state.max_plies = std::nullopt;  // the recorded game already obeyed its own (possibly sampled) bound
+    auto game = make_game_input(state, descr);
     std::vector<PlyRecord> plies;
     for (const auto& j : trajectory.at("plies")) {
         PlyRecord p;
@@ -623,5 +645,5 @@ GameRecord replay_trajectory(const nlohmann::json& trajectory, const GameConfig&
         apply_action(state, p.move);
         plies.push_back(std::move(p));
     }
-    return build_game_record(plies, state, descr);
+    return build_game_record(plies, state, std::move(game));
 }

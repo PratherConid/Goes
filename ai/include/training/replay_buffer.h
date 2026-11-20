@@ -22,8 +22,7 @@ struct GameRecord {
     // Transformer runs only: every ply's minimal history features (TransformerConfig::history_descr),
     // so any row's full history prefix is available. Undefined otherwise.
     torch::Tensor history_features;  // (T, N, F_hist) float16
-    NodeSlots node_slots;                       // the board's slots under the run's input descriptor
-    std::shared_ptr<const BoardConfig> board;  // the game's board
+    std::shared_ptr<const GameInput> game;  // the game's board-derived network input
 
     int64_t num_rows() const;
 };
@@ -38,7 +37,7 @@ struct Batch {
     torch::Tensor stone_owner;      // (B, S) int64 - 0 at slots no node occupies
     torch::Tensor territory_owner;  // (B, S) int64 - 0 at slots no node occupies
     torch::Tensor rank_target;      // (B, num_rank_pairs, 3) float32
-    std::vector<std::shared_ptr<const BoardConfig>> boards;  // each row's board
+    std::vector<std::shared_ptr<const GameInput>> games;  // each row's game's GameInput
 };
 
 // Batch for the Transformer, whose forward() also needs each sampled row's preceding plies.

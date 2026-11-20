@@ -22,6 +22,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <optional>
 #include <random>
@@ -509,7 +510,7 @@ static int train_on_bucket(Trainer& t, TrainState& st, ReplayBuffer& buffer, int
             } else {
                 b = buffer.sample(args.batch_size, window, rng);
                 if constexpr (std::is_same_v<M, MessagePassingGNN>)
-                    out = m->forward(b.features.to(device), b.boards, b.legal_mask.to(device));
+                    out = m->forward(b.features.to(device), b.games, b.legal_mask.to(device));
                 else
                     out = m->forward(b.features.to(device), b.valid.to(device), b.legal_mask.to(device));
             }
@@ -623,10 +624,12 @@ int main(int argc, char* argv[]) {
     cfg_file >> cfg_json;
     GameConfig game_cfg = parse_game_cfg(cfg_json);
 
-    // One board per run, from a fresh random seed (game_cfg.board_seed is ignored).
+    // A reference board from a fresh random seed (game_cfg.board_seed is ignored) fixes the
+    // architecture and the side length/node bound defaults; self-play gives each game thread a board
+    // of its own (SelfPlayRunner).
+    const auto program = parse_cleg(game_cfg.board_descr);
     const uint32_t board_seed = std::random_device{}();
-    const auto board = std::make_shared<const BoardConfig>(build_board_from_cleg(*parse_cleg(game_cfg.board_descr), board_seed));
-    const BoardConfig& bc = *board;
+    const BoardConfig bc = build_board_from_cleg(*program, board_seed);
     std::cout << "Board:\n" << game_cfg.board_descr << "  N=" << bc.N << "  seed=" << board_seed << std::endl;
     const std::string arch = effective_arch(args, game_cfg.board_descr, bc.emb.emb_dim());
 
@@ -709,6 +712,14 @@ int main(int argc, char* argv[]) {
 
     TrainState st;
     ReplayBuffer buffer;
+    // Replayed games' boards, one per board seed - a self-play thread's games all share its board.
+    std::map<uint32_t, std::shared_ptr<const BoardConfig>> replay_boards;
+    auto replay = [&](const json& trajectory) {
+        auto& board = replay_boards[trajectory.at("boardSeed").get<uint32_t>()];
+        if (!board) board = std::make_shared<const BoardConfig>(
+                            build_board_from_cleg(*program, trajectory.at("boardSeed").get<uint32_t>()));
+        return replay_trajectory(trajectory, game_cfg, board, model_cfg->input_descr, hist_descr);
+    };
     fs::path ckpt_dir;
     std::mt19937 rng(std::random_device{}());
 
@@ -742,7 +753,7 @@ int main(int argc, char* argv[]) {
         for (auto it = iters.rbegin(); it != iters.rend() && rows < window; ++it) {
             json games = load_trajectories(ckpt_dir, arch, *it);
             for (auto g = games.rbegin(); g != games.rend() && rows < window; ++g) {
-                records.push_back(replay_trajectory(*g, game_cfg, board, model_cfg->input_descr, hist_descr));
+                records.push_back(replay(*g));
                 rows += records.back().num_rows();
             }
         }
@@ -764,7 +775,7 @@ int main(int argc, char* argv[]) {
             json games = load_trajectories(src, arch, it);
             int64_t new_rows = 0;
             for (auto& g : games) {
-                GameRecord r = replay_trajectory(g, game_cfg, board, model_cfg->input_descr, hist_descr);
+                GameRecord r = replay(g);
                 int64_t rows = r.num_rows();
                 new_rows += rows;
                 if (g.value("model", -1) < 0) st.random_rows += rows;
@@ -789,9 +800,15 @@ int main(int argc, char* argv[]) {
     sp_params.reduced_visits_min = std::min(sp_params.reduced_visits_min, args.full_visits);
     sp_params.cheap_prob = args.cheap_prob;
     sp_params.linear_move_bound = args.linear_move_bound;
-    SelfPlayRunner runner(game_cfg, board, model_cfg->input_descr, hist_descr, sp_params, search_params,
-                          args.gamegen_batch_size, args.nn_server_threads, args.nn_max_batch,
-                          std::random_device{}());
+    std::unique_ptr<SelfPlayRunner> runner;
+    try {
+        runner = std::make_unique<SelfPlayRunner>(game_cfg, model_cfg->input_descr, hist_descr, sp_params,
+                                                  search_params, args.gamegen_batch_size, args.nn_server_threads,
+                                                  args.nn_max_batch, std::random_device{}());
+    } catch (const std::runtime_error& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1;
+    }
 
     // The model self-play plays with: one copy of the newest export per self-play device, taken from
     // the trainer (which holds it whether or not its <arch>_<iter>.pt was kept), or the uniform
@@ -811,7 +828,8 @@ int main(int argc, char* argv[]) {
         std::vector<Evaluator> evaluators;
         for (size_t d = 0; d < selfplay_models.size(); d++)
             evaluators.push_back(make_evaluator(selfplay_models[d]));
-        if (!has_model) evaluators.push_back(make_uniform_evaluator(bc.N, game_cfg.num_stones, game_cfg.num_players));
+        if (!has_model)
+            evaluators.push_back(make_uniform_evaluator(game_cfg.num_stones, game_cfg.num_players));
         int model_id = has_model ? st.exported_iteration : -1;
         if (args.verbosity >= 1)
             std::cout << "[iter " << std::setw(4) << iter << "] self-play with "
@@ -821,8 +839,8 @@ int main(int argc, char* argv[]) {
         json traj = json::array();
         int64_t new_rows = 0;
         int games = 0;
-        auto finished = runner.play(evaluators, args.games_per_iteration);
-        NNServer::Stats nn = runner.take_nn_stats();
+        auto finished = runner->play(evaluators, args.games_per_iteration);
+        NNServer::Stats nn = runner->take_nn_stats();
         for (auto& g : finished) {
             games++;
             if (args.verbosity >= 1) print_game_result(games, (int)finished.size(), model_id, g.final_state);

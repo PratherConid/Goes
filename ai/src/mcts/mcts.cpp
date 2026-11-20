@@ -250,12 +250,9 @@ std::vector<NNRow> output_rows(const ModelOutput& out, const std::vector<const M
     const BoardState& s0 = *states[0];
     int P = s0.num_players;
     int64_t B = static_cast<int64_t>(states.size());
-    const bool slotted = inputs[0]->slot.defined();
 
     // Slots no node occupies own nothing.
-    auto ownership = slotted ? out.ownership * stack_inputs(inputs, &ModelInput::valid)
-                                                   .to(out.ownership.device()).view({B, 1, -1, 1})
-                             : out.ownership;
+    auto ownership = out.ownership * stack_valid(inputs).to(out.ownership.device()).view({B, 1, -1, 1});
     auto totals = estimate_player_totals(ownership, captures, s0.score_rule, s0.stone_to_player_map, P, s0.komi)
                       .to(torch::kCPU).contiguous();
     auto rank = out.rank.to(torch::kCPU).contiguous().view({B, -1});
@@ -266,18 +263,17 @@ std::vector<NNRow> output_rows(const ModelOutput& out, const std::vector<const M
     };
     std::vector<NNRow> rows(states.size());
     for (int64_t j = 0; j < B; j++) {
-        auto row_policy = slotted ? policy[j].index_select(0, slot_action_index({inputs[j]->slot, inputs[j]->valid},
-                                                                                s0.num_stones))
-                                  : policy[j];
+        auto row_policy = policy[j].index_select(0, inputs[j]->game->action_index);
         rows[j] = NNRow{to_vec(row_policy.contiguous()), to_vec(totals[j]), to_vec(rank[j])};
     }
     return rows;
 }
 
-std::vector<NNRow> evaluate_rows(const Evaluator& evaluator, const std::vector<const BoardState*>& states) {
+std::vector<NNRow> evaluate_rows(const Evaluator& evaluator, const std::vector<const BoardState*>& states,
+                                 const std::shared_ptr<const GameInput>& game) {
     std::vector<ModelInput> inputs;
     inputs.reserve(states.size());
-    for (const BoardState* s : states) inputs.push_back(evaluator.prepare(*s));
+    for (const BoardState* s : states) inputs.push_back(evaluator.prepare(*s, game));
     std::vector<const ModelInput*> ptrs;
     ptrs.reserve(inputs.size());
     for (const ModelInput& in : inputs) ptrs.push_back(&in);

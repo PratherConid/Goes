@@ -151,20 +151,23 @@ struct PlyRecord {
 
 // Builds a finished game's GameRecord: rows are the searched plies with row_count > 0, each with
 // the blended pair-outcome target (see ai/Readme.md's "Value Targets"); stone/territory ownership
-// comes from final_state, and node slots from its board under the run's input descriptor `descr`.
+// comes from final_state; `game` is the game's GameInput.
 GameRecord build_game_record(const std::vector<PlyRecord>& plies, const BoardState& final_state,
-                             const nlohmann::json& descr);
+                             std::shared_ptr<const GameInput> game);
 
 struct FinishedGame {
     GameRecord record;
-    nlohmann::json trajectory;  // {"plies": [...]} - see SelfPlayRunner's trajectory format
+    nlohmann::json trajectory;  // {"boardSeed": s, "plies": [...]} - see SelfPlayRunner's trajectory format
     BoardState final_state;
 };
 
 // Concurrent self-play games, one thread per game - KataGo's self-play structure. Each thread plays
 // its own game at its own pace - opening moves sampled from the raw policy, then a cheap or full
 // search per move (see SelfPlayParams) - with every search's network requests batched by one shared
-// NNServer, and starts a new game as soon as one finishes.
+// NNServer, and starts a new game as soon as one finishes. Every thread plays all its games on its
+// own board: the game config's board program run with a seed no other thread has. The constructor
+// builds every thread's board before starting any, and throws std::runtime_error, naming the seed,
+// if one doesn't fit the input descriptor (compute_node_slots(), model/features.h).
 //
 // play() runs every thread until `num_games` games have finished, then pauses each thread at its
 // next ply boundary and returns every game finished by then (possibly more than `num_games`, since
@@ -172,14 +175,15 @@ struct FinishedGame {
 // continuing with whatever evaluators that call passes. Network server thread i uses
 // evaluators[i % evaluators.size()] (NNServer::set_evaluators()).
 //
-// Trajectory format, one object per game: {"plies": [ply, ...]} (train.cpp adds "model": the
+// Trajectory format, one object per game: {"boardSeed": s, "plies": [ply, ...]}, s the seed of the
+// game's board (train.cpp adds "model": the
 // iteration of the model that played it, -1 = uniform evaluator), where an opening ply is
 // {"move": a} and a searched ply is {"move": a, "search": [num_rank_pairs*3 floats], "weight": w}
 // plus "policy": [num_stones*N+1 floats] when w > 0 - everything replay_trajectory() needs to
 // rebuild the game's GameRecord exactly.
 class SelfPlayRunner {
 public:
-    SelfPlayRunner(const GameConfig& cfg, std::shared_ptr<const BoardConfig> bc, nlohmann::json input_descr,
+    SelfPlayRunner(const GameConfig& cfg, nlohmann::json input_descr,
                    const nlohmann::json* history_descr, SelfPlayParams params, SearchParams search_params,
                    int num_games, int nn_server_threads, int nn_max_batch, uint64_t seed);
     ~SelfPlayRunner();
@@ -195,10 +199,11 @@ private:
         std::vector<PlyRecord> plies;
         int opening_moves_left = 0;
         std::vector<float> recent_win;  // per searched ply, the best player's search win term
+        uint32_t board_seed = 0;        // the seed of state's board
+        std::shared_ptr<const GameInput> game_input;  // built once, in new_slot()
     };
 
     const GameConfig& cfg_;
-    std::shared_ptr<const BoardConfig> bc_;
     nlohmann::json input_descr_;
     const nlohmann::json* history_descr_;
     SelfPlayParams params_;
@@ -213,14 +218,15 @@ private:
     std::vector<FinishedGame> finished_;
     std::vector<std::thread> threads_;
 
-    void worker(uint64_t seed);
-    Slot new_slot(std::mt19937_64& rng) const;
+    void worker(uint64_t seed, uint32_t board_seed, std::shared_ptr<const BoardConfig> board);
+    Slot new_slot(std::shared_ptr<const BoardConfig> board, uint32_t board_seed, std::mt19937_64& rng) const;
     void play_ply(Slot& slot, MCTS& mcts, std::mt19937_64& rng);
     FinishedGame finish(Slot& slot, std::mt19937_64& rng) const;
 };
 
 // Rebuilds a finished game's GameRecord from its trajectory (SelfPlayRunner's format) by replaying
-// its moves through a fresh BoardState - used by --resume (to refill the training window) and --retrain.
+// its moves through a fresh BoardState on `bc`, the board its "boardSeed" builds - used by --resume
+// (to refill the training window) and --retrain.
 GameRecord replay_trajectory(const nlohmann::json& trajectory, const GameConfig& cfg,
                              std::shared_ptr<const BoardConfig> bc, const nlohmann::json& descr,
                              const nlohmann::json* history_descr);

@@ -100,8 +100,9 @@ struct UNetImpl : torch::nn::Module {
         torch::Tensor valid,
         torch::Tensor legal_mask);
 
-    // One state's network input (model_output.h's ModelInput), built on the CPU. Thread-safe.
-    ModelInput prepare_input(const BoardState& state) const;
+    // One state's network input (model_output.h's ModelInput), built on the CPU from it and its
+    // game's GameInput (make_game_input(), features.h). Thread-safe.
+    ModelInput prepare_input(const BoardState& state, const std::shared_ptr<const GameInput>& game) const;
 
     // Evaluates prepared inputs (from any boards that fit) in one forward pass, copying each stacked
     // input tensor to the model's device once. Every ModelOutput tensor is left on the model's
