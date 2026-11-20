@@ -81,6 +81,7 @@ const _boardConfigNames = [
     'threeRing_5_10.5_7_12.5_9_14.5', 'biborder_3_tri_3_fractaldrop_3_0.05', 'coin_5_4_9.5',
     'str_go_40_40',
     'rect_7_7_diag_ortho_3_0.5', 'rect_7_7_bishop_ortho_3_0.5', 'rect_6_6_knight_ortho_4_0.5', 'cuboid_5_5_5_diag_ortho_3_0.5', 'soccer_ball', 'heart_9.5', 'teardrop_24.5', 'racket_24.5_10_1.5',
+    'rect_13_13_nice_drop_0.05',
 ];
 
 

@@ -141,6 +141,8 @@ ai/build/goes_train --game-config public/game_presets/7x7x2_twsq_go.json --linea
 ai/build/goes_train --game-config public/game_presets/3x3_go_fpo.json --gamegen-batch-size 256 --iterations 1000 --net-arch transformer --transformer-hidden-dim 128 --min-rows 10000
 
 ai/build/goes_train --game-config public/game_presets/13x13_two_ply_go.json --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 1000 --cnn-hidden-dim 128 --min-rows 10000
+
+ai/build/goes_train --game-config public/game_presets/go.json --board-config public/board_presets/rect_13_13_nice_drop_0.05.cleg --linear-move-bound 1.5 2.5 --gamegen-batch-size 256 --iterations 1000 --cnn-hidden-dim 128 --min-rows 10000
 ```
 
 **Windows:**
@@ -163,7 +165,7 @@ a new, unique directory every run, never reused implicitly:
   loop's counters (`state.json`)
 
 To continue a run later, pass `--resume <hash>` (printed at startup; it is also the directory name) -
-this validates that the current `--game-config`/architecture flags match the saved config exactly,
+this validates that the current `--game-config`/`--board-config`/architecture flags match the saved config exactly,
 restores the trainer, and refills the training window from the newest recorded games. See
 **Checkpoint Directories and Matching**, below.
 
@@ -255,6 +257,7 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--game-config PATH` | _(required)_ | Path to a GameConfig JSON file (`shared/gameConfig.ts`'s `GameConfig.toJSON()` wire shape - see `public/game_presets/`) - board description (cleg source text, `boardDescr`), stone/player counts, turn list, scoring rule, komi, ko rule, suicide, etc. all come from here; `forcedPassOnly: true` requires `--net-arch transformer` (the other three architectures aren't history-aware) |
+| `--board-config PATH` | _(none)_ | Path to a board-only cleg program file (see `public/board_presets/`) that replaces `--game-config`'s `boardDescr`, as the web UI's board presets do (`GameConfig.adoptBoardDescr()`); every other game-config field still comes from `--game-config`. The checkpoint's saved game config holds the replaced `boardDescr` |
 | `--iterations N` | `200` | Self-play / train / export cycles |
 | `--saves-every N` | `8` | Keep the exported model as `<arch>_XXXXXX.pt` only every N iterations and at iteration `--iterations`; `trainer/` and every `_traj.json` are still written each iteration |
 | `--games-per-iteration N` | `500` | Self-play games finished per cycle |
@@ -292,7 +295,7 @@ ai\build\Release\goes_server --checkpoint-dir ai\checkpoints --port 8765
 | `--n-bound N` | _(product of the side lengths)_ | The node bound `nBound` (see **Input Features**), at least the board's node count. This or `--side-lens` is required for a board without an embedding |
 | `--conn-px N` | `0` | CNN/UNet only (an error with `--net-arch gnn`/`transformer`): adds the `connImg` feature block (see **Input Features**) - each grid point's cube of `N` pixels per side of the board's edges, drawn anti-aliased |
 | `--checkpoint-dir PATH` | `ai/checkpoints` | Checkpoint directory |
-| `--resume TAG` | _(none)_ | Continue an existing hash-named checkpoint directory - see **Checkpoint Directories and Matching**. `--side-lens`/`--n-bound`/`--conn-px` must be repeated, since they're part of the stored model config |
+| `--resume TAG` | _(none)_ | Continue an existing hash-named checkpoint directory - see **Checkpoint Directories and Matching**. `--board-config` and `--side-lens`/`--n-bound`/`--conn-px` must be repeated, since they're part of the stored game and model configs |
 | `--retrain TAG` | _(none)_ | Train a fresh model on an existing directory's recorded games (its `_traj.json` files, replayed in order into a *new* directory, training and exporting after each file as the original run did), then continue with self-play for any remaining `--iterations`. Only the game config must match - it never loads `TAG`'s weights. Mutually exclusive with `--resume` |
 | `--verbosity N` | `1` | 0=silent, 1=per-game and per-iteration, ≥2=also each iteration's network batch counts and evaluation time |
 

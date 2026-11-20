@@ -44,6 +44,9 @@ struct Args {
     // A GameConfig JSON file (shared/gameConfig.ts's GameConfig.toJSON() wire shape - the same as
     // server.cpp's /move request `config`), e.g. one under public/game_presets/.
     std::string game_config_path;
+    // A board-only cleg program file (e.g. one under public/board_presets/) replacing the game
+    // config's boardDescr, as shared/gameConfig.ts's adoptBoardDescr() does.
+    std::string board_config_path;
     int gnn_hidden_dim = 128;
     int unet_hidden_dim = 16;
     int cnn_hidden_dim = 64;
@@ -93,6 +96,8 @@ static void print_usage(const char* prog) {
               << "  --game-config PATH        (required) GameConfig JSON file (shared/gameConfig.ts's\n"
               << "                            GameConfig.toJSON() shape, e.g. under public/game_presets/) -\n"
               << "                            forcedPassOnly requires --net-arch transformer\n"
+              << "  --board-config PATH       A board-only cleg program file (e.g. under public/board_presets/)\n"
+              << "                            replacing --game-config's boardDescr\n"
               << "  --net-arch auto|cnn|unet|gnn|transformer  Network architecture (default: auto)\n"
               << "  --gnn-hidden-dim N        GNN hidden dimension (default: 128)\n"
               << "  --unet-hidden-dim N       UNet hidden dimension (default: 16)\n"
@@ -140,7 +145,8 @@ static void print_usage(const char* prog) {
               << "                            0 disables it, exporting the raw model)\n"
               << "  --checkpoint-dir PATH     Checkpoint directory (default: ai/checkpoints)\n"
               << "  --resume TAG              Continue the run in <checkpoint-dir>/TAG - errors if its saved\n"
-              << "                            config doesn't exactly match --game-config/architecture flags\n"
+              << "                            config doesn't exactly match --game-config/--board-config/\n"
+              << "                            architecture flags\n"
               << "                            (including --side-lens/--n-bound/--conn-px)\n"
               << "  --retrain TAG             Train a fresh model on <checkpoint-dir>/TAG's recorded games,\n"
               << "                            in order, into a new directory, then continue with self-play\n"
@@ -182,6 +188,7 @@ static Args parse_args(int argc, char* argv[]) {
         std::string a = argv[i];
         if (a == "--help" || a == "-h") { print_usage(argv[0]); std::exit(0); }
         else if (a == "--game-config") args.game_config_path = need(i);
+        else if (a == "--board-config") args.board_config_path = need(i);
         else if (a == "--net-arch") args.net_arch = need(i);
         else if (a == "--gnn-hidden-dim") args.gnn_hidden_dim = std::stoi(need(i));
         else if (a == "--unet-hidden-dim") args.unet_hidden_dim = std::stoi(need(i));
@@ -704,11 +711,19 @@ static void print_game_result(int game_num, int total_games, int model_id, const
 
 // ── Run steps ─────────────────────────────────────────────────────────────────
 
-static GameConfig load_game_config(const std::string& path) {
-    std::ifstream cfg_file(path);
-    if (!cfg_file) { std::cerr << "Cannot open --game-config file: " << path << "\n"; std::exit(1); }
+// --game-config's GameConfig, with --board-config's program, if given, as its boardDescr.
+static GameConfig load_game_config(const Args& args) {
+    std::ifstream cfg_file(args.game_config_path);
+    if (!cfg_file) { std::cerr << "Cannot open --game-config file: " << args.game_config_path << "\n"; std::exit(1); }
     json cfg_json;
     cfg_file >> cfg_json;
+    if (!args.board_config_path.empty()) {
+        std::ifstream board_file(args.board_config_path);
+        if (!board_file) { std::cerr << "Cannot open --board-config file: " << args.board_config_path << "\n"; std::exit(1); }
+        std::stringstream source;
+        source << board_file.rdbuf();
+        cfg_json["boardDescr"] = source.str();
+    }
     return parse_game_cfg(cfg_json);
 }
 
@@ -873,7 +888,7 @@ static void self_play(Trainer& t, const fs::path& dir, const std::vector<torch::
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 static void run(const Args& args) {
-    const GameConfig game_cfg = load_game_config(args.game_config_path);
+    const GameConfig game_cfg = load_game_config(args);
     const auto program = parse_cleg(game_cfg.board_descr);
     const auto board = reference_board(*program, game_cfg);
     // BoardState's constructor checks the game config. None of its checks depend on the board, so
