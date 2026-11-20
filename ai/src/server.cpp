@@ -362,7 +362,11 @@ int main(int argc, char* argv[]) {
             auto bc                 = build_board_from_cleg(*parse_cleg(game_cfg.board_descr), *game_cfg.board_seed);
             auto adj_norms          = compute_adj_norms(bc, ss.device);
             auto& model_v           = load_model(ss, tag, bc);
-            auto evaluator          = make_evaluator(model_v, adj_norms);
+            // The GNN doesn't run on node slots, so it needn't fit them either.
+            auto node_slots         = std::holds_alternative<MessagePassingGNN>(model_v)
+                                          ? NodeSlots{}
+                                          : compute_node_slots(bc, input_descr_of(model_v), ss.device);
+            auto evaluator          = make_evaluator(model_v, adj_norms, node_slots);
 
             // Full move history, one {"pos","stone"} object per ply - see parse_move_ref().
             std::vector<MoveRef> req_moves;

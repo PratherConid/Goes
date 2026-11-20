@@ -48,7 +48,7 @@ TORCH_MODULE(CNNPolicyHead);
 // convs (no normalization, "same" padding = conv_size/2 so spatial dims
 // never change) at a constant hidden_dim width, with a residual shortcut
 // from the block's input to its output.
-// Ownership: per-node gather (via lin_idx_, same mechanism as the policy head) of the
+// Ownership: per-node gather (at node_slots.slot, same mechanism as the policy head) of the
 //            final block output, then two independent Linear/ReLU/Linear softmax heads
 //            (stone estimate, territory estimate) - see MessagePassingGNN's ownership doc.
 // Policy: extracted from the final block output via CNNPolicyHead.
@@ -67,20 +67,19 @@ struct CNNImpl : torch::nn::Module {
     int num_blocks_;
     int grid_h_, grid_w_;  // the input descriptor's sideLens (no padding)
 
-    torch::Tensor lin_idx_;      // (N,) long - row*grid_w_+col for each board node
-    torch::Tensor valid_tensor_; // (1,1,grid_h_,grid_w_) float - 1 at valid (true board) cells
-
     // cfg.feature_dim: per-node feature dimension F (as produced by board_to_features), NOT
     // the number of input channels to input_proj. features_to_grid appends
     // a validity channel, so input_proj actually receives feature_dim + 1 channels.
     CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_stones, int num_players);
 
-    // x: (B,N,F) → (B,F+1,H,W)
-    torch::Tensor features_to_grid(const torch::Tensor& x) const;
+    // x: (B,N,F) → (B,F+1,H,W), each node at its slot (see NodeSlots, model/features.h)
+    torch::Tensor features_to_grid(const torch::Tensor& x, const NodeSlots& node_slots) const;
 
-    // x (B,N,F), legal_mask (B,numStones*N+1). Returns a ModelOutput (model_output.h).
+    // x (B,N,F), node_slots (the board's, on the model's device), legal_mask (B,numStones*N+1).
+    // Returns a ModelOutput (model_output.h).
     ModelOutput forward(
         torch::Tensor x,
+        const NodeSlots& node_slots,
         torch::Tensor legal_mask);
 
     // One state's network input (model_output.h's ModelInput), built on the CPU. Thread-safe.
@@ -90,7 +89,7 @@ struct CNNImpl : torch::nn::Module {
     // input tensor to the model's device once. Every ModelOutput tensor is left on the model's
     // device - callers needing CPU access (e.g. via .accessor<T,N>()) must call .cpu() themselves
     // at their point of use.
-    ModelOutput evaluate_inputs(const std::vector<const ModelInput*>& inputs);
+    ModelOutput evaluate_inputs(const std::vector<const ModelInput*>& inputs, const NodeSlots& node_slots);
 };
 
 TORCH_MODULE(CNN);

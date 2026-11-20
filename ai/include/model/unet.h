@@ -33,7 +33,7 @@ TORCH_MODULE(UNetPolicyHead);
 //
 // The input descriptor's sideLens are padded up to a square whose side (side_)
 // is the least power of two >= both dimensions; cells outside the true board
-// are marked invalid in valid_tensor_. This guarantees every encoder level's
+// are marked invalid in the validity channel. This guarantees every encoder level's
 // MaxPool2d(2,2) halves exactly, so no board row/column is ever silently
 // dropped by floor-mode pooling.
 //
@@ -57,7 +57,7 @@ TORCH_MODULE(UNetPolicyHead);
 //          already bring h to dec_blocks_[k]'s constant enc_channels_[k]
 //          width, so no channel matching is ever needed here).
 // Ownership: same full-resolution decoder output as the policy head, gathered per-node
-//            (via lin_idx_) and passed through two independent softmax heads (stone
+//            (at node_slots.slot) and passed through two independent softmax heads (stone
 //            estimate, territory estimate) - see MessagePassingGNN's ownership doc.
 // Policy:    extracted from the full-resolution decoder output via UNetPolicyHead.
 // Rank:      RankHead (rank_head.h) over the same per-node gather.
@@ -81,24 +81,24 @@ struct UNetImpl : torch::nn::Module {
     UNetConfig cfg_;
     int num_stones_;
     int num_levels_;                            // L+1 (total encoder blocks)
+    int grid_h_, grid_w_;                       // the input descriptor's sideLens (before padding)
     int side_;                                  // padded power-of-two square side
     std::vector<int>                enc_channels_; // C_k at encoder level k
     std::vector<int>                level_size_;   // image side length at encoder level k
-
-    torch::Tensor lin_idx_;      // (N,) long - row*side+col for each board node
-    torch::Tensor valid_tensor_; // (1,1,side,side) float - 1 at valid (true board) cells
 
     // cfg.feature_dim: per-node feature dimension F (as produced by board_to_features), NOT
     // the number of input channels to input_proj. features_to_grid appends
     // a validity channel, so input_proj actually receives feature_dim + 1 channels.
     UNetImpl(const BoardConfig& bc, const UNetConfig& cfg, int num_stones, int num_players);
 
-    // x: (B,N,F) → (B,F+1,side,side)
-    torch::Tensor features_to_grid(const torch::Tensor& x) const;
+    // x: (B,N,F) → (B,F+1,side,side), each node at its slot (see NodeSlots, model/features.h)
+    torch::Tensor features_to_grid(const torch::Tensor& x, const NodeSlots& node_slots) const;
 
-    // x (B,N,F), legal_mask (B,numStones*N+1). Returns a ModelOutput (model_output.h).
+    // x (B,N,F), node_slots (the board's, on the model's device), legal_mask (B,numStones*N+1).
+    // Returns a ModelOutput (model_output.h).
     ModelOutput forward(
         torch::Tensor x,
+        const NodeSlots& node_slots,
         torch::Tensor legal_mask);
 
     // One state's network input (model_output.h's ModelInput), built on the CPU. Thread-safe.
@@ -108,7 +108,7 @@ struct UNetImpl : torch::nn::Module {
     // input tensor to the model's device once. Every ModelOutput tensor is left on the model's
     // device - callers needing CPU access (e.g. via .accessor<T,N>()) must call .cpu() themselves
     // at their point of use.
-    ModelOutput evaluate_inputs(const std::vector<const ModelInput*>& inputs);
+    ModelOutput evaluate_inputs(const std::vector<const ModelInput*>& inputs, const NodeSlots& node_slots);
 };
 
 TORCH_MODULE(UNet);

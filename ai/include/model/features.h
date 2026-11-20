@@ -21,6 +21,15 @@ struct AdjNorms {
     int max_degree;      // max over deg1, deg2, deg4 (all nodes, all three tiers)
 };
 
+// A board's nodes' slots in the zero-extended input the CNN/UNet/Transformer run on, whose layout
+// the input descriptor alone fixes, so one model serves every board that fits: with an embedding,
+// node i's slot is its position's index in the descriptor's sideLens box (dimension 0 fastest);
+// without one, it is i, out of the descriptor's nBound. Computed once per BoardConfig.
+struct NodeSlots {
+    torch::Tensor slot;   // (N,) long - node i's slot
+    torch::Tensor valid;  // (num_node_slots(),) float - 1 at the board's slots
+};
+
 // Compute per-node feature matrix and legal mask for one state, as CPU tensors. descr is the
 // self-describing feature-block descriptor built by
 // compute_input_descr() (training/self_play.h) - see
@@ -59,3 +68,12 @@ torch::Tensor history_features_at_ply(const BoardState& state, int ply, const nl
 
 // Compute the multi-scale adjacency set. Call once per BoardConfig.
 AdjNorms compute_adj_norms(const BoardConfig& bc, torch::Device device);
+
+// The CNN/UNet/Transformer's slot count for boards like `bc` (see NodeSlots): num_cells(descr's
+// sideLens) with an embedding, else descr's nBound.
+int num_node_slots(const BoardConfig& bc, const nlohmann::json& descr);
+
+// bc's NodeSlots under `descr`. Throws std::runtime_error if bc doesn't fit: its side lengths in
+// sideLens (fits_in(), game/board_config.h), or, without an embedding, its N in nBound. Call once
+// per BoardConfig.
+NodeSlots compute_node_slots(const BoardConfig& bc, const nlohmann::json& descr, torch::Device device);

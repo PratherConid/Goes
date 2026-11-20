@@ -14,8 +14,9 @@
 // Type-erased neural-network evaluator used by MCTS and self-play, split as KataGo's NNEvaluator
 // splits an evaluation: prepare() builds one position's input on the CPU in whichever thread wants
 // it evaluated (thread-safe), and run() evaluates a batch of prepared inputs in one forward pass.
-// Wraps any of the four architectures (see make_evaluator(), any_model.h) - for a
-// MessagePassingGNN, its adj_norms are captured inside run, so every wrapped model presents the same
+// Wraps any of the four architectures (see make_evaluator(), any_model.h) - the board tensors a
+// model runs against (a MessagePassingGNN's adj_norms, the others' node_slots) are captured inside
+// run, so every wrapped model presents the same
 // interface regardless of what it needs internally - or the untrained stand-in
 // (make_uniform_evaluator(), below).
 struct Evaluator {

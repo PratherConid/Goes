@@ -41,44 +41,24 @@ UNetImpl::UNetImpl(const BoardConfig& bc, const UNetConfig& cfg, int num_stones,
 {
     // A real (always-active) check, not assert() - assert compiles out under NDEBUG (this project's
     // Release builds), which would otherwise let a non-2D-embedded board (e.g. regpoly/dodeca/icosa
-    // - see board_config.h - all use emb_dim=0 with an empty pos[] per node) fall through into the
-    // bc.emb.pos[i][0]/[1] accesses below as undefined behavior instead of failing loudly here.
+    // - see board_config.h - all use emb_dim=0) fall through into the side_lens[0]/[1] reads below
+    // as undefined behavior instead of failing loudly here.
     if (bc.emb.emb_dim() != 2)
         throw std::runtime_error(
             "UNet requires a 2D embedding (bc.emb.emb_dim() == 2), got emb_dim=" + std::to_string(bc.emb.emb_dim()));
     assert(bc.N > 0);
 
-    // Pad the input descriptor's sideLens, which the board must fit in, up to a
+    // Pad the input descriptor's sideLens (the grid NodeSlots index into) up to a
     // square whose side is the least power of two >= both dimensions. Every
     // level's MaxPool2d(2,2) then halves exactly with no remainder, so no board
     // row/column is ever silently dropped by floor-mode pooling on an odd or
     // non-power-of-two board size.
     const auto side_lens = cfg.input_descr.at("sideLens").get<std::vector<unsigned>>();
-    if (!fits_in(bc.emb, side_lens))
-        throw std::runtime_error("UNet: the board's side lengths " + nlohmann::json(bc.emb.side_lens).dump() +
-                                 " don't fit in the model's sideLens " + nlohmann::json(side_lens).dump());
-    int gw = static_cast<int>(side_lens[0]), gh = static_cast<int>(side_lens[1]);
+    grid_w_ = static_cast<int>(side_lens[0]);
+    grid_h_ = static_cast<int>(side_lens[1]);
     int side = 1;
-    while (side < std::max(gw, gh)) side <<= 1;
+    while (side < std::max(grid_w_, grid_h_)) side <<= 1;
     side_ = side;
-
-    // Build per-node linear index (row*side + col) and validity grid over the
-    // padded side×side canvas; cells outside the original gw×gh board stay
-    // invalid (valid_tensor_ = 0) and never receive a lin_idx entry.
-    auto lin_cpu = torch::zeros({bc.N}, torch::kLong);
-    auto val_cpu = torch::zeros({1, 1, side, side}, torch::kFloat32);
-    {
-        auto lin_a = lin_cpu.accessor<int64_t, 1>();
-        auto val_a = val_cpu.accessor<float, 4>();
-        for (int i = 0; i < bc.N; i++) {
-            int col = (int)bc.emb.pos[i][0];
-            int row = (int)bc.emb.pos[i][1];
-            lin_a[i]              = row * side + col;
-            val_a[0][0][row][col] = 1.0f;
-        }
-    }
-    lin_idx_      = register_buffer("lin_idx",      lin_cpu);
-    valid_tensor_ = register_buffer("valid_tensor", val_cpu);
 
     // Compute encoder level count, channel counts, and per-level image size
     // (side length; height == width always). Halve spatial dims until 1×1
@@ -180,26 +160,29 @@ torch::Tensor UNetPolicyHeadImpl::forward(const torch::Tensor& h) {
     return torch::cat({place_logits, pass_logit}, -1);                 // (B, ns*N+1)
 }
 
-torch::Tensor UNetImpl::features_to_grid(const torch::Tensor& x) const {
+torch::Tensor UNetImpl::features_to_grid(const torch::Tensor& x, const NodeSlots& node_slots) const {
     int64_t B = x.size(0);
     int64_t N = x.size(1);
     int64_t F = x.size(2);
 
-    // flat: (B, F+1, side*side), all zeros
-    auto flat = torch::zeros({B, F + 1, (int64_t)side_ * side_}, x.options());
+    // flat: (B, F+1, H*W), all zeros
+    auto flat = torch::zeros({B, F + 1, (int64_t)grid_h_ * grid_w_}, x.options());
 
     // Scatter node features into channels 0..F-1
-    auto idx = lin_idx_.unsqueeze(0).unsqueeze(0).expand({B, F, N});
+    auto idx = node_slots.slot.unsqueeze(0).unsqueeze(0).expand({B, F, N});
     flat.slice(1, 0, F).scatter_(2, idx, x.permute({0, 2, 1}));
 
     // Validity channel (same for all batch items)
-    flat.select(1, F).copy_(valid_tensor_.view({1, -1}).expand({B, -1}));
+    flat.select(1, F).copy_(node_slots.valid.view({1, -1}).expand({B, -1}));
 
-    return flat.view({B, F + 1, side_, side_});
+    // Zero-pad the H×W grid's right and bottom edges out to side×side (invalid cells).
+    return torch::constant_pad_nd(flat.view({B, F + 1, grid_h_, grid_w_}),
+                                  {0, side_ - grid_w_, 0, side_ - grid_h_});
 }
 
 ModelOutput UNetImpl::forward(
     torch::Tensor x,
+    const NodeSlots& node_slots,
     torch::Tensor legal_mask)
 {
     int64_t B = x.size(0);
@@ -210,7 +193,7 @@ ModelOutput UNetImpl::forward(
     // brings the raw input to hidden_dim width first, as a plain embedding
     // step with no residual of its own (see class doc comment).
     std::vector<torch::Tensor> skips(num_levels_);
-    auto h = torch::relu(input_proj->forward(features_to_grid(x))); // (B, hidden_dim, H, W)
+    auto h = torch::relu(input_proj->forward(features_to_grid(x, node_slots))); // (B, hidden_dim, side, side)
     for (int k = 0; k < num_levels_; k++) {
         h = enc_blocks_[k]->forward(h) + match_channels(h, enc_channels_[k]);
         skips[k] = h;
@@ -236,13 +219,14 @@ ModelOutput UNetImpl::forward(
         h = h + skips[k];                   // additive residual from encoder
         h = dec_blocks_[k]->forward(h) + h;
     }
-    // h: (B, C_0, H, W) - same full-resolution decoder output the policy head reads
+    // h: (B, C_0, side, side) - same full-resolution decoder output the policy head reads
 
-    // Gather the decoder's full-resolution output at each node's grid position - feeds the
-    // ownership heads (stone/territory estimate), the policy head and the rank head, all of which
-    // operate purely on this per-node (B,N,C_0) tensor rather than the raw grid.
-    auto h_nodes = h.reshape({B, enc_channels_[0], -1})
-                    .index_select(2, lin_idx_)
+    // Gather the decoder's full-resolution output, cropped back to the H×W grid, at each node's
+    // slot - feeds the ownership heads (stone/territory estimate), the policy head and the rank
+    // head, all of which operate purely on this per-node (B,N,C_0) tensor rather than the raw grid.
+    auto h_nodes = h.slice(2, 0, grid_h_).slice(3, 0, grid_w_)
+                    .reshape({B, enc_channels_[0], -1})
+                    .index_select(2, node_slots.slot)
                     .permute({0, 2, 1});                                  // (B, N, C_0)
     auto stone_est     = torch::softmax(stone_head->forward(h_nodes), -1);      // (B, N, num_stones+1)
     auto territory_est = torch::softmax(territory_head->forward(h_nodes), -1);  // (B, N, num_stones+1)
@@ -262,10 +246,10 @@ ModelInput UNetImpl::prepare_input(const BoardState& state) const {
     return {ft, mask, {}};
 }
 
-ModelOutput UNetImpl::evaluate_inputs(const std::vector<const ModelInput*>& inputs) {
+ModelOutput UNetImpl::evaluate_inputs(const std::vector<const ModelInput*>& inputs, const NodeSlots& node_slots) {
     torch::NoGradGuard ng;
-    auto dev = lin_idx_.device();
+    auto dev = input_proj->weight.device();
     auto x    = stack_inputs(inputs, &ModelInput::features).to(dev);   // (B, N, F)
     auto mask = stack_inputs(inputs, &ModelInput::legal_mask).to(dev); // (B, ns*N+1)
-    return forward(x, mask);
+    return forward(x, node_slots, mask);
 }

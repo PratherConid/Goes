@@ -48,16 +48,16 @@ torch::Tensor TransformerBlockImpl::forward(const torch::Tensor& q, const torch:
 
 TransformerImpl::TransformerImpl(const BoardConfig& bc, const TransformerConfig& cfg,
                                   int num_stones, int num_players)
-    : cfg_(cfg), num_stones_(num_stones), N_(bc.N),
+    : cfg_(cfg), num_stones_(num_stones), num_slots_(num_node_slots(bc, cfg.input_descr)),
       history_feature_dim_(cfg_.history_descr.at("totalDims").get<int>())
 {
     assert(cfg_.hidden_dim % kNumHeads == 0 && "TransformerImpl: hidden_dim must be divisible by kNumHeads");
 
     int D = cfg_.hidden_dim;
-    encoder_in  = register_module("encoder_in",  torch::nn::Linear(N_ * cfg_.feature_dim, D));
+    encoder_in  = register_module("encoder_in",  torch::nn::Linear(num_slots_ * cfg_.feature_dim, D));
     encoder_out = register_module("encoder_out", torch::nn::Linear(D, D));
 
-    hist_encoder_in  = register_module("hist_encoder_in",  torch::nn::Linear(N_ * history_feature_dim_, D));
+    hist_encoder_in  = register_module("hist_encoder_in",  torch::nn::Linear(num_slots_ * history_feature_dim_, D));
     hist_encoder_out = register_module("hist_encoder_out", torch::nn::Linear(D, D));
 
     for (int i = 0; i < cfg_.num_attn_layers; i++)
@@ -66,7 +66,7 @@ TransformerImpl::TransformerImpl(const BoardConfig& bc, const TransformerConfig&
     history_sentinel_ = register_parameter("history_sentinel", torch::randn({1, 1, D}));
 
     decoder_in  = register_module("decoder_in",  torch::nn::Linear(D, D));
-    decoder_out = register_module("decoder_out", torch::nn::Linear(D, N_ * D));
+    decoder_out = register_module("decoder_out", torch::nn::Linear(D, num_slots_ * D));
 
     stone_head = register_module("stone_head", torch::nn::Sequential(
         torch::nn::Linear(D, D),
@@ -82,21 +82,25 @@ TransformerImpl::TransformerImpl(const BoardConfig& bc, const TransformerConfig&
 
 ModelOutput TransformerImpl::forward(
     torch::Tensor hist_x, torch::Tensor hist_mask,
-    torch::Tensor cur_x, torch::Tensor legal_mask)
+    torch::Tensor cur_x, const NodeSlots& node_slots, torch::Tensor legal_mask)
 {
     int64_t B = cur_x.size(0);
     int64_t T = hist_x.size(1);
     int D = cfg_.hidden_dim;
+    const torch::Tensor& slot = node_slots.slot;
 
-    // Encode the current state.
-    auto cur_emb = torch::relu(encoder_in->forward(cur_x.reshape({B, N_ * cfg_.feature_dim})));
+    // Encode the current state, zero-extended to num_slots_ slots.
+    auto cur_ext = torch::zeros({B, num_slots_, cfg_.feature_dim}, cur_x.options()).index_copy(1, slot, cur_x);
+    auto cur_emb = torch::relu(encoder_in->forward(cur_ext.reshape({B, num_slots_ * cfg_.feature_dim})));
     cur_emb = encoder_out->forward(cur_emb); // (B, D)
 
     // Encode every past state with the SAME shared weights (a separate encoder from the current
     // state's, since past plies use the narrower history_descr, a different width).
     torch::Tensor hist_emb;
     if (T > 0) {
-        auto hist_flat = hist_x.reshape({B * T, N_ * history_feature_dim_});
+        auto hist_ext = torch::zeros({B, T, num_slots_, history_feature_dim_}, hist_x.options())
+                            .index_copy(2, slot, hist_x);
+        auto hist_flat = hist_ext.reshape({B * T, num_slots_ * history_feature_dim_});
         auto he = torch::relu(hist_encoder_in->forward(hist_flat));
         he = hist_encoder_out->forward(he);
         hist_emb = he.reshape({B, T, D});
@@ -123,10 +127,10 @@ ModelOutput TransformerImpl::forward(
         q = blk->forward(q, seq_lbd, full_mask);
     auto h_star = q.squeeze(0);  // (B, D)
 
-    // Decode back to a per-node representation - the literal inverse of the encoder's flatten,
-    // no per-node operation anywhere in this path.
+    // Decode back to a per-node representation - the literal inverse of the encoder's flatten and
+    // zero-extension, no per-node operation anywhere in this path.
     auto h_nodes = torch::relu(decoder_in->forward(h_star));
-    h_nodes = decoder_out->forward(h_nodes).reshape({B, N_, D});
+    h_nodes = decoder_out->forward(h_nodes).reshape({B, num_slots_, D}).index_select(1, slot);  // (B, N, D)
 
     auto stone_est     = torch::softmax(stone_head->forward(h_nodes), -1);      // (B, N, num_stones+1)
     auto territory_est = torch::softmax(territory_head->forward(h_nodes), -1);  // (B, N, num_stones+1)
@@ -142,6 +146,7 @@ ModelOutput TransformerImpl::forward(
 }
 
 ModelInput TransformerImpl::prepare_input(const BoardState& state) const {
+    auto [ft, mask] = board_to_features(state, cfg_.input_descr);
     int T = state.ply_count();
     torch::Tensor history;
     if (T > 0) {
@@ -149,24 +154,25 @@ ModelInput TransformerImpl::prepare_input(const BoardState& state) const {
         for (int k = 0; k < T; k++) rows[k] = history_features_at_ply(state, k, cfg_.history_descr);
         history = stack_cpu(rows);
     } else {
-        history = torch::empty({0, N_, history_feature_dim_}, torch::kFloat32);
+        history = torch::empty({0, ft.size(0), history_feature_dim_}, torch::kFloat32);
     }
-    auto [ft, mask] = board_to_features(state, cfg_.input_descr);
     return {ft, mask, history};
 }
 
-ModelOutput TransformerImpl::evaluate_inputs(const std::vector<const ModelInput*>& inputs) {
+ModelOutput TransformerImpl::evaluate_inputs(const std::vector<const ModelInput*>& inputs,
+                                             const NodeSlots& node_slots) {
     torch::NoGradGuard ng;
     auto dev = encoder_in->weight.device();
     int64_t B = static_cast<int64_t>(inputs.size());
+    int64_t N = inputs[0]->features.size(0);
     int64_t Tmax = 0;
     for (const ModelInput* in : inputs) Tmax = std::max(Tmax, in->history.size(0));
 
     // Each input's history, zero-padded to Tmax plies, copied in with plain memcpys/memsets for the
     // same reason as stack_cpu() (model_output.h).
-    auto hist_x    = torch::empty({B, Tmax, N_, history_feature_dim_}, torch::kFloat32);
+    auto hist_x    = torch::empty({B, Tmax, N, history_feature_dim_}, torch::kFloat32);
     auto hist_mask = torch::empty({B, Tmax}, torch::kBool);  // True = pad
-    size_t ply_bytes = static_cast<size_t>(N_) * history_feature_dim_ * sizeof(float);
+    size_t ply_bytes = static_cast<size_t>(N) * history_feature_dim_ * sizeof(float);
     auto* hist_dst = static_cast<char*>(hist_x.data_ptr());
     bool* mask_dst = hist_mask.data_ptr<bool>();
     for (int64_t i = 0; i < B; i++) {
@@ -181,5 +187,5 @@ ModelOutput TransformerImpl::evaluate_inputs(const std::vector<const ModelInput*
     }
     auto cur_x      = stack_inputs(inputs, &ModelInput::features).to(dev);   // (B, N, F)
     auto legal_mask = stack_inputs(inputs, &ModelInput::legal_mask).to(dev); // (B, ns*N+1)
-    return forward(hist_x.to(dev), hist_mask.to(dev), cur_x, legal_mask);
+    return forward(hist_x.to(dev), hist_mask.to(dev), cur_x, node_slots, legal_mask);
 }

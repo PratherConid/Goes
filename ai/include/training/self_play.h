@@ -85,7 +85,7 @@ std::vector<std::optional<int>> resolve_global_stone_place_limit(
 // as ModelConfig::input_descr (model/model_config.h), consumed by board_to_features()
 // (model/features.h). Board size is separate, since GameConfig has no board-geometry fields of its
 // own: `side_lens` (goes_train's --side-lens, else the board's own) is stored as "sideLens", the
-// CNN/UNet grid, which every board they run on must fit in (fits_in(), game/board_config.h), and
+// box the CNN/UNet/Transformer zero-extend every board's input to (NodeSlots, model/features.h), and
 // `n_bound`, an upper bound on the board's node count (goes_train's --n-bound, else
 // num_cells(side_lens)), as "nBound", which sizes the liberty and groupSize blocks. Only train.cpp calls this (on --resume, the
 // result must match the checkpoint's stored model config); server.cpp's load_model() reads the descriptor stored in a

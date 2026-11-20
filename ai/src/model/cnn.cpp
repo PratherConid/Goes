@@ -10,37 +10,18 @@ CNNImpl::CNNImpl(const BoardConfig& bc, const CNNConfig& cfg, int num_stones, in
 {
     // A real (always-active) check, not assert() - assert compiles out under NDEBUG (this project's
     // Release builds), which would otherwise let a non-2D-embedded board (e.g. regpoly/dodeca/icosa
-    // - see board_config.h - all use emb_dim=0 with an empty pos[] per node) fall through into the
-    // bc.emb.pos[i][0]/[1] accesses below as undefined behavior instead of failing loudly here.
+    // - see board_config.h - all use emb_dim=0) fall through into the side_lens[0]/[1] reads below
+    // as undefined behavior instead of failing loudly here.
     if (bc.emb.emb_dim() != 2)
         throw std::runtime_error(
             "CNN requires a 2D embedding (bc.emb.emb_dim() == 2), got emb_dim=" + std::to_string(bc.emb.emb_dim()));
     assert(bc.N > 0);
 
-    // The grid is the input descriptor's sideLens (no padding), which the board must fit in.
+    // The grid is the input descriptor's sideLens (no padding), which NodeSlots index into.
     const auto side_lens = cfg.input_descr.at("sideLens").get<std::vector<unsigned>>();
-    if (!fits_in(bc.emb, side_lens))
-        throw std::runtime_error("CNN: the board's side lengths " + nlohmann::json(bc.emb.side_lens).dump() +
-                                 " don't fit in the model's sideLens " + nlohmann::json(side_lens).dump());
     int gw = static_cast<int>(side_lens[0]), gh = static_cast<int>(side_lens[1]);
     grid_w_ = gw;
     grid_h_ = gh;
-
-    // Build per-node linear index (row*grid_w_+col) and validity grid.
-    auto lin_cpu = torch::zeros({bc.N}, torch::kLong);
-    auto val_cpu = torch::zeros({1, 1, gh, gw}, torch::kFloat32);
-    {
-        auto lin_a = lin_cpu.accessor<int64_t, 1>();
-        auto val_a = val_cpu.accessor<float, 4>();
-        for (int i = 0; i < bc.N; i++) {
-            int col = (int)bc.emb.pos[i][0];
-            int row = (int)bc.emb.pos[i][1];
-            lin_a[i]              = row * gw + col;
-            val_a[0][0][row][col] = 1.0f;
-        }
-    }
-    lin_idx_      = register_buffer("lin_idx",      lin_cpu);
-    valid_tensor_ = register_buffer("valid_tensor", val_cpu);
 
     num_blocks_ = std::max(gw, gh);
 
@@ -97,7 +78,7 @@ torch::Tensor CNNPolicyHeadImpl::forward(const torch::Tensor& h) {
     return torch::cat({place_logits, pass_logit}, -1);                 // (B, ns*N+1)
 }
 
-torch::Tensor CNNImpl::features_to_grid(const torch::Tensor& x) const {
+torch::Tensor CNNImpl::features_to_grid(const torch::Tensor& x, const NodeSlots& node_slots) const {
     int64_t B = x.size(0);
     int64_t N = x.size(1);
     int64_t F = x.size(2);
@@ -106,22 +87,23 @@ torch::Tensor CNNImpl::features_to_grid(const torch::Tensor& x) const {
     auto flat = torch::zeros({B, F + 1, (int64_t)grid_h_ * grid_w_}, x.options());
 
     // Scatter node features into channels 0..F-1
-    auto idx = lin_idx_.unsqueeze(0).unsqueeze(0).expand({B, F, N});
+    auto idx = node_slots.slot.unsqueeze(0).unsqueeze(0).expand({B, F, N});
     flat.slice(1, 0, F).scatter_(2, idx, x.permute({0, 2, 1}));
 
     // Validity channel (same for all batch items)
-    flat.select(1, F).copy_(valid_tensor_.view({1, -1}).expand({B, -1}));
+    flat.select(1, F).copy_(node_slots.valid.view({1, -1}).expand({B, -1}));
 
     return flat.view({B, F + 1, grid_h_, grid_w_});
 }
 
 ModelOutput CNNImpl::forward(
     torch::Tensor x,
+    const NodeSlots& node_slots,
     torch::Tensor legal_mask)
 {
     int64_t B = x.size(0);
 
-    auto h = torch::relu(input_proj->forward(features_to_grid(x))); // (B, hidden_dim, H, W)
+    auto h = torch::relu(input_proj->forward(features_to_grid(x, node_slots))); // (B, hidden_dim, H, W)
     for (int k = 0; k < num_blocks_; k++) {
         auto out = blocks_[k]->forward(h);
         h = torch::relu(out + h);
@@ -132,7 +114,7 @@ ModelOutput CNNImpl::forward(
     // (stone/territory estimate), the policy head and the rank head, all of which operate purely on
     // this per-node (B,N,hidden_dim) tensor rather than the raw grid.
     auto h_nodes = h.reshape({B, cfg_.hidden_dim, -1})
-                    .index_select(2, lin_idx_)
+                    .index_select(2, node_slots.slot)
                     .permute({0, 2, 1});                                  // (B, N, hidden_dim)
     auto stone_est     = torch::softmax(stone_head->forward(h_nodes), -1);      // (B, N, num_stones+1)
     auto territory_est = torch::softmax(territory_head->forward(h_nodes), -1);  // (B, N, num_stones+1)
@@ -152,10 +134,10 @@ ModelInput CNNImpl::prepare_input(const BoardState& state) const {
     return {ft, mask, {}};
 }
 
-ModelOutput CNNImpl::evaluate_inputs(const std::vector<const ModelInput*>& inputs) {
+ModelOutput CNNImpl::evaluate_inputs(const std::vector<const ModelInput*>& inputs, const NodeSlots& node_slots) {
     torch::NoGradGuard ng;
-    auto dev = lin_idx_.device();
+    auto dev = input_proj->weight.device();
     auto x    = stack_inputs(inputs, &ModelInput::features).to(dev);   // (B, N, F)
     auto mask = stack_inputs(inputs, &ModelInput::legal_mask).to(dev); // (B, ns*N+1)
-    return forward(x, mask);
+    return forward(x, node_slots, mask);
 }

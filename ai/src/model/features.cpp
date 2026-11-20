@@ -44,6 +44,37 @@ AdjNorms compute_adj_norms(const BoardConfig& bc, torch::Device device) {
             deg1.to(device), deg2.to(device), deg4.to(device), max_degree};
 }
 
+int num_node_slots(const BoardConfig& bc, const nlohmann::json& descr) {
+    return bc.emb.emb_dim() != 0 ? num_cells(descr.at("sideLens").get<std::vector<unsigned>>())
+                                 : descr.at("nBound").get<int>();
+}
+
+NodeSlots compute_node_slots(const BoardConfig& bc, const nlohmann::json& descr, torch::Device device) {
+    const auto side_lens = descr.at("sideLens").get<std::vector<unsigned>>();
+    const int num_slots = num_node_slots(bc, descr);
+    if (bc.emb.emb_dim() != 0 && !fits_in(bc.emb, side_lens))
+        throw std::runtime_error("the board's side lengths " + nlohmann::json(bc.emb.side_lens).dump() +
+                                 " don't fit in the model's sideLens " + descr.at("sideLens").dump());
+    if (bc.emb.emb_dim() == 0 && bc.N > num_slots)
+        throw std::runtime_error("the board's " + std::to_string(bc.N) + " nodes exceed the model's nBound " +
+                                 std::to_string(num_slots));
+
+    auto slot  = torch::empty({bc.N}, torch::kLong);
+    auto valid = torch::zeros({num_slots}, torch::kFloat32);
+    auto slot_a  = slot.accessor<int64_t, 1>();
+    auto valid_a = valid.accessor<float, 1>();
+    for (int i = 0; i < bc.N; i++) {
+        int64_t s = bc.emb.emb_dim() == 0 ? i : 0, stride = 1;
+        for (unsigned k = 0; k < bc.emb.emb_dim(); k++) {
+            s += static_cast<int64_t>(bc.emb.pos[i][k]) * stride;
+            stride *= side_lens[k];
+        }
+        slot_a[i]  = s;
+        valid_a[s] = 1.0f;
+    }
+    return {slot.to(device), valid.to(device)};
+}
+
 // Soft, monotonic stand-in for "bit i of value": 1 at value=0, ramping down
 // linearly to 0 at value=2^i and clamped at 0 beyond - i.e. max(0, 1 -
 // value/2^i). Used (in place of raw binary bit-extraction) for every
