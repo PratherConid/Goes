@@ -374,7 +374,9 @@ trained model is appropriate for a given ruleset - `boardDescr`, `numStones`, `n
 and which `playerStonePlaceLimit`/`globalStonePlaceLimit` entries are set (they decide the model's
 budget input channels - see **Input Features**) - so `boardSeed`, `maxPlies` and the place limits'
 values may differ between the request and the matched checkpoint. (`boardSeed` is left out because
-training gives every self-play thread a board of its own, from its own seed.)
+training gives every self-play thread a board of its own, from its own seed.) `parse_game_cfg()`
+re-prints `boardDescr` the way `unparseCleg()` does - the form the web UI sends - so a program's
+whitespace and formatting don't affect matching.
 
 The matched directory's model is loaded on its first request and cached: the newest
 `<arch>_XXXXXX.pt` of the architecture named by the directory's `<arch>_config.json` (a run directory

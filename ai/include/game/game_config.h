@@ -11,8 +11,9 @@
 
 struct GameConfig {
     // Mirrors shared/gameConfig.ts's GameConfig.boardDescr, but held as cleg source text (its
-    // toJSON() form), not a parsed ClegProgram - re-parsed on demand (game/cleg_parser.h's
-    // parse_cleg) wherever a board is needed, since nothing here keeps the AST around.
+    // toJSON() form, which parse_game_cfg() normalizes to), not a parsed ClegProgram - re-parsed on
+    // demand (game/cleg_parser.h's parse_cleg) wherever a board is needed, since nothing here keeps
+    // the AST around.
     std::string board_descr;
     // Mirrors shared/gameConfig.ts's GameConfig.boardSeed; nullopt = null. server.cpp requires it on
     // a /move request's config. train.cpp ignores it and draws its own seed per run.
